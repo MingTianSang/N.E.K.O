@@ -737,17 +737,18 @@ class BrowserUseAdapter:
                                 country = await asyncio.wait_for(
                                     country_future, timeout=2.0
                                 )
-                                if country:
-                                    enhanced_instruction = (
-                                        f"[User IP country: {country}] "
-                                        f"Keep this in mind when choosing search engine or regional settings.\n\n"
-                                        f"{instruction}"
-                                    )
-                                else:
-                                    enhanced_instruction = instruction
                             except asyncio.TimeoutError:
-                                enhanced_instruction = instruction
+                                country = None
                             country_future = None
+                        else:
+                            country = BrowserUseAdapter._ip_country_cache
+
+                        if country:
+                            enhanced_instruction = (
+                                f"[User IP country: {country}] "
+                                f"Keep this in mind when choosing search engine or regional settings.\n\n"
+                                f"{instruction}"
+                            )
                         else:
                             enhanced_instruction = instruction
 
