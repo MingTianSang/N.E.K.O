@@ -6,15 +6,12 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: # 允许手动触发
 
-# 仅在主仓库的 main 分支上运行
-run-name: Health Check
-
 jobs:
   health-check:
     if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      # ── 检查 lanlan.app (海外节点) ──
+      # ── 检查 lanlan.app (US) ──
       - name: Check lanlan.app
         id: check_app
         run: |
@@ -23,7 +20,7 @@ jobs:
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_tokens":5,"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_tokens":5,"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
@@ -39,7 +36,7 @@ jobs:
             echo "healthy=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 检查 lanlan.tech (国内节点) ──
+      # ── 检查 lanlan.tech (China) ──
       - name: Check lanlan.tech
         id: check_tech
         run: |
@@ -48,7 +45,7 @@ jobs:
             -X POST "https://lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-model","messages":[{"role":"user","content":"ok"}],"max_tokens":5,"max_completion_tokens":5}' \
+            -d '{"model":"free-model","messages":[{"role":"user","content":"sends some useful information"}],"max_tokens":5,"max_completion_tokens":5}' \
             2>/dev/null || echo "000")
           BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
@@ -66,7 +63,7 @@ jobs:
 
       # ── 推送结果到 Discord（仅当 secret 存在时） ──
       - name: Send Discord notification
-        if: env.DISCORD_WEBHOOK_URL != ''
+        if: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL != '' }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
         run: |
@@ -89,15 +86,19 @@ jobs:
           fi
 
           if [ "$APP_HEALTHY" = "true" ]; then
-            APP_STATUS="✅ OK (HTTP $APP_CODE)"
+            APP_STATUS="OK (HTTP $APP_CODE)"
+            APP_EMOJI=":white_check_mark:"
           else
-            APP_STATUS="❌ DOWN (HTTP $APP_CODE)"
+            APP_STATUS="DOWN (HTTP $APP_CODE)"
+            APP_EMOJI=":x:"
           fi
 
           if [ "$TECH_HEALTHY" = "true" ]; then
-            TECH_STATUS="✅ OK (HTTP $TECH_CODE)"
+            TECH_STATUS="OK (HTTP $TECH_CODE)"
+            TECH_EMOJI=":white_check_mark:"
           else
-            TECH_STATUS="❌ DOWN (HTTP $TECH_CODE)"
+            TECH_STATUS="DOWN (HTTP $TECH_CODE)"
+            TECH_EMOJI=":x:"
           fi
 
           # 只在有故障时 @everyone
@@ -110,17 +111,17 @@ jobs:
             --arg content "$CONTENT" \
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
-            --arg app_status "$APP_STATUS" \
-            --arg tech_status "$TECH_STATUS" \
+            --arg app_status "$APP_EMOJI $APP_STATUS" \
+            --arg tech_status "$TECH_EMOJI $TECH_STATUS" \
             --arg timestamp "$TIMESTAMP" \
             '{
-              content: $content,
+              content: (if $content == "" then null else $content end),
               embeds: [{
                 title: $title,
                 color: $color,
                 fields: [
-                  {name: "lanlan.app (overseas)", value: $app_status, inline: true},
-                  {name: "lanlan.tech (mainland)", value: $tech_status, inline: true}
+                  {name: "lanlan.app (US)", value: $app_status, inline: true},
+                  {name: "lanlan.tech (China)", value: $tech_status, inline: true}
                 ],
                 footer: {text: "N.E.K.O Health Monitor"},
                 timestamp: $timestamp
