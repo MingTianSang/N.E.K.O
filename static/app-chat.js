@@ -716,13 +716,8 @@
         }
 
         function looksLikeStructuredRichText(text) {
-            var s = normalizeGeminiText(text || '');
-            return /```[\s\S]*```/.test(s)
-                || /(?:^|\n)```/.test(s)
-                || /\$\$[\s\S]*\$\$/.test(s)
-                || /(?<!\$)\$(?!\$)[^$\n]+(?<!\$)\$(?!\$)/.test(s)
-                || /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/.test(s)
-                || /(?:^|\n)\|.+\|.+(?:\n|\r\n)\|(?:[-: ]+\|){1,}/.test(s);
+            // 统一复用 app-chat-text-utils.js 里的唯一实现，避免与 adapter 路径分叉。
+            return window.appChatTextUtils.looksLikeStructuredRichText(text);
         }
 
         function renderStructuredGeminiMessage(fullText) {
@@ -784,17 +779,35 @@
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
+                window._turnIsStructured = false;
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
+                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                if (typeof window.beginSubtitleTurn === 'function') {
+                    window.beginSubtitleTurn();
+                }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
 
-            // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
-            // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
-            if (typeof window.updateSubtitleStreamingText === 'function') {
-                var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            // 结构化富文本（markdown / code / table / latex）→ 字幕显示 [markdown] 占位，
+            // 不再流式写原文，turn_end 也跳过翻译。检测命中后幂等，不会往回切。
+            var streamingText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            if (!window._turnIsStructured && looksLikeStructuredRichText(streamingText)) {
+                window._turnIsStructured = true;
+            }
+
+            if (window._turnIsStructured) {
+                if (typeof window.markSubtitleStructured === 'function') {
+                    window.markSubtitleStructured();
+                }
+            } else if (typeof window.updateSubtitleStreamingText === 'function') {
+                // 把整轮累积的原文流式写入字幕（常驻字幕，跨气泡持续显示）
+                // turn 结束时由 app-websocket.js 调用翻译替换；turn-start 事件清空
                 window.updateSubtitleStreamingText(streamingText);
             }
         }
