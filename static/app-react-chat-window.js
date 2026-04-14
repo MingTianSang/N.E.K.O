@@ -944,9 +944,7 @@
         };
     }
 
-    var MINIMIZED_SIZE = 50;            // 桌面：圆球直径
-    var MOBILE_CAPSULE_HEIGHT = 48;     // 手机：底部胶囊高度
-    var MOBILE_CAPSULE_MARGIN = 6;      // 手机：胶囊离屏幕边距
+    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
@@ -1097,17 +1095,19 @@
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
             if (isMobileWidth()) {
-                // 手机端：宽度永远是全宽（由 CSS 对非动画态的 `.is-minimized`/展开态
-                // 双向 !important 覆盖），所以忽略 savedShellSize.width —— 否则旋屏
-                // (portrait→landscape) 后 savedSize.width < curRect.width，
-                // expandedRect 被 savedSize 缩窄，sx2 > 1，动画反向缩小。
-                // 高度按当前视口 50vh 重新 clamp，避免旋屏或视口变短后超出上限。
-                shell.style.width = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2) + 'px';
-                var maxMobileHeight = Math.max(0, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
+                // 手机端：宽度由 CSS calc(100vw - 12px) 控制，清除内联宽度
+                shell.style.removeProperty('width');
+                // 高度：优先使用用户手动设置的高度，否则自动计算上限 85vh
+                var mobileMaxH = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
                 var savedHeightPx = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
-                var restoreHeight = isFinite(savedHeightPx) && savedHeightPx > 0
-                    ? Math.min(savedHeightPx, maxMobileHeight)
-                    : maxMobileHeight;
+                var restoreHeight;
+                if (mobileUserHeight > 0) {
+                    restoreHeight = Math.min(mobileUserHeight, mobileMaxH);
+                } else if (isFinite(savedHeightPx) && savedHeightPx > 0) {
+                    restoreHeight = Math.min(savedHeightPx, mobileMaxH);
+                } else {
+                    restoreHeight = Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO);
+                }
                 if (restoreHeight > 0) shell.style.height = restoreHeight + 'px';
             } else if (savedShellSize) {
                 if (savedShellSize.width) shell.style.width = savedShellSize.width;
@@ -1507,9 +1507,13 @@
         newHeight = Math.min(newHeight, window.innerHeight);
 
         if (mobile) {
-            // 手机端仅更新高度，保持 CSS 控制的 bottom/left/width
+            // 手机端：更新高度和 top，保持 CSS 控制的 left/width
             var maxMobileH = Math.floor(window.innerHeight * 0.85);
-            shell.style.height = Math.min(newHeight, maxMobileH) + 'px';
+            var clampedH = Math.min(newHeight, maxMobileH);
+            shell.style.height = clampedH + 'px';
+            // 设置 top 并清除 bottom，使北侧拖拽正确向上扩展
+            shell.style.top = newTop + 'px';
+            shell.style.bottom = 'auto';
         } else {
             shell.style.width = newWidth + 'px';
             shell.style.height = newHeight + 'px';
@@ -1526,8 +1530,10 @@
         if (shell) {
             var rect = shell.getBoundingClientRect();
             if (isMobileWidth()) {
-                // 手机端：保存用户设置的高度
+                // 手机端：保存用户设置的高度，恢复底部锚定
                 mobileUserHeight = Math.round(rect.height);
+                shell.style.removeProperty('top');
+                shell.style.removeProperty('bottom');
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
@@ -1706,9 +1712,9 @@
                         var minH = r.height || MINIMIZED_SIZE;
                         var safeLeft, safeTop;
                         if (isMobileWidth()) {
-                            // 胶囊始终贴屏幕底部中心，左右留 6px
-                            safeLeft = MOBILE_CAPSULE_MARGIN;
-                            safeTop = Math.max(0, window.innerHeight - MOBILE_CAPSULE_HEIGHT - MOBILE_CAPSULE_MARGIN);
+                            // 圆形悬浮球：保持用户拖拽位置，仅 clamp 到视口内
+                            safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - minW));
+                            safeTop = Math.max(0, Math.min(r.top, window.innerHeight - minH));
                         } else {
                             safeLeft = Math.max(0, Math.min(r.left, window.innerWidth - minW));
                             safeTop = Math.max(0, Math.min(r.top, window.innerHeight - minH));
