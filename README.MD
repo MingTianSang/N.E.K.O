@@ -518,7 +518,7 @@ uv run python agent_server.py
 
 ```
 N.E.K.O/
-├── 📁 .agent/                   # 🤖 AI 编程助手规范与技能集（Claude Code 自动加载，其他工具可手动导入）
+├── 📁 .agent/                   # 🤖 AI 编程助手规范与技能集（Google Antigravity 规范）
 ├── 📁 brain/                    # 🧠 Agent 智能体模块
 │   ├── computer_use.py          # 电脑操控
 │   ├── browser_use_adapter.py   # 浏览器自动化
@@ -555,7 +555,7 @@ N.E.K.O/
 └── memory_server.py             # 🧠 记忆服务器
 ```
 
-> **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。Claude Code 开箱即用，其他 AI 工具请参阅[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。
+> **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。只有 Antigravity 自动读取，其他 AI 工具（含 Claude Code）需手动导入，详见[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。
 
 **数据流向**
 
