@@ -119,6 +119,9 @@
             return;
         }
 
+        // 正在拖拽调整高度时不覆盖，等 stopResize() 结束后再同步
+        if (resizeState) return;
+
         // 如果用户手动设置了高度，使用用户高度，不自动计算
         if (mobileUserHeight > 0) {
             var maxH = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
@@ -1511,6 +1514,10 @@
             // 手机端：更新高度和 top，保持 CSS 控制的 left/width
             var maxMobileH = Math.floor(window.innerHeight * 0.85);
             var clampedH = Math.min(newHeight, maxMobileH);
+            // 高度被截断时重新计算 top，保持面板底部不动
+            if (clampedH < newHeight) {
+                newTop = window.innerHeight - clampedH;
+            }
             shell.style.height = clampedH + 'px';
             // 设置 top 并清除 bottom，使北侧拖拽正确向上扩展
             shell.style.top = newTop + 'px';
