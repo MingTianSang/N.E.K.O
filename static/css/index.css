@@ -2244,7 +2244,7 @@ body.react-chat-window-dragging {
     body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
-        max-height: 50vh;
+        max-height: 85vh;
         top: auto;
         bottom: 6px;
         left: 6px;
@@ -2307,29 +2307,55 @@ body.react-chat-window-dragging {
     }
 
     body:not(.electron-chat-window) #react-chat-window-drag-handle {
-        cursor: default;
+        cursor: grab;
     }
 
-    /* ---- 手机端最小化：全宽底部胶囊（替代 50px 圆球）----
-       胶囊横跨屏幕底部，点击即展开；比左下角小圆球更符合手机底栏交互习惯。
-       具体最小化尺寸由 JS 通过 transform scale 动画过渡到此 CSS 终态。 */
+    /* 手机端：仅显示顶部拖拽边缘用于调整高度，隐藏其余方向 */
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
+        display: none;
+    }
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
+        display: block;
+        height: 14px;
+        top: -4px;
+        left: 0;
+        right: 0;
+        cursor: n-resize;
+        /* 可视拖拽指示条 */
+        background: transparent;
+    }
+    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 36px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(150, 160, 175, 0.4);
+    }
+
+    /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
+       替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
-        width: calc(100vw - 12px) !important;
-        height: 48px !important;
-        border-radius: 24px;
+        width: 50px !important;
+        height: 50px !important;
+        border-radius: 50%;
     }
 
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
         display: flex;
         align-items: center;
         justify-content: center;
+        cursor: pointer;
     }
 
     body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
-        width: 28px;
-        height: 28px;
-        /* 居中显示而非填满整条胶囊 */
+        width: 100%;
+        height: 100%;
         object-fit: contain;
+        pointer-events: none;
     }
 
     #chat-container.minimized::before {

@@ -39,6 +39,9 @@
 
     var MOBILE_MAX_HEIGHT_RATIO = 0.5;
     var MOBILE_MESSAGE_MIN_HEIGHT = 60;
+    var MOBILE_MIN_HEIGHT = 150;
+    var MOBILE_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.mobileHeight';
+    var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
 
     function $(id) {
@@ -113,6 +116,16 @@
         var root = getRoot();
         if (!overlay || overlay.hidden || !shell || !root || minimized || !isMobileWidth()) {
             clearMobileContentCap();
+            return;
+        }
+
+        // 如果用户手动设置了高度，使用用户高度，不自动计算
+        if (mobileUserHeight > 0) {
+            var maxH = Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
+            var h = Math.min(mobileUserHeight, maxH);
+            shell.style.height = h + 'px';
+            shell.dataset.mobileAutoHeight = 'false';
+            shell.classList.remove('is-mobile-content-capped');
             return;
         }
 
@@ -521,7 +534,7 @@
 
     function applyPosition(left, top) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
 
         var clamped = clampPosition(left, top);
         shell.style.left = clamped.left + 'px';
@@ -944,20 +957,7 @@
     // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
     // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
     function getMinimizedTarget(rect) {
-        if (isMobileWidth()) {
-            var mobileWidth = Math.max(0, window.innerWidth - MOBILE_CAPSULE_MARGIN * 2);
-            // 胶囊四周保持 MOBILE_CAPSULE_MARGIN 间距（与左右 6px 对称）
-            var mobileBottomTop = Math.max(0, window.innerHeight - MOBILE_CAPSULE_HEIGHT - MOBILE_CAPSULE_MARGIN);
-            return {
-                width: mobileWidth,
-                height: MOBILE_CAPSULE_HEIGHT,
-                left: MOBILE_CAPSULE_MARGIN,
-                top: Math.max(0, Math.min(
-                    rect.bottom - MOBILE_CAPSULE_HEIGHT,
-                    mobileBottomTop
-                ))
-            };
-        }
+        // 桌面端和移动端统一使用 50px 圆形悬浮球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
@@ -1320,7 +1320,6 @@
     function startDrag(clientX, clientY) {
         var shell = getShell();
         if (!shell) return;
-        if (isMobileWidth() && !minimized) return;
 
         var rect = shell.getBoundingClientRect();
         dragState = {
@@ -1399,7 +1398,8 @@
             if (avatarHeaderBtn && avatarHeaderBtn.contains(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
-        }, { passive: true });
+            event.preventDefault();
+        }, { passive: false });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -1408,8 +1408,9 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!dragState || !event.touches || event.touches.length === 0) return;
+            event.preventDefault();
             updateDrag(event.touches[0].clientX, event.touches[0].clientY);
-        }, { passive: true });
+        }, { passive: false });
 
         document.addEventListener('mouseup', stopDrag);
         document.addEventListener('touchend', stopDrag);
@@ -1434,7 +1435,10 @@
 
     function startResize(clientX, clientY, direction) {
         var shell = getShell();
-        if (!shell || isMobileWidth()) return;
+        if (!shell) return;
+        // 手机端仅允许向上拖动调整高度（北侧边缘）
+        if (isMobileWidth() && direction !== 'n') return;
+        if (minimized) return;
 
         var rect = shell.getBoundingClientRect();
         resizeState = {
@@ -1465,10 +1469,13 @@
         var newWidth = resizeState.origWidth;
         var newHeight = resizeState.origHeight;
 
-        if (dir.indexOf('e') !== -1) {
+        // 手机端仅处理高度变化
+        var mobile = isMobileWidth();
+
+        if (!mobile && dir.indexOf('e') !== -1) {
             newWidth = Math.max(MIN_WIDTH, resizeState.origWidth + dx);
         }
-        if (dir.indexOf('w') !== -1) {
+        if (!mobile && dir.indexOf('w') !== -1) {
             var proposedWidth = resizeState.origWidth - dx;
             if (proposedWidth >= MIN_WIDTH) {
                 newWidth = proposedWidth;
@@ -1478,17 +1485,18 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
-        if (dir.indexOf('s') !== -1) {
+        if (!mobile && dir.indexOf('s') !== -1) {
             newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
+            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
             var proposedHeight = resizeState.origHeight - dy;
-            if (proposedHeight >= MIN_HEIGHT) {
+            if (proposedHeight >= minH) {
                 newHeight = proposedHeight;
                 newTop = resizeState.origTop + dy;
             } else {
-                newHeight = MIN_HEIGHT;
-                newTop = resizeState.origTop + resizeState.origHeight - MIN_HEIGHT;
+                newHeight = minH;
+                newTop = resizeState.origTop + resizeState.origHeight - minH;
             }
         }
 
@@ -1498,11 +1506,17 @@
         newWidth = Math.min(newWidth, window.innerWidth);
         newHeight = Math.min(newHeight, window.innerHeight);
 
-        shell.style.width = newWidth + 'px';
-        shell.style.height = newHeight + 'px';
-        shell.style.left = newLeft + 'px';
-        shell.style.top = newTop + 'px';
-        shell.style.transform = 'none';
+        if (mobile) {
+            // 手机端仅更新高度，保持 CSS 控制的 bottom/left/width
+            var maxMobileH = Math.floor(window.innerHeight * 0.85);
+            shell.style.height = Math.min(newHeight, maxMobileH) + 'px';
+        } else {
+            shell.style.width = newWidth + 'px';
+            shell.style.height = newHeight + 'px';
+            shell.style.left = newLeft + 'px';
+            shell.style.top = newTop + 'px';
+            shell.style.transform = 'none';
+        }
     }
 
     function stopResize() {
@@ -1511,8 +1525,16 @@
         var shell = getShell();
         if (shell) {
             var rect = shell.getBoundingClientRect();
-            persistPosition(rect.left, rect.top);
-            persistSize(rect.width, rect.height);
+            if (isMobileWidth()) {
+                // 手机端：保存用户设置的高度
+                mobileUserHeight = Math.round(rect.height);
+                try {
+                    localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
+                } catch (_) {}
+            } else {
+                persistPosition(rect.left, rect.top);
+                persistSize(rect.width, rect.height);
+            }
         }
 
         resizeState = null;
@@ -1535,7 +1557,8 @@
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             if (!event.touches || event.touches.length === 0) return;
             startResize(event.touches[0].clientX, event.touches[0].clientY, target.dataset.resizeDir);
-        }, { passive: true });
+            event.preventDefault();
+        }, { passive: false });
 
         document.addEventListener('mousemove', function (event) {
             if (!resizeState) return;
@@ -1544,8 +1567,9 @@
 
         document.addEventListener('touchmove', function (event) {
             if (!resizeState || !event.touches || event.touches.length === 0) return;
+            event.preventDefault();
             updateResize(event.touches[0].clientX, event.touches[0].clientY);
-        }, { passive: true });
+        }, { passive: false });
 
         document.addEventListener('mouseup', stopResize);
         document.addEventListener('touchend', stopResize);
@@ -1631,6 +1655,17 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+
+        // 恢复手机端用户设置的高度
+        try {
+            var storedMobileHeight = localStorage.getItem(MOBILE_HEIGHT_STORAGE_KEY);
+            if (storedMobileHeight) {
+                var parsed = Number(storedMobileHeight);
+                if (Number.isFinite(parsed) && parsed >= MOBILE_MIN_HEIGHT) {
+                    mobileUserHeight = parsed;
+                }
+            }
+        } catch (_) {}
 
         // 悬浮球 hover 效果（参考原版 #chat-container 实现）
         var header = getHeader();
