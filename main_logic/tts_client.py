@@ -1425,6 +1425,44 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     buffer = ""
                     first_audio_received = False
 
+                    def _detect_beep_watermark(audio: np.ndarray, sr: int) -> int:
+                        """检测开头的滴滴声水印，返回应裁剪的采样数（0 = 未检测到）。
+
+                        检测策略：在前 1.5s 内寻找短促高频脉冲（beep）。
+                        beep 特征：短时能量突增 + 高频占比显著高于语音。
+                        """
+                        scan_len = min(int(sr * 1.5), len(audio))
+                        if scan_len < int(sr * 0.05):
+                            return 0
+
+                        frame_size = int(sr * 0.01)   # 10ms 帧
+                        hop = frame_size
+                        hf_threshold = 0.55            # 高频能量占比阈值
+                        energy_floor = 1e-6
+                        beep_frames: list[int] = []
+
+                        for start in range(0, scan_len - frame_size, hop):
+                            frame = audio[start:start + frame_size]
+                            spectrum = np.abs(np.fft.rfft(frame))
+                            freqs = np.fft.rfftfreq(frame_size, 1.0 / sr)
+
+                            total_energy = np.sum(spectrum ** 2)
+                            if total_energy < energy_floor:
+                                continue
+
+                            hf_energy = np.sum(spectrum[freqs >= 2000] ** 2)
+                            hf_ratio = hf_energy / total_energy
+
+                            if hf_ratio >= hf_threshold:
+                                beep_frames.append(start + frame_size)
+
+                        if len(beep_frames) < 2:
+                            return 0
+
+                        # 裁剪到最后一个 beep 帧之后 + 5ms 安全余量
+                        trim_end = beep_frames[-1] + int(sr * 0.005)
+                        return min(trim_end, scan_len)
+
                     def _handle_sse_line(line: str) -> None:
                         """解析单条 SSE data 行并将音频入队。"""
                         nonlocal first_audio_received
@@ -1451,19 +1489,38 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 audio_bytes, dtype=np.int16,
                             ).astype(np.float32) / 32768.0
 
-                            # 首个音频块：裁剪 1s 初始化噪音 + 10ms 淡入
+                            # 首个音频块：检测并裁剪水印滴滴声
                             if not first_audio_received:
                                 first_audio_received = True
-                                trim_samples = int(sample_rate)
-                                if len(audio_array) > trim_samples:
-                                    audio_array = audio_array[trim_samples:]
-                                fade_samples = min(
-                                    int(sample_rate * 0.01), len(audio_array),
+                                trim_samples = _detect_beep_watermark(
+                                    audio_array, sample_rate,
                                 )
-                                if fade_samples > 0:
-                                    audio_array[:fade_samples] *= np.linspace(
-                                        0.0, 1.0, fade_samples,
+                                if trim_samples > 0:
+                                    logger.info(
+                                        "CogTTS: 检测到水印滴滴声，裁剪 %.0fms",
+                                        trim_samples / sample_rate * 1000,
                                     )
+                                    audio_array = audio_array[trim_samples:]
+                                    # 通知前端检测到水印
+                                    response_queue.put((
+                                        "__warning__",
+                                        json.dumps({
+                                            "code": "TTS_WATERMARK_DETECTED",
+                                            "level": "info",
+                                        }),
+                                    ))
+                                    # 裁剪后淡入 10ms 避免爆音
+                                    fade_samples = min(
+                                        int(sample_rate * 0.01),
+                                        len(audio_array),
+                                    )
+                                    if fade_samples > 0:
+                                        audio_array[:fade_samples] *= np.linspace(
+                                            0.0, 1.0, fade_samples,
+                                        )
+
+                            if len(audio_array) == 0:
+                                return
 
                             resampled = soxr.resample(
                                 audio_array, sample_rate, 48000, quality='HQ',
@@ -1627,12 +1684,11 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """
-    OpenAI TTS worker（用于默认音色）
-    使用 OpenAI 的 TTS API（gpt-4o-mini-tts）
-    注意：OpenAI TTS 不支持流式输入，只支持流式输出
-    因此需要累积文本后一次性发送，但可以流式接收音频
-    
+    """OpenAI TTS worker — 按句切分合成，流式接收音频。
+
+    使用 _non_bistream_tts_main_loop 按标点切句，每句独立调用
+    OpenAI TTS API 并流式接收 PCM 音频，降低首音频延迟。
+
     Args:
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
@@ -1652,78 +1708,44 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             except Exception:
                 break
         return
-    
+
     # 使用默认音色 "marin"
     if not voice_id:
         voice_id = "marin"
-    
+
     async def async_worker():
-        """异步TTS worker主循环"""
-        current_speech_id = None
-        text_buffer = []  # 累积文本缓冲区
-        
         # 初始化 OpenAI 客户端
         client = AsyncOpenAI(api_key=audio_api_key)
-        
+
         # OpenAI TTS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
         logger.info("OpenAI TTS 已就绪，发送就绪信号")
         response_queue.put(("__ready__", True))
-        
-        try:
-            loop = asyncio.get_running_loop()
-            
-            while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
 
-                if sid == "__interrupt__":
-                    sid = None
-                
-                # 新的语音ID，清空缓冲区并重新开始
-                if current_speech_id != sid and sid is not None:
-                    current_speech_id = sid
-                    text_buffer = []
-                
-                if sid is None:
-                    # 收到终止信号，合成累积的文本
-                    if text_buffer and current_speech_id is not None:
-                        full_text = "".join(text_buffer)
-                        if full_text.strip():
-                            try:
-                                # 使用 OpenAI TTS API 进行流式合成
-                                # PCM 格式: 24000Hz, 16-bit, mono
-                                async with client.audio.speech.with_streaming_response.create(
-                                    model="gpt-4o-mini-tts",
-                                    voice=voice_id,
-                                    input=full_text,
-                                    response_format="pcm",
-                                ) as response:
-                                    _record_tts_telemetry("gpt-4o-mini-tts", full_text)
-                                    # 流式接收音频数据
-                                    async for chunk in response.iter_bytes(chunk_size=4096):
-                                        if chunk:
-                                            # OpenAI TTS 返回 PCM 16-bit @ 24000Hz
-                                            audio_array = np.frombuffer(chunk, dtype=np.int16)
-                                            # 重采样到 48000Hz
-                                            resampled_bytes = _resample_audio(audio_array, 24000, 48000)
-                                            response_queue.put(resampled_bytes)
-                                            
-                            except Exception as e:
-                                _enqueue_error(response_queue, f"OpenAI TTS 合成失败: {e}")
-                    
-                    # 清空缓冲区
-                    text_buffer = []
-                    current_speech_id = None
-                    continue
-                
-                # 累积文本到缓冲区（不立即发送）
-                if tts_text and tts_text.strip():
-                    text_buffer.append(tts_text)
-        
-        except Exception as e:
-            _enqueue_error(response_queue, f"OpenAI TTS Worker错误: {e}")
+        async def synthesize(text: str, speech_id: str) -> None:
+            """对单个句子调用 OpenAI TTS API 并流式接收音频。"""
+            async with client.audio.speech.with_streaming_response.create(
+                model="gpt-4o-mini-tts",
+                voice=voice_id,
+                input=text,
+                response_format="pcm",
+            ) as response:
+                _record_tts_telemetry("gpt-4o-mini-tts", text)
+                # 流式接收音频数据
+                async for chunk in response.iter_bytes(chunk_size=4096):
+                    if chunk:
+                        # OpenAI TTS 返回 PCM 16-bit @ 24000Hz
+                        audio_array = np.frombuffer(chunk, dtype=np.int16)
+                        # 重采样到 48000Hz
+                        resampled_bytes = _resample_audio(audio_array, 24000, 48000)
+                        response_queue.put(resampled_bytes)
+
+        try:
+            await _non_bistream_tts_main_loop(
+                request_queue, response_queue, synthesize,
+                label="OpenAI TTS",
+            )
+        except Exception as exc:
+            _enqueue_error(response_queue, f"OpenAI TTS Worker 错误: {exc}")
             response_queue.put(("__ready__", False))
 
     # 运行异步worker
