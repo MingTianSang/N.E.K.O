@@ -140,6 +140,14 @@ def enqueue_voice_migration_notice(legacy_names: list) -> None:
     })
 
 
+# Sentinel returned by start_llm_session when CAS detects a concurrent start
+# already promoted its own session.  Returning a sentinel (instead of raising)
+# keeps the loser out of the generic error path — that path calls cleanup()
+# without an expected_session guard and would otherwise tear down the winner's
+# session/websocket while also inflating session_start_failure_count.
+_START_LLM_CONCURRENT_ABORTED = object()
+
+
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
     def __init__(self, sync_message_queue, lanlan_name, lanlan_prompt):
@@ -1262,7 +1270,10 @@ class LLMSessionManager:
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
-        
+        # CAS 落败早退标志：True 时禁止 finally 递减 guard，
+        # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
+        _llm_concurrent_aborted = False
+
         # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
         await self._cleanup_pending_session_resources()
         await self._reset_preparation_state(clear_main_cache=False)
@@ -1369,7 +1380,9 @@ class LLMSessionManager:
         
         # 如果检测到旧 session，先清理
         if self.is_active:
-            await self.end_session(by_server=True)
+            # reset_starting_count=False：保留自己递增的 guard，防止 end_session 里
+            # 的 _starting_session_count=0 让并发第二次 start_session 穿过，产生孤儿 session。
+            await self.end_session(by_server=True, reset_starting_count=False)
             # 等待一小段时间确保资源完全释放
             await asyncio.sleep(0.5)
             logger.info("旧session清理完成")
@@ -1481,11 +1494,18 @@ class LLMSessionManager:
         # 定义 LLM Session 启动协程
         async def start_llm_session():
             """异步创建并连接 LLM Session.
-            
+
             Uses connect-then-assign: a local new_session is created and connected
             first.  Only after connect() succeeds is it promoted to self.session.
             On failure the half-initialised session is closed and an exception raised.
             """
+            # 强 CAS 语义：只允许在 self.session 为 None（start_session 已清场）
+            # 或已经是自己的 new_session 时赋值。任何其他状态都视为并发落败，
+            # 必须关闭本次 new_session，避免覆盖赢家造成孤儿。
+            #
+            # 反例：若仅对比"入口快照"，当赢家已把 self.session 置为 B、
+            # 落败者 A 早退后 guard 被 finally 放开，第三者 C 会把入口快照
+            # 记作 B，随后 CAS 通过 B==B 的自反检查覆盖 B，产生新的孤儿。
             guard_max_length = self._get_text_guard_max_length()
             _lang = normalize_language_code(self.user_language, format='short')
             initial_prompt = await self._build_initial_prompt()
@@ -1575,11 +1595,29 @@ class LLMSessionManager:
                 except Exception:
                     pass
                 raise
-            
-            # Connect succeeded — promote to self.session
-            self.session = new_session
-            if not self.current_speech_id:
-                self.current_speech_id = str(uuid4())
+
+            # 强 CAS 提升：仅在 self.session 为 None（已被 end_session 清场）
+            # 或已经是自己时才赋值，确保不会覆盖任何已就位的赢家 session。
+            concurrent_winner = False
+            async with self.lock:
+                if self.session is None or self.session is new_session:
+                    self.session = new_session
+                    if not self.current_speech_id:
+                        self.current_speech_id = str(uuid4())
+                else:
+                    concurrent_winner = True
+
+            if concurrent_winner:
+                logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
+                try:
+                    await new_session.close()
+                except Exception as _close_err:
+                    logger.error(f"💥 关闭并发落败的 new_session 失败: {_close_err}")
+                # 返回哨兵（而非 raise）以绕开 start_session 的通用 except：后者会调
+                # cleanup()（无 expected_session 守卫），反过来拆掉赢家的 session/ws，
+                # 还会 +1 session_start_failure_count 并向前端发 SESSION_START_FAILED。
+                return _START_LLM_CONCURRENT_ABORTED
+
             logger.info("✅ LLM Session 已连接")
             logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
             print(initial_prompt)  #只在控制台显示，不输出到日志文件
@@ -1613,6 +1651,15 @@ class LLMSessionManager:
             # 检查是否有错误
             if isinstance(tts_result, Exception):
                 logger.error(f"TTS 启动失败: {tts_result}")
+            # 并发落败分支：赢家已持有 self.session / message_handler_task，
+            # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
+            # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
+            # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
+            # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
+            if llm_result is _START_LLM_CONCURRENT_ABORTED:
+                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
+                _llm_concurrent_aborted = True
+                return
             if isinstance(llm_result, Exception):
                 raise llm_result  # LLM Session 失败是致命的
             
@@ -1707,8 +1754,12 @@ class LLMSessionManager:
             await self.cleanup()
         
         finally:
-            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）
-            self._starting_session_count = max(0, self._starting_session_count - 1)
+            # 无论成功还是失败，都递减启动计数器（而非直接置 False，防止覆盖并发的第二个 start_session）。
+            # 例外：CAS 落败早退时不递减——赢家还在初始化，若此时放开 guard，
+            # 第三个协程会穿过并再次把入口快照当作"赢家"进而覆盖掉真正的赢家。
+            # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
+            if not _llm_concurrent_aborted:
+                self._starting_session_count = max(0, self._starting_session_count - 1)
 
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
@@ -2920,7 +2971,7 @@ class LLMSessionManager:
             logger.error(f"💥 {error_message}")
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
-    async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
+    async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -2970,8 +3021,11 @@ class LLMSessionManager:
             # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
             # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
             # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
-            # connect-then-assign 模式已保证不会出现 >2 个 session。
-            self._starting_session_count = 0
+            # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
+            # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
+            # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
+            if reset_starting_count:
+                self._starting_session_count = 0
             
             # Snapshot all mutable resource refs while holding the lock,
             # then operate only on locals to prevent killing newly created resources.
