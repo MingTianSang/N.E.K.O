@@ -2133,10 +2133,17 @@ class LLMSessionManager:
                 import pyautogui
                 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
                 import base64 as b64mod
-                shot = pyautogui.screenshot()
-                if shot.mode in ('RGBA', 'LA', 'P'):
-                    shot = shot.convert('RGB')
-                jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+                def _capture_and_compress() -> bytes:
+                    shot = pyautogui.screenshot()
+                    if shot.mode in ('RGBA', 'LA', 'P'):
+                        shot = shot.convert('RGB')
+                    return compress_screenshot(
+                        shot,
+                        target_h=COMPRESS_TARGET_HEIGHT,
+                        quality=COMPRESS_JPEG_QUALITY,
+                    )
+
+                jpg_bytes = await asyncio.to_thread(_capture_and_compress)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
                 return b64_str
@@ -2180,11 +2187,19 @@ class LLMSessionManager:
             self._tts_done_queued_for_turn = False
         return True
 
-    async def feed_tts_chunk(self, text: str):
-        """只把文本喂给 TTS 管线，不发送到前端显示。"""
+    async def feed_tts_chunk(self, text: str, expected_speech_id: str | None = None):
+        """只把文本喂给 TTS 管线，不发送到前端显示。
+
+        expected_speech_id: 若不为 None 且与当前 current_speech_id 不匹配（说明
+        调用者所属轮次已被其他路径接管，例如主动搭话流式期间用户打断），丢弃本
+        chunk 并返回。lock 内判定以保证与 enqueue 原子，避免 proactive 文本被错
+        打上新轮次的 speech_id 流入用户正常回复音频。
+        """
         if not self.use_tts:
             return
         async with self.tts_cache_lock:
+            if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
+                return
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
                     self._enqueue_tts_text_chunk(self.current_speech_id, text)

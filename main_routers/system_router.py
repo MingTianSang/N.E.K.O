@@ -55,7 +55,12 @@ from config.prompts_proactive import (
     MUSIC_SEARCH_RESULT_TEXTS,
 )
 from utils.workshop_utils import get_workshop_path
-from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
+from utils.screenshot_utils import (
+    compress_screenshot,
+    decode_and_compress_screenshot_b64,
+    COMPRESS_TARGET_HEIGHT,
+    COMPRESS_JPEG_QUALITY,
+)
 from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
 from utils.web_scraper import (
     fetch_trending_content, format_trending_content,
@@ -2244,9 +2249,13 @@ async def backend_screenshot(request: Request):
         return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
 
     try:
-        shot = pyautogui.screenshot()
-        if shot.mode in ('RGBA', 'LA', 'P'):
-            shot = shot.convert('RGB')
+        def _capture_rgb_screenshot():
+            shot = pyautogui.screenshot()
+            if shot.mode in ('RGBA', 'LA', 'P'):
+                shot = shot.convert('RGB')
+            return shot
+
+        shot = await asyncio.to_thread(_capture_rgb_screenshot)
 
         # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
         # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
@@ -2261,7 +2270,9 @@ async def backend_screenshot(request: Request):
             except Exception:
                 logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
-        jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+        jpg_bytes = await asyncio.to_thread(
+            compress_screenshot, shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY,
+        )
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
         return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
@@ -2390,14 +2401,15 @@ async def proactive_chat(request: Request):
                 # 截图将在 Phase 2 由 vision_model 直接读取原图，这里只做压缩。
                 compressed_b64 = ''
                 try:
-                    from PIL import Image as _PILImage
                     b64_raw = screenshot_data.split(',', 1)[1] if ',' in screenshot_data else screenshot_data
-                    img = _PILImage.open(BytesIO(base64.b64decode(b64_raw)))
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                    jpg_bytes = compress_screenshot(img, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
-                    compressed_b64 = base64.b64encode(jpg_bytes).decode('utf-8')
-                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {len(jpg_bytes)//1024}KB (Phase 2 将直接分析)")
+                    compressed_b64 = await asyncio.to_thread(
+                        decode_and_compress_screenshot_b64,
+                        b64_raw,
+                        COMPRESS_TARGET_HEIGHT,
+                        COMPRESS_JPEG_QUALITY,
+                    )
+                    jpg_size_kb = len(compressed_b64) * 3 // 4 // 1024
+                    print(f"[{lanlan_name}] Vision 通道: 截图压缩完成 {jpg_size_kb}KB (Phase 2 将直接分析)")
                 except Exception as compress_err:
                     logger.warning(f"[{lanlan_name}] 截图压缩失败（Phase 2 将无法使用截图）: {compress_err}")
                 return (mode, {'window_title': window_title, 'screenshot_b64': compressed_b64})
@@ -3216,6 +3228,10 @@ async def proactive_chat(request: Request):
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
 
+        # 记录本轮主动搭话起始的 speech_id；abort 时若该 id 已变，说明用户已打断并接管，
+        # 此时再调 handle_new_message() 会把用户正常回复的 TTS 也一起清掉。
+        proactive_sid = mgr.current_speech_id
+
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
 
@@ -3251,6 +3267,12 @@ async def proactive_chat(request: Request):
             nonlocal pipe_count, full_text, aborted
             if not text:
                 return False
+            # sid 已被换掉说明用户已打断并接管本轮，立刻 abort 以停止 LLM stream；
+            # feed_tts_chunk 下面还有 lock 内二次校验兜底，防止 await 期间的 race。
+            if mgr.current_speech_id != proactive_sid:
+                print(f"[{lanlan_name}] Phase 2 检测到 sid 变更（用户已接管），abort")
+                aborted = True
+                return True
             for ch in text:
                 if ch in ('|', '｜'):
                     pipe_count += 1
@@ -3263,7 +3285,7 @@ async def proactive_chat(request: Request):
                 aborted = True
                 return True
             full_text += text
-            await mgr.feed_tts_chunk(text)
+            await mgr.feed_tts_chunk(text, expected_speech_id=proactive_sid)
             return False
         
         try:
@@ -3354,8 +3376,11 @@ async def proactive_chat(request: Request):
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")
         if aborted or not full_text.strip():
-            await mgr.handle_new_message()
-            logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+                logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
+            else:
+                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (sid changed)，跳过 TTS 清理避免误伤正常回复")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -3388,7 +3413,10 @@ async def proactive_chat(request: Request):
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-            await mgr.handle_new_message()
+            if mgr.current_speech_id == proactive_sid:
+                await mgr.handle_new_message()
+            else:
+                logger.info(f"[{lanlan_name}] 降级拦截 abort 但用户已接管 (sid changed)，跳过 TTS 清理")
             return JSONResponse({
                 "success": True,
                 "action": "pass",
