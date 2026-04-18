@@ -300,13 +300,14 @@
             }
         }
         if (!window.vrmManager.renderer) {
-            const canvas = document.getElementById('vrm-canvas');
-            await window.vrmManager.initThreeJS(canvas);
+            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
         }
         if (lighting) {
             window.lanlan_config.lighting = lighting;
         }
         await window.vrmManager.loadModel(modelPath);
+        // 重置相机：让模型居中填满画布（忽略主页面保存的相机位置）
+        centerThreeCamera(window.vrmManager);
     }
 
     async function loadMMDModel(modelPath) {
@@ -321,10 +322,54 @@
             }
         }
         if (!window.mmdManager.core?.renderer) {
-            const canvas = document.getElementById('mmd-canvas');
-            await window.mmdManager.initThreeJS(canvas);
+            await window.mmdManager.init('mmd-canvas', 'mmd-container');
         }
         await window.mmdManager.loadModel(modelPath);
+        // 重置相机：让模型居中填满画布
+        const mmdProxy = {
+            scene: window.mmdManager.core?.scene,
+            camera: window.mmdManager.core?.camera,
+            renderer: window.mmdManager.core?.renderer
+        };
+        centerThreeCamera(mmdProxy);
+    }
+
+    /**
+     * 将 Three.js 相机重置为正对模型中心，模型高度填满画布约 85%
+     * 适用于 VRM / MMD 的 manager 对象（需具有 scene, camera, renderer）
+     */
+    function centerThreeCamera(mgr) {
+        const THREE = window.THREE;
+        if (!THREE || !mgr?.scene || !mgr?.camera || !mgr?.renderer) return;
+        try {
+            const box = new THREE.Box3().setFromObject(mgr.scene);
+            if (box.isEmpty()) return;
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const modelHeight = size.y > 0 ? size.y : 1.5;
+
+            // 用画布实际高度计算，让模型占约 85% 高度
+            const canvasH = mgr.renderer.domElement.height || window.innerHeight;
+            const fillRatio = 0.85;
+            const fov = mgr.camera.fov * (Math.PI / 180);
+            const distance = (modelHeight / 2) / Math.tan(fov / 2) / fillRatio;
+
+            mgr.camera.position.set(center.x, center.y, center.z + Math.abs(distance));
+            mgr.camera.lookAt(center.x, center.y, center.z);
+            mgr.camera.updateProjectionMatrix();
+
+            // 同步 _cameraTarget（VRM 用）
+            if (mgr._cameraTarget) {
+                mgr._cameraTarget.set(center.x, center.y, center.z);
+            }
+            // 同步 OrbitControls（如果存在）
+            if (mgr.controls) {
+                mgr.controls.target.set(center.x, center.y, center.z);
+                mgr.controls.update();
+            }
+        } catch (e) {
+            console.warn('[CardExport] centerThreeCamera 失败:', e);
+        }
     }
 
     /**
@@ -423,13 +468,15 @@
         const dx = (outW - drawW) / 2 + composition.offsetX * ratio;
         const dy = (outH - drawH) / 2 + composition.offsetY * ratio;
 
-        // 应用旋转
+        // 应用旋转（围绕模型中心）
         const angle = composition.rotation * Math.PI / 180;
         if (angle !== 0) {
+            const cx = dx + drawW / 2;
+            const cy = dy + drawH / 2;
             ctx.save();
-            ctx.translate(outW / 2, outH / 2);
+            ctx.translate(cx, cy);
             ctx.rotate(angle);
-            ctx.translate(-outW / 2, -outH / 2);
+            ctx.translate(-cx, -cy);
         }
 
         ctx.drawImage(srcCanvas, sx, sy, sw, sh, dx, dy, drawW, drawH);

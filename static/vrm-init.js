@@ -395,8 +395,8 @@ function cleanupLive2DUIElements() {
 window.addEventListener('vrm-modules-ready', () => {
     initializeVRMManager();
 
-    // 如果不是管理页面，尝试自动加载模型
-    if (!isModelManagerPage()) {
+    // 如果不是管理页面或角色卡导出页，尝试自动加载模型
+    if (!isModelManagerPage() && !window._cardExportPage) {
         initVRMModel();
     }
 });
