@@ -2013,6 +2013,12 @@ async def proxy_meme_image(url: str):
 
 # 辅助函数
 
+def _read_binary_file(path: str) -> bytes:
+    """同步 binary read，给 asyncio.to_thread 调用。"""
+    with open(path, 'rb') as f:
+        return f.read()
+
+
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
     """
@@ -2191,14 +2197,13 @@ async def proxy_image(image_path: str):
         
         # 检查文件大小是否超过50MB限制
         MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50MB
-        file_size = os.path.getsize(final_path)
+        file_size = await asyncio.to_thread(os.path.getsize, final_path)
         if file_size > MAX_IMAGE_SIZE:
             logger.warning(f"图片文件大小超过限制: {final_path} ({file_size / 1024 / 1024:.2f}MB > 50MB)")
             return JSONResponse(content={"success": False, "error": f"图片文件大小超过50MB限制 ({file_size / 1024 / 1024:.2f}MB)"}, status_code=413)
-        
-        # 读取图片文件
-        with open(final_path, 'rb') as f:
-            image_data = f.read()
+
+        # 读取图片文件 —— 最多 50MB，事件循环上同步 read 会卡几十毫秒
+        image_data = await asyncio.to_thread(_read_binary_file, final_path)
         
         # 根据文件扩展名设置MIME类型
         ext = os.path.splitext(final_path)[1].lower()
@@ -2331,7 +2336,7 @@ async def proactive_chat(request: Request):
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
         # 获取当前角色数据（包括完整人设）
-        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
+        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = await _config_manager.aget_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -2510,13 +2515,17 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
-                resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                resp.raise_for_status()  # Check for HTTP errors explicitly
-                if resp.status_code == 200:
-                    raw_memory_context = resp.text
-                else:
-                    logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
+            from utils.memory_client import get_memory_client
+            _pt_client = get_memory_client()
+            resp = await _pt_client.get(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                timeout=5.0,
+            )
+            resp.raise_for_status()  # Check for HTTP errors explicitly
+            if resp.status_code == 200:
+                raw_memory_context = resp.text
+            else:
+                logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
@@ -3455,7 +3464,26 @@ async def proactive_chat(request: Request):
                 _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
-        await mgr.finish_proactive_delivery(response_text)
+        # 传 proactive_sid：若 Phase 2 流结束到这里之间用户已打断（换了 sid），
+        # finish 内部会跳过所有写入，避免 proactive 文本污染用户当前轮次。
+        committed = await mgr.finish_proactive_delivery(
+            response_text, expected_speech_id=proactive_sid
+        )
+        if not committed:
+            # Proactive 内容未真正落库（用户已接管本轮），所有下游副作用必须跳过：
+            # 否则 _record_proactive_chat 会把未送达内容计入去重历史、topic usage
+            # 会误记已用，前端拿到 "chat" action 会以为搭话成功。
+            logger.info(
+                "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
+                lanlan_name,
+            )
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "proactive delivery skipped: user took over turn",
+                "lanlan_name": lanlan_name,
+                "turn_id": mgr.current_speech_id,
+            })
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
