@@ -1373,6 +1373,14 @@ class LLMSessionManager:
         await self.send_session_failed(input_mode)
         await self.cleanup()
 
+    @property
+    def is_starting(self) -> bool:
+        """start_session 协程正在运行但 is_active 尚未置 True 的窗口。
+        外部（如切猫娘路径）据此判断是否应保留当前 manager 实例，
+        避免替换掉一个正在初始化的 manager 造成孤儿 session 泄漏。
+        """
+        return self._starting_session_count > 0
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
         self.user_language = normalize_language_code(get_global_language(), format='short')
@@ -2833,6 +2841,8 @@ class LLMSessionManager:
                 return
 
         try:
+            new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
+            old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
@@ -2887,54 +2897,67 @@ class LLMSessionManager:
             logger.info("Final Swap Sequence: Starting actual session swap...")
             old_main_session = self.session
             old_main_message_handler_task = self.message_handler_task
-            
-            # 执行session切换
-            # 热切换完成后，立即将缓存的音频数据发送到新session
-            await self._flush_hot_swap_audio_cache()
-            self.session = self.pending_session
-            self.current_speech_id = str(uuid4())
-            self._tts_done_queued_for_turn = False
-            self.session_start_time = datetime.now()
-            self._session_turn_count = 0
-            
-            # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
-            # 此时self.session和self.pending_session指向同一对象（新session）
-            # 如果在此之后发生异常，_cleanup_pending_session_resources()会关闭pending_session
-            # 导致新session的websocket被关闭，引发 'NoneType' object has no attribute 'send' 错误
+            # 立即用局部变量持有新 session，并清空 self.pending_session。
+            # 必须在任何 await 之前完成：后续 cancel/close 的 await 若触发
+            # CancelledError，异常处理器会调 _cleanup_pending_session_resources()，
+            # 它检查 self.pending_session；若不提前清零，会把新 session 的 ws 关掉。
+            new_session = self.pending_session
             self.pending_session = None
 
-            # Start the main listener for the NEWLY PROMOTED self.session
-            if self.session and hasattr(self.session, 'handle_messages'):
-                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
-            
-            # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
-            if isinstance(self.session, OmniRealtimeClient):
-                if not self.session.ws:
-                    logger.error("💥 Final Swap Sequence: 新session的WebSocket在swap后已失效，热切换失败")
-                    # 不强制回滚，让系统通过现有错误处理机制自动重建session
-                    # 注意：此时旧session已关闭，无法回滚
-
-            # 关闭旧session - 必须先关闭WebSocket再取消task
-            # 因为handle_messages使用 async for message in self.ws，只有关闭ws才能让循环退出
-            if old_main_session:
-                try:
-                    # 先关闭WebSocket，让async for循环自然退出
-                    await old_main_session.close()
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
-            
-            # 然后取消和等待旧session的消息处理任务完成
+            # ── 步骤 1：先停旧 listener ────────────────────────────────────────────
+            # 必须在 old_main_session.close() 之前完成：ws.close() 内部执行关闭握手
+            # （等待服务端 CLOSE 帧），本质上是一次 recv()。若旧 task 仍在
+            # async for 的 recv() 中，就会产生
+            # "cannot call recv while another coroutine is already running recv" 并发冲突。
             if old_main_message_handler_task and not old_main_message_handler_task.done():
                 old_main_message_handler_task.cancel()
                 try:
                     await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
                     logger.info("Final Swap Sequence: Old message handler task stopped")
                 except asyncio.TimeoutError:
-                    logger.warning("Final Swap Sequence: Old message handler task cancellation timeout (should not happen now)")
+                    # 旧 task 仍占着 recv()，继续往下 close() 会重演并发 recv 冲突。
+                    # 关闭 new_session 防止 ws 泄漏，标记超时后中止 swap。
+                    old_listener_cancel_timed_out = True
+                    logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
+                    try:
+                        await new_session.close()
+                    except Exception as _e:
+                        logger.debug(f"Final Swap Sequence: 超时中止时关闭 new_session 失败（可忽略）: {_e}")
+                    raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error during old message handler cleanup: {e}")
+                    logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
+
+            # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────────
+            if old_main_session:
+                try:
+                    await old_main_session.close()
+                except Exception as e:
+                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+
+            # ── 步骤 3：promote 新 session ────────────────────────────────────────
+            # 旧 listener 已停、旧 session 已关，现在切换 self.session；
+            # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
+            self.session = new_session
+            self.current_speech_id = str(uuid4())
+            self._tts_done_queued_for_turn = False
+            self.session_start_time = datetime.now()
+            self._session_turn_count = 0
+
+            # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
+            if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+                # 旧session已关闭无法回滚，抛出异常让 except 块走重建流程
+                raise RuntimeError("新session的WebSocket在swap后已失效，热切换失败")
+
+            # ── 步骤 4：启动新 listener ───────────────────────────────────────────
+            if self.session and hasattr(self.session, 'handle_messages'):
+                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+            # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
+            # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
+            # 发送音频，此时 self.session 已是新 session，音频会正确发往新会话。
+            await self._flush_hot_swap_audio_cache()
 
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
@@ -2946,20 +2969,45 @@ class LLMSessionManager:
 
         except asyncio.CancelledError:
             logger.info("Final Swap Sequence: Task cancelled.")
-            # If cancelled mid-swap, state could be inconsistent. Prioritize cleaning pending.
-            self.is_hot_swap_imminent = False  # Reset flag immediately
+            self.is_hot_swap_imminent = False
+            # new_session 在 self.pending_session = None 后由局部变量持有。
+            # 若 swap 在 promote 之前被取消，_cleanup_pending_session_resources 不再持有它，
+            # 必须在此手动关闭，防止 ws 泄漏。
+            if new_session is not None and new_session is not self.session:
+                try:
+                    await new_session.close()
+                except Exception as _e:
+                    logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
-            # The old main session listener might have been cancelled, needs robust restart if still active
+            await self._reset_preparation_state(clear_main_cache=True)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
-            self.is_hot_swap_imminent = False  # Reset flag immediately
+            self.is_hot_swap_imminent = False
             await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
+            # 同上：new_session 若未完成 promote，需手动关闭防 ws 泄漏。
+            if new_session is not None and new_session is not self.session:
+                try:
+                    await new_session.close()
+                except Exception as _e:
+                    logger.debug(f"Final Swap Sequence: 异常路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
+            await self._reset_preparation_state(clear_main_cache=True)
+            if old_listener_cancel_timed_out:
+                # 旧 listener 取消超时：旧 task 可能在本函数返回后才真正退出，
+                # 此时无法安全判断 task.done() 并补建 listener，会留下"活跃但无监听"状态。
+                # 直接 fail-close：清除会话状态让前端重连，优于让后续输入陷入僵局。
+                self.session = None
+                self.message_handler_task = None
+                self.is_active = False
+                return
+            # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
+            # 防止 is_active=True + ws=None 让后续输入进入坏会话。
+            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+                self.session = None
+                self.is_active = False
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
@@ -3381,7 +3429,8 @@ class LLMSessionManager:
             except asyncio.TimeoutError:
                 logger.warning("End Session: Warning: Listener task cancellation timeout.")
             except Exception as e:
-                logger.error(f"💥 End Session: Error during listener task cancellation: {e}")
+                # 任务可能已因并发 recv() 冲突等原因提前退出，此处只是发现既成事实
+                logger.warning(f"End Session: Listener task had prior error: {e}")
             if self.message_handler_task is message_handler_task_ref:
                 self.message_handler_task = None
 
