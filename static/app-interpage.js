@@ -224,6 +224,13 @@
     async function handleModelReload(targetLanlanName) {
         targetLanlanName = targetLanlanName || '';
 
+        // 只有主窗口（/）才处理模型重载；Chat 等子窗口没有渲染基础设施，
+        // 执行会导致异常并弹出误导性的"模型切换失败"toast。
+        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') {
+            console.log('[Model] 非主窗口，跳过模型重载:', window.location.pathname);
+            return;
+        }
+
         // If the message targets a different character, ignore it
         var currentLanlanName = window.lanlan_config?.lanlan_name || '';
         if (targetLanlanName && currentLanlanName && targetLanlanName !== currentLanlanName) {
@@ -778,6 +785,7 @@
      * Hide main-page model rendering (entering model manager).
      */
     function handleHideMainUI() {
+        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') return;
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -858,6 +866,7 @@
      * Show main-page model rendering (returning to main page).
      */
     function handleShowMainUI() {
+        if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') return;
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
