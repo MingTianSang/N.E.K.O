@@ -2958,7 +2958,7 @@ function openCatgirlPanel(card, originEl) {
 
     // 创建面板容器
     const wrapper = document.createElement('div');
-    wrapper.className = 'catgirl-panel-wrapper';
+    wrapper.className = 'catgirl-panel-wrapper' + (isNew ? '' : ' card-only');
     wrapper.id = 'catgirl-panel-wrapper';
 
     // 设置动画起点
@@ -2988,18 +2988,6 @@ function openCatgirlPanel(card, originEl) {
     cardImage.appendChild(imgPlaceholder);
     leftSection.appendChild(cardImage);
 
-    const cardNameDiv = document.createElement('div');
-    cardNameDiv.className = 'catgirl-panel-card-name';
-    cardNameDiv.textContent = name || (window.t ? window.t('steam.newCatgirl') : '新猫娘');
-    leftSection.appendChild(cardNameDiv);
-
-    if (!isNew && name === window._workshopCurrentCatgirl) {
-        const badge = document.createElement('div');
-        badge.className = 'catgirl-panel-badge';
-        badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
-        leftSection.appendChild(badge);
-    }
-
     wrapper.appendChild(leftSection);
 
     // 右侧：编辑表单
@@ -3011,11 +2999,11 @@ function openCatgirlPanel(card, originEl) {
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
 
-    // 动画 Phase 1: 移动到中间
+    // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
         overlay.classList.add('active');
         wrapper.classList.add('phase-center');
-        // Phase 2: 向左展开表单
+        // Phase 2: 展开右侧表单
         setTimeout(() => {
             wrapper.classList.remove('phase-center');
             wrapper.classList.add('phase-expand');

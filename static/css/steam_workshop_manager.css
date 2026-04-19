@@ -3742,17 +3742,50 @@ margin-top: 10px;
     width: 260px;
 }
 
+.catgirl-panel-wrapper.card-only {
+    height: 80vh;
+    max-height: 80vh;
+    border-radius: 12px;
+}
+
 .catgirl-panel-wrapper.phase-center {
     opacity: 1;
     transform: scale(0.9);
     width: 260px;
 }
 
+.catgirl-panel-wrapper.card-only.phase-center {
+    width: calc(80vh * 0.75);
+}
+
 .catgirl-panel-wrapper.phase-expand {
     opacity: 1;
     transform: scale(1);
-    width: min(900px, 85vw);
+    width: min(1200px, 92vw);
     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 左侧卡面无白色边框模式 */
+.catgirl-panel-wrapper.card-only .catgirl-panel-left {
+    width: auto;
+    padding: 0;
+    border-right: none;
+    background: transparent;
+    gap: 0;
+    height: 80vh;
+}
+
+.catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
+    border-radius: 0;
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
+    border-right: 1px solid #f0f0f0;
+}
+
+.catgirl-panel-wrapper.card-only .catgirl-panel-right {
+    height: 80vh;
+    overflow-y: auto;
 }
 
 .catgirl-panel-close {
@@ -3791,6 +3824,14 @@ margin-top: 10px;
     background: #fafcff;
 }
 
+.catgirl-panel-wrapper.card-only .catgirl-panel-left {
+    width: auto;
+    padding: 0;
+    border-right: none;
+    background: transparent;
+    gap: 0;
+}
+
 .catgirl-panel-card-image {
     width: 200px;
     height: 267px;
@@ -3800,6 +3841,12 @@ margin-top: 10px;
     align-items: center;
     justify-content: center;
     overflow: hidden;
+}
+
+.catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
+    width: calc(80vh * 0.75);
+    height: 80vh;
+    border-radius: 0;
 }
 
 .catgirl-panel-card-image .card-avatar-placeholder {
