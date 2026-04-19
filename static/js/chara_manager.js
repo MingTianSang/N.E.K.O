@@ -459,7 +459,7 @@ const RESERVED_ROUTE_NAMES = new Set([
     'l2d', 'model_manager', 'live2d_parameter_editor', 'live2d_emotion_manager',
     'vrm_emotion_manager', 'mmd_emotion_manager', 'chara_manager', 'voice_clone',
     'api_key', 'steam_workshop_manager', 'memory_browser', 'cookies_login',
-    'chat', 'subtitle', 'agenthud', 'toast',
+    'chat', 'subtitle', 'agenthud', 'toast', 'card_export',
     'static', 'user_live2d', 'user_live2d_local', 'user_vrm', 'user_mmd',
     'user_mods', 'workshop',
     'api', 'ws', 'health',
@@ -3757,11 +3757,14 @@ function showExportOptionsModal(catgirlName) {
             const w = 1400, h = 820;
             const left = Math.round((screen.width - w) / 2);
             const top = Math.round((screen.height - h) / 2);
-            window.open(
+            const win = window.open(
                 `/card_export?name=${encodeURIComponent(catgirlName)}`,
                 'card_export',
                 `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
             );
+            if (!win) {
+                alert(t('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试'));
+            }
         };
         footer.appendChild(exportBtn);
 

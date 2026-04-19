@@ -563,12 +563,12 @@
         previewEl.addEventListener('pointermove', (e) => {
             if (!dragging) return;
             const previewScale = $('#card-portrait-area').clientWidth / 450;
-            composition.offsetX = Math.round(startOX + (e.clientX - startX) / previewScale);
-            composition.offsetY = Math.round(startOY + (e.clientY - startY) / previewScale);
+            composition.offsetX = clamp(Math.round(startOX + (e.clientX - startX) / previewScale), -500, 500);
+            composition.offsetY = clamp(Math.round(startOY + (e.clientY - startY) / previewScale), -500, 500);
 
             // 同步滑块
-            offsetXInput.value = clamp(composition.offsetX, -500, 500);
-            offsetYInput.value = clamp(composition.offsetY, -500, 500);
+            offsetXInput.value = composition.offsetX;
+            offsetYInput.value = composition.offsetY;
             offsetXVal.textContent = composition.offsetX;
             offsetYVal.textContent = composition.offsetY;
         });
@@ -667,8 +667,13 @@
         const ctx = outCanvas.getContext('2d');
 
         // 绘制顺序：模型下方贴纸 → 模型 → 模型上方贴纸
-        const belowStickers = stickers.filter(s => s.layer === 'below');
-        const aboveStickers = stickers.filter(s => s.layer === 'above');
+        // 按 layerOrder 排序确保与预览一致
+        const stickerOrder = layerOrder
+            .filter(e => e.type === 'sticker')
+            .map(e => stickers.find(s => s.id === e.id))
+            .filter(Boolean);
+        const belowStickers = stickerOrder.filter(s => s.layer === 'below');
+        const aboveStickers = stickerOrder.filter(s => s.layer === 'above');
 
         if (belowStickers.length > 0) {
             await drawStickerList(ctx, belowStickers, outW, outH);
@@ -1094,11 +1099,16 @@
         const above = $('#sticker-overlay');
         const below = $('#sticker-overlay-below');
         if (!above || !below) return;
-        stickers.forEach(s => {
+        // 按 layerOrder 顺序排列贴纸到对应容器
+        const ordered = layerOrder
+            .filter(e => e.type === 'sticker')
+            .map(e => stickers.find(s => s.id === e.id))
+            .filter(Boolean);
+        // 补上不在 layerOrder 中的贴纸（安全兜底）
+        stickers.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
+        ordered.forEach(s => {
             const target = (s.layer === 'below') ? below : above;
-            if (s.imgEl.parentElement !== target) {
-                target.appendChild(s.imgEl);
-            }
+            target.appendChild(s.imgEl);
         });
     }
 
