@@ -3763,7 +3763,7 @@ function showExportOptionsModal(catgirlName) {
                 `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
             );
             if (!win) {
-                alert(t('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试'));
+                window.showAlert(window.t ? window.t('cardExport.popupBlocked') : '弹窗被阻止，请允许弹窗后重试');
             }
         };
         footer.appendChild(exportBtn);

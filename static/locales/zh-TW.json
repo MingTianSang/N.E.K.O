@@ -3018,6 +3018,7 @@
         "stickerSizeWarning": "該圖片較大（超過 5MB），壓縮後可永久儲存。\n選擇「臨時使用」將作為臨時貼紙使用（關閉頁面後消失）。",
         "compressAndSave": "壓縮並儲存",
         "useTemporary": "臨時使用",
-        "tempBadge": "臨時"
+        "tempBadge": "臨時",
+        "popupBlocked": "彈窗被阻止，請允許彈窗後重試"
     }
 }

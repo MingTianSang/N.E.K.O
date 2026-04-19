@@ -3018,6 +3018,7 @@
         "stickerSizeWarning": "This image is large (over 5MB). It can be permanently saved after compression.\nChoose \"Use Temporarily\" to use it as a temporary sticker (disappears after closing the page).",
         "compressAndSave": "Compress & Save",
         "useTemporary": "Use Temporarily",
-        "tempBadge": "Temp"
+        "tempBadge": "Temp",
+        "popupBlocked": "Popup was blocked. Please allow popups and try again."
     }
 }
