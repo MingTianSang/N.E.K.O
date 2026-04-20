@@ -3734,7 +3734,7 @@ margin-top: 10px;
     border-radius: 20px;
     overflow: hidden;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-    max-height: 85vh;
+    max-height: 90vh;
     position: relative;
     opacity: 0;
     transform: scale(0.3);
@@ -3743,7 +3743,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only {
-    height: 80vh;
+    height: 65vh;
     max-height: 80vh;
     border-radius: 12px;
 }
@@ -3755,24 +3755,30 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only.phase-center {
-    width: calc(80vh * 0.75);
+    width: calc(65vh * 0.75);
+    height: 65vh;
 }
 
 .catgirl-panel-wrapper.phase-expand {
     opacity: 1;
     transform: scale(1);
-    width: min(1200px, 92vw);
+    width: 95vw;
     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand {
+    height: 80vh;
 }
 
 /* 左侧卡面无白色边框模式 */
 .catgirl-panel-wrapper.card-only .catgirl-panel-left {
-    width: auto;
+    width: calc(65vh * 0.75);
     padding: 0;
     border-right: none;
-    background: transparent;
+    background: #fafcff;
     gap: 0;
     height: 80vh;
+    flex-shrink: 0;
 }
 
 .catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
@@ -3785,7 +3791,9 @@ margin-top: 10px;
 
 .catgirl-panel-wrapper.card-only .catgirl-panel-right {
     height: 80vh;
+    max-height: 80vh;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .catgirl-panel-close {
@@ -3844,8 +3852,8 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
-    width: calc(80vh * 0.75);
-    height: 80vh;
+    width: calc(65vh * 0.75);
+    height: 65vh;
     border-radius: 0;
 }
 
@@ -3874,11 +3882,13 @@ margin-top: 10px;
 .catgirl-panel-right {
     flex: 1;
     overflow-y: auto;
-    padding: 24px;
+    overflow-x: hidden;
+    padding: 16px 20px;
     opacity: 0;
     transform: translateX(20px);
     transition: opacity 0.3s ease 0.15s, transform 0.3s ease 0.15s;
     min-width: 0;
+    max-height: 90vh;
 }
 
 .catgirl-panel-wrapper.phase-expand .catgirl-panel-right {
@@ -3886,144 +3896,443 @@ margin-top: 10px;
     transform: translateX(0);
 }
 
-.catgirl-detail-form {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-}
-
-.catgirl-form-title {
-    margin: 0 0 4px;
-    font-size: 20px;
-    font-weight: 700;
-    color: #333;
-}
-
-.catgirl-form-group {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.catgirl-form-label {
-    font-size: 13px;
-    font-weight: 600;
-    color: #555;
-}
-
-.catgirl-form-input {
-    padding: 8px 12px;
-    border: 1.5px solid #ddd;
-    border-radius: 8px;
-    font-size: 14px;
-    transition: border-color 0.2s;
-    outline: none;
-}
-
-.catgirl-form-input:focus {
-    border-color: #40C5F1;
-}
-
-.catgirl-form-input[readonly] {
-    background: #f5f5f5;
-    color: #888;
-}
-
-.catgirl-form-textarea {
-    padding: 8px 12px;
-    border: 1.5px solid #ddd;
-    border-radius: 8px;
-    font-size: 14px;
-    font-family: inherit;
-    resize: vertical;
-    min-height: 60px;
-    outline: none;
-    transition: border-color 0.2s;
-}
-
-.catgirl-form-textarea:focus {
-    border-color: #40C5F1;
-}
-
-.catgirl-form-del-field {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 24px;
-    height: 24px;
-    border: none;
-    border-radius: 50%;
-    background: #ff6b6b;
-    color: #fff;
-    font-size: 14px;
-    cursor: pointer;
+/* 角色卡面板表单 - 完全复制角色管理样式 */
+.catgirl-panel-right .field-row-wrapper {
     display: flex;
     align-items: center;
-    justify-content: center;
-    opacity: 0;
-    transition: opacity 0.2s;
+    margin-bottom: 10px;
+    gap: 12px;
+    position: relative;
+    overflow: visible;
 }
 
-.catgirl-form-group:hover .catgirl-form-del-field {
-    opacity: 1;
+.catgirl-panel-right .field-row-wrapper:has(select) {
+    align-items: center;
+    overflow: visible;
 }
 
-.catgirl-form-add-field {
-    padding: 8px 16px;
-    border: 2px dashed #b3e5fc;
-    border-radius: 8px;
-    background: transparent;
+.catgirl-panel-right .field-row-wrapper label {
+    min-width: 110px;
+    max-width: 160px;
+    font-weight: 700;
     color: #40C5F1;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    display: block;
+    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
 }
 
-.catgirl-form-add-field:hover {
-    background: #f0fbff;
+.catgirl-panel-right .field-row-wrapper label span[style*="color:red"] {
+    color: #ff5252 !important;
+}
+
+.catgirl-panel-right .field-row {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    padding: 2px;
+    border: 2px solid #b3e5fc;
+    border-radius: 50px;
+    background: #fff;
+    transition: border-color 0.2s, border-radius 0.3s ease;
+    min-height: 30px;
+    min-width: 150px;
+    position: relative;
+}
+
+/* voice_id 的 field-row 特殊处理 - 缩短宽度 */
+.catgirl-panel-right .field-row:has(select[name="voice_id"]) {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 200px;
+    max-width: 300px;
+}
+
+/* select 下拉框需要可见 */
+.catgirl-panel-right .field-row:has(select) {
+    overflow: visible !important;
+    z-index: 100;
+    position: relative;
+}
+
+.catgirl-panel-right .field-row select {
+    overflow: visible !important;
+    position: relative;
+    z-index: 1000;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    appearance: auto;
+    -webkit-appearance: menulist;
+    -moz-appearance: menulist;
+}
+
+.catgirl-panel-right .field-row select:focus,
+.catgirl-panel-right .field-row select:active {
+    z-index: 1001;
+    outline: none;
+}
+
+.catgirl-panel-right .field-row:focus-within {
     border-color: #40C5F1;
 }
 
-.catgirl-form-buttons {
-    display: flex;
-    gap: 10px;
-    margin-top: 8px;
+/* 档案名超限反馈 */
+.catgirl-panel-right .field-row.profile-name-too-long {
+    border-color: #ff5252;
 }
 
-.catgirl-form-save-btn {
+.catgirl-panel-right .profile-name-too-long-tip {
+    position: absolute;
+    top: 100%;
+    left: 12px;
+    margin-top: 6px;
+    padding: 2px 10px;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #ff5252;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(255, 82, 82, 0.35);
+    border-radius: 999px;
+    z-index: 10;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.catgirl-panel-right .field-row input,
+.catgirl-panel-right .field-row select,
+.catgirl-panel-right .field-row textarea {
     flex: 1;
+    padding: 4px 12px;
+    border: none !important;
+    border-radius: 48px;
+    font-size: 0.9rem;
+    resize: none !important;
+    min-height: 30px;
+    max-height: none;
+    line-height: 1.4;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    box-sizing: border-box;
+    background: #fff;
+    color: #40C5F1;
+    outline: none !important;
+    outline-offset: 0 !important;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+}
+
+.catgirl-panel-right .field-row input:focus,
+.catgirl-panel-right .field-row select:focus,
+.catgirl-panel-right .field-row textarea:focus {
+    outline: none !important;
+    outline-offset: 0 !important;
+    border: none !important;
+    background: #fff;
+    color: #40C5F1;
+    box-shadow: none !important;
+}
+
+.catgirl-panel-right .field-row input:hover,
+.catgirl-panel-right .field-row select:hover,
+.catgirl-panel-right .field-row textarea:hover {
+    outline: none !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.catgirl-panel-right .field-row input::placeholder,
+.catgirl-panel-right .field-row textarea::placeholder {
+    color: #b3e5fc;
+}
+
+.catgirl-panel-right .field-row textarea {
+    overflow-y: hidden;
+    transition: height 0.2s ease;
+    max-height: 80px;
+    border-radius: 48px;
+    resize: none !important;
+}
+
+/* 移除 spinner 和 resizer */
+.catgirl-panel-right .field-row input::-webkit-inner-spin-button,
+.catgirl-panel-right .field-row input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.catgirl-panel-right .field-row textarea::-webkit-resizer {
+    display: none;
+}
+
+/* textarea 滚动条 */
+.catgirl-panel-right .field-row textarea::-webkit-scrollbar {
+    width: 6px;
+}
+
+.catgirl-panel-right .field-row textarea::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.catgirl-panel-right .field-row textarea::-webkit-scrollbar-thumb {
+    background-color: rgba(64, 197, 241, 0.3);
+    border-radius: 3px;
+}
+
+.catgirl-panel-right .field-row textarea::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(64, 197, 241, 0.5);
+}
+
+.catgirl-panel-right .field-row.has-scrollbar {
+    overflow: hidden;
+    border-radius: 16px;
+}
+
+.catgirl-panel-right .field-row.has-scrollbar textarea {
+    border-radius: 14px;
+}
+
+/* 胶囊行内的按钮 */
+.catgirl-panel-right .field-row .btn {
+    margin-right: 0;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
+/* 删除按钮在胶囊框外面 */
+.catgirl-panel-right .field-row-wrapper .btn.delete {
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+/* 按钮在field-row-wrapper中对齐 */
+.catgirl-panel-right .field-row-wrapper > .btn.sm {
+    flex-shrink: 0;
+    margin-left: 8px;
+    min-width: 100px;
+    padding: 0 15px;
+}
+
+/* 进阶设定中按钮对齐 */
+.catgirl-panel-right .fold-content .field-row-wrapper > .btn.sm {
+    margin-left: 8px;
+    min-width: 120px;
+}
+
+/* 按钮 - 圆角胶囊 */
+.catgirl-panel-right .btn {
     padding: 10px 20px;
+    border-radius: 999px;
+    border: none;
     background: #40C5F1;
     color: #fff;
-    border: none;
-    border-radius: 10px;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 0.95rem;
     cursor: pointer;
-    transition: filter 0.2s;
+    margin-right: 8px;
+    transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
+    font-weight: 500;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 
-.catgirl-form-save-btn:hover {
-    filter: brightness(1.1);
+.catgirl-panel-right .btn:hover:not(:disabled) {
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
 }
 
-.catgirl-form-cancel-btn {
-    padding: 10px 20px;
-    background: #f0f0f0;
-    color: #666;
+.catgirl-panel-right .btn:active:not(:disabled) {
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
+}
+
+.catgirl-panel-right .btn.sm {
+    padding: 0 15px;
+    border-radius: 999px;
+    margin-right: 0;
+    min-width: 80px;
+    justify-content: center;
+    height: 30px;
+    line-height: 1;
+    font-size: 0.8rem;
+    width: auto;
+}
+
+/* 按钮内图标尺寸限制 */
+.catgirl-panel-right .btn.sm img {
+    width: 20px !important;
+    height: 20px !important;
+    margin-right: 4px !important;
+    vertical-align: middle !important;
+}
+
+.catgirl-panel-right .btn.delete {
+    background: #ff5252;
+}
+
+.catgirl-panel-right .btn.delete:hover:not(:disabled) {
+    background: #ff4444;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
+}
+
+.catgirl-panel-right .btn.delete:active:not(:disabled) {
+    background: #e53935;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(255, 82, 82, 0.2);
+    opacity: 0.95;
+}
+
+.catgirl-panel-right .btn.sm.delete {
+    background: #ff5252;
+    padding: 6px 12px;
+}
+
+.catgirl-panel-right .btn.add {
+    background: #40C5F1;
+}
+
+.catgirl-panel-right .btn.add:hover:not(:disabled) {
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+}
+
+.catgirl-panel-right .btn.add:active:not(:disabled) {
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
+}
+
+/* 折叠面板 */
+.catgirl-panel-right .fold {
+    background: transparent;
+    border-radius: 20px;
+    margin-bottom: 12px;
+    padding: 0;
     border: none;
-    border-radius: 10px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
+    overflow: visible;
 }
 
-.catgirl-form-cancel-btn:hover {
-    background: #e0e0e0;
-    color: #333;
+.catgirl-panel-right .fold-toggle {
+    cursor: pointer;
+    color: #fff;
+    font-weight: 600;
+    user-select: none;
+    padding: 12px 16px;
+    border-radius: 20px 20px 0 0;
+    background: linear-gradient(135deg, #40C5F1 0%, #b3e5fc 100%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
+    margin-bottom: 0;
+    font-size: 0.95rem;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.catgirl-panel-right .fold:not(.open) .fold-toggle {
+    border-radius: 20px;
+}
+
+.catgirl-panel-right .fold-toggle:hover:not(:disabled) {
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.3);
+}
+
+.catgirl-panel-right .fold-toggle:active:not(:disabled) {
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
+}
+
+.catgirl-panel-right .fold-toggle .arrow {
+    font-size: 0.8rem;
+    width: 32px !important;
+    height: 32px !important;
+    vertical-align: middle !important;
+}
+
+.catgirl-panel-right .fold-content {
+    display: none;
+    margin-top: 0;
+    background: #fff;
+    border: 2px solid #b3e5fc;
+    border-top: none;
+    border-radius: 0 0 20px 20px;
+    padding: 16px 16px 8px 16px;
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: visible;
+}
+
+.catgirl-panel-right .fold.open > .fold-content {
+    display: block;
+}
+
+/* 限制live2d-link的可点击区域 */
+.catgirl-panel-right .fold-content .live2d-link {
+    display: inline-block;
+    flex: 0 0 auto;
+    max-width: fit-content;
+    width: auto;
+    cursor: pointer;
+    color: #40C5F1;
+    text-decoration: underline;
+    padding: 6px 0;
+}
+
+/* 确保field-row的空白区域不触发链接点击 */
+.catgirl-panel-right .fold-content .field-row::after {
+    content: '';
+    flex: 1;
+    pointer-events: none;
+}
+
+.catgirl-panel-right .btn-area {
+    display: flex;
+    align-items: center;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    gap: 12px;
+}
+
+/* 底部留白防止内容被遮挡 */
+.catgirl-panel-right form {
+    padding-bottom: 40px;
+}
+
+/* 面板右侧滚动条样式 */
+.catgirl-panel-right::-webkit-scrollbar {
+    width: 6px;
+}
+
+.catgirl-panel-right::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.catgirl-panel-right::-webkit-scrollbar-thumb {
+    background-color: rgba(64, 197, 241, 0.3);
+    border-radius: 3px;
+}
+
+.catgirl-panel-right::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(64, 197, 241, 0.5);
 }
 
 /* Live2D控制按钮 - 播放动作/播放表情 */

@@ -41,11 +41,8 @@ function getWorkshopReservedFields() {
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live3d_sub_type', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations'];
-    const presentSystemFields = cfg.all_reserved_fields.length > 0
-        ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
-        : keySystemFields;
-    return _uniqueFields([...presentSystemFields, ...getWorkshopReservedFields()]);
+    // 完全遵照角色管理：隐藏所有 system + workshop 保留字段
+    return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -3039,168 +3036,788 @@ function closeCatgirlPanel() {
 window.closeCatgirlPanel = closeCatgirlPanel;
 
 function buildCatgirlDetailForm(name, rawData, isNew, container) {
-    const form = document.createElement('form');
-    form.className = 'catgirl-detail-form';
+    let cat = rawData || {};
+    let form = document.createElement('form');
+    form.id = name ? 'catgirl-form-' + name : 'catgirl-form-new';
+    form.style.padding = '0';
+    form._catgirlName = name;
     form.onsubmit = function (e) { e.preventDefault(); };
 
-    // 标题
-    const title = document.createElement('h3');
-    title.className = 'catgirl-form-title';
-    title.textContent = isNew
-        ? (window.t ? window.t('steam.newCatgirl') : '新增猫娘')
-        : (window.t ? window.t('steam.editCatgirl') : '编辑猫娘');
-    form.appendChild(title);
-
     // 档案名
-    const nameGroup = document.createElement('div');
-    nameGroup.className = 'catgirl-form-group';
-    const nameLabel = document.createElement('label');
-    nameLabel.className = 'catgirl-form-label';
-    nameLabel.textContent = window.t ? window.t('character.profileName') : '档案名';
-    nameGroup.appendChild(nameLabel);
+    const baseWrapper = document.createElement('div');
+    baseWrapper.className = 'field-row-wrapper';
+
+    const baseLabel = document.createElement('label');
+    const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
+    const requiredText = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
+    baseLabel.innerHTML = '<span data-i18n="character.profileName">' + profileNameText + '</span><span style="color:red" data-i18n="character.required">' + requiredText + '</span>';
+    baseWrapper.appendChild(baseLabel);
+
+    const fieldRow = document.createElement('div');
+    fieldRow.className = 'field-row';
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.name = '档案名';
-    nameInput.className = 'catgirl-form-input';
-    nameInput.value = name || '';
     nameInput.required = true;
-    nameInput.placeholder = window.t ? window.t('character.enterProfileName') : '输入档案名...';
+    nameInput.value = name || '';
     if (!isNew) nameInput.readOnly = true;
-    nameGroup.appendChild(nameInput);
-    form.appendChild(nameGroup);
+    _panelAttachProfileNameLimiter(nameInput);
+    fieldRow.appendChild(nameInput);
+    baseWrapper.appendChild(fieldRow);
+
+    // 重命名按钮（非新建时显示）
+    if (!isNew) {
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'btn sm';
+        renameBtn.id = 'rename-catgirl-btn';
+        renameBtn.style.marginLeft = '8px';
+        renameBtn.style.minWidth = '120px';
+        const renameText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">' + window.t('character.rename') + '</span>'
+            : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
+        renameBtn.innerHTML = renameText;
+        renameBtn.addEventListener('click', async function () {
+            let newName;
+            if (typeof showPrompt === 'function') {
+                newName = await showPrompt(
+                    window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+                    name,
+                    window.t ? window.t('character.renameTitle') : '修改名称'
+                );
+            } else {
+                newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', name);
+            }
+            if (!newName || newName.trim() === '' || newName.trim() === name) return;
+            try {
+                const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_name: newName.trim() })
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    closeCatgirlPanel();
+                    await loadCharacterCards();
+                    showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
+                } else {
+                    const errMsg = result.error || (window.t ? window.t('character.renameFailed') : '重命名失败');
+                    if (typeof showAlert === 'function') {
+                        await showAlert(errMsg);
+                    } else {
+                        alert(errMsg);
+                    }
+                }
+            } catch (e) {
+                console.error('重命名失败:', e);
+                if (typeof showAlert === 'function') {
+                    await showAlert(window.t ? window.t('character.renameError') : '重命名时发生错误');
+                }
+            }
+        });
+        baseWrapper.appendChild(renameBtn);
+    }
+    form.appendChild(baseWrapper);
 
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
-    Object.keys(rawData).forEach(k => {
+    Object.keys(cat).forEach(k => {
         if (ALL_RESERVED.includes(k)) return;
-        const val = rawData[k];
+        const val = cat[k];
         if (val === null || val === undefined) return;
 
-        const group = document.createElement('div');
-        group.className = 'catgirl-form-group';
-        const label = document.createElement('label');
-        label.className = 'catgirl-form-label';
-        label.textContent = k;
-        group.appendChild(label);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
 
-        const textarea = document.createElement('textarea');
-        textarea.name = k;
-        textarea.className = 'catgirl-form-textarea';
-        textarea.value = typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val);
-        textarea.rows = 3;
-        group.appendChild(textarea);
+        const deleteFieldText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
+            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+
+        const labelEl = document.createElement('label');
+        _panelSetFieldLabel(labelEl, k);
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = k;
+        textareaEl.rows = 1;
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
+        textareaEl.value = cat[k];
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'catgirl-form-del-field';
-        delBtn.textContent = '\u00d7';
-        delBtn.title = window.t ? window.t('character.deleteField') : '删除字段';
-        delBtn.onclick = function () { group.remove(); };
-        group.appendChild(delBtn);
+        delBtn.className = 'btn sm delete';
+        delBtn.innerHTML = deleteFieldText;
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+        });
+        wrapper.appendChild(delBtn);
 
-        form.appendChild(group);
+        form.appendChild(wrapper);
+
+        // textarea自动调整高度
+        _panelAttachTextareaAutoResize(textareaEl);
     });
 
-    // 添加字段按钮
+    // 新增设定按钮区
+    const addFieldArea = document.createElement('div');
+    addFieldArea.className = 'btn-area add-field-area';
+    addFieldArea.style.display = 'flex';
+    addFieldArea.style.alignItems = 'center';
+    addFieldArea.style.marginTop = '10px';
+    addFieldArea.style.marginBottom = '10px';
+    addFieldArea.style.gap = '12px';
+
+    const addFieldLabelPlaceholder = document.createElement('div');
+    addFieldLabelPlaceholder.style.minWidth = '80px';
+    addFieldLabelPlaceholder.style.flexShrink = '0';
+    addFieldArea.appendChild(addFieldLabelPlaceholder);
+
+    const addFieldSpacer = document.createElement('div');
+    addFieldSpacer.style.flex = '1';
+    addFieldArea.appendChild(addFieldSpacer);
+
     const addFieldBtn = document.createElement('button');
     addFieldBtn.type = 'button';
-    addFieldBtn.className = 'catgirl-form-add-field';
-    addFieldBtn.textContent = window.t ? window.t('character.addField') : '+ 添加字段';
-    addFieldBtn.onclick = function () {
-        const group = document.createElement('div');
-        group.className = 'catgirl-form-group';
-        const fnInput = document.createElement('input');
-        fnInput.type = 'text';
-        fnInput.className = 'catgirl-form-input catgirl-form-field-name';
-        fnInput.placeholder = window.t ? window.t('character.fieldName') : '字段名';
-        const textarea = document.createElement('textarea');
-        textarea.className = 'catgirl-form-textarea';
-        textarea.placeholder = window.t ? window.t('character.fieldValue') : '字段值';
-        textarea.rows = 3;
+    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.id = 'panel-add-catgirl-field-btn';
+    addFieldBtn.style.minWidth = '120px';
+    const addFieldText = (window.t && typeof window.t === 'function')
+        ? '<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">' + window.t('character.addField') + '</span>'
+        : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
+    addFieldBtn.innerHTML = addFieldText;
+    addFieldBtn.onclick = async function () {
+        let key;
+        if (typeof showPrompt === 'function') {
+            key = await showPrompt(
+                window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）',
+                '',
+                window.t ? window.t('character.addCatgirlFieldTitle') : '新增猫娘设定'
+            );
+        } else {
+            key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
+        }
+        const FORBIDDEN = ALL_RESERVED;
+        if (!key || FORBIDDEN.includes(key)) return;
+        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+            } else {
+                alert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+            }
+            return;
+        }
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const deleteFieldText = (window.t && typeof window.t === 'function')
+            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
+            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
+
+        const labelEl = document.createElement('label');
+        _panelSetFieldLabel(labelEl, key);
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = key;
+        textareaEl.rows = 1;
+        textareaEl.placeholder = (window.t && typeof window.t === 'function')
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
+
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'catgirl-form-del-field';
-        delBtn.textContent = '\u00d7';
-        delBtn.onclick = function () { group.remove(); };
-        group.appendChild(fnInput);
-        group.appendChild(textarea);
-        group.appendChild(delBtn);
-        form.insertBefore(group, addFieldBtn);
+        delBtn.className = 'btn sm delete';
+        delBtn.innerHTML = deleteFieldText;
+        delBtn.addEventListener('click', function () { wrapper.remove(); });
+        wrapper.appendChild(delBtn);
+
+        form.insertBefore(wrapper, addFieldArea);
+        _panelAttachTextareaAutoResize(textareaEl);
     };
-    form.appendChild(addFieldBtn);
+    addFieldArea.appendChild(addFieldBtn);
+    form.appendChild(addFieldArea);
 
-    // 保存/取消按钮
-    const btnRow = document.createElement('div');
-    btnRow.className = 'catgirl-form-buttons';
+    // 进阶设定折叠
+    const fold = document.createElement('div');
+    fold.className = 'fold open';
 
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'catgirl-form-save-btn';
-    saveBtn.textContent = isNew
+    const foldToggle = document.createElement('div');
+    foldToggle.className = 'fold-toggle';
+    const arrowSpan = document.createElement('img');
+    arrowSpan.className = 'arrow';
+    arrowSpan.src = '/static/icons/dropdown_arrow.png';
+    arrowSpan.alt = '';
+    arrowSpan.style.width = '32px';
+    arrowSpan.style.height = '32px';
+    arrowSpan.style.verticalAlign = 'middle';
+    arrowSpan.style.transition = 'transform 0.2s';
+    arrowSpan.style.transform = 'rotate(0deg)';
+    foldToggle.appendChild(arrowSpan);
+    foldToggle.appendChild(document.createTextNode(' '));
+    const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
+    foldToggle.appendChild(toggleText);
+    foldToggle.onclick = function () {
+        fold.classList.toggle('open');
+        arrowSpan.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
+        // localStorage 持久化折叠状态
+        if (name) {
+            localStorage.setItem('catgirl_advanced_' + name, fold.classList.contains('open'));
+        }
+    };
+    fold.appendChild(foldToggle);
+
+    const foldContent = document.createElement('div');
+    foldContent.className = 'fold-content';
+
+    // 模型设定
+    const modelWrapper = document.createElement('div');
+    modelWrapper.className = 'field-row-wrapper';
+    const modelLabel = document.createElement('label');
+    modelLabel.textContent = window.t ? window.t('character.modelSettings') : '模型设定';
+    modelLabel.style.fontSize = '1rem';
+    modelWrapper.appendChild(modelLabel);
+
+    const modelLink = document.createElement('span');
+    modelLink.className = 'live2d-link';
+    modelLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
+    modelLink.style.color = '#40C5F1';
+    modelLink.style.cursor = 'pointer';
+    modelLink.style.textDecoration = 'underline';
+    modelLink.style.display = 'flex';
+    modelLink.style.alignItems = 'center';
+
+    // 辅助函数：检查模型路径是否有效
+    function validateModelPath(path) {
+        if (path === undefined || path === null) return '';
+        if (typeof path !== 'string') path = String(path);
+        const strValue = path.trim();
+        if (strValue === '' || strValue === 'undefined' || strValue === 'null') return '';
+        if (strValue.toLowerCase().includes('undefined') || strValue.toLowerCase().includes('null')) return '';
+        return strValue;
+    }
+
+    const modelType = cat['model_type'] || 'live2d';
+    const normalizedModelType = modelType === 'vrm' ? 'live3d' : modelType;
+    let modelDisplayText = '';
+
+    const mmdPath = validateModelPath(cat['mmd'])
+        || validateModelPath(cat['_reserved']?.avatar?.mmd?.model_path);
+    const vrmPath = validateModelPath(cat['vrm'])
+        || validateModelPath(cat['_reserved']?.avatar?.vrm?.model_path);
+    const live2dPath = validateModelPath(cat['live2d']);
+
+    const live3dSubType = String(
+        cat['_reserved']?.avatar?.live3d_sub_type || cat['live3d_sub_type'] || ''
+    ).trim().toLowerCase();
+
+    if (normalizedModelType === 'live3d' && live3dSubType === 'mmd' && mmdPath) {
+        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+    } else if (normalizedModelType === 'live3d' && live3dSubType === 'vrm' && vrmPath) {
+        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+    } else if (normalizedModelType === 'live3d' && mmdPath && !vrmPath) {
+        modelDisplayText = (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '');
+    } else if (normalizedModelType === 'live3d' && vrmPath) {
+        modelDisplayText = (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '');
+    } else if (live2dPath) {
+        modelDisplayText = live2dPath;
+    } else {
+        modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
+    }
+
+    modelLink.textContent = modelDisplayText || (window.t ? window.t('character.modelNotSet') : '未设置');
+    modelWrapper.appendChild(modelLink);
+    foldContent.appendChild(modelWrapper);
+
+    // 模型设定弹窗逻辑
+    modelLink.onclick = async function () {
+        const catgirlName = form.querySelector('[name="档案名"]').value;
+        if (!catgirlName) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
+            }
+            return;
+        }
+        const url = '/model_manager?lanlan_name=' + encodeURIComponent(catgirlName);
+        if (!window._openSettingsWindows) window._openSettingsWindows = {};
+        if (window._openSettingsWindows[url]) {
+            const existingWindow = window._openSettingsWindows[url];
+            if (existingWindow && !existingWindow.closed) {
+                existingWindow.focus();
+                return;
+            } else {
+                delete window._openSettingsWindows[url];
+            }
+        }
+        const popup = window.open(url, '_blank',
+            'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
+        if (!popup) {
+            if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
+            return;
+        }
+        window._openSettingsWindows[url] = popup;
+        popup.moveTo(0, 0);
+        popup.resizeTo(screen.availWidth, screen.availHeight);
+        const timer = setInterval(() => {
+            if (popup.closed) {
+                clearInterval(timer);
+                if (window._openSettingsWindows[url] === popup) delete window._openSettingsWindows[url];
+                loadCharacterCards();
+            }
+        }, 500);
+    };
+
+    // 音色设定
+    const voiceWrapper = document.createElement('div');
+    voiceWrapper.className = 'field-row-wrapper';
+    const voiceLabel = document.createElement('label');
+    voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
+    voiceLabel.style.fontSize = '1rem';
+    voiceWrapper.appendChild(voiceLabel);
+
+    const voiceRow = document.createElement('div');
+    voiceRow.className = 'field-row';
+    voiceRow.style.overflow = 'visible';
+    voiceRow.style.position = 'relative';
+    voiceRow.style.alignItems = 'center';
+    voiceRow.style.flex = '0 0 auto';
+    voiceRow.style.width = 'auto';
+    voiceRow.style.minWidth = '200px';
+    voiceRow.style.maxWidth = '300px';
+    const voiceSelect = document.createElement('select');
+    voiceSelect.name = 'voice_id';
+    voiceSelect.className = 'form-control';
+    voiceSelect.style.flex = '0 0 auto';
+    voiceSelect.style.width = '100%';
+    voiceSelect.style.position = 'relative';
+    voiceSelect.style.zIndex = '1000';
+    voiceSelect.style.border = 'none';
+    voiceSelect.style.background = 'transparent';
+    voiceSelect.style.appearance = 'auto';
+    voiceSelect.style.alignSelf = 'stretch';
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+    voiceSelect.appendChild(defaultOption);
+    voiceRow.appendChild(voiceSelect);
+    voiceWrapper.appendChild(voiceRow);
+
+    // 注册新声音按钮
+    const registerVoiceBtn = document.createElement('button');
+    registerVoiceBtn.type = 'button';
+    registerVoiceBtn.className = 'btn sm';
+    registerVoiceBtn.style.marginLeft = '8px';
+    registerVoiceBtn.style.minWidth = '120px';
+    const registerVoiceText = (window.t && typeof window.t === 'function')
+        ? '<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">' + window.t('character.registerNewVoice') + '</span>'
+        : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
+    registerVoiceBtn.innerHTML = registerVoiceText;
+    registerVoiceBtn.addEventListener('click', async function () {
+        const catgirlName = form.querySelector('[name="档案名"]').value;
+        if (!catgirlName) {
+            if (typeof showAlert === 'function') {
+                await showAlert(window.t ? window.t('character.fillProfileNameFirstForVoice') : '请先填写猫娘档案名，然后再注册音色');
+            }
+            return;
+        }
+        if (typeof openVoiceClone === 'function') {
+            openVoiceClone(catgirlName);
+        } else {
+            const url = '/voice_clone?lanlan_name=' + encodeURIComponent(catgirlName);
+            window.open(url, '_blank');
+        }
+    });
+    voiceWrapper.appendChild(registerVoiceBtn);
+    foldContent.appendChild(voiceWrapper);
+
+    fold.appendChild(foldContent);
+    form.appendChild(fold);
+
+    // 操作按钮区
+    const btnArea = document.createElement('div');
+    btnArea.className = 'btn-area';
+    btnArea.style.display = 'flex';
+    btnArea.style.alignItems = 'center';
+    btnArea.style.marginTop = '10px';
+    btnArea.style.gap = '12px';
+
+    const labelPlaceholder = document.createElement('div');
+    labelPlaceholder.style.minWidth = '80px';
+    labelPlaceholder.style.flexShrink = '0';
+    btnArea.appendChild(labelPlaceholder);
+
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
+    btnArea.appendChild(spacer);
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.className = 'btn sm';
+    saveButton.style.minWidth = '120px';
+    saveButton.textContent = isNew
         ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
         : (window.t ? window.t('character.saveChanges') : '保存修改');
-    saveBtn.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
+    saveButton.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
+    btnArea.appendChild(saveButton);
 
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'catgirl-form-cancel-btn';
-    cancelBtn.textContent = window.t ? window.t('character.cancel') : '取消';
-    cancelBtn.onclick = closeCatgirlPanel;
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'btn sm';
+    cancelButton.style.minWidth = '120px';
+    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.onclick = closeCatgirlPanel;
+    btnArea.appendChild(cancelButton);
 
-    btnRow.appendChild(saveBtn);
-    btnRow.appendChild(cancelBtn);
-    form.appendChild(btnRow);
-
+    form.appendChild(btnArea);
+    container.innerHTML = '';
     container.appendChild(form);
+
+    // 加载音色列表
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    form._voicesLoadPromise = voicesLoadPromise;
+    form._previousVoiceId = String(cat['voice_id'] || '').trim();
+
+    // 恢复进阶设定折叠状态
+    if (name) {
+        setTimeout(() => {
+            const savedState = localStorage.getItem('catgirl_advanced_' + name);
+            if (savedState === 'false') {
+                fold.classList.remove('open');
+                arrowSpan.style.transform = 'rotate(-90deg)';
+            }
+        }, 0);
+    }
+
+    // 初始化textarea自动调整
+    setTimeout(() => {
+        form.querySelectorAll('textarea').forEach(ta => _panelAttachTextareaAutoResize(ta));
+    }, 100);
+}
+
+// 档案名输入限制器
+function _panelAttachProfileNameLimiter(input) {
+    if (!input) return;
+    const MAX_LEN = 50;
+    let composing = false;
+    input.addEventListener('compositionstart', () => { composing = true; });
+    input.addEventListener('compositionend', () => {
+        composing = false;
+        checkLen();
+    });
+    function checkLen() {
+        if (composing) return;
+        const fieldRow = input.closest('.field-row');
+        if (!fieldRow) return;
+        if (input.value.length > MAX_LEN) {
+            fieldRow.classList.add('profile-name-too-long');
+            let tip = fieldRow.querySelector('.profile-name-too-long-tip');
+            if (!tip) {
+                tip = document.createElement('span');
+                tip.className = 'profile-name-too-long-tip';
+                fieldRow.appendChild(tip);
+            }
+            tip.textContent = (window.t ? window.t('character.profileNameTooLong') : '档案名过长') + ' (' + input.value.length + '/' + MAX_LEN + ')';
+        } else {
+            fieldRow.classList.remove('profile-name-too-long');
+            const tip = fieldRow.querySelector('.profile-name-too-long-tip');
+            if (tip) tip.remove();
+        }
+    }
+    input.addEventListener('input', checkLen);
+}
+
+// label 设置（支持i18n + 超长title提示）
+function _panelSetFieldLabel(labelEl, key) {
+    const MAX_LABEL_LEN = 8;
+    let displayText = key;
+    if (window.t && typeof window.t === 'function') {
+        const translated = window.t('character.field.' + key);
+        if (translated && translated !== 'character.field.' + key) {
+            displayText = translated;
+        }
+    }
+    labelEl.textContent = displayText;
+    if (displayText.length > MAX_LABEL_LEN) {
+        labelEl.title = displayText;
+    }
+}
+
+// textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
+function _panelAttachTextareaAutoResize(textarea) {
+    if (!textarea || textarea.dataset.autoResizeAttached) return;
+    textarea.dataset.autoResizeAttached = 'true';
+
+    function resize() {
+        textarea.style.height = 'auto';
+        const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+        const maxHeight = lineHeight * 3 + 10;
+        const scrollHeight = textarea.scrollHeight;
+        textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+
+        const fieldRow = textarea.closest('.field-row');
+        if (fieldRow) {
+            if (scrollHeight > maxHeight) {
+                textarea.style.overflowY = 'auto';
+                fieldRow.classList.add('has-scrollbar');
+            } else {
+                textarea.style.overflowY = 'hidden';
+                fieldRow.classList.remove('has-scrollbar');
+            }
+        }
+    }
+
+    textarea.addEventListener('input', resize);
+    textarea.addEventListener('focus', resize);
+    resize();
+}
+
+// 加载音色列表（完整复制原版逻辑）
+async function _loadPanelVoices(selectEl, currentVoiceId) {
+    const GSV_PREFIX = 'gsv:';
+
+    try {
+        const response = await fetch('/api/characters/voices');
+        if (!response.ok) return;
+        const data = await response.json();
+
+        if (data && data.voices) {
+            // 清空现有选项
+            while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+            selectEl.appendChild(defaultOption);
+
+            // 添加音色选项
+            const voiceOwners = data.voice_owners || {};
+            Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                const option = document.createElement('option');
+                option.value = voiceId;
+                // 显示名称：优先用 voice_owners，其次 voiceData.name，最后 voiceId
+                let displayName = voiceId;
+                if (voiceOwners[voiceId]) {
+                    displayName = voiceOwners[voiceId] + ' - ' + voiceId;
+                } else if (voiceData && voiceData.name) {
+                    displayName = voiceData.name;
+                }
+                option.textContent = displayName;
+                option.title = voiceId;
+                if (voiceId === currentVoiceId) option.selected = true;
+                selectEl.appendChild(option);
+            });
+
+            // 免费预设音色
+            if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                const freeGroup = document.createElement('optgroup');
+                const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                freeGroup.label = '── ' + freeLabel + ' ──';
+                Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
+                    const option = document.createElement('option');
+                    option.value = voiceId;
+                    option.textContent = window.t ? window.t('voice.freeVoice.' + voiceKey) : voiceKey;
+                    if (voiceId === currentVoiceId) option.selected = true;
+                    freeGroup.appendChild(option);
+                });
+                selectEl.appendChild(freeGroup);
+            }
+        }
+
+        // 加载 GPT-SoVITS 声音列表
+        await _loadPanelGsvVoices(selectEl, currentVoiceId);
+    } catch (e) {
+        console.warn('加载音色列表失败:', e);
+    }
+}
+
+// GPT-SoVITS 声音列表
+async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
+    const GSV_PREFIX = 'gsv:';
+
+    function ensureGsvFallback() {
+        if (!currentVoiceId || !currentVoiceId.startsWith(GSV_PREFIX)) return;
+        if (selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            selectEl.value = currentVoiceId;
+            return;
+        }
+        let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
+        if (!gsvGroup) {
+            gsvGroup = document.createElement('optgroup');
+            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.dataset.gsvGroup = 'true';
+            selectEl.appendChild(gsvGroup);
+        }
+        const fallbackOpt = document.createElement('option');
+        fallbackOpt.value = currentVoiceId;
+        fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+        gsvGroup.appendChild(fallbackOpt);
+        selectEl.value = currentVoiceId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    try {
+        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        const result = await resp.json();
+        if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
+            const gsvGroup = document.createElement('optgroup');
+            const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.dataset.gsvGroup = 'true';
+            result.voices.forEach(function (v) {
+                const option = document.createElement('option');
+                option.value = v.voice_id;
+                option.textContent = v.name + (v.version ? ' (' + v.version + ')' : '');
+                if (v.description) option.title = v.description;
+                if (v.voice_id === currentVoiceId) option.selected = true;
+                gsvGroup.appendChild(option);
+            });
+            selectEl.appendChild(gsvGroup);
+            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX) && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                const fallbackOpt = document.createElement('option');
+                fallbackOpt.value = currentVoiceId;
+                fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+                gsvGroup.appendChild(fallbackOpt);
+            }
+            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
+                selectEl.value = currentVoiceId;
+            }
+        }
+        ensureGsvFallback();
+    } catch (e) {
+        clearTimeout(timeoutId);
+        console.debug('GPT-SoVITS voices not available:', e.message);
+        ensureGsvFallback();
+    }
 }
 
 async function saveCatgirlFromPanel(form, originalName, isNew) {
-    const data = {};
-
-    // 收集表单数据
-    const nameInput = form.querySelector('input[name="档案名"]');
-    if (!nameInput || !nameInput.value.trim()) {
-        showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+    // 防止重复提交
+    if (form.dataset.submitting === 'true') {
+        console.log('表单正在提交中，忽略重复提交');
         return;
     }
-    data['档案名'] = nameInput.value.trim();
-
-    // 收集已有字段
-    form.querySelectorAll('textarea[name]').forEach(ta => {
-        if (ta.name && ta.value.trim()) {
-            data[ta.name] = ta.value.trim();
-        }
-    });
-
-    // 收集新增字段
-    form.querySelectorAll('.catgirl-form-field-name').forEach(nameEl => {
-        const fieldName = nameEl.value.trim();
-        const textarea = nameEl.parentElement.querySelector('textarea');
-        if (fieldName && textarea && textarea.value.trim()) {
-            data[fieldName] = textarea.value.trim();
-        }
-    });
+    form.dataset.submitting = 'true';
 
     try {
+        // 等待音色加载完成
+        if (form._voicesLoadPromise) {
+            await form._voicesLoadPromise;
+        }
+
+        const data = {};
+
+        // 收集表单数据
+        const nameInput = form.querySelector('input[name="档案名"]');
+        if (!nameInput || !nameInput.value.trim()) {
+            showMessage(window.t ? window.t('character.profileNameRequired') : '请输入档案名', 'error');
+            return;
+        }
+        data['档案名'] = nameInput.value.trim();
+
+        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
+        const fd = new FormData(form);
+        const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
+        const previousVoiceId = form._previousVoiceId || '';
+
+        for (const [k, v] of fd.entries()) {
+            if (k === 'voice_id') continue;
+            const normalizedValue = typeof v === 'string' ? v.trim() : v;
+            if (k && normalizedValue) {
+                data[k] = normalizedValue;
+            }
+        }
+
         const url = '/api/characters/catgirl' + (isNew ? '' : '/' + encodeURIComponent(originalName));
         const response = await fetch(url, {
             method: isNew ? 'POST' : 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        const result = await response.json();
-        if (result.success || (response.ok && !result.error)) {
-            showMessage(isNew
-                ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
-                : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
-            closeCatgirlPanel();
-            await loadCharacterCards();
-        } else {
-            showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage = errorText;
+            try {
+                const errorJson = JSON.parse(errorText);
+                if (errorJson.error) errorMessage = errorJson.error;
+            } catch (e) { /* keep original */ }
+            showMessage((window.t ? window.t('character.saveFailedWithError') : '保存失败: ') + errorMessage, 'error');
+            return;
         }
+
+        const result = await response.json();
+        if (result.success === false) {
+            showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
+            return;
+        }
+
+        // voice_id 通过专用接口更新
+        if (selectedVoiceId !== previousVoiceId) {
+            if (selectedVoiceId) {
+                try {
+                    const voiceResp = await fetch('/api/characters/catgirl/voice_id/' + encodeURIComponent(data['档案名']), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ voice_id: selectedVoiceId })
+                    });
+                    const voiceResult = await voiceResp.json().catch(() => ({}));
+                    if (!voiceResp.ok || voiceResult.success === false) {
+                        const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
+                        showMessage(
+                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            'error'
+                        );
+                    }
+                } catch (voiceErr) {
+                    showMessage(
+                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (voiceErr.message || String(voiceErr)),
+                        'error'
+                    );
+                }
+            } else if (previousVoiceId) {
+                try {
+                    const clearResp = await fetch('/api/characters/catgirl/' + encodeURIComponent(data['档案名']) + '/unregister_voice', {
+                        method: 'POST'
+                    });
+                    const clearResult = await clearResp.json().catch(() => ({}));
+                    if (!clearResp.ok || clearResult.success === false) {
+                        const detail = (clearResult && clearResult.error) || (clearResp.status + ' ' + clearResp.statusText);
+                        showMessage(
+                            (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + detail,
+                            'error'
+                        );
+                    }
+                } catch (clearErr) {
+                    showMessage(
+                        (window.t ? window.t('character.partialSaveVoiceFailed') : '角色已保存，但音色更新失败: ') + (clearErr.message || String(clearErr)),
+                        'error'
+                    );
+                }
+            }
+        }
+
+        showMessage(isNew
+            ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
+            : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
+        closeCatgirlPanel();
+        await loadCharacterCards();
     } catch (error) {
         console.error('保存猫娘失败:', error);
-        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误', 'error');
+        showMessage(window.t ? window.t('character.saveError') : '保存时发生错误: ' + error.message, 'error');
+    } finally {
+        form.dataset.submitting = 'false';
     }
 }
 
