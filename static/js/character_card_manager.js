@@ -1028,10 +1028,8 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
-    const messageArea = document.getElementById('message-area') || createMessageArea();
-    const messageElement = document.createElement('div');
-
-    // 创建消息容器（如果不存在）
+    // 统一为「导出角色卡」同款风格的居中顶部浮层卡片（非模态），
+    // 保证桌面端网页也能稳定显示。调用签名保持与旧版兼容。
     function createMessageArea() {
         const container = document.createElement('div');
         container.id = 'message-area';
@@ -1040,98 +1038,89 @@ function showMessage(message, type = 'info', duration = 3000) {
         return container;
     }
 
-    // 消息类型和图标映射
-    const typeConfig = {
-        error: { className: 'error-message', icon: 'fa-exclamation-circle' },
-        warning: { className: 'warning-message', icon: 'fa-exclamation-triangle' },
-        success: { className: 'success-message', icon: 'fa-check-circle' },
-        info: { className: 'info-message', icon: 'fa-info-circle' }
-    };
+    const messageArea = document.getElementById('message-area') || createMessageArea();
 
-    // 获取当前消息类型的配置
-    const config = typeConfig[type] || typeConfig.info;
-
-    // 设置样式类
-    messageElement.className = config.className;
-
-    // 设置消息内容，添加图标和HTML转义
-    messageElement.innerHTML = `
-        <i class="fa ${config.icon}" style="margin-right: 8px;"></i>
-        <span>${escapeHtml(message)}</span>
-    `;
-
-    // 添加关闭按钮
-    const closeButton = document.createElement('span');
-    closeButton.className = 'message-close';
-    closeButton.innerHTML = '<i class="fa fa-times"></i>';
-    closeButton.onclick = () => messageElement.remove();
-    messageElement.appendChild(closeButton);
-
-    // 为错误消息添加详细信息支持
-    if (type === 'error' && typeof message === 'object') {
-        messageElement.title = JSON.stringify(message, null, 2);
-    }
-
-    // 添加消息
-    messageArea.appendChild(messageElement);
-
-    // 设置初始样式
-    messageElement.style.opacity = '0';
-    messageElement.style.transform = 'translateY(-10px)';
-    messageElement.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
-    messageElement.style.display = 'flex';
-    messageElement.style.alignItems = 'center';
-    messageElement.style.padding = '10px 15px';
-    messageElement.style.marginBottom = '10px';
-    messageElement.style.borderRadius = '4px';
-    messageElement.style.position = 'relative';
-    messageElement.style.zIndex = '1000';
-
-    // 为不同类型设置背景色和前景色
-    const bgColors = { error: '#fde8e8', warning: '#fdf6e3', success: '#e3f7f1', info: '#e8f4fd' };
-    const fgColors = { error: '#d04848', warning: '#c47e00', success: '#1a8a5c', info: '#2d8ec9' };
-    messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
-    messageElement.style.color = fgColors[type] || '#333';
-
-    // 设置消息显示动画
-    setTimeout(() => {
-        messageElement.style.opacity = '1';
-        messageElement.style.transform = 'translateY(0)';
-    }, 10);
-
-    // 确保消息区域在页面顶部且固定
+    // 布局：居中、顶部向下滑入，堆叠显示
     messageArea.style.position = 'fixed';
-    messageArea.style.top = '20px';
-    messageArea.style.right = '20px';
-    messageArea.style.maxWidth = '400px';
-    messageArea.style.zIndex = '99999'; // 增加z-index确保显示在最顶层
+    messageArea.style.top = '24px';
+    messageArea.style.left = '50%';
+    messageArea.style.transform = 'translateX(-50%)';
+    messageArea.style.right = '';
+    messageArea.style.maxWidth = '90vw';
+    messageArea.style.width = 'auto';
+    messageArea.style.zIndex = '100000';
     messageArea.style.display = 'flex';
     messageArea.style.flexDirection = 'column';
-    messageArea.style.alignItems = 'flex-end';
-    messageArea.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'; // 添加阴影增强可见性
+    messageArea.style.alignItems = 'center';
+    messageArea.style.pointerEvents = 'none';
 
-    // 关闭按钮样式
-    closeButton.style.position = 'absolute';
-    closeButton.style.right = '10px';
-    closeButton.style.cursor = 'pointer';
-    closeButton.style.fontSize = '16px';
-    closeButton.style.border = 'none';
-    closeButton.style.background = 'none';
-    closeButton.style.padding = '2px 5px';
-    closeButton.style.borderRadius = '3px';
-    closeButton.onmouseover = function () { this.style.backgroundColor = 'rgba(0,0,0,0.1);' };
-    closeButton.onmouseout = function () { this.style.backgroundColor = 'transparent;' };
+    const typeConfig = {
+        error:   { icon: 'fa-exclamation-circle', accent: '#ff5a5a', grad: 'linear-gradient(135deg,#ff7a7a,#ff5a5a)' },
+        warning: { icon: 'fa-exclamation-triangle', accent: '#f0ad4e', grad: 'linear-gradient(135deg,#f6c266,#f0ad4e)' },
+        success: { icon: 'fa-check-circle', accent: '#58c38a', grad: 'linear-gradient(135deg,#6ec5a8,#58c38a)' },
+        info:    { icon: 'fa-info-circle', accent: '#40C5F1', grad: 'linear-gradient(135deg,#40C5F1,#5dd4f7)' },
+    };
+    const cfg = typeConfig[type] || typeConfig.info;
 
-    // 自动清除消息（如果指定了持续时间）
+    const card = document.createElement('div');
+    card.className = 'ccm-toast-card ccm-toast-' + type;
+    card.style.cssText = [
+        'background:#fff',
+        'border-radius:14px',
+        'padding:12px 18px',
+        'min-width:260px',
+        'max-width:min(560px, 90vw)',
+        'box-shadow:0 14px 40px rgba(0,0,0,0.18)',
+        'display:flex',
+        'align-items:flex-start',
+        'gap:10px',
+        'margin-bottom:10px',
+        'font-family:inherit',
+        'color:#333',
+        'font-size:13.5px',
+        'line-height:1.5',
+        'pointer-events:auto',
+        'border-left:4px solid ' + cfg.accent,
+        'opacity:0',
+        'transform:translateY(-8px)',
+        'transition:opacity 0.22s ease, transform 0.22s ease',
+    ].join(';');
+
+    const iconEl = document.createElement('i');
+    iconEl.className = 'fa ' + cfg.icon;
+    iconEl.style.cssText = 'color:' + cfg.accent + ';font-size:18px;margin-top:2px;flex-shrink:0';
+    card.appendChild(iconEl);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1;min-width:0;word-break:break-word;white-space:pre-wrap';
+    body.textContent = (typeof message === 'string') ? message : String(message);
+    card.appendChild(body);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '<i class="fa fa-times"></i>';
+    closeBtn.style.cssText = 'background:transparent;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;flex-shrink:0';
+    closeBtn.onmouseenter = () => { closeBtn.style.background = 'rgba(0,0,0,0.06)'; closeBtn.style.color = '#333'; };
+    closeBtn.onmouseleave = () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#888'; };
+    const dismiss = () => {
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(-8px)';
+        setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 220);
+    };
+    closeBtn.onclick = dismiss;
+    card.appendChild(closeBtn);
+
+    messageArea.appendChild(card);
+    requestAnimationFrame(() => {
+        card.style.opacity = '1';
+        card.style.transform = 'translateY(0)';
+    });
+
     if (duration > 0) {
-        setTimeout(() => {
-            messageElement.style.opacity = '0';
-            messageElement.style.transform = 'translateY(-10px)';
-            setTimeout(() => {
-                messageElement.remove();
-            }, 300);
-        }, duration);
+        setTimeout(dismiss, duration);
     }
+
+    return card;
 }
 
 // HTML转义函数
@@ -2733,6 +2722,11 @@ async function loadCharacterCards() {
         window._workshopCurrentCatgirl = '';
     }
 
+    // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）
+    await loadCardFaceNames();
+    // 预取卡面元数据（作者/创建时间/来源）
+    await loadCardMetas();
+
     // 渲染卡片/列表视图
     renderCharaCardsView();
 
@@ -2745,6 +2739,630 @@ async function loadCharacterCards() {
 }
 
 // ===== 角色卡 卡片/列表 视图 =====
+
+// 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
+window._cardFaceNames = window._cardFaceNames || new Set();
+async function loadCardFaceNames() {
+    try {
+        const resp = await fetch('/api/characters/card-faces');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success && Array.isArray(data.names)) {
+            window._cardFaceNames = new Set(data.names);
+        }
+    } catch (e) {
+        // 忽略，退化为不加载头像
+    }
+}
+
+// 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
+window._cardMetas = window._cardMetas || {};
+async function loadCardMetas() {
+    try {
+        const resp = await fetch('/api/characters/card-metas');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success && data.metas && typeof data.metas === 'object') {
+            window._cardMetas = data.metas;
+        }
+    } catch (e) {
+        // 忽略，退化为面板内单独请求
+    }
+}
+
+// 格式化 ISO 时间为本地化短字符串
+function _formatCardMetaTime(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${y}-${m}-${day} ${hh}:${mm}`;
+    } catch (e) { return iso; }
+}
+
+// 渲染卡面信息块（作者、创建时间、来源）
+function renderCardMetaBlock(container, name, isNew, rawData) {
+    container.innerHTML = '';
+    if (isNew || !name) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'card-meta-placeholder';
+        placeholder.textContent = window.t ? window.t('character.cardNotCreated') : '尚未创建角色卡';
+        container.appendChild(placeholder);
+        return;
+    }
+
+    // 优先用缓存，否则惰性请求
+    let meta = window._cardMetas && window._cardMetas[name];
+    const draw = (m) => {
+        container.innerHTML = '';
+        const origin = (m && m.origin) || 'self';
+        const author = (m && m.author) || '';
+        const createdAt = (m && m.created_at) || '';
+
+        const title = document.createElement('div');
+        title.className = 'card-meta-title';
+        title.textContent = window.t ? window.t('character.cardMeta') : '卡面信息';
+        container.appendChild(title);
+
+        // 来源徽章
+        const originRow = document.createElement('div');
+        originRow.className = 'card-meta-row card-meta-origin';
+        const originLabel = document.createElement('span');
+        originLabel.className = 'card-meta-label';
+        originLabel.textContent = window.t ? window.t('character.cardOriginLabel') : '来源';
+        const originValue = document.createElement('span');
+        originValue.className = 'card-meta-origin-badge origin-' + origin;
+        const originKey = origin === 'imported' ? 'character.cardOriginImported'
+            : origin === 'steam' ? 'character.cardOriginSteam'
+                : 'character.cardOriginSelf';
+        const originText = window.t ? window.t(originKey) : (origin === 'imported' ? '导入' : origin === 'steam' ? '创意工坊' : '本地');
+        originValue.textContent = originText;
+        originRow.appendChild(originLabel);
+        originRow.appendChild(originValue);
+        container.appendChild(originRow);
+
+        // 作者（可编辑：仅 origin=self）
+        const authorRow = document.createElement('div');
+        authorRow.className = 'card-meta-row card-meta-author';
+        const authorLabel = document.createElement('span');
+        authorLabel.className = 'card-meta-label';
+        authorLabel.textContent = window.t ? window.t('character.cardAuthor') : '作者';
+        authorRow.appendChild(authorLabel);
+
+        if (origin === 'self') {
+            const authorInput = document.createElement('input');
+            authorInput.type = 'text';
+            authorInput.className = 'card-meta-author-input';
+            authorInput.value = author;
+            authorInput.maxLength = 64;
+            authorInput.placeholder = window.t ? window.t('character.cardAuthorPlaceholder') : '请输入作者';
+            let saving = false;
+            const saveAuthor = async () => {
+                if (saving) return;
+                const newVal = (authorInput.value || '').trim();
+                if (newVal === (author || '').trim()) return;
+                saving = true;
+                try {
+                    const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ author: newVal })
+                    });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const data = await resp.json();
+                    if (window._cardMetas) window._cardMetas[name] = data.meta || { ...m, author: newVal };
+                    showMessage(window.t ? window.t('character.cardAuthorUpdated') : '作者已更新', 'success');
+                } catch (e) {
+                    showMessage(window.t ? window.t('character.cardAuthorUpdateFailed') : '作者更新失败', 'error');
+                    authorInput.value = author;
+                } finally { saving = false; }
+            };
+            authorInput.addEventListener('blur', saveAuthor);
+            authorInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); authorInput.blur(); }
+            });
+            authorRow.appendChild(authorInput);
+        } else {
+            const authorValue = document.createElement('span');
+            authorValue.className = 'card-meta-value card-meta-readonly';
+            authorValue.textContent = author || '-';
+            authorValue.title = window.t ? window.t('character.cardAuthorReadonly') : '导入/工坊角色卡的作者不可修改';
+            authorRow.appendChild(authorValue);
+        }
+        container.appendChild(authorRow);
+
+        // 创建时间
+        if (createdAt) {
+            const timeRow = document.createElement('div');
+            timeRow.className = 'card-meta-row card-meta-time';
+            const timeLabel = document.createElement('span');
+            timeLabel.className = 'card-meta-label';
+            timeLabel.textContent = window.t ? window.t('character.cardCreatedAt') : '创建时间';
+            const timeValue = document.createElement('span');
+            timeValue.className = 'card-meta-value';
+            timeValue.textContent = _formatCardMetaTime(createdAt);
+            timeRow.appendChild(timeLabel);
+            timeRow.appendChild(timeValue);
+            container.appendChild(timeRow);
+        }
+    };
+
+    if (meta) {
+        draw(meta);
+    } else {
+        // 占位
+        const loading = document.createElement('div');
+        loading.className = 'card-meta-placeholder';
+        loading.textContent = '...';
+        container.appendChild(loading);
+        // 异步拉取
+        fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta')
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data && data.meta) {
+                    if (window._cardMetas) window._cardMetas[name] = data.meta;
+                    draw(data.meta);
+                } else {
+                    draw(null);
+                }
+            })
+            .catch(() => draw(null));
+    }
+}
+
+// 从 PNG neKo 辅助块中提取 ZIP 数据
+function _extractNekoChunk(uint8Array) {
+    if (uint8Array.length < 8) return null;
+    if (uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || uint8Array[2] !== 0x4E ||
+        uint8Array[3] !== 0x47 || uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+        uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+        return null;
+    }
+    const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
+    let offset = 8;
+    while (offset + 12 <= uint8Array.length) {
+        const chunkLen = view.getUint32(offset, false);
+        if (chunkLen > 0x7FFFFFFF) return null;
+        const chunkEnd = offset + 12 + chunkLen;
+        if (chunkEnd > uint8Array.length) return null;
+        const t0 = uint8Array[offset + 4];
+        const t1 = uint8Array[offset + 5];
+        const t2 = uint8Array[offset + 6];
+        const t3 = uint8Array[offset + 7];
+        if (t0 === 0x6E && t1 === 0x65 && t2 === 0x4B && t3 === 0x6F) {
+            const dataStart = offset + 8;
+            return uint8Array.slice(dataStart, dataStart + chunkLen);
+        }
+        if (t0 === 0x49 && t1 === 0x45 && t2 === 0x4E && t3 === 0x44) break;
+        offset = chunkEnd;
+    }
+    return null;
+}
+
+async function handleImportCharacterCard(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    event.target.value = '';
+
+    const isNekoFile = file.name.endsWith('.nekocfg');
+    const isPngFile = file.type.startsWith('image/') || file.name.endsWith('.png');
+    if (!isNekoFile && !isPngFile) {
+        showMessage(window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件或.nekocfg设定文件', 'warning');
+        return;
+    }
+
+    const loadingText = window.t ? window.t('character.importingCard') : '正在导入角色卡...';
+    showMessage(loadingText, 'info');
+
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        let fileData;
+        if (isNekoFile) {
+            fileData = new Uint8Array(arrayBuffer);
+        } else {
+            const uint8Array = new Uint8Array(arrayBuffer);
+            fileData = _extractNekoChunk(uint8Array);
+            if (!fileData) {
+                // 回退：查找旧版 NEKOCHARA 标记
+                const marker = new TextEncoder().encode('NEKOCHARA\x00');
+                let markerIndex = -1;
+                for (let i = uint8Array.length - marker.length; i >= 0; i--) {
+                    let found = true;
+                    for (let j = 0; j < marker.length; j++) {
+                        if (uint8Array[i + j] !== marker[j]) { found = false; break; }
+                    }
+                    if (found) { markerIndex = i; break; }
+                }
+                if (markerIndex === -1 || markerIndex < 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                const zipSizeBytes = uint8Array.slice(markerIndex - 8, markerIndex);
+                const zipSize = new DataView(zipSizeBytes.buffer).getUint32(0, true);
+                if (zipSize <= 0 || zipSize > uint8Array.length) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                const zipStart = markerIndex - 8 - zipSize;
+                if (zipStart < 0 || zipStart + zipSize > markerIndex - 8) {
+                    throw new Error(window.t ? window.t('character.importNoMarker') : '该图片不是有效的角色卡文件');
+                }
+                fileData = uint8Array.slice(zipStart, markerIndex - 8);
+            }
+        }
+
+        const formData = new FormData();
+        const blob = new Blob([fileData], { type: isNekoFile ? 'application/octet-stream' : 'application/zip' });
+        formData.append('zip_file', blob, isNekoFile ? file.name : 'character_data.zip');
+        // 对于 PNG 载体，额外上传原始图片作为卡面回退（老角色卡兼容）
+        if (isPngFile) {
+            const pngBlob = new Blob([new Uint8Array(arrayBuffer)], { type: 'image/png' });
+            formData.append('card_image', pngBlob, file.name || 'card.png');
+        }
+
+        const response = await fetch('/api/characters/import-card', { method: 'POST', body: formData });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: '导入失败' }));
+            throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+        const result = await response.json();
+
+        const successText = window.t ? window.t('character.importCardSuccess', { name: result.character_name }) : `角色卡 "${result.character_name}" 导入成功`;
+        showMessage(successText, 'success');
+
+        // 刷新角色卡列表（含 sidecar / 卡面 / 视图重新渲染）
+        if (typeof loadCharacterCards === 'function') {
+            await loadCharacterCards();
+        } else if (typeof loadCharacterData === 'function') {
+            await loadCharacterData();
+        }
+    } catch (error) {
+        console.error('导入角色卡失败:', error);
+        const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
+        showMessage(errorText, 'error');
+    }
+}
+
+// 绑定导入按钮（页面加载后）
+function _setupImportCardButton() {
+    const btn = document.getElementById('chara-import-btn');
+    const input = document.getElementById('chara-import-input');
+    if (btn && input && !btn._bound) {
+        btn._bound = true;
+        btn.addEventListener('click', () => input.click());
+        input.addEventListener('change', handleImportCharacterCard);
+    }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _setupImportCardButton);
+} else {
+    _setupImportCardButton();
+}
+
+// ===== API 设置弹窗 =====
+const _API_KEY_ALLOWED_ORIGINS = [window.location.origin];
+function openApiKeySettings() {
+    const existingModal = document.getElementById('api-key-settings-modal');
+    if (existingModal) {
+        existingModal.style.display = 'block';
+        return;
+    }
+    const modal = document.createElement('div');
+    modal.id = 'api-key-settings-modal';
+    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.4);z-index:9999';
+
+    const apiKeyMessageHandler = function (e) {
+        if (!_API_KEY_ALLOWED_ORIGINS.includes(e.origin)) return;
+        if (e.data && e.data.type === 'close_api_key_settings') {
+            const m = document.getElementById('api-key-settings-modal');
+            if (m && m.parentNode) m.parentNode.removeChild(m);
+            window.removeEventListener('message', apiKeyMessageHandler);
+        }
+    };
+
+    modal.onclick = function (e) {
+        if (e.target === modal) {
+            window.removeEventListener('message', apiKeyMessageHandler);
+            if (modal.parentNode) modal.parentNode.removeChild(modal);
+        }
+    };
+
+    const iframe = document.createElement('iframe');
+    iframe.src = '/api_key';
+    iframe.style.cssText = 'width:800px;height:720px;border:none;background:#fff;display:block;margin:50px auto;border-radius:8px';
+
+    window.addEventListener('message', apiKeyMessageHandler);
+    modal.appendChild(iframe);
+    document.body.appendChild(modal);
+}
+
+function _setupApiKeySettingsButton() {
+    const btn = document.getElementById('api-key-settings-btn');
+    if (btn && !btn._bound) {
+        btn._bound = true;
+        btn.addEventListener('click', openApiKeySettings);
+    }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _setupApiKeySettingsButton);
+} else {
+    _setupApiKeySettingsButton();
+}
+
+// ===== 统一弹窗样式 =====
+// 与导出角色卡弹窗风格一致的通用 Confirm / Alert / Toast
+// 目的：在桌面端网页中也能稳定显示（替换老的 top-corner showMessage / 原生 confirm）。
+
+function _createManagerModal({ title, message, variant = 'info', buttons = [], dismissOnOverlay = true, icon = null }) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'ccm-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10002;display:flex;align-items:center;justify-content:center;animation:ccmFadeIn 0.18s ease';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;min-width:340px;max-width:90vw;box-shadow:0 14px 40px rgba(0,0,0,0.25);font-family:inherit;animation:ccmSlideUp 0.22s ease';
+
+        const accentColor = {
+            info: '#40C5F1',
+            success: '#58c38a',
+            warning: '#f0ad4e',
+            error: '#ff5a5a',
+            danger: '#ff5a5a',
+        }[variant] || '#40C5F1';
+
+        if (title) {
+            const t = document.createElement('div');
+            t.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:8px;display:flex;align-items:center;gap:8px';
+            if (icon) {
+                const i = document.createElement('i');
+                i.className = 'fa ' + icon;
+                i.style.cssText = 'color:' + accentColor + ';font-size:16px';
+                t.appendChild(i);
+            }
+            const ts = document.createElement('span');
+            ts.textContent = title;
+            t.appendChild(ts);
+            dialog.appendChild(t);
+        }
+
+        if (message) {
+            const d = document.createElement('div');
+            d.style.cssText = 'font-size:13px;color:#555;margin-bottom:18px;line-height:1.5;white-space:pre-wrap;word-break:break-word';
+            d.textContent = message;
+            dialog.appendChild(d);
+        }
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap';
+
+        const mkBtn = (label, btnVariant) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            const base = 'padding:8px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:filter 0.15s,transform 0.1s';
+            if (btnVariant === 'primary') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#40C5F1,#5dd4f7);color:#fff;box-shadow:0 2px 6px rgba(64,197,241,0.3)';
+            } else if (btnVariant === 'danger') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#ff7a7a,#ff5a5a);color:#fff;box-shadow:0 2px 6px rgba(255,90,90,0.3)';
+            } else {
+                b.style.cssText = base + ';background:#f3f5f7;color:#333';
+            }
+            b.onmouseenter = () => { b.style.filter = 'brightness(1.06)'; b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.filter = ''; b.style.transform = ''; };
+            return b;
+        };
+
+        const close = (value) => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            resolve(value);
+        };
+
+        (buttons || []).forEach(bt => {
+            const btn = mkBtn(bt.label, bt.variant || 'secondary');
+            btn.onclick = () => close(bt.value);
+            footer.appendChild(btn);
+        });
+
+        dialog.appendChild(footer);
+        overlay.appendChild(dialog);
+        if (dismissOnOverlay) {
+            overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+        }
+        // ESC 关闭
+        const escHandler = (e) => {
+            if (e.key === 'Escape') { document.removeEventListener('keydown', escHandler); close(null); }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        // 注入一次性动画 keyframes
+        if (!document.getElementById('ccm-modal-keyframes')) {
+            const st = document.createElement('style');
+            st.id = 'ccm-modal-keyframes';
+            st.textContent = '@keyframes ccmFadeIn{from{opacity:0}to{opacity:1}}@keyframes ccmSlideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes ccmSlideOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-8px)}}';
+            document.head.appendChild(st);
+        }
+
+        document.body.appendChild(overlay);
+    });
+}
+
+// 确认对话框（Promise<boolean>）
+function showConfirmDialog(message, options = {}) {
+    const title = options.title || (window.t ? window.t('common.confirm') : '确认');
+    const okText = options.okText || (window.t ? window.t('common.confirm') : '确认');
+    const cancelText = options.cancelText || (window.t ? window.t('common.cancel') : '取消');
+    const variant = options.danger ? 'danger' : 'info';
+    const icon = options.danger ? 'fa-exclamation-triangle' : 'fa-question-circle';
+    return _createManagerModal({
+        title,
+        message,
+        variant,
+        icon,
+        buttons: [
+            { label: cancelText, variant: 'secondary', value: false },
+            { label: okText, variant: options.danger ? 'danger' : 'primary', value: true },
+        ],
+    }).then(v => v === true);
+}
+
+// 提示对话框（Promise<void>，仅 OK 按钮）
+function showAlertDialog(message, options = {}) {
+    const typeMap = {
+        error:   { titleKey: 'common.error',   fallback: '错误', icon: 'fa-exclamation-circle', variant: 'error' },
+        warning: { titleKey: 'common.warning', fallback: '警告', icon: 'fa-exclamation-triangle', variant: 'warning' },
+        success: { titleKey: 'common.success', fallback: '成功', icon: 'fa-check-circle', variant: 'success' },
+        info:    { titleKey: 'common.alert',   fallback: '提示', icon: 'fa-info-circle', variant: 'info' },
+    };
+    const t = typeMap[options.type || 'info'];
+    const title = options.title || (window.t ? window.t(t.titleKey) : t.fallback);
+    const okText = options.okText || (window.t ? window.t('common.ok') : '确定');
+    return _createManagerModal({
+        title,
+        message,
+        variant: t.variant,
+        icon: t.icon,
+        buttons: [{ label: okText, variant: 'primary', value: true }],
+    });
+}
+
+// ===== 导出角色卡（弹窗：取消 / 仅导出设定 / 导出角色卡） =====
+function showExportOptionsModal(catgirlName) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'export-options-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10001;display:flex;align-items:center;justify-content:center';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;min-width:360px;max-width:90vw;box-shadow:0 14px 40px rgba(0,0,0,0.25);font-family:inherit';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:8px';
+        title.textContent = (window.t ? window.t('character.exportOptions') : '导出角色卡');
+        dialog.appendChild(title);
+
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size:13px;color:#555;margin-bottom:18px;line-height:1.5';
+        const descTpl = window.t ? window.t('character.exportOptionsDesc') : '请选择要导出的内容：';
+        desc.textContent = descTpl + ' 「' + catgirlName + '」';
+        dialog.appendChild(desc);
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap';
+
+        const mkBtn = (label, variant) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            const base = 'padding:8px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:filter 0.15s,transform 0.1s';
+            if (variant === 'primary') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#40C5F1,#5dd4f7);color:#fff;box-shadow:0 2px 6px rgba(64,197,241,0.3)';
+            } else {
+                b.style.cssText = base + ';background:#f3f5f7;color:#333';
+            }
+            b.onmouseenter = () => { b.style.filter = 'brightness(1.06)'; b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.filter = ''; b.style.transform = ''; };
+            return b;
+        };
+
+        const cancelBtn = mkBtn(window.t ? window.t('common.cancel') : '取消', 'secondary');
+        cancelBtn.onclick = () => { close(); resolve(null); };
+        footer.appendChild(cancelBtn);
+
+        const settingsBtn = mkBtn(window.t ? window.t('character.exportSettingsOnly') : '仅导出设定', 'secondary');
+        settingsBtn.onclick = () => { close(); resolve('settings-only'); };
+        footer.appendChild(settingsBtn);
+
+        const fullBtn = mkBtn(window.t ? window.t('character.exportFull') : '导出角色卡', 'primary');
+        fullBtn.onclick = () => { close(); resolve('full'); };
+        footer.appendChild(fullBtn);
+
+        dialog.appendChild(footer);
+        overlay.appendChild(dialog);
+        overlay.onclick = (e) => { if (e.target === overlay) { close(); resolve(null); } };
+        document.body.appendChild(overlay);
+
+        function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+    });
+}
+
+async function _downloadBlobAs(blob, filename, pickerType) {
+    // pickerType: { description, accept }，限制保存对话框文件类型
+    try {
+        if ('showSaveFilePicker' in window && pickerType) {
+            const fh = await window.showSaveFilePicker({ suggestedName: filename, types: [pickerType] });
+            const w = await fh.createWritable();
+            await w.write(blob);
+            await w.close();
+            return true;
+        }
+    } catch (err) {
+        if (err && err.name === 'AbortError') return false;
+        // 其它错误回退到 <a> 下载
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 0);
+    return true;
+}
+
+function _filenameFromContentDisposition(headerValue, fallback) {
+    if (!headerValue) return fallback;
+    const star = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+    if (star) {
+        try { return decodeURIComponent(star[1]); } catch (e) { /* fallthrough */ }
+    }
+    const m = headerValue.match(/filename="([^"]+)"/i);
+    if (m) return m[1];
+    return fallback;
+}
+
+async function exportCharacterCard(catgirlName) {
+    let mode;
+    try {
+        mode = await showExportOptionsModal(catgirlName);
+    } catch (e) {
+        return;
+    }
+    if (!mode) return;
+
+    const url = mode === 'settings-only'
+        ? `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export-settings`
+        : `/api/characters/catgirl/${encodeURIComponent(catgirlName)}/export`;
+    const fallbackName = mode === 'settings-only'
+        ? `${catgirlName}_设定.nekocfg`
+        : `${catgirlName}.png`;
+    const pickerType = mode === 'settings-only'
+        ? { description: 'NEKO 设定文件', accept: { 'application/octet-stream': ['.nekocfg'] } }
+        : { description: 'NEKO 角色卡 (PNG)', accept: { 'image/png': ['.png'] } };
+
+    const loadingText = window.t ? window.t('character.exportingCard') : '正在导出...';
+    showMessage(loadingText, 'info');
+    try {
+        const resp = await fetch(url, { method: 'GET' });
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+            throw new Error(errData.error || `HTTP ${resp.status}`);
+        }
+        const blob = await resp.blob();
+        const filename = _filenameFromContentDisposition(resp.headers.get('Content-Disposition'), fallbackName);
+        const ok = await _downloadBlobAs(blob, filename, pickerType);
+        if (ok) {
+            const successText = window.t ? window.t('character.exportCardSuccess') : '导出成功';
+            showMessage(successText, 'success');
+        }
+    } catch (error) {
+        console.error('导出角色卡失败:', error);
+        const errorText = window.t ? window.t('character.exportCardFailed', { error: error.message }) : `导出失败: ${error.message}`;
+        showMessage(errorText, 'error');
+    }
+}
 
 // 当前视图模式
 let charaCardsViewMode = localStorage.getItem('charaCardsViewMode') || 'card';
@@ -2844,15 +3462,17 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
         placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
         avatar.appendChild(placeholderSpan);
 
-        // 加载已有的卡面图片
-        const avatarImg = document.createElement('img');
-        avatarImg.className = 'card-face-img';
-        avatarImg.alt = name;
-        avatarImg.onload = () => {
-            placeholderSpan.style.display = 'none';
-            avatar.insertBefore(avatarImg, placeholderSpan);
-        };
-        avatarImg.src = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${Date.now()}`;
+        // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
+        if (window._cardFaceNames && window._cardFaceNames.has(name)) {
+            const avatarImg = document.createElement('img');
+            avatarImg.className = 'card-face-img';
+            avatarImg.alt = name;
+            avatarImg.onload = () => {
+                placeholderSpan.style.display = 'none';
+                avatar.insertBefore(avatarImg, placeholderSpan);
+            };
+            avatarImg.src = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face?t=${Date.now()}`;
+        }
 
         item.appendChild(avatar);
 
@@ -2862,11 +3482,12 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
         nameDiv.textContent = name;
         item.appendChild(nameDiv);
 
-        // 当前猫娘标记
+        // 当前角色卡标记（胶囊 + 肇状图标）
         if (isCurrent) {
             const badge = document.createElement('span');
             badge.className = 'card-badge';
-            badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
+            badge.innerHTML = '<img src="/static/icons/paw_ui.png" class="card-badge-icon" alt="">'
+                + '<span>' + (window.t ? window.t('character.currentCard') : '当前角色卡') + '</span>';
             item.appendChild(badge);
         }
 
@@ -2876,7 +3497,9 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'card-action-btn switch-btn';
-        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -2886,7 +3509,9 @@ function renderCharaCardsGrid(container, cards, currentCatgirl) {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'card-action-btn delete-btn';
-        deleteBtn.textContent = window.t ? window.t('character.deleteCatgirl') : '删除';
+        deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span>' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
         deleteBtn.onclick = function (e) {
             e.stopPropagation();
             workshopDeleteCatgirl(name);
@@ -2918,17 +3543,20 @@ function renderCharaCardsList(container, cards, currentCatgirl) {
             openCatgirlPanel(card, item);
         };
 
+        // 头像缩略图在列表视图中已移除（列表仅展示名称/状态/操作）
+
         // 名称
         const nameDiv = document.createElement('div');
         nameDiv.className = 'list-name';
         nameDiv.textContent = name;
         item.appendChild(nameDiv);
 
-        // 当前猫娘标记
+        // 当前角色卡标记
         if (isCurrent) {
             const badge = document.createElement('span');
             badge.className = 'list-badge';
-            badge.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
+            badge.innerHTML = '<img src="/static/icons/paw_ui.png" class="list-badge-icon" alt="">'
+                + '<span>' + (window.t ? window.t('character.currentCard') : '当前角色卡') + '</span>';
             item.appendChild(badge);
         }
 
@@ -2938,7 +3566,9 @@ function renderCharaCardsList(container, cards, currentCatgirl) {
 
         const switchBtn = document.createElement('button');
         switchBtn.className = 'list-action-btn switch-btn';
-        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换';
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span class="list-action-label">' + (window.t ? window.t('character.switchCard') : '切换角色卡') + '</span>';
         switchBtn.disabled = isCurrent;
         switchBtn.onclick = function (e) {
             e.stopPropagation();
@@ -2948,7 +3578,9 @@ function renderCharaCardsList(container, cards, currentCatgirl) {
 
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'list-action-btn delete-btn';
-        deleteBtn.textContent = window.t ? window.t('character.deleteCatgirl') : '删除';
+        deleteBtn.title = window.t ? window.t('character.deleteCard') : '删除角色卡';
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span class="list-action-label">' + (window.t ? window.t('character.deleteCard') : '删除角色卡') + '</span>';
         deleteBtn.onclick = function (e) {
             e.stopPropagation();
             workshopDeleteCatgirl(name);
@@ -3006,16 +3638,18 @@ function openCatgirlPanel(card, originEl) {
     imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
     cardImage.appendChild(imgPlaceholder);
 
-    // 加载已有的卡面图片
-    const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
-    const img = document.createElement('img');
-    img.className = 'card-face-img';
-    img.alt = '角色卡面';
-    img.onload = () => {
-        imgPlaceholder.style.display = 'none';
-        cardImage.insertBefore(img, imgPlaceholder);
-    };
-    img.src = cardFaceUrl + '?t=' + Date.now();
+    // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
+    if (name && window._cardFaceNames && window._cardFaceNames.has(name)) {
+        const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
+        const img = document.createElement('img');
+        img.className = 'card-face-img';
+        img.alt = '角色卡面';
+        img.onload = () => {
+            imgPlaceholder.style.display = 'none';
+            cardImage.insertBefore(img, imgPlaceholder);
+        };
+        img.src = cardFaceUrl + '?t=' + Date.now();
+    }
 
     // 点击卡面打开角色卡制作页面
     cardImage.addEventListener('click', () => {
@@ -3040,6 +3674,8 @@ function openCatgirlPanel(card, originEl) {
         if (event.data && event.data.type === 'card-face-updated' && event.data.name === currentName) {
             const ts = event.data.timestamp;
             const newSrc = `/api/characters/catgirl/${encodeURIComponent(currentName)}/card-face?t=${ts}`;
+            // 更新缓存：标记该名字现在已有卡面
+            if (window._cardFaceNames) window._cardFaceNames.add(currentName);
 
             // 更新面板卡面图片
             let panelImg = cardImage.querySelector('.card-face-img');
@@ -3088,6 +3724,70 @@ function openCatgirlPanel(card, originEl) {
     panelCleanupObserver.observe(document.body, { childList: true, subtree: true });
 
     leftSection.appendChild(cardImage);
+
+    // === 卡面信息 ===
+    const metaBlock = document.createElement('div');
+    metaBlock.className = 'card-meta-block';
+    metaBlock.id = 'card-meta-block';
+    leftSection.appendChild(metaBlock);
+    renderCardMetaBlock(metaBlock, name, isNew, rawData);
+
+    // === 角色卡操作按钮（仅已存在的猫娘） ===
+    if (!isNew && name) {
+        const actions = document.createElement('div');
+        actions.className = 'card-panel-actions';
+
+        const exportBtn = document.createElement('button');
+        exportBtn.type = 'button';
+        exportBtn.className = 'card-panel-action-btn export-btn';
+        exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
+        exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+        exportBtn.onclick = function (e) {
+            e.stopPropagation();
+            exportCharacterCard(name);
+        };
+        actions.appendChild(exportBtn);
+
+        const switchBtn = document.createElement('button');
+        switchBtn.type = 'button';
+        switchBtn.className = 'card-panel-action-btn switch-btn';
+        const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
+        switchBtn.disabled = isCurrentChara;
+        switchBtn.title = window.t ? window.t('character.switchCard') : '切换角色卡';
+        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
+            + '<span>' + (window.t ? window.t('character.switchCard') : '切换') + '</span>';
+        switchBtn.onclick = function (e) {
+            e.stopPropagation();
+            workshopSwitchCatgirl(name);
+        };
+        actions.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'card-panel-action-btn delete-btn';
+        deleteBtn.disabled = isCurrentChara;
+        deleteBtn.title = isCurrentChara
+            ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
+            : (window.t ? window.t('character.deleteCard') : '删除角色卡');
+        deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
+            + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+        deleteBtn.onclick = function (e) {
+            e.stopPropagation();
+            if (isCurrentChara) {
+                if (typeof showMessage === 'function') {
+                    showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡', 'error');
+                }
+                return;
+            }
+            workshopDeleteCatgirl(name);
+            // 删除会刷新列表，关闭面板
+            setTimeout(() => closeCatgirlPanel(), 300);
+        };
+        actions.appendChild(deleteBtn);
+
+        leftSection.appendChild(actions);
+    }
 
     wrapper.appendChild(leftSection);
 
@@ -3243,6 +3943,13 @@ function openCatgirlPanel(card, originEl) {
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
                 updateIndicator();
+
+                // 根据当前激活状态切换设定齿轮图标 on/off
+                if (settingsIcon) {
+                    settingsIcon.src = (targetTab === 'settings')
+                        ? '/static/icons/set_on.png'
+                        : '/static/icons/set_off.png';
+                }
 
                 // 播放幕布转场
                 spawnCurtainTransition(targetTab);
@@ -4274,14 +4981,14 @@ async function workshopSwitchCatgirl(name) {
 async function workshopDeleteCatgirl(name) {
     // 检查是否为当前猫娘
     if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotDeleteCurrentCatgirl') : '不能删除当前正在使用的猫娘', 'error');
+        showMessage(window.t ? window.t('character.cannotDeleteCurrentCard') : '不能删除当前正在使用的角色卡', 'error');
         return;
     }
 
     // 确认删除
     let confirmMsg;
     if (window.t) {
-        const translated = window.t('character.confirmDeleteCatgirl', { name: name });
+        const translated = window.t('character.confirmDeleteCard', { name: name });
         confirmMsg = (translated && translated.includes('{name}'))
             ? `确定要删除猫娘"${name}"？`
             : (translated || `确定要删除猫娘"${name}"？`);
@@ -4289,17 +4996,17 @@ async function workshopDeleteCatgirl(name) {
         confirmMsg = `确定要删除猫娘"${name}"？`;
     }
 
-    if (typeof showConfirm === 'function') {
-        const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
-        if (!await showConfirm(confirmMsg, confirmTitle, { danger: true })) return;
-    } else if (typeof showConfirmModal === 'function') {
-        const confirmed = await new Promise(resolve => {
-            showConfirmModal(confirmMsg, () => resolve(true), () => resolve(false));
-        });
-        if (!confirmed) return;
-    } else {
-        if (!confirm(confirmMsg)) return;
-    }
+    // 统一使用与「导出角色卡」同款风格的 Confirm 弹窗
+    const confirmTitle = window.t ? window.t('character.deleteCardTitle') : '删除角色卡';
+    const okText = window.t ? window.t('common.delete') : '删除';
+    const cancelText = window.t ? window.t('common.cancel') : '取消';
+    const confirmed = await showConfirmDialog(confirmMsg, {
+        title: confirmTitle,
+        okText,
+        cancelText,
+        danger: true,
+    });
+    if (!confirmed) return;
 
     try {
         await fetch('/api/characters/catgirl/' + encodeURIComponent(name), { method: 'DELETE' });

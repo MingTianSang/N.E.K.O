@@ -3524,6 +3524,28 @@ async def sync_workshop_character_cards() -> dict:
                             need_save = True
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
+
+                            # 写入卡面元数据 sidecar（origin=steam）
+                            try:
+                                config_mgr.ensure_card_faces_directory()
+                                meta_path = config_mgr.card_face_meta_path(chara_name)
+                                if not meta_path.exists():
+                                    workshop_author = ''
+                                    try:
+                                        workshop_author = str(item.get('author') or item.get('creatorName') or '').strip()[:64]
+                                    except Exception:
+                                        workshop_author = ''
+                                    now_iso = datetime.now().isoformat(timespec='seconds')
+                                    meta = {
+                                        'author': workshop_author,
+                                        'origin': 'steam',
+                                        'created_at': now_iso,
+                                        'updated_at': now_iso,
+                                    }
+                                    with open(meta_path, 'w', encoding='utf-8') as f:
+                                        json.dump(meta, f, ensure_ascii=False, indent=2)
+                            except Exception as meta_err:
+                                logger.warning(f"sync_workshop_character_cards: 写入卡面元数据失败 {chara_name}: {meta_err}")
                             
                         except Exception as e:
                             logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
