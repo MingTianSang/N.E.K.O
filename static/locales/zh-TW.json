@@ -1627,7 +1627,8 @@
         "editAuthor": "編輯作者",
         "cardAuthorReadonly": "此來源的卡面無法修改作者",
         "cardAuthorUpdated": "作者已更新",
-        "cardAuthorUpdateFailed": "更新作者失敗：{{error}}"
+        "cardAuthorUpdateFailed": "更新作者失敗：{{error}}",
+        "idleMotionHint": "保存角色時，當前選中的動作將被設為待機動作"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",

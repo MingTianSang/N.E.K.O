@@ -1523,6 +1523,7 @@
         "saveMaster": "保存主人设定",
         "addMasterField": "新增设定",
         "manageLive2D": "点击管理Live2D模型",
+        "idleMotionHint": "保存角色时，当前选中的动作将被设为待机动作",
         "currentCatgirl": "当前猫娘",
         "rename": "修改名称",
         "cancel": "取消",

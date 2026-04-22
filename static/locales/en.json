@@ -1523,6 +1523,7 @@
         "saveMaster": "Save Master Profile",
         "addMasterField": "Add Field",
         "manageLive2D": "Click to manage Live2D model",
+        "idleMotionHint": "When saving, the selected motion will be set as idle motion",
         "currentCatgirl": "Current NEKO",
         "rename": "Rename",
         "cancel": "Cancel",

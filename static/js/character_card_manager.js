@@ -4137,9 +4137,6 @@ function openCatgirlPanel(card, originEl) {
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
 
-    // 禁止外层页面滚动
-    document.documentElement.style.overflowY = 'hidden';
-
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
         overlay.classList.add('active');
@@ -4225,8 +4222,6 @@ function closeCatgirlPanel() {
         setTimeout(() => {
             overlay.remove();
             _catgirlPanelOpen = false;
-            // 恢复外层页面滚动
-            document.documentElement.style.overflowY = '';
         }, 400);
     }, 300);
 }
@@ -4804,6 +4799,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
     form._voicesLoadPromise = voicesLoadPromise;
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
+    form._live2dModel = live2dPath;
+    form._modelType = normalizedModelType;
 
     // 恢复进阶设定折叠状态
     if (name) {
@@ -5157,6 +5154,29 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
+        // 保存 Live2D 待机动作（如果当前是 Live2D 模型且动作选择器有值）
+        if (!isNew && form._modelType === 'live2d' && form._live2dModel) {
+            const motionSelect = document.getElementById('preview-motion-select');
+            const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
+            try {
+                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(data['档案名']), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model_type: 'live2d',
+                        live2d: form._live2dModel,
+                        live2d_idle_animation: idleAnimation
+                    })
+                });
+                const l2dResult = await l2dResp.json().catch(() => ({}));
+                if (!l2dResp.ok || l2dResult.success === false) {
+                    console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+                }
+            } catch (l2dErr) {
+                console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
+            }
+        }
+
         showMessage(isNew
             ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
             : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
@@ -5464,6 +5484,7 @@ function buildSteamTabContent(name, rawData, card, container) {
                 <select id="preview-motion-select" class="control-input" style="width: 100%;">
                     <option value="" data-i18n="steam.selectMotion">${window.t ? window.t('steam.selectMotion') : '选择动作'}</option>
                 </select>
+                <div style="font-size: 11px; color: #888; margin-top: 3px; text-align: center;" data-i18n="character.idleMotionHint">${window.t ? window.t('character.idleMotionHint') : '保存角色时，当前选中的动作将被设为待机动作'}</div>
             </div>
             <div class="btn-play-wrapper">
                 <button id="preview-play-motion-btn" class="btn" disabled>
@@ -5773,6 +5794,7 @@ function expandCharacterCardSection(card) {
     window.currentCharacterCardModel = (effectiveModelType !== 'live2d' && effectiveModelPath) ? effectiveModelPath : live2d;
     window.currentCharacterCardModelType = effectiveModelType;
     window.currentCharacterCardModelPath = effectiveModelPath;
+    window._currentCardRawData = rawData;
 
     // 检查模型是否可上传（检查是否来自static目录）
     const uploadButton = document.getElementById('upload-to-workshop-btn');
@@ -7181,6 +7203,7 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         }
         const filesData = await filesRes.json();
         if (!filesData.success) throw new Error(window.t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
+        window._previewMotionFiles = filesData.motion_files || [];
 
         // 2. Fetch model config
         let modelJsonUrl;
@@ -7322,6 +7345,18 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         updatePreviewControls(filesData.motion_files, filesData.expression_files);
     } catch (error) {
         console.error('Failed to update preview controls:', error);
+    }
+
+    // 恢复已保存的待机动作（如果存在）
+    const rawData = window._currentCardRawData || {};
+    const savedIdleAnimation = rawData._reserved?.avatar?.live2d?.idle_animation
+        || rawData.avatar?.live2d?.idle_animation
+        || rawData.live2d_idle_animation;
+    if (savedIdleAnimation && motionSelect) {
+        const motionFiles = window._previewMotionFiles || [];
+        if (motionFiles.includes(savedIdleAnimation)) {
+            motionSelect.value = savedIdleAnimation;
+        }
     }
 }
 
@@ -7733,10 +7768,10 @@ function updatePreviewControls(motionFiles, expressionFiles) {
         motionSelect.disabled = false;
         playMotionBtn.disabled = false;
 
-        // 添加动作选项
-        motionFiles.forEach((motionFile, index) => {
+        // 添加动作选项（value 使用文件名，便于直接作为 live2d_idle_animation）
+        motionFiles.forEach((motionFile) => {
             const option = document.createElement('option');
-            option.value = index;
+            option.value = motionFile;
             option.textContent = motionFile;
             motionSelect.appendChild(option);
         });
@@ -7784,15 +7819,17 @@ if (playMotionBtn) {
         if (!currentPreviewModel) return;
 
         const motionSelect = document.getElementById('preview-motion-select');
-        const motionIndex = parseInt(motionSelect.value);
+        const motionFile = motionSelect.value;
+        if (!motionFile) return;
 
-        if (isNaN(motionIndex)) return;
+        const motionIndex = (window._previewMotionFiles || []).indexOf(motionFile);
+        if (motionIndex < 0) return;
 
         try {
             currentPreviewModel.motion('PreviewAll', motionIndex, 3);
         } catch (error) {
             console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', { motion: motionIndex }), 'error');
+            showMessage(window.t('live2d.playMotionFailed', { motion: motionFile }), 'error');
         }
     });
 }

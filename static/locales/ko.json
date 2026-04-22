@@ -1627,7 +1627,8 @@
         "editAuthor": "작성자 수정",
         "cardAuthorReadonly": "이 출처의 카드는 작성자를 수정할 수 없습니다",
         "cardAuthorUpdated": "작성자가 업데이트되었습니다",
-        "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}"
+        "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
+        "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

@@ -1627,7 +1627,8 @@
         "editAuthor": "Изменить автора",
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",
         "cardAuthorUpdated": "Автор обновлён",
-        "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}"
+        "cardAuthorUpdateFailed": "Не удалось обновить автора: {{error}}",
+        "idleMotionHint": "При сохранении выбранное движение будет установлено как ожидающее"
     },
     "app": {
         "welcomeBack": "{{name}} вернулась!",
