@@ -219,7 +219,7 @@ min-height: 100vh;
 
 /* 顶层：sidebar_logo1.png */
 .cover-image-stack .cover-bg-top {
-    z-index: 1;
+    z-index: 3;
     width: 160%;
     height: 80%;
     transform: translateY(-43%);
@@ -1511,6 +1511,19 @@ overflow: hidden;
     .tab-content.tab-entering,
     .tab-content.tab-leaving {
         clip-path: none !important;
+        transform: none !important;
+    }
+    .curtain-sweep,
+    .panel-transition-curtain,
+    .curtain-icon,
+    .curtain-center-icon {
+        animation: none !important;
+        transition: none !important;
+        transform: none !important;
+        clip-path: none !important;
+    }
+    .catgirl-panel-wrapper {
+        transition: none !important;
         transform: none !important;
     }
 }
@@ -4123,17 +4136,30 @@ margin-top: 10px;
 }
 
 @media (max-width: 768px) {
+    .catgirl-panel-wrapper.card-only {
+        flex-direction: column;
+        height: auto;
+        max-height: 95vh;
+    }
     .catgirl-panel-wrapper.card-only.phase-center {
-        width: min(calc(65vh * 0.75), 95vw);
+        width: 95vw;
     }
     .catgirl-panel-wrapper.card-only .catgirl-panel-left,
     .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
-        width: min(calc(65vh * 0.75), 95vw);
-    }
-    .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
-        width: min(calc(65vh * 0.75), 95vw);
+        width: 100%;
         height: auto;
         max-height: 55vh;
+        overflow-y: visible;
+    }
+    .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
+        width: 100%;
+        height: auto;
+        max-height: 50vh;
+    }
+    .catgirl-panel-wrapper.card-only .catgirl-panel-right {
+        height: auto;
+        max-height: none;
+        flex: 1 1 auto;
     }
 }
 

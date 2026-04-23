@@ -1670,6 +1670,15 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
     memory_targets.append(Path(_config_manager.memory_dir) / new_name)
+    # 卡面文件纳入 snapshot，使迁移失败也能回滚
+    old_face = _config_manager.card_faces_dir / f"{old_name}.png"
+    new_face = _config_manager.card_faces_dir / f"{new_name}.png"
+    old_meta = _config_manager.card_face_meta_path(old_name)
+    new_meta = _config_manager.card_face_meta_path(new_name)
+    memory_targets.append(old_face)
+    memory_targets.append(new_face)
+    memory_targets.append(old_meta)
+    memory_targets.append(new_meta)
     memory_server_reloaded = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
@@ -1689,6 +1698,24 @@ async def rename_catgirl(old_name: str, request: Request):
             # 自动重新加载配置
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
+
+            # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime('%Y%m%d%H%M%S')
+            if old_face.exists():
+                if new_face.exists():
+                    backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+                    await asyncio.to_thread(new_face.rename, backup_face)
+                    logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
+                await asyncio.to_thread(old_face.rename, new_face)
+                logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
+            if old_meta.exists():
+                if new_meta.exists():
+                    backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
+                await asyncio.to_thread(old_meta.rename, new_meta)
+                logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
@@ -1737,37 +1764,6 @@ async def rename_catgirl(old_name: str, request: Request):
             if rollback_error:
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
-
-    # 迁移卡面 PNG 与 sidecar JSON（如有）
-    from datetime import datetime as _dt
-    _ts = _dt.now().strftime('%Y%m%d%H%M%S')
-    try:
-        old_face = _config_manager.card_faces_dir / f"{old_name}.png"
-        new_face = _config_manager.card_faces_dir / f"{new_name}.png"
-        if old_face.exists():
-            if new_face.exists():
-                backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                await asyncio.to_thread(new_face.rename, backup_face)
-                logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-            await asyncio.to_thread(old_face.rename, new_face)
-            logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
-        old_meta = _config_manager.card_face_meta_path(old_name)
-        new_meta = _config_manager.card_face_meta_path(new_name)
-        if old_meta.exists():
-            if new_meta.exists():
-                backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                await asyncio.to_thread(new_meta.rename, backup_meta)
-                logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-            await asyncio.to_thread(old_meta.rename, new_meta)
-            logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
-    except Exception as e:
-        logger.warning(f"[重命名卡面] 迁移失败 {old_name} -> {new_name}: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": f"角色数据已更新，但卡面迁移失败: {e}",
-            "memory_renamed": True,
-            "memory_server_reloaded": memory_server_reloaded,
-        }, status_code=500)
 
     # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
@@ -3869,9 +3865,9 @@ async def export_catgirl_card(name: str):
                         _new_meta['created_at'] = _created_at
                         if not _new_meta.get('updated_at'):
                             _new_meta['updated_at'] = now_iso
-                        # 仅当 sidecar 原本不存在且没有用户提供的 origin 时才推断来源，
+                        # 仅当 sidecar 原本不存在且 origin 为默认值（None/空/'self'）时才推断来源，
                         # 避免覆盖已有的 self 默认值或用户设定。
-                        if not _sidecar_existed and not _new_meta.get('origin'):
+                        if not _sidecar_existed and _new_meta.get('origin') in (None, '', 'self'):
                             _new_meta['origin'] = _detect_card_origin_from_character(catgirl_data or {})
                         await asyncio.to_thread(_write_card_meta, _sidecar_meta_path, _new_meta)
                     except Exception as _meta_persist_err:
@@ -4424,6 +4420,11 @@ async def import_character_card(
                 await asyncio.to_thread(_write_card_meta, meta_path, meta)
             except Exception as meta_err:
                 logger.warning(f"[导入角色卡] 写入卡面元数据失败: {meta_err}")
+                return JSONResponse({
+                    "success": False,
+                    "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
+                    "card_meta_saved": False,
+                }, status_code=500)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
             # 则直接使用该 PNG 作为卡面（带 neKo chunk 不影响质量）。

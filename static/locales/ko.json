@@ -1772,7 +1772,7 @@
         },
         "assetSource": {
             "notRecorded": "기록 없음",
-            "steamWorkshop": "캐릭터 카드 관리",
+            "steamWorkshop": "Steam 워크숍",
             "localImported": "로컬로 가져온 모델",
             "manualExternal": "외부 모델 참조",
             "builtin": "내장 리소스"
