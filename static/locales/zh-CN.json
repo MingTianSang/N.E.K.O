@@ -1629,7 +1629,8 @@
         "cardAuthorReadonly": "该来源的卡面不可修改作者",
         "cardAuthorUpdated": "作者已更新",
         "cardAuthorUpdateFailed": "更新作者失败：{{error}}",
-        "saveMasterSuccess": "保存主人设定成功"
+        "saveMasterSuccess": "保存主人设定成功",
+        "editCardFace": "✎ 编辑卡面"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -3370,6 +3371,10 @@
         "useTemporary": "临时使用",
         "tempBadge": "临时",
         "popupBlocked": "弹窗被阻止，请允许弹窗后重试",
-        "saveCardFace": "保存卡面"
+        "saveCardFace": "保存卡面",
+        "savingCardFace": "保存中...",
+        "saveCardFaceSuccess": "保存成功！",
+        "saveCardFaceFailed": "保存失败: ",
+        "renderFailed": "无法渲染卡面图片"
     }
 }

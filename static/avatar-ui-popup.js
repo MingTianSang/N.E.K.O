@@ -812,6 +812,9 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
+                if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                    windowName = 'neko_chara_manager';
+                }
                 isOpening = true;
                 if (typeof window.openOrFocusWindow === 'function') {
                     window.openOrFocusWindow(finalUrl, windowName);

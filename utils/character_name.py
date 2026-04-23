@@ -39,6 +39,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "voice_clone",
     "api_key",
     "character_card_manager",
+    "cloudsave_manager",
     "memory_browser",
     "cookies_login",
     "chat",
@@ -46,6 +47,8 @@ RESERVED_ROUTE_NAMES = frozenset({
     "agenthud",
     "toast",
     "card_maker",
+    "soccer_demo",
+    "jukebox",
     # 静态资源 / 挂载路径
     "static",
     "user_live2d",

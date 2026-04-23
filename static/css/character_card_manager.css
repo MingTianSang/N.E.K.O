@@ -4458,7 +4458,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-card-image::after {
-    content: '✎ 编辑卡面';
+    content: attr(data-edit-label);
     position: absolute;
     bottom: 0;
     left: 0;
@@ -4671,6 +4671,13 @@ margin-top: 10px;
     appearance: none;
 }
 
+/* select 需要保留原生下拉菜单 */
+.catgirl-panel-right .field-row select {
+    -webkit-appearance: menulist;
+    -moz-appearance: menulist;
+    appearance: auto;
+}
+
 .catgirl-panel-right .field-row input:focus,
 .catgirl-panel-right .field-row select:focus,
 .catgirl-panel-right .field-row textarea:focus {
@@ -4696,7 +4703,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-right .field-row textarea {
-    overflow-y: hidden;
+    overflow-y: auto;
     transition: height 0.2s ease;
     max-height: 80px;
     border-radius: 48px;

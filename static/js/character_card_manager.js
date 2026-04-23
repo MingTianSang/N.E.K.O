@@ -3733,6 +3733,7 @@ function openCatgirlPanel(card, originEl) {
 
     const cardImage = document.createElement('div');
     cardImage.className = 'catgirl-panel-card-image';
+    cardImage.setAttribute('data-edit-label', window.t ? window.t('character.editCardFace') : '✎ 编辑卡面');
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
     imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置\n角色卡图片';
@@ -8424,6 +8425,7 @@ function toggleMasterSection() {
     const isHidden = content.style.display === 'none';
     content.style.display = isHidden ? 'block' : 'none';
     header.classList.toggle('open', isHidden);
+    header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
 }
 
 // ===================== 隐藏猫娘 =====================

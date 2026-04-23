@@ -1,4 +1,4 @@
-﻿# 页面与模板
+# 页面与模板
 
 ## 模板渲染
 
@@ -17,7 +17,6 @@
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM 情感映射 |
 | `/voice_clone` | `voice_clone.html` | 语音克隆界面 |
 | `/memory_browser` | `memory_browser.html` | 记忆浏览和编辑 |
-| `/character_card_manager` | `character_card_manager.html` | 角色卡管理 |
 
 ## 深色模式
 

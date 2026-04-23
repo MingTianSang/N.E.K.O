@@ -1611,7 +1611,7 @@
         "switchCard": "카드 전환",
         "deleteCard": "카드 삭제",
         "currentCard": "현재 카드",
-        "confirmDeleteCard": "카드 \"{{name}}\"을(를) 삭제하시겠습니까？",
+        "confirmDeleteCard": "카드 \"{{name}}\"을(를) 삭제하시겠습니까?",
         "deleteCardTitle": "카드 삭제",
         "cannotDeleteCurrentCard": "현재 사용 중인 카드는 삭제할 수 없습니다.\n\n다른 카드로 전환 후 삭제하세요.",
         "exportCardOnly": "이 카드 내보내기",
@@ -1629,7 +1629,8 @@
         "cardAuthorUpdated": "작성자가 업데이트되었습니다",
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
-        "saveMasterSuccess": "주인 설정 저장 성공"
+        "saveMasterSuccess": "주인 설정 저장 성공",
+        "editCardFace": "✎ 카드 페이스 편집"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -3370,6 +3371,10 @@
         "useTemporary": "임시로 사용",
         "tempBadge": "임시",
         "popupBlocked": "팝업이 차단되었습니다. 팝업을 허용한 후 다시 시도하세요.",
-        "saveCardFace": "카드 페이스 저장"
+        "saveCardFace": "카드 페이스 저장",
+        "savingCardFace": "저장 중...",
+        "saveCardFaceSuccess": "저장 성공!",
+        "saveCardFaceFailed": "저장 실패: ",
+        "renderFailed": "카드 이미지를 렌더링할 수 없습니다"
     }
 }

@@ -1747,17 +1747,29 @@ async def rename_catgirl(old_name: str, request: Request):
             logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
 
     # 迁移卡面 PNG 与 sidecar JSON（如有）
+    from datetime import datetime as _dt
+    _ts = _dt.now().strftime('%Y%m%d%H%M%S')
     try:
         old_face = _config_manager.card_faces_dir / f"{old_name}.png"
         new_face = _config_manager.card_faces_dir / f"{new_name}.png"
-        if old_face.exists() and not new_face.exists():
+        if old_face.exists():
+            if new_face.exists():
+                backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+                await asyncio.to_thread(new_face.rename, backup_face)
+                logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
             await asyncio.to_thread(old_face.rename, new_face)
+            logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
         old_meta = _config_manager.card_face_meta_path(old_name)
         new_meta = _config_manager.card_face_meta_path(new_name)
-        if old_meta.exists() and not new_meta.exists():
+        if old_meta.exists():
+            if new_meta.exists():
+                backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+                await asyncio.to_thread(new_meta.rename, backup_meta)
+                logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
             await asyncio.to_thread(old_meta.rename, new_meta)
+            logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
     except Exception as e:
-        logger.warning(f"重命名卡面文件失败 {old_name} -> {new_name}: {e}")
+        logger.warning(f"[重命名卡面] 迁移失败 {old_name} -> {new_name}: {e}")
 
     return {
         "success": True,
@@ -2654,6 +2666,7 @@ async def delete_voice(voice_id: str):
 _trim_tasks: dict[str, dict] = {}
 
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_CARD_FACE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class _UploadTooLargeError(Exception):
@@ -3840,7 +3853,7 @@ async def export_catgirl_card(name: str):
                 now_iso = datetime.now().isoformat(timespec='seconds')
                 # 优先使用已有的创建时间；未设置时使用当前时间并回写 sidecar，
                 # 以确保后续导出不会重复刷新。
-                _author = str(_sidecar_meta.get('author') or '').strip()
+                _author = str(_sidecar_meta.get('author') or '').strip()[:64]
                 _existing_created_at = str(_sidecar_meta.get('created_at') or '').strip()
                 _created_at = _existing_created_at or now_iso
                 if not _existing_created_at:
@@ -4411,14 +4424,31 @@ async def import_character_card(
                     face_path = _config_manager.card_faces_dir / f"{character_name}.png"
                     if not face_path.exists():
                         try:
-                            face_buffer = await _read_limited_stream(card_image, MAX_UPLOAD_SIZE)
+                            face_buffer = await _read_limited_stream(card_image, MAX_CARD_FACE_SIZE)
                             face_bytes = face_buffer.getvalue()
                         except _UploadTooLargeError as e:
                             logger.warning(f"[导入角色卡] 卡面图过大，跳过保存: {e}")
                             face_bytes = b''
-                        if face_bytes and face_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-                            await asyncio.to_thread(face_path.write_bytes, face_bytes)
-                            logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                        if face_bytes:
+                            try:
+                                from PIL import Image as PILImage
+
+                                def _validate_import_png(buffer: io.BytesIO) -> bytes:
+                                    img = PILImage.open(buffer)
+                                    img.verify()
+                                    buffer.seek(0)
+                                    img = PILImage.open(buffer)
+                                    if img.mode not in ('RGB', 'RGBA', 'L'):
+                                        img = img.convert('RGB')
+                                    out = io.BytesIO()
+                                    img.save(out, format='PNG')
+                                    return out.getvalue()
+
+                                valid_png = await asyncio.to_thread(_validate_import_png, io.BytesIO(face_bytes))
+                                await asyncio.to_thread(face_path.write_bytes, valid_png)
+                                logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                            except Exception as pil_err:
+                                logger.warning(f"[导入角色卡] 卡面图 PNG 验证失败，跳过保存: {pil_err}")
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
@@ -4497,10 +4527,19 @@ async def list_card_faces():
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
     names: list[str] = []
+    orphans: list[str] = []
     try:
+        characters = await _config_manager.aload_characters()
+        valid_names = set(characters.get('猫娘', {}).keys())
         if faces_dir.exists():
             for p in await asyncio.to_thread(lambda: list(faces_dir.glob('*.png'))):
-                names.append(p.stem)
+                stem = p.stem
+                if stem in valid_names:
+                    names.append(stem)
+                else:
+                    orphans.append(stem)
+        if orphans:
+            logger.info(f"[list_card_faces] 孤儿卡面文件（无对应角色）: {orphans}")
     except Exception:
         pass
     return JSONResponse({'success': True, 'names': names})
@@ -4633,15 +4672,28 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     if not content_type.startswith('image/'):
         return JSONResponse({'success': False, 'error': '文件类型无效，请上传图片'}, status_code=400)
 
-    # 读取并验证图片
-    image_data = await image.read()
-    if len(image_data) > 10 * 1024 * 1024:  # 10MB 限制
+    # 流式读取并限制大小
+    try:
+        image_buffer = await _read_limited_stream(image, MAX_CARD_FACE_SIZE)
+    except _UploadTooLargeError:
         return JSONResponse({'success': False, 'error': '图片文件过大（最大 10MB）'}, status_code=400)
 
+    # 在线程中验证并重新编码为 PNG
     try:
         from PIL import Image as PILImage
-        img = await asyncio.to_thread(PILImage.open, io.BytesIO(image_data))
-        await asyncio.to_thread(img.verify)
+
+        def _validate_and_reencode(buffer: io.BytesIO) -> bytes:
+            img = PILImage.open(buffer)
+            img.verify()
+            buffer.seek(0)
+            img = PILImage.open(buffer)
+            if img.mode not in ('RGB', 'RGBA', 'L'):
+                img = img.convert('RGB')
+            out = io.BytesIO()
+            img.save(out, format='PNG')
+            return out.getvalue()
+
+        png_bytes = await asyncio.to_thread(_validate_and_reencode, image_buffer)
     except Exception:
         return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
 
@@ -4649,7 +4701,7 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
     _config_manager.ensure_card_faces_directory()
 
     face_path = _config_manager.card_faces_dir / f"{name}.png"
-    await asyncio.to_thread(face_path.write_bytes, image_data)
+    await asyncio.to_thread(face_path.write_bytes, png_bytes)
 
     # 同步更新 sidecar 元数据
     meta_path = _config_manager.card_face_meta_path(name)

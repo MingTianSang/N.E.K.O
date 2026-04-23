@@ -1630,7 +1630,8 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
-        "tempSaveFailed": "Error al guardar temporalmente: "
+        "tempSaveFailed": "Error al guardar temporalmente: ",
+        "editCardFace": "✎ Editar tarjeta"
     },
     "app": {
         "welcomeBack": "¡{{name}} ha vuelto!",
@@ -3370,6 +3371,10 @@
         "compressAndSave": "Comprimir y guardar",
         "useTemporary": "Usar temporalmente",
         "tempBadge": "Temperatura",
-        "popupBlocked": "La ventana emergente fue bloqueada. Permita las ventanas emergentes e inténtelo de nuevo."
+        "popupBlocked": "La ventana emergente fue bloqueada. Permita las ventanas emergentes e inténtelo de nuevo.",
+        "savingCardFace": "Guardando...",
+        "saveCardFaceSuccess": "¡Guardado correctamente!",
+        "saveCardFaceFailed": "Error al guardar: ",
+        "renderFailed": "No se puede renderizar la imagen de la tarjeta"
     }
 }

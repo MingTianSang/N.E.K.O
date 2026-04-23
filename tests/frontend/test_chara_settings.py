@@ -83,31 +83,27 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         print("SUCCESS: Character added and visible.")
 
         # Cleanup (Delete it)
-        try:
-            # Re-locate card block in case of reload
-            card_item = mock_page.locator(".chara-card-item", has=mock_page.locator(f".card-name:text-is('{test_name}')"))
-            
-            # Ensure we click the delete button for THIS card
-            delete_btn = card_item.locator(".delete-btn")
-            delete_btn.click()
-            
-            # Handle Custom Confirm Modal
-            mock_page.wait_for_selector(".modal-dialog")
-            # Try to find the Danger button specifically
-            danger_btn = mock_page.locator(".modal-footer .modal-btn-danger")
-            if danger_btn.count() > 0 and danger_btn.is_visible():
-                danger_btn.click()
-            else:
-                print("Danger button not found, clicking last button in footer...")
-                confirm_btn = mock_page.locator(".modal-footer button").last
-                confirm_btn.click()
-            
-            # Verify it is gone
-            expect(new_card).not_to_be_visible(timeout=5000)
-            print("Cleanup successful.")
-        except Exception as e:
-            print(f"Cleanup failed: {e}. This is a TEARDOWN failure, not a functional failure.")
-            pass
+        # Re-locate card block in case of reload
+        card_item = mock_page.locator(".chara-card-item", has=mock_page.locator(f".card-name:text-is('{test_name}')"))
+        
+        # Ensure we click the delete button for THIS card
+        delete_btn = card_item.locator(".delete-btn")
+        delete_btn.click()
+        
+        # Handle Custom Confirm Modal
+        mock_page.wait_for_selector(".modal-dialog")
+        # Try to find the Danger button specifically
+        danger_btn = mock_page.locator(".modal-footer .modal-btn-danger")
+        if danger_btn.count() > 0 and danger_btn.is_visible():
+            danger_btn.click()
+        else:
+            print("Danger button not found, clicking last button in footer...")
+            confirm_btn = mock_page.locator(".modal-footer button").last
+            confirm_btn.click()
+        
+        # Verify it is gone
+        expect(new_card).not_to_be_visible(timeout=5000)
+        print("Cleanup successful.")
     except Exception:
         # Check for error modal again in case of generic exception
         try:

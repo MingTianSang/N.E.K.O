@@ -38,7 +38,7 @@ uv run python main_server.py
 | URL | 用途 |
 |-----|------|
 | `/` | 主聊天界面 |
-| `/character_card_manager` | 角色设置 |
+| `/character_card_manager` | 角色卡管理 |
 | `/api_key` | API 密钥配置 |
 | `/model_manager` | Live2D/VRM 模型管理 |
 | `/live2d_emotion_manager` | 情绪到动画映射 |

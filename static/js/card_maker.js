@@ -671,11 +671,11 @@
 
         try {
             exportFullBtn.disabled = true;
-            exportFullBtn.textContent = '保存中...';
+            exportFullBtn.textContent = t('cardExport.savingCardFace', '保存中...');
 
             const cardBlob = await renderFullCard();
             if (!cardBlob) {
-                throw new Error('无法渲染卡面图片');
+                throw new Error(t('cardExport.renderFailed', '无法渲染卡面图片'));
             }
 
             const formData = new FormData();
@@ -697,19 +697,19 @@
                     type: 'card-face-updated',
                     name: currentCharaName,
                     timestamp: Date.now()
-                }, '*');
+                }, window.location.origin);
             }
 
-            exportFullBtn.textContent = '保存成功！';
+            exportFullBtn.textContent = t('cardExport.saveCardFaceSuccess', '保存成功！');
             setTimeout(() => {
                 exportFullBtn.disabled = false;
-                exportFullBtn.textContent = '保存卡面';
+                exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
             }, 1500);
         } catch (e) {
             console.error('[CardMaker] 保存卡面失败:', e);
-            alert('保存失败: ' + e.message);
+            alert(t('cardExport.saveCardFaceFailed', '保存失败: ') + e.message);
             exportFullBtn.disabled = false;
-            exportFullBtn.textContent = '保存卡面';
+            exportFullBtn.textContent = t('cardExport.saveCardFace', '保存卡面');
         }
     }
 
@@ -764,6 +764,10 @@
      */
     async function renderFullCard() {
         const portraitBlob = await renderFinalPortrait();
+        if (!portraitBlob) {
+            console.warn('[card_maker] renderFinalPortrait returned null, aborting card render');
+            return null;
+        }
 
         const cardW = 600, cardH = 800;
         const headerH = Math.floor(cardH / 6); // 133px

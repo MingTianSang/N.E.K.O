@@ -1630,7 +1630,8 @@
         "showHidden": "Mostrar ocultos",
         "switchCard": "Trocar cartão",
         "switchSuccess": "Trocado com sucesso",
-        "tempSaveFailed": "Falha ao salvar temporariamente: "
+        "tempSaveFailed": "Falha ao salvar temporariamente: ",
+        "editCardFace": "✎ Editar cartão"
     },
     "app": {
         "welcomeBack": "{{name}} está de volta!",
@@ -3370,6 +3371,10 @@
         "compressAndSave": "Compactar e salvar",
         "useTemporary": "Usar temporariamente",
         "tempBadge": "Temperatura",
-        "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente."
+        "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente.",
+        "savingCardFace": "Salvando...",
+        "saveCardFaceSuccess": "Salvo com sucesso!",
+        "saveCardFaceFailed": "Falha ao salvar: ",
+        "renderFailed": "Não foi possível renderizar a imagem do cartão"
     }
 }

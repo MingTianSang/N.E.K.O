@@ -1,4 +1,4 @@
-﻿# ページとテンプレート
+# ページとテンプレート
 
 ## テンプレートレンダリング
 
@@ -17,7 +17,6 @@
 | `/vrm_emotion_manager` | `vrm_emotion_manager.html` | VRM 感情マッピング |
 | `/voice_clone` | `voice_clone.html` | ボイスクローニングインターフェース |
 | `/memory_browser` | `memory_browser.html` | メモリの閲覧と編集 |
-| `/character_card_manager` | `character_card_manager.html` | キャラクターカード管理 |
 
 ## ダークモード
 

@@ -38,7 +38,7 @@ Navigate to `http://localhost:48911/character_card_manager` to:
 | URL | Purpose |
 |-----|---------|
 | `/` | Main chat interface |
-| `/character_card_manager` | Character settings |
+| `/character_card_manager` | Character Card Manager |
 | `/api_key` | API key configuration |
 | `/model_manager` | Live2D/VRM model management |
 | `/live2d_emotion_manager` | Emotion-to-animation mapping |
