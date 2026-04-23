@@ -95,13 +95,6 @@ async def mmd_emotion_manager(request: Request):
     })
 
 
-@router.get('/chara_manager', response_class=HTMLResponse)
-async def chara_manager(request: Request):
-    """渲染主控制页面"""
-    templates = get_templates()
-    return templates.TemplateResponse('templates/chara_manager.html', {"request": request})
-
-
 @router.get('/voice_clone', response_class=HTMLResponse)
 async def voice_clone_page(request: Request):
     templates = get_templates()

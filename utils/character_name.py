@@ -36,7 +36,6 @@ RESERVED_ROUTE_NAMES = frozenset({
     "live2d_emotion_manager",
     "vrm_emotion_manager",
     "mmd_emotion_manager",
-    "chara_manager",
     "voice_clone",
     "api_key",
     "character_card_manager",

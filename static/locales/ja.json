@@ -1628,7 +1628,8 @@
         "cardAuthorReadonly": "この由来のカードは作者を変更できません",
         "cardAuthorUpdated": "作者を更新しました",
         "cardAuthorUpdateFailed": "作者の更新に失敗しました: {{error}}",
-        "idleMotionHint": "保存時に選択されたモーションが待機モーションとして設定されます"
+        "idleMotionHint": "保存時に選択されたモーションが待機モーションとして設定されます",
+        "saveMasterSuccess": "マスタープロフィールを保存しました"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",

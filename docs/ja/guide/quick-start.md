@@ -1,4 +1,4 @@
-# クイックスタート
+﻿# クイックスタート
 
 このページでは、[開発環境セットアップ](./dev-setup)の完了後に N.E.K.O. を初めて実行する手順を説明します。
 
@@ -26,7 +26,7 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 
 ## 4. キャラクターのカスタマイズ
 
-`http://localhost:48911/chara_manager` にアクセスして、以下の操作ができます：
+`http://localhost:48911/character_card_manager` にアクセスして、以下の操作ができます：
 
 - キャラクターの名前、性別、年齢、性格特性の変更
 - カスタムLive2DまたはVRMモデルの設定
@@ -38,7 +38,7 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 | URL | 用途 |
 |-----|------|
 | `/` | メインチャットインターフェース |
-| `/chara_manager` | キャラクター設定 |
+| `/character_card_manager` | キャラクター設定 |
 | `/api_key` | APIキーの設定 |
 | `/model_manager` | Live2D/VRMモデル管理 |
 | `/live2d_emotion_manager` | 感情からアニメーションへのマッピング |

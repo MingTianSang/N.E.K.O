@@ -1,4 +1,4 @@
-# 快速开始
+﻿# 快速开始
 
 本页将引导你在完成[开发环境搭建](./dev-setup)后首次运行 N.E.K.O.。
 
@@ -26,7 +26,7 @@ uv run python main_server.py
 
 ## 4. 自定义角色
 
-访问 `http://localhost:48911/chara_manager` 可以：
+访问 `http://localhost:48911/character_card_manager` 可以：
 
 - 修改角色的名字、性别、年龄和性格特征
 - 设置自定义 Live2D 或 VRM 模型
@@ -38,7 +38,7 @@ uv run python main_server.py
 | URL | 用途 |
 |-----|------|
 | `/` | 主聊天界面 |
-| `/chara_manager` | 角色设置 |
+| `/character_card_manager` | 角色设置 |
 | `/api_key` | API 密钥配置 |
 | `/model_manager` | Live2D/VRM 模型管理 |
 | `/live2d_emotion_manager` | 情绪到动画映射 |

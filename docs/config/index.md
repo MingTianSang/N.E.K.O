@@ -1,4 +1,4 @@
-# Configuration Overview
+﻿# Configuration Overview
 
 N.E.K.O. uses a layered configuration system with multiple sources. Configuration values are resolved in priority order from highest to lowest.
 
@@ -24,7 +24,7 @@ N.E.K.O. uses a layered configuration system with multiple sources. Configuratio
 The easiest way to configure N.E.K.O. is through the Web UI:
 
 - **API keys:** `http://localhost:48911/api_key`
-- **Character settings:** `http://localhost:48911/chara_manager`
+- **Character settings:** `http://localhost:48911/character_card_manager`
 - **Model management:** `http://localhost:48911/model_manager`
 
 Changes made through the Web UI are persisted to the appropriate config files automatically.

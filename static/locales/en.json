@@ -1628,7 +1628,8 @@
         "editAuthor": "Edit author",
         "cardAuthorReadonly": "Author is read-only for this source",
         "cardAuthorUpdated": "Author updated",
-        "cardAuthorUpdateFailed": "Failed to update author: {{error}}"
+        "cardAuthorUpdateFailed": "Failed to update author: {{error}}",
+        "saveMasterSuccess": "Master profile saved successfully"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",

@@ -1628,7 +1628,8 @@
         "editAuthor": "编辑作者",
         "cardAuthorReadonly": "该来源的卡面不可修改作者",
         "cardAuthorUpdated": "作者已更新",
-        "cardAuthorUpdateFailed": "更新作者失败：{{error}}"
+        "cardAuthorUpdateFailed": "更新作者失败：{{error}}",
+        "saveMasterSuccess": "保存主人设定成功"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",

@@ -1,4 +1,4 @@
-# Quick Start
+﻿# Quick Start
 
 This page walks you through a first run of N.E.K.O. after completing the [Development Setup](./dev-setup).
 
@@ -26,7 +26,7 @@ Open `http://localhost:48911` in your browser. The default character ("小天") 
 
 ## 4. Customize the character
 
-Navigate to `http://localhost:48911/chara_manager` to:
+Navigate to `http://localhost:48911/character_card_manager` to:
 
 - Change the character's name, gender, age, and personality traits
 - Set a custom Live2D or VRM model
@@ -38,7 +38,7 @@ Navigate to `http://localhost:48911/chara_manager` to:
 | URL | Purpose |
 |-----|---------|
 | `/` | Main chat interface |
-| `/chara_manager` | Character settings |
+| `/character_card_manager` | Character settings |
 | `/api_key` | API key configuration |
 | `/model_manager` | Live2D/VRM model management |
 | `/live2d_emotion_manager` | Emotion-to-animation mapping |

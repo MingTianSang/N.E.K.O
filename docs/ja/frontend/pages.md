@@ -1,4 +1,4 @@
-# ページとテンプレート
+﻿# ページとテンプレート
 
 ## テンプレートレンダリング
 
@@ -9,7 +9,7 @@
 | パス | テンプレート | 説明 |
 |------|----------|-------------|
 | `/` | `index.html` | Live2D/VRM レンダリング付きメインチャットインターフェース |
-| `/chara_manager` | `chara_manager.html` | キャラクターの性格と設定エディター |
+| `/character_card_manager` | `character_card_manager.html` | キャラクターの性格と設定エディター |
 | `/api_key` | `api_key_settings.html` | API キー設定パネル |
 | `/model_manager` | `model_manager.html` | モデルの閲覧と管理 |
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D モデルパラメータの微調整 |

@@ -1,4 +1,4 @@
-# Steam Auto-Cloud 云存档基线与维护规范（cloud_archive）
+﻿# Steam Auto-Cloud 云存档基线与维护规范（cloud_archive）
 
 > 这份文档是云存档后续迭代的参考基线。
 > 目标是让每次修改都先对齐真实行为，再决定要不要改代码。
@@ -269,7 +269,7 @@ uv run pytest -q \
 - `launcher.py`
 - `main_server.py`
 - `static/js/cloudsave_manager.js`
-- `static/js/chara_manager.js`（涉及 cloudsave）
+- `static/js/character_card_manager.js`（涉及 cloudsave）
 
 ### 10.2 提交前检查
 

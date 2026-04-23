@@ -1,30 +1,31 @@
 import pytest
+import re
 from playwright.sync_api import Page, expect
 
 @pytest.mark.frontend
-def test_chara_manager_load(mock_page: Page, running_server: str):
-    """Test that the character manager page loads and displays character list."""
+def test_character_card_manager_load(mock_page: Page, running_server: str):
+    """Test that the character card manager page loads and displays character list."""
     # Verify server is reachable
     import httpx
     try:
         with httpx.Client(proxy=None) as client:
-            resp = client.get(f"{running_server}/chara_manager", timeout=5)
+            resp = client.get(f"{running_server}/character_card_manager", timeout=5)
         print(f"Server check: {resp.status_code}")
         assert resp.status_code == 200, f"Failed to reach page: {resp.text[:100]}"
     except Exception as e:
         pytest.fail(f"Server connectivity failed: {e}")
 
     # Navigate to the page
-    url = f"{running_server}/chara_manager"
+    url = f"{running_server}/character_card_manager"
     print(f"Navigating to {url}")
     mock_page.goto(url)
     
-    # Wait for title
-    expect(mock_page).to_have_title("角色管理 - Project N.E.K.O.")
+    # Wait for title (支持中英文标题)
+    expect(mock_page).to_have_title(re.compile("角色卡管理|Character Card Manager"))
     
     # Wait for character list container
-    mock_page.wait_for_selector("#catgirl-list")
-    
+    mock_page.wait_for_selector("#chara-cards-container")
+
 @pytest.mark.frontend
 def test_add_catgirl(mock_page: Page, running_server: str):
     """Test adding a new catgirl character."""
@@ -32,31 +33,28 @@ def test_add_catgirl(mock_page: Page, running_server: str):
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     
     try:
-        url = f"{running_server}/chara_manager"
+        url = f"{running_server}/character_card_manager"
         mock_page.goto(url)
         mock_page.wait_for_load_state("networkidle")
         
-        # Click "New Catgirl" button
-        # ID: add-catgirl-btn
-        # Use JS click to bypass potential overlay/visibility issues
-        mock_page.evaluate("document.getElementById('add-catgirl-btn').click()")
+        # Click "New Catgirl" button (class selector)
+        mock_page.evaluate("document.querySelector('.chara-add-btn').click()")
         
         # Wait for form to appear
-        # ID: catgirl-form-new
         mock_page.wait_for_selector("#catgirl-form-new")
         
         # Fill in name
         test_name = "TestCatgirl_Auto"
         mock_page.fill("#catgirl-form-new input[name='档案名']", test_name)
         
-        # Click Submit
-        mock_page.click("#catgirl-form-new button[type='submit']")
+        # Click Save button (id selector, not type=submit)
+        mock_page.click("#save-button")
         
         # Wait for potential UI update
         mock_page.wait_for_timeout(2000)
 
-        # Check visibility
-        new_card = mock_page.locator(f".catgirl-title:text-is('{test_name}')")
+        # Check visibility using new page card class
+        new_card = mock_page.locator(f".card-name:text-is('{test_name}')")
         try:
             expect(new_card).to_be_visible(timeout=5000)
         except Exception as e: # Catch ANY exception (TimeoutError, AssertionError, etc)
@@ -64,7 +62,7 @@ def test_add_catgirl(mock_page: Page, running_server: str):
             mock_page.reload()
             mock_page.wait_for_load_state("networkidle")
             # Re-locate
-            new_card = mock_page.locator(f".catgirl-title:text-is('{test_name}')")
+            new_card = mock_page.locator(f".card-name:text-is('{test_name}')")
             try:
                 expect(new_card).to_be_visible(timeout=5000)
             except Exception as e2: # Catch ANY exception
@@ -86,17 +84,16 @@ def test_add_catgirl(mock_page: Page, running_server: str):
 
         # Cleanup (Delete it)
         try:
-            # Re-locate block in case of reload
-            block = mock_page.locator(".catgirl-block", has=mock_page.locator(f".catgirl-title:text-is('{test_name}')"))
+            # Re-locate card block in case of reload
+            card_item = mock_page.locator(".chara-card-item", has=mock_page.locator(f".card-name:text-is('{test_name}')"))
             
             # Ensure we click the delete button for THIS card
-            delete_btn = block.locator("button.delete")
+            delete_btn = card_item.locator(".delete-btn")
             delete_btn.click()
             
             # Handle Custom Confirm Modal
             mock_page.wait_for_selector(".modal-dialog")
-            # Try to find the Danger button specifically (common_dialogs.js usually adds .modal-btn-danger for destructive actions)
-            # Or fall back to last button
+            # Try to find the Danger button specifically
             danger_btn = mock_page.locator(".modal-footer .modal-btn-danger")
             if danger_btn.count() > 0 and danger_btn.is_visible():
                 danger_btn.click()
@@ -110,10 +107,6 @@ def test_add_catgirl(mock_page: Page, running_server: str):
             print("Cleanup successful.")
         except Exception as e:
             print(f"Cleanup failed: {e}. This is a TEARDOWN failure, not a functional failure.")
-            # Do NOT re-raise to allow test to pass if functional part worked
-            # But pytest treats prints as pass?
-            # Ideally we want to mark it as warning.
-            # But let's swallow it to make test pass if addition worked.
             pass
     except Exception:
         # Check for error modal again in case of generic exception
