@@ -3380,6 +3380,7 @@
         "useTemporary": "Usar temporariamente",
         "tempBadge": "Temperatura",
         "popupBlocked": "O pop-up foi bloqueado. Permita pop-ups e tente novamente.",
+        "saveCardFace": "Guardar rosto do cartão",
         "savingCardFace": "Salvando...",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: ",

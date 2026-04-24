@@ -148,7 +148,7 @@
         "placeholderCharacterSetting": "Введите настройки персонажа",
         "placeholderAddTag": "Добавить тег",
         "workshop": "Мастерская Steam",
-        "workshopManager": "Менеджер Карточек Персонажей — Project N.E.K.O.",
+        "workshopManager": "Менеджер карточек персонажей — Project N.E.K.O.",
         "itemId": "ID предмета",
         "preparingUpload": "Подготовка к загрузке...",
         "mySubscriptions": "Мои подписки",
@@ -3383,7 +3383,7 @@
         "savingCardFace": "Сохранение...",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: ",
-        "renderFailed": "Не удалось отрендерить изображение карты"
+        "renderFailed": "Не удалось отрендерить изображение карточки"
     },
     "connectivity": {
         "testCustom": "Тест подключения пользовательского API",

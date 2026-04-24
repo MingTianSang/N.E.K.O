@@ -1529,6 +1529,12 @@ overflow: hidden;
         transition: none !important;
         transform: none !important;
     }
+    .panel-tabs-indicator,
+    .catgirl-panel-right {
+        transition: none !important;
+        transform: none !important;
+        animation: none !important;
+    }
 }
 
 #character-cards-content > .chara-cards-view-area {
@@ -5267,11 +5273,16 @@ margin-top: 10px;
         animation: none;
         transform: none;
     }
-    .preview-ring-container .ring-char,
+    .preview-ring-container .ring-char {
+        animation: none;
+        opacity: 1;
+        transform: none;
+        clip-path: none;
+    }
     .preview-ring-container .ring-char::before,
     .preview-ring-container .ring-char::after {
         animation: none;
-        opacity: 1;
+        opacity: 0;
         transform: none;
         clip-path: none;
     }

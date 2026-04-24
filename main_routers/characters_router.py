@@ -4433,10 +4433,11 @@ async def import_character_card(
                     face_path = _config_manager.card_faces_dir / f"{character_name}.png"
                     if not face_path.exists():
                         try:
-                            face_buffer = await _read_limited_stream(card_image, MAX_CARD_FACE_SIZE)
+                            # 先用更大的上传限制读取载体 PNG（可能嵌入 ZIP）
+                            face_buffer = await _read_limited_stream(card_image, MAX_UPLOAD_SIZE)
                             face_bytes = face_buffer.getvalue()
                         except _UploadTooLargeError as e:
-                            logger.warning(f"[导入角色卡] 卡面图过大，跳过保存: {e}")
+                            logger.warning(f"[导入角色卡] 载体 PNG 超过上传限制，跳过保存: {e}")
                             face_bytes = b''
                         if face_bytes:
                             try:
@@ -4454,8 +4455,11 @@ async def import_character_card(
                                     return out.getvalue()
 
                                 valid_png = await asyncio.to_thread(_validate_import_png, io.BytesIO(face_bytes))
-                                await asyncio.to_thread(face_path.write_bytes, valid_png)
-                                logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                                if len(valid_png) > MAX_CARD_FACE_SIZE:
+                                    logger.warning(f"[导入角色卡] 重编码后的卡面图 ({len(valid_png)} bytes) 超过最大限制 ({MAX_CARD_FACE_SIZE} bytes)，跳过保存")
+                                else:
+                                    await asyncio.to_thread(face_path.write_bytes, valid_png)
+                                    logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
                             except Exception as pil_err:
                                 logger.warning(f"[导入角色卡] 卡面图 PNG 验证失败，跳过保存: {pil_err}")
             except Exception as face_err:

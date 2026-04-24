@@ -147,8 +147,8 @@
         "placeholderDescription": "Introduce la descripción",
         "placeholderCharacterSetting": "Ingrese la configuración de caracteres",
         "placeholderAddTag": "Agregar etiqueta",
-        "workshop": "Taller de vapor",
-        "workshopManager": "Administrador de Steam Workshop - Proyecto N.E.K.O.",
+        "workshop": "Gestión de tarjetas de personaje",
+        "workshopManager": "Gestión de tarjetas de personaje - Proyecto N.E.K.O.",
         "itemId": "ID del artículo",
         "preparingUpload": "Preparando la carga...",
         "mySubscriptions": "Mis suscripciones",
@@ -177,7 +177,7 @@
         "validatingFolderPath": "Carpeta de validación: {{path}}",
         "previewImageMissing": "No se encontró el archivo de imagen de vista previa, verifique la ruta",
         "uploadReady": "Listo para cargar {{itemName}}",
-        "pageDescription": "Explore, suscríbase, descargue y administre modelos y voces Live2D desde Steam Workshop",
+        "pageDescription": "Desde esta página puede explorar, editar, importar/exportar tarjetas de personaje y gestionar modelos y voces Live2D alojados en Steam Workshop",
         "voiceNote": "Para la configuración de voz, vaya a la página de configuración de Live2D para registrarse manualmente",
         "openVoiceClone": "Abrir en clon de voz",
         "searchLocalItems": "Buscar artículos locales...",
@@ -1781,7 +1781,7 @@
         },
         "assetSource": {
             "notRecorded": "No registrado",
-            "steamWorkshop": "Taller de vapor",
+            "steamWorkshop": "Gestión de tarjetas de personaje",
             "localImported": "Modelo importado localmente",
             "manualExternal": "Referencia de modelo externo",
             "builtin": "Activo incorporado"
@@ -2435,8 +2435,8 @@
             "desc": "Ver y administrar el contenido de la memoria de tu Neko ~"
         },
         "step18": {
-            "title": "🛠️ Taller de vapor",
-            "desc": "Accede a la página de Steam Workshop y gestiona las suscripciones~"
+            "title": "🛠️ Gestión de tarjetas de personaje",
+            "desc": "Accede a la página de gestión de tarjetas de personaje y administra sus tarjetas y suscripciones~"
         },
         "systray": {
             "location": {
@@ -3380,6 +3380,7 @@
         "useTemporary": "Usar temporalmente",
         "tempBadge": "Temperatura",
         "popupBlocked": "La ventana emergente fue bloqueada. Permita las ventanas emergentes e inténtelo de nuevo.",
+        "saveCardFace": "Guardar cara de la tarjeta",
         "savingCardFace": "Guardando...",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
         "saveCardFaceFailed": "Error al guardar: ",
