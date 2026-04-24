@@ -3384,5 +3384,33 @@
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: ",
         "renderFailed": "카드 이미지를 렌더링할 수 없습니다"
+    },
+    "connectivity": {
+        "testCustom": "사용자 정의 API 연결 테스트",
+        "testCore": "테스트",
+        "testCoreTooltip": "코어 API 연결 테스트",
+        "testAssist": "테스트",
+        "testAssistTooltip": "보조 API 연결 테스트",
+        "gsvTestText": "GSV 연결 테스트",
+        "gsvTestTooltip": "GPT-SoVITS 연결 테스트",
+        "error": {
+            "timeout": "요청 시간 초과 (10초)",
+            "auth_failed": "API Key가 유효하지 않거나 만료되었습니다",
+            "connection_refused": "대상 서버에 연결할 수 없습니다",
+            "dns_error": "DNS 확인 실패",
+            "ssl_error": "SSL 인증서 확인 실패",
+            "ws_error": "WebSocket 연결 실패",
+            "missing_params": "필수 매개변수가 누락되었습니다",
+            "unknown": "알 수 없는 오류",
+            "backend_unavailable": "백엔드 서비스를 사용할 수 없습니다",
+            "invalid_response": "응답 형식이 잘못되었습니다"
+        },
+        "status": {
+            "connected": "연결됨",
+            "failed": "연결 실패",
+            "untested": "미테스트",
+            "not_configured": "미설정",
+            "testing": "테스트 중..."
+        }
     }
 }

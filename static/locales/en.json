@@ -3384,5 +3384,33 @@
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: ",
         "renderFailed": "Unable to render card face image"
+    },
+    "connectivity": {
+        "testCustom": "Test Custom API Connectivity",
+        "testCore": "Test",
+        "testCoreTooltip": "Test Core API Connectivity",
+        "testAssist": "Test",
+        "testAssistTooltip": "Test Assist API Connectivity",
+        "gsvTestText": "GSV connectivity test",
+        "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
+        "error": {
+            "timeout": "Request timed out (10s)",
+            "auth_failed": "API Key is invalid or expired",
+            "connection_refused": "Cannot connect to target server",
+            "dns_error": "DNS resolution failed",
+            "ssl_error": "SSL certificate verification failed",
+            "ws_error": "WebSocket connection failed",
+            "missing_params": "Missing required parameters",
+            "unknown": "Unknown error",
+            "backend_unavailable": "Backend service unavailable",
+            "invalid_response": "Invalid response format"
+        },
+        "status": {
+            "connected": "Connected",
+            "failed": "Connection failed",
+            "untested": "Not tested",
+            "not_configured": "Not configured",
+            "testing": "Testing..."
+        }
     }
 }
