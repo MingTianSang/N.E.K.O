@@ -1991,14 +1991,14 @@
             "characterManage": "Gestión de personajes",
             "voiceClone": "Clon de voz",
             "memoryBrowser": "Explorador de memoria",
-            "steamWorkshop": "Gestión de tarjetas de personaje",
             "memoryManage": "Gestión de la memoria",
             "characterSettings": "Configuración de personajes",
             "live2dManage": "Gestión Live2D",
             "apiSettings": "Configuración de API",
             "language": "Idioma",
             "general": "General",
-            "mediaCredentials": "Credenciales de medios"
+            "mediaCredentials": "Credenciales de medios",
+            "characterCardManager": "Gestión de tarjetas de personaje"
         },
         "language": {
             "title": "Seleccionar idioma",
@@ -2436,7 +2436,7 @@
         },
         "step18": {
             "title": "🛠️ Gestión de tarjetas de personaje",
-            "desc": "Accede a la página de gestión de tarjetas de personaje y administra sus tarjetas y suscripciones~"
+            "desc": "Gestiona las tarjetas de personaje, importación/exportación y personalización~"
         },
         "systray": {
             "location": {

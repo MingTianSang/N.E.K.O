@@ -4109,10 +4109,6 @@ margin-top: 10px;
     overflow-y: auto;
 }
 
-.catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
-    border-right: 1px solid #f0f0f0;
-}
-
 /* phase-expand 后，左侧容器恢复正常对齐；卡面图片尺寸保持原设，
    卡面信息与操作按钮显示在下方剩余空间（约 15vh） */
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
@@ -4121,6 +4117,7 @@ margin-top: 10px;
     background: #fafcff;
     overflow: hidden;
     display: flex;
+    border-right: 1px solid #f0f0f0;
     flex-direction: column;
 }
 

@@ -1611,7 +1611,7 @@
         "cannotHideCurrentCatgirl": "Não é possível ocultar o NEKO atualmente ativo",
         "cardAuthor": "Autor",
         "cardAuthorPlaceholder": "Não definido",
-        "cardAuthorReadonly": "O autor é somente leitura para esta fonte",
+        "cardAuthorReadonly": "O autor é somente leitura para esta origem",
         "cardAuthorUpdateFailed": "Falha ao atualizar autor: {{error}}",
         "cardAuthorUpdated": "Autor atualizado",
         "cardCreatedAt": "Criado",
@@ -1991,14 +1991,14 @@
             "characterManage": "Gerenciamento de personagens",
             "voiceClone": "Clone de voz",
             "memoryBrowser": "Navegador de memória",
-            "steamWorkshop": "Oficina Steam",
             "memoryManage": "Gerenciamento de memória",
             "characterSettings": "Configurações de personagem",
             "live2dManage": "Gerenciamento Live2D",
             "apiSettings": "Configurações de API",
             "language": "Linguagem",
             "general": "Em geral",
-            "mediaCredentials": "Credenciais de mídia"
+            "mediaCredentials": "Credenciais de mídia",
+            "characterCardManager": "Oficina Steam"
         },
         "language": {
             "title": "Selecione o idioma",
@@ -2436,7 +2436,7 @@
         },
         "step18": {
             "title": "🛠️ Oficina Steam",
-            "desc": "Acesse a página do Steam Workshop e gerencie as assinaturas~"
+            "desc": "Gerencie os cartões de personagem, importação/exportação e personalização~"
         },
         "systray": {
             "location": {

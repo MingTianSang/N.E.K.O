@@ -1510,7 +1510,7 @@
         "hideCatgirl": "隱藏此貓娘",
         "hiddenCatgirls": "已隱藏貓娘",
         "showHidden": "顯示已隱藏",
-        "hideHidden": "隱藏已隱藏",
+        "hideHidden": "收起已隱藏",
         "show": "顯示",
         "advancedSettings": "進階設定",
         "modelSettings": "模型設定",
@@ -1990,14 +1990,14 @@
             "characterManage": "角色管理",
             "voiceClone": "聲音剋隆",
             "memoryBrowser": "記憶瀏覽",
-            "steamWorkshop": "創意工坊",
             "memoryManage": "記憶管理",
             "characterSettings": "角色設置",
             "live2dManage": "Live2D管理",
             "apiSettings": "API設置",
             "language": "語言",
             "general": "通用設置",
-            "mediaCredentials": "媒體資格信息"
+            "mediaCredentials": "媒體資格信息",
+            "characterCardManager": "創意工坊"
         },
         "language": {
             "title": "選擇語言",
@@ -2435,7 +2435,7 @@
         },
         "step18": {
             "title": "🛠️ 創意工坊",
-            "desc": "進入 Steam 創意工坊頁面，管理訂閱內容~"
+            "desc": "進入角色卡管理頁面，管理角色卡的匯入、匯出與設定~"
         },
         "systray": {
             "location": {

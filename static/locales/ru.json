@@ -1619,7 +1619,7 @@
         "switchCard": "Сменить карточку",
         "deleteCard": "Удалить карточку",
         "currentCard": "Текущая карточка",
-        "confirmDeleteCard": "Удалить карточку «{{name}}»?",
+        "confirmDeleteCard": "Вы уверены, что хотите удалить карточку \"{{name}}\"?",
         "deleteCardTitle": "Удалить карточку",
         "cannotDeleteCurrentCard": "Нельзя удалить активную карточку.\n\nСначала переключитесь на другую.",
         "exportCardOnly": "Экспортировать карточку",
@@ -1990,14 +1990,14 @@
             "characterManage": "Управление персонажами",
             "voiceClone": "Клонирование голоса",
             "memoryBrowser": "Браузер памяти",
-            "steamWorkshop": "Мастерская Steam",
             "memoryManage": "Управление памятью",
             "characterSettings": "Настройки персонажа",
             "live2dManage": "Управление Live2D",
             "apiSettings": "Настройки API",
             "language": "Язык",
             "general": "Общие",
-            "mediaCredentials": "Настройка медиа-учётных данных"
+            "mediaCredentials": "Настройка медиа-учётных данных",
+            "characterCardManager": "Мастерская Steam"
         },
         "language": {
             "title": "Выберите язык",

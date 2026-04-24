@@ -177,7 +177,7 @@
         "validatingFolderPath": "Validating folder: {{path}}",
         "previewImageMissing": "Preview image file not found, please check the path",
         "uploadReady": "Ready to upload {{itemName}}",
-        "pageDescription": "From this page you can browse, edit, upload, import and export character cards, and manage Live2D models and voices hosted on the Steam Workshop",
+        "pageDescription": "From this page you can browse, edit, upload, import and export character cards, and manage Live2D models and voices hosted on the Steam Workshop.",
         "openVoiceClone": "Open in Voice Clone",
         "searchLocalItems": "Search local items...",
         "scanLocalItems": "Scan Local Items",
@@ -1617,14 +1617,14 @@
         "saveSuccess": "Saved successfully",
         "switchSuccess": "Switched successfully",
         "deleteError": "Error occurred while deleting catgirl",
-        "switchCard": "Switch card",
-        "deleteCard": "Delete card",
-        "currentCard": "Current card",
+        "switchCard": "Switch Card",
+        "deleteCard": "Delete Card",
+        "currentCard": "Current Card",
         "confirmDeleteCard": "Delete card \"{{name}}\"?",
-        "deleteCardTitle": "Delete card",
+        "deleteCardTitle": "Delete Card",
         "cannotDeleteCurrentCard": "Cannot delete the currently active card.\n\nSwitch to another card first.",
         "exportCardOnly": "Export this card",
-        "cardMeta": "Card info",
+        "cardMeta": "Card Info",
         "cardAuthor": "Author",
         "cardAuthorPlaceholder": "Not set",
         "cardCreatedAt": "Created",
@@ -1990,14 +1990,14 @@
             "characterManage": "Character Management",
             "voiceClone": "Voice Clone",
             "memoryBrowser": "Memory Browser",
-            "steamWorkshop": "Steam Workshop",
             "memoryManage": "Memory Management",
             "characterSettings": "Character Settings",
             "live2dManage": "Live2D Management",
             "apiSettings": "API Settings",
             "language": "Language",
             "general": "General",
-            "mediaCredentials": "Media Credentials"
+            "mediaCredentials": "Media Credentials",
+            "characterCardManager": "Steam Workshop"
         },
         "language": {
             "title": "Select Language",
@@ -2435,7 +2435,7 @@
         },
         "step18": {
             "title": "🛠️ Steam Workshop",
-            "desc": "Access Steam Workshop page and manage subscriptions~"
+            "desc": "Access the character card manager to create, edit, import, and export character cards~"
         },
         "systray": {
             "location": {

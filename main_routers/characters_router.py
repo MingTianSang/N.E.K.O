@@ -4424,6 +4424,7 @@ async def import_character_card(
                     "success": True,
                     "error": f"角色数据已导入，但卡面元数据写入失败: {meta_err}",
                     "card_meta_saved": False,
+                    "character_name": character_name,
                 }, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
@@ -4502,11 +4503,13 @@ def _read_card_meta(meta_path) -> dict:
         if meta_path.exists():
             with open(meta_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                # 合并默认字段，保证字段完整
-                merged = _default_card_meta()
-                merged.update({k: v for k, v in data.items() if k in merged})
-                return merged
+            if not isinstance(data, dict):
+                logger.warning(f"卡面元数据内容无效（非字典）{meta_path}: {type(data).__name__}")
+                return _default_card_meta(origin=None)
+            # 合并默认字段，保证字段完整
+            merged = _default_card_meta()
+            merged.update({k: v for k, v in data.items() if k in merged})
+            return merged
     except Exception as e:
         logger.warning(f"读取卡面元数据失败 {meta_path}: {e}")
         return _default_card_meta(origin=None)

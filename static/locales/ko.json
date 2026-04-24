@@ -1638,7 +1638,7 @@
         "cardAuthorUpdateFailed": "작성자 업데이트 실패: {{error}}",
         "idleMotionHint": "저장 시 선택한 모션이 대기 모션으로 설정됩니다",
         "saveMasterSuccess": "주인 설정 저장 성공",
-        "editCardFace": "카드 페이스 편집"
+        "editCardFace": "카드 이미지 편집"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",
@@ -1990,14 +1990,14 @@
             "characterManage": "캐릭터 관리",
             "voiceClone": "음성 복제",
             "memoryBrowser": "메모리 브라우저",
-            "steamWorkshop": "Steam 창작마당",
             "memoryManage": "메모리 관리",
             "characterSettings": "캐릭터 설정",
             "live2dManage": "Live2D 관리",
             "apiSettings": "API 설정",
             "language": "언어",
             "general": "일반",
-            "mediaCredentials": "미디어 자격 증명 설정"
+            "mediaCredentials": "미디어 자격 증명 설정",
+            "characterCardManager": "Steam 창작마당"
         },
         "language": {
             "title": "언어 선택",
@@ -2435,7 +2435,7 @@
         },
         "step18": {
             "title": "🛠️ 캐릭터 카드 관리",
-            "desc": "캐릭터 카드를 생성·편집·가져오기/내보내기하고 구독을 관리하세요~"
+            "desc": "캐릭터 카드를 생성·편집·가져오기/낳볼내기하세요~"
         },
         "systray": {
             "location": {
@@ -3339,7 +3339,7 @@
         "unlocked": "🏆 업적 달성: {{description}}"
     },
     "cardExport": {
-        "title": "카드 페이스 메이커",
+        "title": "카드 이미지 메이커",
         "loadingModel": "모델 로딩 중...",
         "selectCharacter": "캐릭터 선택",
         "selectCharacterHint": "-- 캐릭터를 선택하세요 --",
@@ -3379,7 +3379,7 @@
         "useTemporary": "임시로 사용",
         "tempBadge": "임시",
         "popupBlocked": "팝업이 차단되었습니다. 팝업을 허용한 후 다시 시도하세요.",
-        "saveCardFace": "카드 페이스 저장",
+        "saveCardFace": "카드 이미지 저장",
         "savingCardFace": "저장 중...",
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: {{error}}",

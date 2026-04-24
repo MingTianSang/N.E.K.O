@@ -1631,7 +1631,7 @@
         "cardOriginLabel": "来源",
         "cardOriginSelf": "本地创作",
         "cardOriginImported": "导入",
-        "cardOriginSteam": "Steam 工坊",
+        "cardOriginSteam": "Steam 创意工坊",
         "cardNotCreated": "尚未创建",
         "editAuthor": "编辑作者",
         "cardAuthorReadonly": "该来源的卡面不可修改作者",
@@ -1990,14 +1990,14 @@
             "characterManage": "角色管理",
             "voiceClone": "声音克隆",
             "memoryBrowser": "记忆浏览",
-            "steamWorkshop": "角色卡管理",
             "memoryManage": "记忆管理",
             "characterSettings": "角色设置",
             "live2dManage": "Live2D管理",
             "apiSettings": "API设置",
             "language": "语言",
             "general": "通用设置",
-            "mediaCredentials": "配置媒体凭证"
+            "mediaCredentials": "配置媒体凭证",
+            "characterCardManager": "角色卡管理"
         },
         "language": {
             "title": "选择语言",
