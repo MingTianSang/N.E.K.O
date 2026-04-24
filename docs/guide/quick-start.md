@@ -1,4 +1,4 @@
-﻿# Quick Start
+# Quick Start
 
 This page walks you through a first run of N.E.K.O. after completing the [Development Setup](./dev-setup).
 
@@ -38,14 +38,12 @@ Navigate to `http://localhost:48911/character_card_manager` to:
 | URL | Purpose |
 |-----|---------|
 | `/` | Main chat interface |
-| `/character_card_manager` | Character Card Manager |
 | `/api_key` | API key configuration |
 | `/model_manager` | Live2D/VRM model management |
 | `/live2d_emotion_manager` | Emotion-to-animation mapping |
 | `/vrm_emotion_manager` | VRM emotion mapping |
 | `/voice_clone` | Voice cloning |
 | `/memory_browser` | Browse and edit memories |
-| `/character_card_manager` | Character Card Manager |
 
 ## Next steps
 

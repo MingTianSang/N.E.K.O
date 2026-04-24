@@ -1997,7 +1997,7 @@
             "language": "語言",
             "general": "通用設置",
             "mediaCredentials": "媒體資格信息",
-            "characterCardManager": "創意工坊"
+            "characterCardManager": "角色卡管理"
         },
         "language": {
             "title": "選擇語言",
@@ -2434,7 +2434,7 @@
             "desc": "查看與管理貓娘的記憶內容~"
         },
         "step18": {
-            "title": "🛠️ 創意工坊",
+            "title": "🛠️ 角色卡管理",
             "desc": "進入角色卡管理頁面，管理角色卡的匯入、匯出與設定~"
         },
         "systray": {
@@ -3383,7 +3383,8 @@
         "savingCardFace": "儲存中...",
         "saveCardFaceSuccess": "儲存成功！",
         "saveCardFaceFailed": "儲存失敗: {{error}}",
-        "renderFailed": "無法渲染卡面圖片"
+        "renderFailed": "無法渲染卡面圖片",
+        "exportTitle": "匯出角色卡"
     },
     "connectivity": {
         "testCustom": "測試自訂 API 連通性",

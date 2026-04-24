@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 ![Логотип](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 

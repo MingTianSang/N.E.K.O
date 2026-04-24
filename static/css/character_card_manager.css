@@ -1503,12 +1503,19 @@ overflow: hidden;
 
 @media (prefers-reduced-motion: reduce) {
     .tab-content.tab-entering,
-    .panel-tab-content.tab-enter,
-    .panel-tab-content.tab-exit {
+    .panel-tab-content.tab-enter {
         animation: none !important;
         transition: none !important;
         opacity: 1 !important;
         display: block !important;
+        transform: none !important;
+    }
+    .panel-tab-content.tab-exit {
+        animation: none !important;
+        transition: none !important;
+        opacity: 0 !important;
+        display: none !important;
+        visibility: hidden !important;
         transform: none !important;
     }
     .tab-content.tab-entering,
@@ -3574,6 +3581,22 @@ margin-top: 10px;
     min-width: 0;
 }
 
+@media (max-width: 768px) {
+    .chara-cards-toggle-bar {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 12px;
+    }
+    .chara-cards-toolbar-left {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    .chara-cards-toolbar-right,
+    .api-key-toolbar-btn {
+        flex: 0 0 auto;
+    }
+}
+
 .chara-add-btn {
     display: flex;
     align-items: center;
@@ -5441,4 +5464,47 @@ margin-top: 10px;
     opacity: 0.55;
     cursor: not-allowed;
     box-shadow: none;
+}
+
+/* ===== Dark mode overrides for character card manager ===== */
+[data-theme="dark"] .layout-container {
+    background: #1e1e1e;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .tab-contents {
+    background: #1e1e1e;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .chara-cards-view-area {
+    background: #1e1e1e;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .catgirl-panel-wrapper {
+    background: #2a2a2a;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .character-card-top-row,
+[data-theme="dark"] .character-card-bottom-row {
+    background: #2a2a2a;
+    border-color: #444;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .sidebar-cloudsave-btn {
+    background: #2a2a2a;
+    border-color: #444;
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .chara-cards-toggle-bar {
+    background-color: #1e1e1e;
+    border-bottom-color: #444;
+}
+
+[data-theme="dark"] .chara-cards-container {
+    background: #1e1e1e;
 }

@@ -68,16 +68,25 @@
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
 
-        // maker 模式：修改标题和按钮
+        // 设置标题和按钮（maker 模式与导出模式使用不同文案）
+        const titleEl = document.querySelector('.page-title-bar h2');
         if (isMakerMode) {
             document.title = (window.t ? window.t('cardExport.title') : '卡面制作') + ' - Project N.E.K.O.';
-            const titleEl = document.querySelector('.page-title-bar h2');
             if (titleEl) {
                 titleEl.textContent = window.t ? window.t('cardExport.title') : '卡面制作';
             }
             if (exportFullBtn) {
                 exportFullBtn.textContent = window.t ? window.t('cardExport.saveCardFace') : '保存卡面';
                 exportFullBtn.setAttribute('data-i18n', 'cardExport.saveCardFace');
+            }
+        } else {
+            document.title = (window.t ? window.t('cardExport.exportTitle') : '导出角色卡') + ' - Project N.E.K.O.';
+            if (titleEl) {
+                titleEl.textContent = window.t ? window.t('cardExport.exportTitle') : '导出角色卡';
+            }
+            if (exportFullBtn) {
+                exportFullBtn.textContent = window.t ? window.t('cardExport.exportFull', '导出角色卡') : '导出角色卡';
+                exportFullBtn.setAttribute('data-i18n', 'cardExport.exportFull');
             }
         }
 
@@ -689,6 +698,12 @@
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({}));
                 throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+
+            const respJson = await response.json().catch(() => ({}));
+            if (respJson.partial_success) {
+                exportFullBtn.textContent = t('cardExport.saveCardFaceFailed', '保存失败: ' + (respJson.error || ''), { error: respJson.error || '' });
+                throw new Error(respJson.error || '卡面已保存，但元数据写入失败');
             }
 
             // 通知父窗口更新卡面

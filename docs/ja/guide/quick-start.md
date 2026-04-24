@@ -1,4 +1,4 @@
-﻿# クイックスタート
+# クイックスタート
 
 このページでは、[開発環境セットアップ](./dev-setup)の完了後に N.E.K.O. を初めて実行する手順を説明します。
 
@@ -38,14 +38,12 @@ APIキーなしでクイックテストを行う場合は、Core APIプロバイ
 | URL | 用途 |
 |-----|------|
 | `/` | メインチャットインターフェース |
-| `/character_card_manager` | キャラクター設定 |
 | `/api_key` | APIキーの設定 |
 | `/model_manager` | Live2D/VRMモデル管理 |
 | `/live2d_emotion_manager` | 感情からアニメーションへのマッピング |
 | `/vrm_emotion_manager` | VRM感情マッピング |
 | `/voice_clone` | 音声クローン |
 | `/memory_browser` | メモリの閲覧と編集 |
-| `/character_card_manager` | キャラクターカード管理 |
 
 ## 次のステップ
 

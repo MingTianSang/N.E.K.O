@@ -3384,7 +3384,8 @@
         "savingCardFace": "Guardando...",
         "saveCardFaceSuccess": "¡Guardado correctamente!",
         "saveCardFaceFailed": "Error al guardar: {{error}}",
-        "renderFailed": "No se puede renderizar la imagen de la tarjeta"
+        "renderFailed": "No se puede renderizar la imagen de la tarjeta",
+        "exportTitle": "Exportar tarjeta de personaje"
     },
     "connectivity": {
         "testCustom": "Probar conectividad de API personalizada",

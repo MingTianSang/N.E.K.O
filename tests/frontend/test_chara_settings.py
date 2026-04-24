@@ -1,5 +1,6 @@
 import pytest
 import re
+import time
 from playwright.sync_api import Page, expect
 
 @pytest.mark.frontend
@@ -32,6 +33,7 @@ def test_add_catgirl(mock_page: Page, running_server: str):
     # Capture console logs
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     
+    test_name = f"TestCatgirl_Auto_{int(time.time())}"
     try:
         url = f"{running_server}/character_card_manager"
         mock_page.goto(url)
@@ -44,7 +46,6 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.wait_for_selector("#catgirl-form-new")
         
         # Fill in name
-        test_name = "TestCatgirl_Auto"
         mock_page.fill("#catgirl-form-new input[name='档案名']", test_name)
         
         # Click Save button (id selector, not type=submit)
@@ -81,37 +82,22 @@ def test_add_catgirl(mock_page: Page, running_server: str):
 
         # Success point reached
         print("SUCCESS: Character added and visible.")
-
-        # Cleanup (Delete it)
-        # Re-locate card block in case of reload
-        card_item = mock_page.locator(".chara-card-item", has=mock_page.locator(f".card-name:text-is('{test_name}')"))
-        
-        # Ensure we click the delete button for THIS card
-        delete_btn = card_item.locator(".delete-btn")
-        delete_btn.click()
-        
-        # Handle Custom Confirm Modal
-        mock_page.wait_for_selector(".modal-dialog")
-        # Try to find the Danger button specifically
-        danger_btn = mock_page.locator(".modal-footer .modal-btn-danger")
-        if danger_btn.count() > 0 and danger_btn.is_visible():
-            danger_btn.click()
-        else:
-            print("Danger button not found, clicking last button in footer...")
-            confirm_btn = mock_page.locator(".modal-footer button").last
-            confirm_btn.click()
-        
-        # Verify it is gone
-        expect(new_card).not_to_be_visible(timeout=5000)
-        print("Cleanup successful.")
-    except Exception:
-        # Check for error modal again in case of generic exception
+    finally:
+        # Cleanup (Delete it) — best-effort even on failure
         try:
-            modal = mock_page.locator(".modal-body")
-            if modal.is_visible():
-                print(f"Exception Modal Content: {modal.text_content()}")
-        except Exception:
-            pass
-        mock_page.screenshot(path="frontend_failure_generic.png")
-        print("Page content on failure:", mock_page.content()[:1000])
-        raise
+            new_card = mock_page.locator(f".card-name:text-is('{test_name}')")
+            card_item = mock_page.locator(".chara-card-item", has=mock_page.locator(f".card-name:text-is('{test_name}')"))
+            delete_btn = card_item.locator(".delete-btn")
+            if delete_btn.count() > 0 and delete_btn.is_visible():
+                delete_btn.click()
+                mock_page.wait_for_selector(".modal-dialog", timeout=3000)
+                danger_btn = mock_page.locator(".modal-footer .modal-btn-danger")
+                if danger_btn.count() > 0 and danger_btn.is_visible():
+                    danger_btn.click()
+                else:
+                    confirm_btn = mock_page.locator(".modal-footer button").last
+                    confirm_btn.click()
+                expect(new_card).not_to_be_visible(timeout=5000)
+                print("Cleanup successful.")
+        except Exception as cleanup_err:
+            print(f"Cleanup best-effort failed: {cleanup_err}")

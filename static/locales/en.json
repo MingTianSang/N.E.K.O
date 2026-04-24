@@ -1997,7 +1997,7 @@
             "language": "Language",
             "general": "General",
             "mediaCredentials": "Media Credentials",
-            "characterCardManager": "Steam Workshop"
+            "characterCardManager": "Character Card Management"
         },
         "language": {
             "title": "Select Language",
@@ -2434,7 +2434,7 @@
             "desc": "View and manage your Neko's memory content~"
         },
         "step18": {
-            "title": "🛠️ Steam Workshop",
+            "title": "🛠️ Character Card Manager",
             "desc": "Access the character card manager to create, edit, import, and export character cards~"
         },
         "systray": {
@@ -3383,7 +3383,8 @@
         "savingCardFace": "Saving...",
         "saveCardFaceSuccess": "Saved successfully!",
         "saveCardFaceFailed": "Save failed: {{error}}",
-        "renderFailed": "Unable to render card face image"
+        "renderFailed": "Unable to render card face image",
+        "exportTitle": "Export Character Card"
     },
     "connectivity": {
         "testCustom": "Test Custom API Connectivity",

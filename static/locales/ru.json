@@ -1510,7 +1510,7 @@
         "hideCatgirl": "Спрятать NEKO",
         "hiddenCatgirls": "Спрятанные NEKO",
         "showHidden": "Показать скрытых",
-        "hideHidden": "Скрыть скрытых",
+        "hideHidden": "Скрыть список скрытых",
         "show": "Показать",
         "advancedSettings": "Расширенные настройки",
         "modelSettings": "Настройки модели",
@@ -1612,10 +1612,10 @@
         "renamePrompt": "Введите новое имя профиля",
         "renameTitle": "Переименовать",
         "tempSaveFailed": "Ошибка временного сохранения: {{error}}",
-        "newCatgirlSuccess": "Новый персонаж успешно создан",
+        "newCatgirlSuccess": "Новый NEKO успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
-        "deleteError": "Ошибка при удалении персонажа",
+        "deleteError": "Ошибка при удалении NEKO",
         "switchCard": "Сменить карточку",
         "deleteCard": "Удалить карточку",
         "currentCard": "Текущая карточка",
@@ -1997,7 +1997,7 @@
             "language": "Язык",
             "general": "Общие",
             "mediaCredentials": "Настройка медиа-учётных данных",
-            "characterCardManager": "Мастерская Steam"
+            "characterCardManager": "Управление карточками персонажей"
         },
         "language": {
             "title": "Выберите язык",
@@ -2434,7 +2434,7 @@
             "desc": "Просматривайте и управляйте памятью Neko~"
         },
         "step18": {
-            "title": "🛠️ Мастерская Steam",
+            "title": "🛠️ Менеджер карточек персонажей",
             "desc": "Доступ к Мастерской Steam~"
         },
         "systray": {
@@ -3383,7 +3383,8 @@
         "savingCardFace": "Сохранение...",
         "saveCardFaceSuccess": "Сохранено успешно!",
         "saveCardFaceFailed": "Ошибка сохранения: {{error}}",
-        "renderFailed": "Не удалось отрендерить изображение карточки"
+        "renderFailed": "Не удалось отрендерить изображение карточки",
+        "exportTitle": "Экспорт карточки персонажа"
     },
     "connectivity": {
         "testCustom": "Тест подключения пользовательского API",

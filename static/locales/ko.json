@@ -1997,7 +1997,7 @@
             "language": "언어",
             "general": "일반",
             "mediaCredentials": "미디어 자격 증명 설정",
-            "characterCardManager": "Steam 창작마당"
+            "characterCardManager": "캐릭터 카드 관리"
         },
         "language": {
             "title": "언어 선택",
@@ -2435,7 +2435,7 @@
         },
         "step18": {
             "title": "🛠️ 캐릭터 카드 관리",
-            "desc": "캐릭터 카드를 생성·편집·가져오기/낳볼내기하세요~"
+            "desc": "캐릭터 카드를 생성·편집·가져오기/내보내기하세요~"
         },
         "systray": {
             "location": {
@@ -3383,7 +3383,8 @@
         "savingCardFace": "저장 중...",
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: {{error}}",
-        "renderFailed": "카드 이미지를 렌더링할 수 없습니다"
+        "renderFailed": "카드 이미지를 렌더링할 수 없습니다",
+        "exportTitle": "캐릭터 카드 내보내기"
     },
     "connectivity": {
         "testCustom": "사용자 정의 API 연결 테스트",

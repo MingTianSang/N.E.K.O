@@ -1,4 +1,4 @@
-﻿# Configuration Overview
+# Configuration Overview
 
 N.E.K.O. uses a layered configuration system with multiple sources. Configuration values are resolved in priority order from highest to lowest.
 

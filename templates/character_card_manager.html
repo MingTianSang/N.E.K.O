@@ -331,7 +331,7 @@
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
-        <h2 data-i18n="steam.workshopManager" data-text="Steam 创意工坊管理 - Project N.E.K.O.">Steam 创意工坊管理 - Project N.E.K.O.</h2>
+        <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
         <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
             <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
         </button>
@@ -347,6 +347,7 @@
                 <!-- 标签切换按钮组 -->
                 <div class="tabs compact" id="workshop-tabs">
                      <button class="tab active" onclick="switchTab('character-cards-content', event)" data-i18n="steam.characterCards">角色卡</button>
+                     <button class="tab" onclick="switchTab('local-items-content', event)" data-i18n="steam.localItems">本地物品</button>
                      <button class="tab" onclick="switchTab('subscriptions-content', event)" data-i18n="steam.subscriptions">订阅内容</button>
                   </div>
                 
@@ -555,6 +556,7 @@
 <div class="empty-state">
 <p data-i18n="steam.loadingCharacterCards">正在加载角色卡...</p>
 </div>
+</div>
 
 <!-- 已隐藏猫娘区域 -->
 <div id="hidden-catgirl-area" class="hidden-catgirl-area" style="display:none;">
@@ -563,7 +565,6 @@
         <span id="hidden-catgirl-count" data-i18n="character.hiddenCatgirls">已隐藏猫娘</span>
     </button>
     <div id="hidden-catgirl-list" class="hidden-catgirl-list" style="display:none;"></div>
-</div>
 </div>
 </div>
 

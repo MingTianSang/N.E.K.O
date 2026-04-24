@@ -110,6 +110,11 @@ async def api_key_settings(request: Request):
     })
 
 
+@router.get('/chara_manager')
+async def chara_manager_redirect():
+    return RedirectResponse(status_code=307, headers={"Location": "/character_card_manager"})
+
+
 @router.get('/character_card_manager', response_class=HTMLResponse)
 async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()

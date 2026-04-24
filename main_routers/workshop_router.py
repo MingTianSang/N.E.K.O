@@ -3532,6 +3532,9 @@ async def sync_workshop_character_cards() -> dict:
                             # 写入卡面元数据 sidecar（origin=steam）
                             try:
                                 config_mgr.ensure_card_faces_directory()
+                                if not config_mgr.card_faces_dir.exists():
+                                    logger.error(f"sync_workshop_character_cards: 卡面目录创建失败，跳过写入元数据")
+                                    continue
                                 meta_path = config_mgr.card_face_meta_path(chara_name)
                                 if not meta_path.exists():
                                     workshop_author = ''

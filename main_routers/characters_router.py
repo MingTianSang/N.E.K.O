@@ -3887,12 +3887,15 @@ async def export_catgirl_card(name: str):
 
             # 5. 获取卡面图：优先使用保存的 card_faces/{name}.png，
             #    不存在时才回退到合成图。
+            from utils.screenshot_utils import _validate_image_data
             saved_face_path = _config_manager.card_faces_dir / f"{name}.png"
             png_data = None
             if saved_face_path.exists():
                 try:
                     png_data = await asyncio.to_thread(saved_face_path.read_bytes)
-                    if not png_data or png_data[:8] != b'\x89PNG\r\n\x1a\n':
+                    validated = await asyncio.to_thread(_validate_image_data, png_data)
+                    if validated is None:
+                        logger.warning(f"[导出角色卡] 已保存卡面验证失败，回退到合成图")
                         png_data = None
                 except Exception as _read_err:
                     logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
@@ -4442,27 +4445,25 @@ async def import_character_card(
                             face_bytes = b''
                         if face_bytes:
                             try:
+                                from utils.screenshot_utils import _validate_image_data
                                 from PIL import Image as PILImage
 
-                                def _validate_import_png(buffer: io.BytesIO) -> bytes:
-                                    img = PILImage.open(buffer)
-                                    img.verify()
-                                    buffer.seek(0)
-                                    img = PILImage.open(buffer)
-                                    if img.mode not in ('RGB', 'RGBA', 'L'):
-                                        img = img.convert('RGB')
-                                    out = io.BytesIO()
-                                    img.save(out, format='PNG')
-                                    return out.getvalue()
-
-                                valid_png = await asyncio.to_thread(_validate_import_png, io.BytesIO(face_bytes))
-                                if len(valid_png) > MAX_CARD_FACE_SIZE:
-                                    logger.warning(f"[导入角色卡] 重编码后的卡面图 ({len(valid_png)} bytes) 超过最大限制 ({MAX_CARD_FACE_SIZE} bytes)，跳过保存")
+                                validated = await asyncio.to_thread(_validate_image_data, face_bytes)
+                                if validated is None:
+                                    logger.warning(f"[导入角色卡] 载体 PNG 验证失败，跳过保存")
                                 else:
-                                    await asyncio.to_thread(face_path.write_bytes, valid_png)
-                                    logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
+                                    if validated.mode not in ('RGB', 'RGBA', 'L'):
+                                        validated = validated.convert('RGB')
+                                    out = io.BytesIO()
+                                    validated.save(out, format='PNG')
+                                    valid_png = out.getvalue()
+                                    if len(valid_png) > MAX_CARD_FACE_SIZE:
+                                        logger.warning(f"[导入角色卡] 重编码后的卡面图 ({len(valid_png)} bytes) 超过最大限制 ({MAX_CARD_FACE_SIZE} bytes)，跳过保存")
+                                    else:
+                                        await asyncio.to_thread(face_path.write_bytes, valid_png)
+                                        logger.info(f"[导入角色卡] 已将载体 PNG 存为卡面: {face_path}")
                             except Exception as pil_err:
-                                logger.warning(f"[导入角色卡] 卡面图 PNG 验证失败，跳过保存: {pil_err}")
+                                logger.warning(f"[导入角色卡] 卡面图 PNG 处理失败，跳过保存: {pil_err}")
             except Exception as face_err:
                 logger.warning(f"[导入角色卡] 保存载体 PNG 为卡面失败: {face_err}")
 
@@ -4517,9 +4518,9 @@ def _read_card_meta(meta_path) -> dict:
 
 
 def _write_card_meta(meta_path, meta: dict) -> None:
-    """写入 sidecar JSON。调用方需先 ensure_card_faces_directory()。"""
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    """写入 sidecar JSON（原子写入）。调用方需先 ensure_card_faces_directory()。"""
+    from utils.file_utils import atomic_write_json
+    atomic_write_json(meta_path, meta, ensure_ascii=False, indent=2)
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
@@ -4704,20 +4705,22 @@ async def put_card_face(name: str, image: UploadFile = File(...)):
 
     # 在线程中验证并重新编码为 PNG
     try:
+        from utils.screenshot_utils import _validate_image_data
         from PIL import Image as PILImage
 
-        def _validate_and_reencode(buffer: io.BytesIO) -> bytes:
-            img = PILImage.open(buffer)
-            img.verify()
-            buffer.seek(0)
-            img = PILImage.open(buffer)
+        image_buffer.seek(0)
+        validated_img = await asyncio.to_thread(_validate_image_data, image_buffer.getvalue())
+        if validated_img is None:
+            return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
+
+        def _reencode(img) -> bytes:
             if img.mode not in ('RGB', 'RGBA', 'L'):
                 img = img.convert('RGB')
             out = io.BytesIO()
             img.save(out, format='PNG')
             return out.getvalue()
 
-        png_bytes = await asyncio.to_thread(_validate_and_reencode, image_buffer)
+        png_bytes = await asyncio.to_thread(_reencode, validated_img)
     except Exception:
         return JSONResponse({'success': False, 'error': '无效的图片文件'}, status_code=400)
 

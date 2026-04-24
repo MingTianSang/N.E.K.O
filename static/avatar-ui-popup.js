@@ -812,7 +812,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
-                if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/character_card_manager')) {
                     windowName = 'neko_chara_manager';
                 }
                 isOpening = true;

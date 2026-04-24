@@ -1998,7 +1998,7 @@
             "language": "Linguagem",
             "general": "Em geral",
             "mediaCredentials": "Credenciais de mídia",
-            "characterCardManager": "Oficina Steam"
+            "characterCardManager": "Gestão de Cartões de Personagem"
         },
         "language": {
             "title": "Selecione o idioma",
@@ -2435,7 +2435,7 @@
             "desc": "Visualize e gerencie o conteúdo da memória do seu Neko ~"
         },
         "step18": {
-            "title": "🛠️ Oficina Steam",
+            "title": "🛠️ Gerenciador de Cartões de Personagem",
             "desc": "Gerencie os cartões de personagem, importação/exportação e personalização~"
         },
         "systray": {
@@ -3384,7 +3384,8 @@
         "savingCardFace": "Salvando...",
         "saveCardFaceSuccess": "Salvo com sucesso!",
         "saveCardFaceFailed": "Falha ao salvar: {{error}}",
-        "renderFailed": "Não foi possível renderizar a imagem do cartão"
+        "renderFailed": "Não foi possível renderizar a imagem do cartão",
+        "exportTitle": "Exportar cartão de personagem"
     },
     "connectivity": {
         "testCustom": "Testar conectividade de API personalizada",

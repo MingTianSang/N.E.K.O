@@ -3383,7 +3383,8 @@
         "savingCardFace": "保存中...",
         "saveCardFaceSuccess": "保存成功！",
         "saveCardFaceFailed": "保存失败: {{error}}",
-        "renderFailed": "无法渲染卡面图片"
+        "renderFailed": "无法渲染卡面图片",
+        "exportTitle": "导出角色卡"
     },
     "connectivity": {
         "testCustom": "测试自定义 API 连通性",
