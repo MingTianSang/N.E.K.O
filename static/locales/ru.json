@@ -1636,7 +1636,7 @@
         "newCatgirlSuccess": "Новый NEKO успешно создан",
         "saveSuccess": "Сохранено",
         "switchSuccess": "Переключено",
-        "deleteError": "Ошибка при удалении NEKO",
+        "deleteError": "Ошибка при удалении карточки",
         "switchCard": "Сменить карточку",
         "deleteCard": "Удалить карточку",
         "currentCard": "Текущая карточка",
