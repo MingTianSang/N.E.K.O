@@ -3950,7 +3950,7 @@ async def sync_workshop_character_cards() -> dict:
                                         workshop_author = str(item.get('authorName') or item.get('author') or item.get('creatorName') or '').strip()[:64]
                                     except Exception:
                                         workshop_author = ''
-                                    now_iso = datetime.now().isoformat(timespec='seconds')
+                                    now_iso = datetime.utcnow().isoformat() + 'Z'
                                     meta = {
                                         'author': workshop_author,
                                         'origin': 'steam',
