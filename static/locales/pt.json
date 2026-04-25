@@ -1618,7 +1618,7 @@
         "deleteError": "Erro ao excluir personagem",
         "editAuthor": "Editar autor",
         "exportCardOnly": "Exportar este cartão",
-        "hideHidden": "Ocultar ocultos",
+        "hideHidden": "Recolher ocultos",
         "masterProfileTitle": "Perfil do mestre",
         "newCatgirlSuccess": "Novo NEKO criado com sucesso",
         "renamePrompt": "Insira um novo nome de perfil",
@@ -1988,7 +1988,7 @@
             "language": "Linguagem",
             "general": "Em geral",
             "mediaCredentials": "Credenciais de mídia",
-            "characterCardManager": "Gestão de Cartões de Personagem"
+            "characterCardManager": "Gerenciador de Cartões de Personagem"
         },
         "language": {
             "title": "Selecione o idioma",

@@ -3897,6 +3897,17 @@ async def export_catgirl_card(name: str):
                     if validated is None:
                         logger.warning(f"[导出角色卡] 已保存卡面验证失败，回退到合成图")
                         png_data = None
+                    elif not png_data.startswith(b'\x89PNG\r\n\x1a\n'):
+                        try:
+                            from PIL import Image
+                            from io import BytesIO
+                            img = await asyncio.to_thread(Image.open, BytesIO(png_data))
+                            buf = BytesIO()
+                            await asyncio.to_thread(img.save, buf, format='PNG')
+                            png_data = buf.getvalue()
+                        except Exception as _conv_err:
+                            logger.warning(f"[导出角色卡] 卡面非 PNG 且重新编码失败，回退到合成图: {_conv_err}")
+                            png_data = None
                 except Exception as _read_err:
                     logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
                     png_data = None

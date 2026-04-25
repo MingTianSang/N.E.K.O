@@ -1500,7 +1500,7 @@
         "hideCatgirl": "Hide this NEKO",
         "hiddenCatgirls": "Hidden NEKOs",
         "showHidden": "Show Hidden",
-        "hideHidden": "Hide Hidden",
+        "hideHidden": "Collapse Hidden",
         "show": "Unhide",
         "advancedSettings": "Advanced Settings",
         "modelSettings": "Model Settings",

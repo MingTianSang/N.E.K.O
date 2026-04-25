@@ -40,7 +40,7 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.wait_for_load_state("networkidle")
         
         # Click "New Catgirl" button (class selector)
-        mock_page.evaluate("document.querySelector('.chara-add-btn').click()")
+        mock_page.locator(".chara-add-btn").click()
         
         # Wait for form to appear
         mock_page.wait_for_selector("#catgirl-form-new")
@@ -49,15 +49,12 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.fill("#catgirl-form-new input[name='档案名']", test_name)
         
         # Click Save button (id selector, not type=submit)
-        mock_page.click("#save-button")
-        
-        # Wait for potential UI update
-        mock_page.wait_for_timeout(2000)
+        mock_page.locator("#save-button").click()
 
         # Check visibility using new page card class
         new_card = mock_page.locator(f".card-name:text-is('{test_name}')")
         try:
-            expect(new_card).to_be_visible(timeout=5000)
+            expect(new_card).to_be_visible(timeout=7000)
         except Exception as e: # Catch ANY exception (TimeoutError, AssertionError, etc)
             print(f"Card not visible immediately ({type(e).__name__}: {e}). Reloading page to check persistence...")
             mock_page.reload()

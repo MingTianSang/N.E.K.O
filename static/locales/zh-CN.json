@@ -1620,7 +1620,7 @@
         "cardCreatedAt": "创建时间",
         "cardOriginLabel": "来源",
         "cardOriginSelf": "本地创作",
-        "cardOriginImported": "导入",
+        "cardOriginImported": "外部导入",
         "cardOriginSteam": "Steam 创意工坊",
         "cardNotCreated": "尚未创建",
         "editAuthor": "编辑作者",

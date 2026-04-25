@@ -6,7 +6,7 @@ Handles HTML page rendering endpoints.
 """
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .shared_state import get_templates
 
@@ -111,8 +111,11 @@ async def api_key_settings(request: Request):
 
 
 @router.get('/chara_manager')
-async def chara_manager_redirect():
-    return RedirectResponse(status_code=307, headers={"Location": "/character_card_manager"})
+async def chara_manager_redirect(request: Request):
+    url = "/character_card_manager"
+    if request.query_params:
+        url += "?" + str(request.query_params)
+    return RedirectResponse(url=url, status_code=307)
 
 
 @router.get('/character_card_manager', response_class=HTMLResponse)

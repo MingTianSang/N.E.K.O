@@ -1618,7 +1618,7 @@
         "deleteError": "Error al eliminar el personaje",
         "editAuthor": "Editar autor",
         "exportCardOnly": "Exportar esta tarjeta",
-        "hideHidden": "Ocultar ocultos",
+        "hideHidden": "Contraer ocultos",
         "masterProfileTitle": "Perfil de maestro",
         "newCatgirlSuccess": "Nuevo NEKO creado con éxito",
         "renamePrompt": "Ingrese un nuevo nombre de perfil",

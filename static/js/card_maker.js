@@ -702,8 +702,9 @@
 
             const respJson = await response.json().catch(() => ({}));
             if (respJson.partial_success) {
-                exportFullBtn.textContent = t('cardExport.saveCardFaceFailed', '保存失败: ' + (respJson.error || ''), { error: respJson.error || '' });
-                throw new Error(respJson.error || '卡面已保存，但元数据写入失败');
+                exportFullBtn.textContent = t('cardExport.saveCardFacePartialSuccess', 'PNG 已保存，但元数据写入失败: {{error}}', { error: respJson.error || '' });
+                exportFullBtn.disabled = false;
+                return;
             }
 
             // 通知父窗口更新卡面
