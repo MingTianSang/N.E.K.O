@@ -1558,7 +1558,7 @@
         "fieldExists": "Это поле уже существует",
         "profileNameRequired": "Имя профиля обязательно",
         "onlyOneCatgirlLeft": "Остался только один NEKO, удаление невозможно!",
-        "cannotHideCurrentCatgirl": "Нельзя скрыть активного NEKO",
+        "cannotHideCurrentNeko": "Нельзя скрыть активного NEKO",
         "cannotDeleteCurrentCatgirl": "Нельзя удалить текущего активного NEKO!\n\nСначала переключитесь на другого.",
         "cannotConfirmCatgirlStatus": "Не удалось подтвердить статус текущего NEKO, удаление отменено",
         "confirmDeleteCatgirl": "Вы уверены, что хотите удалить NEKO \"{{name}}\"?",

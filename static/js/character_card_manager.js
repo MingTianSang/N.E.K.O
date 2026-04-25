@@ -8291,7 +8291,7 @@ function getHiddenCatgirlKeys() {
 
 async function workshopHideCatgirl(name) {
     if (name === window._workshopCurrentCatgirl) {
-        showMessage(window.t ? window.t('character.cannotHideCurrentCatgirl') : '不能隐藏当前正在使用的猫娘', 'error');
+        showMessage(window.t ? window.t('character.cannotHideCurrentNeko') : '不能隐藏当前正在使用的猫娘', 'error');
         return;
     }
     const hiddenKeys = getHiddenCatgirlKeys();

@@ -1627,7 +1627,7 @@
         "idleMotionHint": "Al guardar, el movimiento seleccionado se establecerá como movimiento de espera",
         "saveMasterSuccess": "Perfil de maestro guardado correctamente",
         "cannotDeleteCurrentCard": "No se puede eliminar la tarjeta actualmente activa.\n\nCambie a otra tarjeta primero.",
-        "cannotHideCurrentCatgirl": "No se puede ocultar el NEKO actualmente activo",
+        "cannotHideCurrentNeko": "No se puede ocultar el NEKO actualmente activo",
         "cardAuthor": "Autor",
         "cardAuthorPlaceholder": "Sin establecer",
         "cardAuthorReadonly": "El autor es de solo lectura para esta fuente",
@@ -1644,7 +1644,7 @@
         "currentCard": "Tarjeta actual",
         "deleteCard": "Eliminar tarjeta",
         "deleteCardTitle": "Eliminar tarjeta",
-        "deleteError": "Error al eliminar el personaje",
+        "deleteError": "Error al eliminar la tarjeta",
         "editAuthor": "Editar autor",
         "exportCardOnly": "Exportar esta tarjeta",
         "hideHidden": "Contraer ocultos",
@@ -1658,7 +1658,7 @@
         "switchCard": "Cambiar tarjeta",
         "switchSuccess": "Cambiado con éxito",
         "tempSaveFailed": "Error al guardar temporalmente: {{error}}",
-        "editCardFace": "Editar tarjeta"
+        "editCardFace": "Editar cara de la tarjeta"
     },
     "app": {
         "welcomeBack": "¡{{name}} ha vuelto!",

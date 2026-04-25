@@ -1559,7 +1559,7 @@
         "fieldExists": "This field already exists",
         "profileNameRequired": "Profile name is required",
         "onlyOneCatgirlLeft": "Only one neko left, cannot delete!",
-        "cannotHideCurrentCatgirl": "Cannot hide the currently active catgirl",
+        "cannotHideCurrentNeko": "Cannot hide the currently active NEKO",
         "cannotDeleteCurrentCatgirl": "Cannot delete the currently active neko!\n\nPlease switch to another neko first.",
         "cannotConfirmCatgirlStatus": "Unable to confirm current neko status, deletion cancelled",
         "confirmDeleteCatgirl": "Are you sure you want to delete neko \"{{name}}\"?",
@@ -2016,7 +2016,7 @@
             "language": "Language",
             "general": "General",
             "mediaCredentials": "Media Credentials",
-            "characterCardManager": "Character Card Management"
+            "characterCardManager": "Character Card Manager"
         },
         "language": {
             "title": "Select Language",

@@ -1558,7 +1558,7 @@
         "fieldExists": "이 필드는 이미 존재합니다.",
         "profileNameRequired": "프로필 이름이 필요합니다.",
         "onlyOneCatgirlLeft": "네코가 하나만 남았습니다. 삭제할 수 없습니다!",
-        "cannotHideCurrentCatgirl": "현재 활성화된 네코는 숨길 수 없습니다",
+        "cannotHideCurrentNeko": "현재 활성화된 네코는 숨길 수 없습니다",
         "cannotDeleteCurrentCatgirl": "현재 활성화된 네코를 삭제할 수 없습니다!\n\n먼저 다른 네코로 바꿔주세요.",
         "cannotConfirmCatgirlStatus": "현재 네코 상태를 확인할 수 없어 삭제가 취소되었습니다.",
         "confirmDeleteCatgirl": "네코 \"{{name}}\"을(를) 삭제하시겠습니까?",

@@ -1558,7 +1558,7 @@
         "fieldExists": "このフィールドは既に存在します",
         "profileNameRequired": "プロフィール名は必須です",
         "onlyOneCatgirlLeft": "neko が 1 つだけ残っています。削除できません！",
-        "cannotHideCurrentCatgirl": "現在アクティブな neko は非表示にできません",
+        "cannotHideCurrentNeko": "現在アクティブな neko は非表示にできません",
         "cannotDeleteCurrentCatgirl": "現在アクティブな neko は削除できません！\n\n別の neko に切り替えてからお試しください。",
         "cannotConfirmCatgirlStatus": "現在の neko ステータスを確認できません。削除がキャンセルされました",
         "confirmDeleteCatgirl": "neko \"{{name}}\" を削除してもよろしいですか？",
