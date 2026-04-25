@@ -5817,3 +5817,17 @@ margin-top: 10px;
     background: linear-gradient(135deg, #1a5a7a, #0d3a5a);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
+
+[data-theme="dark"] .chara-card-item .card-name,
+[data-theme="dark"] .chara-list-item .list-name,
+[data-theme="dark"] .chara-cards-title {
+    color: #e0e0e0;
+}
+[data-theme="dark"] .chara-card-item.active {
+    background: linear-gradient(160deg, #1a3a4a 0%, #2a2a2a 65%);
+    border-color: #40C5F1;
+}
+[data-theme="dark"] .card-avatar-placeholder {
+    background: #1a3a4a;
+    color: #7ec8e3;
+}
