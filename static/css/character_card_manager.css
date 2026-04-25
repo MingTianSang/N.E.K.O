@@ -1631,13 +1631,13 @@ overflow: hidden;
     width: 100%;
     pointer-events: none;
     z-index: 1;
-    background: #fff;
+    background: inherit;
 }
 
 .tab-content.tab-entering {
     position: relative;
     z-index: 2;
-    background: #fff;
+    background: inherit;
     animation: viewCurtainReveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     transform-origin: top center;
     box-shadow: 0 6px 18px rgba(64, 197, 241, 0.12);
@@ -5805,4 +5805,15 @@ margin-top: 10px;
 }
 [data-theme="dark"] .catgirl-panel-right .field-row:focus-within {
     border-color: #40C5F1;
+}
+
+[data-theme="dark"] .catgirl-panel-left,
+[data-theme="dark"] .catgirl-panel-wrapper.card-only .catgirl-panel-left,
+[data-theme="dark"] .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
+    background: #2a2a2a;
+    border-color: #444;
+}
+[data-theme="dark"] .sidebar-cloudsave-btn:hover {
+    background: linear-gradient(135deg, #1a5a7a, #0d3a5a);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
