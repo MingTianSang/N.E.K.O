@@ -5772,7 +5772,8 @@ margin-top: 10px;
     background: linear-gradient(to right, #1a5a7a, #0d3a5a);
 }
 [data-theme="dark"] .panel-tab-content.active,
-[data-theme="dark"] .panel-tab-content.tab-enter {
+[data-theme="dark"] .panel-tab-content.tab-enter,
+[data-theme="dark"] .panel-tab-content.tab-exit {
     background: #2a2a2a;
 }
 [data-theme="dark"] .catgirl-panel-card-image {

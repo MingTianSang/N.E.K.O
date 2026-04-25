@@ -1642,7 +1642,7 @@
         "currentCard": "當前角色卡",
         "confirmDeleteCard": "確定要刪除角色卡「{{name}}」？",
         "deleteCardTitle": "刪除角色卡",
-        "cannotDeleteCurrentCard": "無法刪除當前正在使用的角色卡！\n\n請先切換到其他角色卡後再刪除。",
+        "cannotDeleteCurrentCard": "不能刪除當前正在使用的角色卡！\n\n請先切換到其他角色卡後再刪除。",
         "exportCardOnly": "匯出此角色卡",
         "cardMeta": "卡面資訊",
         "cardAuthor": "作者",
