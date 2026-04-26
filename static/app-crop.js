@@ -216,10 +216,12 @@
         imgDisplayLeft = Math.round((overlayW - imgDisplayWidth) / 2);
         imgDisplayTop = Math.round((overlayH - imgDisplayHeight) / 2);
 
-        // 同步 DOM 图片尺寸，确保 CSS 显示和 canvas 计算完全一致
+        // 同步 DOM 图片尺寸和位置，确保 CSS 显示和 canvas 计算完全一致
         if (imgEl) {
             imgEl.style.width = imgDisplayWidth + 'px';
             imgEl.style.height = imgDisplayHeight + 'px';
+            imgEl.style.left = imgDisplayLeft + 'px';
+            imgEl.style.top = (imgDisplayTop + getTopBarHeight()) + 'px';
         }
     }
 
