@@ -515,6 +515,10 @@ class PersonaManager:
                         # fingerprint mismatch 才补算，还会额外浪费一次
                         # sha256（对偶于 amerge_into 的 _sync_mutate_entry）。
                         self._invalidate_token_count_cache(entry)
+                        # Same logic for the embedding cache: a stale
+                        # vector under the old text would slip into
+                        # cosine-based retrieval matches.
+                        self._invalidate_embedding_cache(entry)
                         modified = True
                         logger.info(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
@@ -719,6 +723,16 @@ class PersonaManager:
             # 大阪" stays traceable. Each item: {text, replaced_at, reason,
             # source_fact_id}. None/empty list means no version history.
             'version_history': [],
+            # Vector-embedding cache (memory-enhancements P2 — see
+            # memory/embeddings.py). Populated by the background warmup
+            # worker after the EmbeddingService becomes ready; consumed
+            # by retrieval candidate generation. Same invalidation
+            # contract as token_count: text-sha mismatch OR model_id
+            # mismatch ⇒ re-embed on next worker pass. Legacy entries
+            # naturally read None.
+            'embedding': None,
+            'embedding_text_sha256': None,
+            'embedding_model_id': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1164,6 +1178,10 @@ class PersonaManager:
                 # concurrent reader might see new text + stale count and
                 # saves one sha256 compute on the next render.
                 self._invalidate_token_count_cache(target_entry)
+                # Same reason for the embedding cache — a stale vector
+                # would silently match the old wording in cosine
+                # candidate generation.
+                self._invalidate_embedding_cache(target_entry)
 
             # _sync_save: cloudsave gate + write + cache-evict-on-failure
             # (CodeRabbit PR #936 round-5 Major #1). See
@@ -1642,12 +1660,11 @@ class PersonaManager:
                             existing['text'] = merged_text
                             existing['version_history'] = list(prior_history) + [history_entry]
                             # Text changed → invalidate the derived
-                            # token-count cache so the next render recomputes
-                            # against the new text instead of serving a
-                            # stale count tied to old_text's sha.
-                            existing['token_count'] = None
-                            existing['token_count_text_sha256'] = None
-                            existing['token_count_tokenizer'] = None
+                            # caches so the next render recomputes
+                            # against the new text instead of serving
+                            # stale counts/vectors tied to old_text.
+                            self._invalidate_token_count_cache(existing)
+                            self._invalidate_embedding_cache(existing)
                             section_facts[j] = self._normalize_entry(existing)
                         else:
                             # Legacy str entry — no metadata to preserve;
@@ -1975,6 +1992,20 @@ class PersonaManager:
         entry['token_count'] = None
         entry['token_count_text_sha256'] = None
         entry['token_count_tokenizer'] = None
+
+    @staticmethod
+    def _invalidate_embedding_cache(entry: dict) -> None:
+        """Drop the cached vector triple alongside the token-count cache.
+
+        Called by every path that rewrites ``entry['text']`` — leaving
+        a stale vector pointing at old_text would silently corrupt the
+        retrieval candidate set (cosine matches would map to text the
+        user never said). Same shape as ``_invalidate_token_count_cache``
+        so callers can wipe both caches in two adjacent lines.
+        """
+        entry['embedding'] = None
+        entry['embedding_text_sha256'] = None
+        entry['embedding_model_id'] = None
 
     @classmethod
     def _score_trim_entries(
