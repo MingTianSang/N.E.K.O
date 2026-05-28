@@ -5814,6 +5814,12 @@ async def proactive_chat(request: Request):
 
         async def _fetch_music_with_fallback(kw: str):
             """用 LLM 关键词搜索音乐，失败则随机推荐"""
+            kw = (kw or "").strip()
+            if not kw:
+                try:
+                    return await fetch_music_content(keyword="", limit=5)
+                except Exception:
+                    return None
             try:
                 raw = await fetch_music_content(keyword=kw, limit=5)
                 if raw and raw.get('success'):
@@ -5833,6 +5839,18 @@ async def proactive_chat(request: Request):
             （描述了梗内容，下游话题会带上它）；走随机热词兜底时置空，避免谎报
             "这是关于 X 的图"。
             """
+            kw = (kw or "").strip()
+            if not kw:
+                try:
+                    raw = await asyncio.wait_for(
+                        fetch_meme_content(keyword="", limit=_PHASE1_FETCH_PER_SOURCE),
+                        timeout=12.0
+                    )
+                    if raw:
+                        raw['effective_keyword'] = ""
+                    return raw
+                except Exception:
+                    return None
             try:
                 raw = await asyncio.wait_for(
                     fetch_meme_content(keyword=kw, limit=_PHASE1_FETCH_PER_SOURCE),

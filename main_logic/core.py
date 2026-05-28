@@ -864,6 +864,8 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
         self.session_start_max_failures = 3  # 最大连续失败次数
+        self.session_runtime_disconnect_count = 0
+        self.session_runtime_disconnect_recent_seconds = 10.0
         # 熔断：达到 max_failures 后必须等用户显式触发 start_session（刷新页面/点重试）
         # 才会清。中间任何内部 recovery 路径都被早退拦截，避免日志被刷屏。
         self._session_start_circuit_open = False
@@ -2787,8 +2789,11 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
             elif '1008' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
+            elif 'control frame too long' in message_text_lower or '1002' in message_text_lower:
+                await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": message_text}}))
             else:
                 await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
+        await self._record_runtime_disconnect_failure(str(message or ""))
         logger.info("💥 Session closed by API Server.")
         await self.disconnected_by_server(expected_session=expected_session)
     
@@ -3871,6 +3876,64 @@ class LLMSessionManager:
             return None
         return self._starting_input_mode
 
+    async def _record_runtime_disconnect_failure(self, message_text: str) -> None:
+        """把启动后立刻断开的 realtime 会话计入熔断保护。"""
+        if self.input_mode != 'audio':
+            return
+        lower = str(message_text or "").lower()
+        is_protocol_error = 'control frame too long' in lower or '1002' in lower
+        elapsed = None
+        if self.session_start_time:
+            try:
+                elapsed = (datetime.now() - self.session_start_time).total_seconds()
+            except Exception:
+                elapsed = None
+        is_recent_disconnect = (
+            elapsed is not None
+            and elapsed <= self.session_runtime_disconnect_recent_seconds
+        )
+        if not is_protocol_error and not is_recent_disconnect:
+            return
+
+        self.session_runtime_disconnect_count += 1
+        self.session_start_last_failure_time = datetime.now()
+        count = self.session_runtime_disconnect_count
+        logger.warning(
+            "[%s] realtime session disconnected during startup window count=%d/%d elapsed=%s reason=%s",
+            self.lanlan_name,
+            count,
+            self.session_start_max_failures,
+            f"{elapsed:.2f}s" if elapsed is not None else "unknown",
+            (message_text or "")[:160],
+        )
+        if count >= self.session_start_max_failures and not self._session_start_circuit_open:
+            self._session_start_circuit_open = True
+            logger.critical(
+                "[%s] realtime session disconnected %d times; auto-retry stopped",
+                self.lanlan_name,
+                count,
+            )
+            await self.send_status(json.dumps({
+                "code": "SESSION_START_CRITICAL",
+                "details": {"count": count},
+            }))
+
+    async def _reset_runtime_disconnect_failures_when_healthy(self, session_ref, input_mode: str) -> None:
+        """语音会话稳定存活一小段时间后，清掉启动期断连计数。"""
+        if input_mode != 'audio':
+            return
+        await asyncio.sleep(self.session_runtime_disconnect_recent_seconds)
+        async with self.lock:
+            if self.session is not session_ref or not self.is_active:
+                return
+            if self.session_runtime_disconnect_count:
+                logger.info(
+                    "[%s] realtime session healthy for %.1fs, reset startup disconnect count",
+                    self.lanlan_name,
+                    self.session_runtime_disconnect_recent_seconds,
+                )
+            self.session_runtime_disconnect_count = 0
+
     def reset_session_start_circuit(self) -> None:
         """清掉熔断 + 失败计数 + memory 冷却。仅供 websocket_router 在收到用户
         显式 start_session action 时调用——这等价于"用户看到 CRITICAL 后选择重试，
@@ -3883,6 +3946,7 @@ class LLMSessionManager:
             logger.info(f"🔄 重置 session 启动熔断 (之前失败 {self.session_start_failure_count} 次)")
         self._session_start_circuit_open = False
         self.session_start_failure_count = 0
+        self.session_runtime_disconnect_count = 0
         self.session_start_last_failure_time = None
         self._memory_error_retry_after = 0
 
@@ -4529,6 +4593,9 @@ class LLMSessionManager:
 
                 # 启动消息处理任务
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+                self._fire_task(
+                    self._reset_runtime_disconnect_failures_when_healthy(self.session, input_mode)
+                )
                 
                 # 启动成功，重置失败计数器和熔断
                 self.session_start_failure_count = 0
@@ -6841,6 +6908,14 @@ class LLMSessionManager:
     async def disconnected_by_server(self, *, expected_session=None):
         if expected_session is not None and expected_session is not self.session:
             logger.info("⏭️ disconnected_by_server: expected_session stale, skipping")
+            return
+        # 熔断已打开时只通知会话结束，不再发送 CHARACTER_DISCONNECTED。
+        # 前端收到 CHARACTER_DISCONNECTED 会自动重启语音会话，会绕过这里刚建立的
+        # 后端熔断，重新进入短断线循环。
+        if self._session_start_circuit_open:
+            await self.send_session_ended_by_server()
+            self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
+            await self.cleanup(expected_session=expected_session)
             return
         await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
         await self.send_session_ended_by_server()

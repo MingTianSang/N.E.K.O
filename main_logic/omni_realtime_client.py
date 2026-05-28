@@ -9,6 +9,7 @@ import time
 import wave
 import numpy as np
 from pathlib import Path
+from urllib.parse import urlparse
 
 from typing import Optional, Callable, Dict, Any, Awaitable, List
 from enum import Enum
@@ -80,6 +81,26 @@ def _ensure_gemini_sdk() -> bool:
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+_WS_PROXY_BYPASS_HOSTS = {
+    "127.0.0.1",
+    "localhost",
+    "::1",
+    "dashscope.aliyuncs.com",
+    "dashscope-intl.aliyuncs.com",
+    "dashscope-us.aliyuncs.com",
+}
+
+
+def _websocket_connect_kwargs_for_url(url: str) -> Dict[str, Any]:
+    """为特定 realtime WebSocket 构造连接参数。"""
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    if host in _WS_PROXY_BYPASS_HOSTS:
+        return {"proxy": None}
+    return {}
 
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
@@ -750,7 +771,13 @@ class OmniRealtimeClient:
         # close_timeout=0.5 缩短 close handshake 的等待上限：默认 10s 会把
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
-        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        connect_kwargs = _websocket_connect_kwargs_for_url(url)
+        self.ws = await websockets.connect(
+            url,
+            additional_headers=headers,
+            close_timeout=0.5,
+            **connect_kwargs,
+        )
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).

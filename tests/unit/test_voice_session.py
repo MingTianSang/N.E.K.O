@@ -8,10 +8,32 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
+from main_logic.omni_realtime_client import (
+    OmniRealtimeClient,
+    TurnDetectionMode,
+    _websocket_connect_kwargs_for_url,
+)
 
 # Dummy WAV header + silence for testing audio streaming
 DUMMY_AUDIO_CHUNK = b'\x00' * 1024
+
+
+@pytest.mark.unit
+def test_websocket_connect_kwargs_bypass_dashscope_proxy():
+    kwargs = _websocket_connect_kwargs_for_url(
+        "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen"
+    )
+
+    assert kwargs == {"proxy": None}
+
+
+@pytest.mark.unit
+def test_websocket_connect_kwargs_keeps_default_proxy_for_other_hosts():
+    kwargs = _websocket_connect_kwargs_for_url(
+        "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+    )
+
+    assert kwargs == {}
 
 
 @pytest.fixture
