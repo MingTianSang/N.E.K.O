@@ -4704,5 +4704,98 @@
             "label": "이번 경기를 기억에 저장 (기본 꺼짐)",
             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 응답, 이벤트 반응, 경기 후 요약, 이어지는 대화 모두 기억에 저장되거나 참조되지 않습니다."
         }
+    },
+    "drawingGuess": {
+        "title": "그림 맞히기",
+        "subtitle": "NEKO와 번갈아 그리고 맞히기",
+        "hud": {
+            "round": "라운드",
+            "timer": "시간",
+            "user": "나"
+        },
+        "status": {
+            "ready": "준비됨",
+            "loading": "게임 시작 중...",
+            "nekoDrawing": "{{name}} 그리는 중",
+            "userGuessing": "{{name}}가 그린 것을 맞혀 봐",
+            "userDrawing": "그릴 단어: {{answer}}",
+            "nekoGuessing": "{{name}} 추리 중",
+            "complete": "라운드 완료",
+            "ended": "게임 종료"
+        },
+        "phase": {
+            "ready": "준비",
+            "nekoDrawing": "NEKO 그림",
+            "userGuessing": "내가 맞히기",
+            "userDrawing": "내가 그리기",
+            "nekoGuessing": "NEKO 맞히기",
+            "roundComplete": "완료"
+        },
+        "actions": {
+            "done": "다 그렸어",
+            "nextRound": "다음",
+            "end": "끝내기",
+            "saveUser": "내 그림 저장",
+            "saveNeko": "NEKO 그림 저장"
+        },
+        "tools": {
+            "brush": "붓",
+            "eraser": "지우개",
+            "undo": "실행 취소",
+            "redo": "다시 실행",
+            "clear": "지우기",
+            "size": "크기"
+        },
+        "colors": {
+            "black": "검정",
+            "red": "빨강",
+            "green": "초록",
+            "blue": "파랑",
+            "yellow": "노랑"
+        },
+        "chat": {
+            "title": "게임 채팅",
+            "placeholder": "추측을 입력하거나 NEKO와 대화",
+            "send": "전송",
+            "voice": "음성",
+            "placeholderReady": "NEKO? ????? ?? ???? ?????",
+            "placeholderUserGuessing": "??? ????? ??? ????? ?????",
+            "placeholderUserDrawing": "???? NEKO? ???? ???",
+            "placeholderNekoGuessing": "NEKO? ?? ???. ??? ??? ?? ??",
+            "placeholderComplete": "??? ??. ????? ?? ???? ???"
+        },
+        "messages": {
+            "welcome": "게임 시작. 여기서 채팅하거나 힌트를 요청하고 바로 추측할 수 있어.",
+            "nekoDrawing": "{{name}}가 SVG로 그림을 그리고 있어.",
+            "userDrawing": "단어는 {{answer}}. 답을 글자로 쓰지 말고 그려 줘.",
+            "userSaved": "내 그림을 다운로드했어.",
+            "nekoSaved": "NEKO 그림을 다운로드했어.",
+            "noNekoDrawing": "아직 저장할 NEKO 그림이 없어.",
+            "noUserDrawing": "저장하기 전에 먼저 그려 줘.",
+            "voiceUnavailable": "이 브라우저는 음성 입력을 지원하지 않아.",
+            "voiceListening": "듣는 중...",
+            "timeout": "시간 종료.",
+            "routeFailed": "게임 라우트 시작에 실패했지만 demo는 계속 실행할 수 있어."
+        },
+        "answer": {
+            "label": "정답"
+        },
+        "aria": {
+            "stage": "그림 영역",
+            "aiDrawing": "AI 그림",
+            "userCanvas": "사용자 캔버스",
+            "tools": "그림 도구",
+            "chat": "게임 채팅"
+        },
+        "result": {
+            "title": "??? ??",
+            "answer": "??",
+            "score": "??",
+            "userCorrect": "????.",
+            "userTimeout": "?? ???? ??? ????.",
+            "nekoCorrect": "{{name}}? ????.",
+            "nekoWrong": "{{name}}? ??? ? ????.",
+            "generic": "?? ???? ????."
+        }
     }
 }

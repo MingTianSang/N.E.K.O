@@ -212,5 +212,7 @@ def test_basketball_demo_memory_toggle_and_payload_contract():
     assert "gameMemoryArchiveEnabled: enabled" in html
     assert "game_memory_postgame_context_enabled: enabled" in html
     assert "gameMemoryToggle.checked === true" in html
-    assert "localStorage.getItem('bb_record')" in html
-    assert "event: Object.assign({}, event, _basketballGameMemoryPolicyPayload())" in html
+    assert "readJson('bb_leaderboard', { personal_best: null, recent_games: [] })" in html
+    assert "localStorage.getItem('bb_record')" not in html
+    assert "event: Object.assign({}, event, _basketballGameMemoryPolicyPayload(), {" in html
+    assert "event: Object.assign({}, buildNekoDuelTurnEvent(), _basketballGameMemoryPolicyPayload())" in html

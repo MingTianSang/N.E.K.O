@@ -3349,6 +3349,15 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
         "es": "{master_name}, ¿quieres probar un reto rápido de tiros de baloncesto conmigo?",
         "pt": "{master_name}, quer tentar um desafio rápido de arremessos de basquete comigo?",
     },
+    "drawing_guess": {
+        "zh": "{master_name}，要不要玩一局你画我猜？这次换我也来画。",
+        "en": "{master_name}, want to play a quick draw-and-guess round with me?",
+        "ja": "{master_name}、今ちょっとお絵かき当てゲームしない？",
+        "ko": "{master_name}, 지금 같이 그림 맞히기 한 판 어때?",
+        "ru": "{master_name}, хочешь сыграть со мной в короткую игру «нарисуй и угадай»?",
+        "es": "{master_name}, ¿quieres jugar una ronda rápida de dibujar y adivinar conmigo?",
+        "pt": "{master_name}, quer jogar uma rodada rápida de desenhar e adivinhar comigo?",
+    },
 }
 
 # ---------- Mini-game 邀请三选项按钮 ----------

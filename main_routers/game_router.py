@@ -31,10 +31,12 @@ import re
 import shutil
 import sqlite3
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+from xml.etree import ElementTree as ET
 from urllib.parse import urlparse
 
 
@@ -169,6 +171,357 @@ _BASKETBALL_LEGACY_SCORES_DB_PATH = Path(__file__).resolve().with_name("basketba
 _BASKETBALL_SCORES_DB_MIGRATED = False
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
 _MAX_GAME_MEMORY_TAIL_COUNT = 50
+
+_DRAWING_GUESS_DRAW_SECONDS = 60
+_DRAWING_GUESS_GUESS_SECONDS = 60
+_DRAWING_GUESS_SESSION_TTL_SECONDS = 2 * 60 * 60
+_DRAWING_GUESS_CANVAS_VIEWBOX = "0 0 800 500"
+_drawing_guess_sessions: Dict[str, dict] = {}
+
+_DRAWING_GUESS_WORDS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "apple",
+        "category": "food",
+        "labels": {
+            "zh-CN": "苹果", "zh-TW": "蘋果", "en": "apple", "ja": "りんご",
+            "ko": "사과", "ru": "яблоко", "es": "manzana", "pt": "maçã",
+        },
+        "aliases": {
+            "zh-CN": ["红苹果", "水果"], "zh-TW": ["紅蘋果", "水果"],
+            "en": ["red apple", "fruit"], "ja": ["林檎"], "ko": ["빨간 사과"],
+            "ru": ["красное яблоко"], "es": ["fruta"], "pt": ["fruta"],
+        },
+        "hint": {
+            "zh-CN": "它是一种常见水果，通常圆圆的。",
+            "zh-TW": "它是一種常見水果，通常圓圓的。",
+            "en": "It is a common round fruit.",
+            "ja": "よくある丸い果物だよ。",
+            "ko": "흔한 둥근 과일이야.",
+            "ru": "Это обычный круглый фрукт.",
+            "es": "Es una fruta común y redonda.",
+            "pt": "É uma fruta comum e redonda.",
+        },
+    },
+    {
+        "id": "cat",
+        "category": "animal",
+        "labels": {
+            "zh-CN": "猫", "zh-TW": "貓", "en": "cat", "ja": "猫",
+            "ko": "고양이", "ru": "кот", "es": "gato", "pt": "gato",
+        },
+        "aliases": {
+            "zh-CN": ["小猫", "猫咪"], "zh-TW": ["小貓", "貓咪"],
+            "en": ["kitty", "kitten"], "ja": ["ねこ"], "ko": ["냥이"],
+            "ru": ["кошка", "котик"], "es": ["gatito"], "pt": ["gatinho"],
+        },
+        "hint": {
+            "zh-CN": "它会喵喵叫，耳朵尖尖的。",
+            "zh-TW": "它會喵喵叫，耳朵尖尖的。",
+            "en": "It meows and has pointy ears.",
+            "ja": "にゃあと鳴いて、耳がとがってる。",
+            "ko": "야옹 하고 울고 귀가 뾰족해.",
+            "ru": "Оно мяукает и с острыми ушами.",
+            "es": "Maúlla y tiene orejas puntiagudas.",
+            "pt": "Mia e tem orelhas pontudas.",
+        },
+    },
+    {
+        "id": "umbrella",
+        "category": "object",
+        "labels": {
+            "zh-CN": "雨伞", "zh-TW": "雨傘", "en": "umbrella", "ja": "傘",
+            "ko": "우산", "ru": "зонт", "es": "paraguas", "pt": "guarda-chuva",
+        },
+        "aliases": {
+            "zh-CN": ["伞"], "zh-TW": ["傘"], "en": ["rain umbrella"],
+            "ja": ["かさ"], "ko": ["비우산"], "ru": ["зонтик"],
+            "es": ["sombrilla"], "pt": ["sombrinha"],
+        },
+        "hint": {
+            "zh-CN": "下雨时会把它撑开。",
+            "zh-TW": "下雨時會把它撐開。",
+            "en": "You open it when it rains.",
+            "ja": "雨の日に開くものだよ。",
+            "ko": "비 오는 날 펼치는 거야.",
+            "ru": "Его раскрывают во время дождя.",
+            "es": "Lo abres cuando llueve.",
+            "pt": "Você abre quando chove.",
+        },
+    },
+    {
+        "id": "car",
+        "category": "vehicle",
+        "labels": {
+            "zh-CN": "汽车", "zh-TW": "汽車", "en": "car", "ja": "車",
+            "ko": "자동차", "ru": "машина", "es": "coche", "pt": "carro",
+        },
+        "aliases": {
+            "zh-CN": ["小汽车", "车"], "zh-TW": ["小汽車", "車"],
+            "en": ["automobile"], "ja": ["くるま"], "ko": ["차"],
+            "ru": ["автомобиль"], "es": ["auto"], "pt": ["automóvel"],
+        },
+        "hint": {
+            "zh-CN": "它有轮子，可以载人到处跑。",
+            "zh-TW": "它有輪子，可以載人到處跑。",
+            "en": "It has wheels and carries people around.",
+            "ja": "車輪があって、人を乗せて走るよ。",
+            "ko": "바퀴가 있고 사람을 태워 가.",
+            "ru": "У него есть колёса, оно возит людей.",
+            "es": "Tiene ruedas y lleva personas.",
+            "pt": "Tem rodas e leva pessoas.",
+        },
+    },
+    {
+        "id": "sun",
+        "category": "nature",
+        "labels": {
+            "zh-CN": "太阳", "zh-TW": "太陽", "en": "sun", "ja": "太陽",
+            "ko": "태양", "ru": "солнце", "es": "sol", "pt": "sol",
+        },
+        "aliases": {
+            "zh-CN": ["日头"], "zh-TW": ["日頭"], "en": ["sunshine"],
+            "ja": ["お日さま"], "ko": ["해"], "ru": ["солнышко"],
+            "es": ["solecito"], "pt": ["luz do sol"],
+        },
+        "hint": {
+            "zh-CN": "白天抬头常能看到它，很亮。",
+            "zh-TW": "白天抬頭常能看到它，很亮。",
+            "en": "You often see it in the daytime sky.",
+            "ja": "昼の空で明るく光ってるよ。",
+            "ko": "낮 하늘에서 밝게 보여.",
+            "ru": "Днём оно ярко светит в небе.",
+            "es": "Brilla en el cielo de día.",
+            "pt": "Brilha no céu durante o dia.",
+        },
+    },
+    {
+        "id": "cake",
+        "category": "food",
+        "labels": {
+            "zh-CN": "蛋糕", "zh-TW": "蛋糕", "en": "cake", "ja": "ケーキ",
+            "ko": "케이크", "ru": "торт", "es": "pastel", "pt": "bolo",
+        },
+        "aliases": {
+            "zh-CN": ["生日蛋糕"], "zh-TW": ["生日蛋糕"], "en": ["birthday cake"],
+            "ja": ["誕生日ケーキ"], "ko": ["생일 케이크"], "ru": ["пирог"],
+            "es": ["tarta"], "pt": ["bolo de aniversário"],
+        },
+        "hint": {
+            "zh-CN": "庆祝生日时常会吃它。",
+            "zh-TW": "慶祝生日時常會吃它。",
+            "en": "People often eat it on birthdays.",
+            "ja": "誕生日によく食べる甘いもの。",
+            "ko": "생일에 자주 먹는 달콤한 거야.",
+            "ru": "Его часто едят на день рождения.",
+            "es": "Se come mucho en cumpleaños.",
+            "pt": "É comum em aniversários.",
+        },
+    },
+)
+
+_DRAWING_GUESS_LOCALES = ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es")
+
+
+def _drawing_guess_make_word(
+    word_id: str,
+    category: str,
+    labels: dict[str, str],
+    hints: dict[str, str],
+    aliases: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    alias_map = aliases or {}
+    return {
+        "id": word_id,
+        "category": category,
+        "labels": {locale: labels[locale] for locale in _DRAWING_GUESS_LOCALES},
+        "aliases": {
+            locale: list(alias_map.get(locale) or [labels[locale]])
+            for locale in _DRAWING_GUESS_LOCALES
+        },
+        "hint": {locale: hints[locale] for locale in _DRAWING_GUESS_LOCALES},
+    }
+
+
+_DRAWING_GUESS_EXTRA_WORDS: tuple[dict[str, Any], ...] = (
+    _drawing_guess_make_word(
+        "dog", "animal",
+        {"en": "dog", "ja": "犬", "ko": "강아지", "zh-CN": "狗", "zh-TW": "狗", "ru": "собака", "pt": "cachorro", "es": "perro"},
+        {"en": "It barks and likes walks.", "ja": "散歩が好きで、わんわん鳴く動物。", "ko": "산책을 좋아하고 멍멍 짖는 동물이에요.", "zh-CN": "它会汪汪叫，也喜欢散步。", "zh-TW": "牠會汪汪叫，也喜歡散步。", "ru": "Оно лает и любит прогулки.", "pt": "Ele late e gosta de passear.", "es": "Ladra y le gusta pasear."},
+        {"en": ["puppy"], "ja": ["子犬"], "ko": ["개"], "zh-CN": ["小狗"], "zh-TW": ["小狗"], "ru": ["пес"], "pt": ["cão"], "es": ["can"]},
+    ),
+    _drawing_guess_make_word(
+        "fish", "animal",
+        {"en": "fish", "ja": "魚", "ko": "물고기", "zh-CN": "鱼", "zh-TW": "魚", "ru": "рыба", "pt": "peixe", "es": "pez"},
+        {"en": "It swims and usually lives in water.", "ja": "水の中を泳ぐ生き物。", "ko": "물속에서 헤엄치는 생물이에요.", "zh-CN": "它在水里游来游去。", "zh-TW": "牠在水裡游來游去。", "ru": "Она плавает и живет в воде.", "pt": "Ele nada e vive na água.", "es": "Nada y vive en el agua."},
+    ),
+    _drawing_guess_make_word(
+        "bird", "animal",
+        {"en": "bird", "ja": "鳥", "ko": "새", "zh-CN": "鸟", "zh-TW": "鳥", "ru": "птица", "pt": "pássaro", "es": "pájaro"},
+        {"en": "It has wings and can often fly.", "ja": "羽があって、空を飛ぶことが多いよ。", "ko": "날개가 있고 하늘을 나는 경우가 많아요.", "zh-CN": "它有翅膀，常常会飞。", "zh-TW": "牠有翅膀，常常會飛。", "ru": "У нее есть крылья, и она часто летает.", "pt": "Tem asas e muitas vezes voa.", "es": "Tiene alas y suele volar."},
+    ),
+    _drawing_guess_make_word(
+        "rabbit", "animal",
+        {"en": "rabbit", "ja": "うさぎ", "ko": "토끼", "zh-CN": "兔子", "zh-TW": "兔子", "ru": "кролик", "pt": "coelho", "es": "conejo"},
+        {"en": "It has long ears and hops around.", "ja": "長い耳でぴょんぴょん跳ねるよ。", "ko": "긴 귀가 있고 깡충깡충 뛰어요.", "zh-CN": "它耳朵长长的，会蹦蹦跳跳。", "zh-TW": "牠耳朵長長的，會蹦蹦跳跳。", "ru": "У него длинные уши, он прыгает.", "pt": "Tem orelhas longas e pula.", "es": "Tiene orejas largas y salta."},
+    ),
+    _drawing_guess_make_word(
+        "mouse", "animal",
+        {"en": "mouse", "ja": "ねずみ", "ko": "쥐", "zh-CN": "老鼠", "zh-TW": "老鼠", "ru": "мышь", "pt": "rato", "es": "ratón"},
+        {"en": "It is small, quick, and has a thin tail.", "ja": "小さくてすばしっこく、細いしっぽがある。", "ko": "작고 빠르며 가느다란 꼬리가 있어요.", "zh-CN": "它小小的，跑得快，还有细尾巴。", "zh-TW": "牠小小的，跑得快，還有細尾巴。", "ru": "Она маленькая, быстрая, с тонким хвостом.", "pt": "É pequeno, rápido e tem cauda fina.", "es": "Es pequeño, rápido y tiene cola fina."},
+    ),
+    _drawing_guess_make_word(
+        "turtle", "animal",
+        {"en": "turtle", "ja": "亀", "ko": "거북이", "zh-CN": "乌龟", "zh-TW": "烏龜", "ru": "черепаха", "pt": "tartaruga", "es": "tortuga"},
+        {"en": "It carries a hard shell on its back.", "ja": "背中に硬い甲羅を背負っている。", "ko": "등에 단단한 등껍질이 있어요.", "zh-CN": "它背着硬硬的壳。", "zh-TW": "牠背著硬硬的殼。", "ru": "У нее твердый панцирь на спине.", "pt": "Carrega um casco duro nas costas.", "es": "Lleva un caparazón duro en la espalda."},
+    ),
+    _drawing_guess_make_word(
+        "banana", "food",
+        {"en": "banana", "ja": "バナナ", "ko": "바나나", "zh-CN": "香蕉", "zh-TW": "香蕉", "ru": "банан", "pt": "banana", "es": "plátano"},
+        {"en": "It is a curved yellow fruit.", "ja": "黄色くて曲がった果物。", "ko": "노랗고 휘어진 과일이에요.", "zh-CN": "它是弯弯的黄色水果。", "zh-TW": "它是彎彎的黃色水果。", "ru": "Это желтый изогнутый фрукт.", "pt": "É uma fruta amarela e curva.", "es": "Es una fruta amarilla y curva."},
+    ),
+    _drawing_guess_make_word(
+        "carrot", "food",
+        {"en": "carrot", "ja": "にんじん", "ko": "당근", "zh-CN": "胡萝卜", "zh-TW": "胡蘿蔔", "ru": "морковь", "pt": "cenoura", "es": "zanahoria"},
+        {"en": "It is orange and grows under the ground.", "ja": "オレンジ色で土の中に育つ野菜。", "ko": "주황색이고 땅속에서 자라는 채소예요.", "zh-CN": "它是橙色的，长在土里。", "zh-TW": "它是橙色的，長在土裡。", "ru": "Она оранжевая и растет в земле.", "pt": "É laranja e cresce debaixo da terra.", "es": "Es naranja y crece bajo tierra."},
+    ),
+    _drawing_guess_make_word(
+        "hamburger", "food",
+        {"en": "hamburger", "ja": "ハンバーガー", "ko": "햄버거", "zh-CN": "汉堡", "zh-TW": "漢堡", "ru": "бургер", "pt": "hambúrguer", "es": "hamburguesa"},
+        {"en": "It has bread on top and filling inside.", "ja": "パンで具をはさんだ食べ物。", "ko": "빵 사이에 속재료가 들어간 음식이에요.", "zh-CN": "它用面包夹着很多馅料。", "zh-TW": "它用麵包夾著很多餡料。", "ru": "В нем булочка и начинка внутри.", "pt": "Tem pão e recheio no meio.", "es": "Tiene pan y relleno en medio."},
+        {"en": ["burger"], "ja": ["バーガー"], "ko": ["버거"], "zh-CN": ["汉堡包"], "zh-TW": ["漢堡包"], "ru": ["гамбургер"], "pt": ["burger"], "es": ["burger"]},
+    ),
+    _drawing_guess_make_word(
+        "ice_cream", "food",
+        {"en": "ice cream", "ja": "アイスクリーム", "ko": "아이스크림", "zh-CN": "冰淇淋", "zh-TW": "冰淇淋", "ru": "мороженое", "pt": "sorvete", "es": "helado"},
+        {"en": "It is cold, sweet, and melts easily.", "ja": "冷たくて甘く、すぐ溶ける。", "ko": "차갑고 달콤하며 쉽게 녹아요.", "zh-CN": "它凉凉甜甜的，很容易融化。", "zh-TW": "它涼涼甜甜的，很容易融化。", "ru": "Оно холодное, сладкое и быстро тает.", "pt": "É frio, doce e derrete fácil.", "es": "Es frío, dulce y se derrite fácil."},
+    ),
+    _drawing_guess_make_word(
+        "pizza", "food",
+        {"en": "pizza", "ja": "ピザ", "ko": "피자", "zh-CN": "披萨", "zh-TW": "披薩", "ru": "пицца", "pt": "pizza", "es": "pizza"},
+        {"en": "It is a round food often cut into triangles.", "ja": "丸くて三角に切られることが多い食べ物。", "ko": "둥글고 삼각 조각으로 자주 나눠요.", "zh-CN": "它常常是圆的，会切成三角块。", "zh-TW": "它常常是圓的，會切成三角塊。", "ru": "Ее часто режут треугольными кусками.", "pt": "Costuma ser redonda e cortada em fatias.", "es": "Suele ser redonda y cortada en porciones."},
+    ),
+    _drawing_guess_make_word(
+        "cup", "object",
+        {"en": "cup", "ja": "コップ", "ko": "컵", "zh-CN": "杯子", "zh-TW": "杯子", "ru": "чашка", "pt": "copo", "es": "taza"},
+        {"en": "You use it to drink.", "ja": "飲み物を入れるもの。", "ko": "마실 것을 담는 물건이에요.", "zh-CN": "它用来装喝的东西。", "zh-TW": "它用來裝喝的東西。", "ru": "Из нее пьют.", "pt": "Serve para beber.", "es": "Sirve para beber."},
+    ),
+    _drawing_guess_make_word(
+        "book", "object",
+        {"en": "book", "ja": "本", "ko": "책", "zh-CN": "书", "zh-TW": "書", "ru": "книга", "pt": "livro", "es": "libro"},
+        {"en": "It has pages you can read.", "ja": "読むためのページがある。", "ko": "읽을 수 있는 페이지가 있어요.", "zh-CN": "它有很多页，可以阅读。", "zh-TW": "它有很多頁，可以閱讀。", "ru": "В ней есть страницы для чтения.", "pt": "Tem páginas para ler.", "es": "Tiene páginas para leer."},
+    ),
+    _drawing_guess_make_word(
+        "key", "object",
+        {"en": "key", "ja": "鍵", "ko": "열쇠", "zh-CN": "钥匙", "zh-TW": "鑰匙", "ru": "ключ", "pt": "chave", "es": "llave"},
+        {"en": "It opens a lock.", "ja": "鍵穴に入れて開けるもの。", "ko": "잠긴 것을 여는 물건이에요.", "zh-CN": "它可以打开锁。", "zh-TW": "它可以打開鎖。", "ru": "Им открывают замок.", "pt": "Abre uma fechadura.", "es": "Abre una cerradura."},
+    ),
+    _drawing_guess_make_word(
+        "glasses", "object",
+        {"en": "glasses", "ja": "眼鏡", "ko": "안경", "zh-CN": "眼镜", "zh-TW": "眼鏡", "ru": "очки", "pt": "óculos", "es": "gafas"},
+        {"en": "People wear them on the face to see better.", "ja": "よく見るために顔にかけるもの。", "ko": "잘 보기 위해 얼굴에 쓰는 물건이에요.", "zh-CN": "戴在脸上，帮助看得更清楚。", "zh-TW": "戴在臉上，幫助看得更清楚。", "ru": "Их носят на лице, чтобы лучше видеть.", "pt": "Usa-se no rosto para ver melhor.", "es": "Se usan en la cara para ver mejor."},
+    ),
+    _drawing_guess_make_word(
+        "chair", "object",
+        {"en": "chair", "ja": "椅子", "ko": "의자", "zh-CN": "椅子", "zh-TW": "椅子", "ru": "стул", "pt": "cadeira", "es": "silla"},
+        {"en": "You sit on it.", "ja": "座るための家具。", "ko": "앉기 위한 가구예요.", "zh-CN": "它是用来坐的。", "zh-TW": "它是用來坐的。", "ru": "На нем сидят.", "pt": "Você senta nela.", "es": "Te sientas en ella."},
+    ),
+    _drawing_guess_make_word(
+        "phone", "object",
+        {"en": "phone", "ja": "電話", "ko": "전화기", "zh-CN": "手机", "zh-TW": "手機", "ru": "телефон", "pt": "telefone", "es": "teléfono"},
+        {"en": "You can call or send messages with it.", "ja": "電話したりメッセージを送ったりできる。", "ko": "전화하거나 메시지를 보낼 수 있어요.", "zh-CN": "可以打电话，也可以发消息。", "zh-TW": "可以打電話，也可以發訊息。", "ru": "С ним звонят и отправляют сообщения.", "pt": "Serve para ligar e mandar mensagens.", "es": "Sirve para llamar y enviar mensajes."},
+        {"en": ["mobile phone"], "ja": ["スマホ"], "ko": ["휴대폰"], "zh-CN": ["电话"], "zh-TW": ["電話"], "ru": ["смартфон"], "pt": ["celular"], "es": ["móvil"]},
+    ),
+    _drawing_guess_make_word(
+        "bicycle", "vehicle",
+        {"en": "bicycle", "ja": "自転車", "ko": "자전거", "zh-CN": "自行车", "zh-TW": "自行車", "ru": "велосипед", "pt": "bicicleta", "es": "bicicleta"},
+        {"en": "It has two wheels and pedals.", "ja": "二つの車輪とペダルがある。", "ko": "바퀴 두 개와 페달이 있어요.", "zh-CN": "它有两个轮子和脚踏板。", "zh-TW": "它有兩個輪子和腳踏板。", "ru": "У него два колеса и педали.", "pt": "Tem duas rodas e pedais.", "es": "Tiene dos ruedas y pedales."},
+        {"en": ["bike"], "ja": ["チャリ"], "ko": ["자전차"], "zh-CN": ["单车"], "zh-TW": ["單車"], "ru": ["велик"], "pt": ["bike"], "es": ["bici"]},
+    ),
+    _drawing_guess_make_word(
+        "train", "vehicle",
+        {"en": "train", "ja": "電車", "ko": "기차", "zh-CN": "火车", "zh-TW": "火車", "ru": "поезд", "pt": "trem", "es": "tren"},
+        {"en": "It runs on rails with many cars.", "ja": "線路の上を長くつながって走る。", "ko": "철로 위를 여러 칸이 이어져 달려요.", "zh-CN": "它沿着铁轨跑，车厢一节一节。", "zh-TW": "它沿著鐵軌跑，車廂一節一節。", "ru": "Он едет по рельсам с вагонами.", "pt": "Anda nos trilhos com vários vagões.", "es": "Va por vías con varios vagones."},
+    ),
+    _drawing_guess_make_word(
+        "airplane", "vehicle",
+        {"en": "airplane", "ja": "飛行機", "ko": "비행기", "zh-CN": "飞机", "zh-TW": "飛機", "ru": "самолет", "pt": "avião", "es": "avión"},
+        {"en": "It flies in the sky and has wings.", "ja": "翼があって空を飛ぶ乗り物。", "ko": "날개가 있고 하늘을 나는 탈것이에요.", "zh-CN": "它有翅膀，在天上飞。", "zh-TW": "它有翅膀，在天上飛。", "ru": "Он летает в небе и имеет крылья.", "pt": "Voa no céu e tem asas.", "es": "Vuela en el cielo y tiene alas."},
+        {"en": ["plane"], "ja": ["飛行機"], "ko": ["항공기"], "zh-CN": ["航空飞机"], "zh-TW": ["航空飛機"], "ru": ["самолёт"], "pt": ["aeronave"], "es": ["aeroplano"]},
+    ),
+    _drawing_guess_make_word(
+        "boat", "vehicle",
+        {"en": "boat", "ja": "船", "ko": "배", "zh-CN": "船", "zh-TW": "船", "ru": "лодка", "pt": "barco", "es": "barco"},
+        {"en": "It travels on water.", "ja": "水の上を進む乗り物。", "ko": "물 위를 다니는 탈것이에요.", "zh-CN": "它在水面上行驶。", "zh-TW": "它在水面上行駛。", "ru": "Она движется по воде.", "pt": "Viaja sobre a água.", "es": "Viaja sobre el agua."},
+    ),
+    _drawing_guess_make_word(
+        "moon", "nature",
+        {"en": "moon", "ja": "月", "ko": "달", "zh-CN": "月亮", "zh-TW": "月亮", "ru": "луна", "pt": "lua", "es": "luna"},
+        {"en": "You often see it in the night sky.", "ja": "夜の空によく見える。", "ko": "밤하늘에서 자주 보여요.", "zh-CN": "夜晚抬头常常能看到它。", "zh-TW": "夜晚抬頭常常能看到它。", "ru": "Ее часто видно в ночном небе.", "pt": "Aparece muito no céu à noite.", "es": "Se ve mucho en el cielo nocturno."},
+    ),
+    _drawing_guess_make_word(
+        "star", "nature",
+        {"en": "star", "ja": "星", "ko": "별", "zh-CN": "星星", "zh-TW": "星星", "ru": "звезда", "pt": "estrela", "es": "estrella"},
+        {"en": "It twinkles in the night sky.", "ja": "夜空できらきら光る。", "ko": "밤하늘에서 반짝여요.", "zh-CN": "它在夜空里闪闪发亮。", "zh-TW": "它在夜空裡閃閃發亮。", "ru": "Она мерцает в ночном небе.", "pt": "Brilha no céu noturno.", "es": "Brilla en el cielo nocturno."},
+    ),
+    _drawing_guess_make_word(
+        "tree", "nature",
+        {"en": "tree", "ja": "木", "ko": "나무", "zh-CN": "树", "zh-TW": "樹", "ru": "дерево", "pt": "árvore", "es": "árbol"},
+        {"en": "It has a trunk, branches, and leaves.", "ja": "幹、枝、葉がある。", "ko": "줄기와 가지와 잎이 있어요.", "zh-CN": "它有树干、树枝和叶子。", "zh-TW": "它有樹幹、樹枝和葉子。", "ru": "У него есть ствол, ветви и листья.", "pt": "Tem tronco, galhos e folhas.", "es": "Tiene tronco, ramas y hojas."},
+    ),
+    _drawing_guess_make_word(
+        "flower", "nature",
+        {"en": "flower", "ja": "花", "ko": "꽃", "zh-CN": "花", "zh-TW": "花", "ru": "цветок", "pt": "flor", "es": "flor"},
+        {"en": "It blooms with petals.", "ja": "花びらを広げて咲く。", "ko": "꽃잎을 펼치며 피어요.", "zh-CN": "它会开放，有花瓣。", "zh-TW": "它會開放，有花瓣。", "ru": "Он раскрывает лепестки.", "pt": "Floresce com pétalas.", "es": "Florece con pétalos."},
+    ),
+    _drawing_guess_make_word(
+        "cloud", "nature",
+        {"en": "cloud", "ja": "雲", "ko": "구름", "zh-CN": "云", "zh-TW": "雲", "ru": "облако", "pt": "nuvem", "es": "nube"},
+        {"en": "It floats in the sky and can bring rain.", "ja": "空に浮かんで、雨を連れてくることもある。", "ko": "하늘에 떠 있고 비를 데려오기도 해요.", "zh-CN": "它飘在天上，有时会带来雨。", "zh-TW": "它飄在天上，有時會帶來雨。", "ru": "Оно плывет в небе и может принести дождь.", "pt": "Flutua no céu e pode trazer chuva.", "es": "Flota en el cielo y puede traer lluvia."},
+    ),
+    _drawing_guess_make_word(
+        "house", "object",
+        {"en": "house", "ja": "家", "ko": "집", "zh-CN": "房子", "zh-TW": "房子", "ru": "дом", "pt": "casa", "es": "casa"},
+        {"en": "People live inside it.", "ja": "人が住む場所。", "ko": "사람이 사는 곳이에요.", "zh-CN": "人们住在里面。", "zh-TW": "人們住在裡面。", "ru": "В нем живут люди.", "pt": "Pessoas moram nela.", "es": "La gente vive dentro."},
+    ),
+    _drawing_guess_make_word(
+        "clock", "object",
+        {"en": "clock", "ja": "時計", "ko": "시계", "zh-CN": "时钟", "zh-TW": "時鐘", "ru": "часы", "pt": "relógio", "es": "reloj"},
+        {"en": "It tells the time.", "ja": "時間を教えてくれるもの。", "ko": "시간을 알려 주는 물건이에요.", "zh-CN": "它用来显示时间。", "zh-TW": "它用來顯示時間。", "ru": "Они показывают время.", "pt": "Mostra as horas.", "es": "Muestra la hora."},
+    ),
+    _drawing_guess_make_word(
+        "shoe", "object",
+        {"en": "shoe", "ja": "靴", "ko": "신발", "zh-CN": "鞋子", "zh-TW": "鞋子", "ru": "обувь", "pt": "sapato", "es": "zapato"},
+        {"en": "You wear it on your foot.", "ja": "足に履くもの。", "ko": "발에 신는 물건이에요.", "zh-CN": "它穿在脚上。", "zh-TW": "它穿在腳上。", "ru": "Ее надевают на ногу.", "pt": "Você usa no pé.", "es": "Se usa en el pie."},
+    ),
+    _drawing_guess_make_word(
+        "hat", "object",
+        {"en": "hat", "ja": "帽子", "ko": "모자", "zh-CN": "帽子", "zh-TW": "帽子", "ru": "шляпа", "pt": "chapéu", "es": "sombrero"},
+        {"en": "You wear it on your head.", "ja": "頭にかぶるもの。", "ko": "머리에 쓰는 물건이에요.", "zh-CN": "它戴在头上。", "zh-TW": "它戴在頭上。", "ru": "Ее носят на голове.", "pt": "Você usa na cabeça.", "es": "Se lleva en la cabeza."},
+    ),
+    _drawing_guess_make_word(
+        "guitar", "object",
+        {"en": "guitar", "ja": "ギター", "ko": "기타", "zh-CN": "吉他", "zh-TW": "吉他", "ru": "гитара", "pt": "violão", "es": "guitarra"},
+        {"en": "It has strings and makes music.", "ja": "弦があって音楽を奏でる。", "ko": "줄이 있고 음악을 연주해요.", "zh-CN": "它有弦，可以弹出音乐。", "zh-TW": "它有弦，可以彈出音樂。", "ru": "У нее есть струны, она играет музыку.", "pt": "Tem cordas e faz música.", "es": "Tiene cuerdas y hace música."},
+    ),
+    _drawing_guess_make_word(
+        "bed", "object",
+        {"en": "bed", "ja": "ベッド", "ko": "침대", "zh-CN": "床", "zh-TW": "床", "ru": "кровать", "pt": "cama", "es": "cama"},
+        {"en": "You sleep on it.", "ja": "眠るために使うもの。", "ko": "잠을 자기 위해 쓰는 물건이에요.", "zh-CN": "睡觉时会躺在上面。", "zh-TW": "睡覺時會躺在上面。", "ru": "На ней спят.", "pt": "Você dorme nela.", "es": "Duermes en ella."},
+    ),
+    _drawing_guess_make_word(
+        "toothbrush", "object",
+        {"en": "toothbrush", "ja": "歯ブラシ", "ko": "칫솔", "zh-CN": "牙刷", "zh-TW": "牙刷", "ru": "зубная щетка", "pt": "escova de dentes", "es": "cepillo de dientes"},
+        {"en": "You use it to clean your teeth.", "ja": "歯を磨くために使う。", "ko": "이를 닦을 때 써요.", "zh-CN": "它用来刷牙。", "zh-TW": "它用來刷牙。", "ru": "Ею чистят зубы.", "pt": "Serve para escovar os dentes.", "es": "Sirve para cepillarse los dientes."},
+    ),
+    _drawing_guess_make_word(
+        "heart", "shape",
+        {"en": "heart", "ja": "ハート", "ko": "하트", "zh-CN": "爱心", "zh-TW": "愛心", "ru": "сердце", "pt": "coração", "es": "corazón"},
+        {"en": "It is a shape people use for love.", "ja": "好きな気持ちを表す形。", "ko": "좋아하는 마음을 나타내는 모양이에요.", "zh-CN": "它常用来表示喜欢和爱。", "zh-TW": "它常用來表示喜歡和愛。", "ru": "Этой формой часто обозначают любовь.", "pt": "É uma forma usada para amor.", "es": "Es una forma usada para el amor."},
+    ),
+)
+
+_DRAWING_GUESS_WORDS = _DRAWING_GUESS_WORDS + _DRAWING_GUESS_EXTRA_WORDS
+_DRAWING_GUESS_WORD_BY_ID = {item["id"]: item for item in _DRAWING_GUESS_WORDS}
 
 
 async def _push_game_window_state_change(
@@ -435,6 +788,18 @@ def _build_game_prompt(
         context_prompt = _format_basketball_pregame_context_for_prompt(pre_game_context, language, mode=mode)
         in_game_context_prompt = _format_game_context_for_prompt(game_context, language)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
+    if game_type == "drawing_guess":
+        output_language = _drawing_guess_language(language or get_global_language() or "en")
+        return (
+            f"You are {lanlan_name}. Keep exactly the same character, names, relationship, "
+            f"voice, habits, and emotional tone as this persona:\n{lanlan_prompt}\n\n"
+            "You are currently inside a casual draw-and-guess mini-game with the user. "
+            "The user may type or speak guesses, ask for hints, or just chat with you during the game. "
+            "Treat every such message as in-game context unless it clearly asks to leave the game. "
+            "If you are drawing, never reveal the answer in text, SVG text, filenames, or labels. "
+            "If the user is drawing, guess playfully from the visual/game context and stay in character. "
+            f"Use short, lively in-character replies in {output_language}."
+        )
     # 未来其他游戏在这里扩展
     output_language = str(language or get_global_language() or "en")
     return (
@@ -475,6 +840,430 @@ def _normalize_short_text(value: Any, *, max_chars: int = 120) -> str:
     if max_chars > 0:
         text = text[:max_chars]
     return text
+
+
+def _drawing_guess_language(language: Any) -> str:
+    raw = str(language or "").strip().replace("_", "-")
+    if raw in _DRAWING_GUESS_LOCALES:
+        return raw
+    lowered = raw.lower()
+    if lowered.startswith("zh"):
+        return "zh-TW" if "tw" in lowered or "hk" in lowered else "zh-CN"
+    try:
+        normalized = normalize_language_code(raw, format="short") if raw else ""
+    except Exception:
+        normalized = lowered
+    if normalized == "zh":
+        return "zh-CN"
+    if normalized in _DRAWING_GUESS_LOCALES:
+        return normalized
+    return "en"
+
+
+def _drawing_guess_word_label(word: dict[str, Any], language: Any) -> str:
+    lang = _drawing_guess_language(language)
+    labels = word.get("labels") if isinstance(word, dict) else {}
+    if isinstance(labels, dict):
+        return str(labels.get(lang) or labels.get("en") or word.get("id") or "")
+    return str(word.get("id") or "")
+
+
+def _drawing_guess_word_hint(word: dict[str, Any], language: Any) -> str:
+    lang = _drawing_guess_language(language)
+    hints = word.get("hint") if isinstance(word, dict) else {}
+    if isinstance(hints, dict):
+        return str(hints.get(lang) or hints.get("en") or "")
+    return ""
+
+
+def _drawing_guess_normalize_answer(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    text = re.sub(r"[\s\-_.,!?;:'\"`~，。！？；：、“”‘’（）()\[\]{}<>《》|/\\]+", "", text)
+    return text
+
+
+def _drawing_guess_answer_terms(word: dict[str, Any]) -> list[str]:
+    terms: list[str] = []
+    labels = word.get("labels")
+    aliases = word.get("aliases")
+    if isinstance(labels, dict):
+        terms.extend(str(item or "") for item in labels.values())
+    if isinstance(aliases, dict):
+        for values in aliases.values():
+            if isinstance(values, list):
+                terms.extend(str(item or "") for item in values)
+    clean: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = _drawing_guess_normalize_answer(term)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            clean.append(term)
+    return clean
+
+
+def _drawing_guess_match_answer(text: Any, word: dict[str, Any]) -> dict[str, Any]:
+    normalized = _drawing_guess_normalize_answer(text)
+    if not normalized:
+        return {"matched": False, "term": ""}
+    for term in _drawing_guess_answer_terms(word):
+        normalized_term = _drawing_guess_normalize_answer(term)
+        if not normalized_term:
+            continue
+        if normalized == normalized_term:
+            return {"matched": True, "term": term}
+        if len(normalized_term) >= 3 and normalized_term in normalized:
+            return {"matched": True, "term": term}
+    return {"matched": False, "term": ""}
+
+
+def _drawing_guess_session_key(lanlan_name: str, session_id: str) -> str:
+    return f"{lanlan_name or ''}:{session_id or 'default'}"
+
+
+def _drawing_guess_persona_context(lanlan_name: str, language: Any = None) -> dict[str, Any]:
+    char_info = _get_character_info(lanlan_name)
+    prompt = _normalize_short_text(char_info.get("lanlan_prompt"), max_chars=700)
+    resolved_name = str(char_info.get("lanlan_name") or lanlan_name or "")
+    return {
+        "lanlan_name": resolved_name,
+        "master_name": str(char_info.get("master_name") or ""),
+        "language": _drawing_guess_language(language or char_info.get("user_language")),
+        "persona_prompt": prompt,
+        "persona_context": (
+            f"You are still {resolved_name}, the user's familiar NEKO character. "
+            "You are playing a drawing guessing mini-game; keep your existing persona, names, tone, and relationship."
+        ),
+    }
+
+
+def _drawing_guess_public_word(word: dict[str, Any], language: Any, *, reveal: bool) -> dict[str, Any]:
+    public = {
+        "id": str(word.get("id") or ""),
+        "category": str(word.get("category") or ""),
+    }
+    if reveal:
+        public["label"] = _drawing_guess_word_label(word, language)
+    return public
+
+
+def _drawing_guess_candidate_words(answer_id: str, language: Any, *, count: int = 8) -> list[dict[str, str]]:
+    answer = _DRAWING_GUESS_WORD_BY_ID.get(answer_id) or _DRAWING_GUESS_WORDS[0]
+    pool = [word for word in _DRAWING_GUESS_WORDS if word.get("id") != answer_id]
+    random.shuffle(pool)
+    words = [answer] + pool[: max(0, count - 1)]
+    random.shuffle(words)
+    return [
+        {"id": str(word.get("id") or ""), "label": _drawing_guess_word_label(word, language)}
+        for word in words
+    ]
+
+
+def _drawing_guess_new_round(
+    lanlan_name: str,
+    session_id: str,
+    *,
+    language: Any = None,
+    drawer: str | None = None,
+) -> dict[str, Any]:
+    key = _drawing_guess_session_key(lanlan_name, session_id)
+    session = _drawing_guess_sessions.get(key)
+    now = time.time()
+    if not session or now - float(session.get("updated_at") or now) > _DRAWING_GUESS_SESSION_TTL_SECONDS:
+        session = {
+            "lanlan_name": lanlan_name,
+            "session_id": session_id,
+            "round_index": 0,
+            "user_score": 0,
+            "neko_score": 0,
+            "messages": [],
+            "artifacts": [],
+            "created_at": now,
+        }
+        _drawing_guess_sessions[key] = session
+    else:
+        session["round_index"] = int(session.get("round_index") or 0) + 1
+    session["updated_at"] = now
+    round_index = int(session.get("round_index") or 0)
+    if drawer not in {"neko", "user"}:
+        drawer = "neko" if round_index % 2 == 0 else "user"
+    word = random.choice(_DRAWING_GUESS_WORDS)
+    phase = "neko_drawing" if drawer == "neko" else "user_drawing"
+    session["round"] = {
+        "round_index": round_index,
+        "drawer": drawer,
+        "guesser": "user" if drawer == "neko" else "neko",
+        "phase": phase,
+        "answer_id": word["id"],
+        "started_at": now,
+        "draw_deadline_at": now + _DRAWING_GUESS_DRAW_SECONDS,
+        "guess_deadline_at": None,
+        "wrong_guesses": [],
+        "hints_used": 0,
+        "ai_svg": "",
+        "ai_caption": "",
+        "vision_guess": "",
+        "result": "",
+    }
+    return session
+
+
+def _drawing_guess_get_session(lanlan_name: str, session_id: str) -> dict[str, Any] | None:
+    key = _drawing_guess_session_key(lanlan_name, session_id)
+    session = _drawing_guess_sessions.get(key)
+    if not session:
+        return None
+    now = time.time()
+    if now - float(session.get("updated_at") or now) > _DRAWING_GUESS_SESSION_TTL_SECONDS:
+        _drawing_guess_sessions.pop(key, None)
+        return None
+    session["updated_at"] = now
+    return session
+
+
+def _drawing_guess_round_payload(session: dict[str, Any], language: Any, *, reveal_answer: bool) -> dict[str, Any]:
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    answer_id = str(round_state.get("answer_id") or "")
+    word = _DRAWING_GUESS_WORD_BY_ID.get(answer_id) or _DRAWING_GUESS_WORDS[0]
+    return {
+        "session_id": str(session.get("session_id") or ""),
+        "lanlan_name": str(session.get("lanlan_name") or ""),
+        "round_index": int(round_state.get("round_index") or 0),
+        "drawer": str(round_state.get("drawer") or "neko"),
+        "guesser": str(round_state.get("guesser") or "user"),
+        "phase": str(round_state.get("phase") or ""),
+        "draw_seconds": _DRAWING_GUESS_DRAW_SECONDS,
+        "guess_seconds": _DRAWING_GUESS_GUESS_SECONDS,
+        "draw_deadline_at": float(round_state.get("draw_deadline_at") or 0.0),
+        "guess_deadline_at": round_state.get("guess_deadline_at"),
+        "score": {
+            "user": int(session.get("user_score") or 0),
+            "neko": int(session.get("neko_score") or 0),
+        },
+        "answer": _drawing_guess_public_word(word, language, reveal=reveal_answer),
+        "wrong_guesses": list(round_state.get("wrong_guesses") or []),
+        "hints_used": int(round_state.get("hints_used") or 0),
+        "ai_svg": str(round_state.get("ai_svg") or ""),
+        "ai_caption": str(round_state.get("ai_caption") or ""),
+        "result": str(round_state.get("result") or ""),
+    }
+
+
+def _drawing_guess_shape_svg(word_id: str) -> str:
+    if word_id == "apple":
+        return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#fff7ec"/><circle cx="390" cy="270" r="95" fill="#ef3f46" stroke="#7b1c20" stroke-width="8"/><circle cx="455" cy="270" r="88" fill="#f4545b" stroke="#7b1c20" stroke-width="8"/><path d="M420 185 C425 145 456 125 500 120" fill="none" stroke="#6c3b1c" stroke-width="14" stroke-linecap="round"/><ellipse cx="505" cy="128" rx="42" ry="22" fill="#4ea857" transform="rotate(-18 505 128)"/><circle cx="370" cy="235" r="18" fill="#fff" opacity=".65"/></svg>"""
+    if word_id == "cat":
+        return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#f6fbff"/><circle cx="400" cy="270" r="105" fill="#f6c27a" stroke="#7b4a22" stroke-width="8"/><polygon points="310,200 342,105 386,205" fill="#f6c27a" stroke="#7b4a22" stroke-width="8"/><polygon points="490,200 458,105 414,205" fill="#f6c27a" stroke="#7b4a22" stroke-width="8"/><circle cx="360" cy="260" r="15" fill="#1b2230"/><circle cx="440" cy="260" r="15" fill="#1b2230"/><path d="M400 285 L385 310 L415 310 Z" fill="#d35b75"/><path d="M330 310 C245 290 225 290 175 305 M470 310 C555 290 575 290 625 305 M330 335 C255 350 230 365 190 390 M470 335 C545 350 570 365 610 390" stroke="#7b4a22" stroke-width="6" fill="none" stroke-linecap="round"/></svg>"""
+    if word_id == "umbrella":
+        return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#eef6ff"/><path d="M190 260 C245 130 555 130 610 260 Z" fill="#5f7cff" stroke="#23366f" stroke-width="8"/><path d="M190 260 C235 220 275 220 320 260 C365 220 435 220 480 260 C525 220 565 220 610 260" fill="#8da0ff" stroke="#23366f" stroke-width="6"/><line x1="400" y1="260" x2="400" y2="385" stroke="#23366f" stroke-width="10" stroke-linecap="round"/><path d="M400 385 C400 440 465 440 465 392" fill="none" stroke="#23366f" stroke-width="10" stroke-linecap="round"/><line x1="400" y1="175" x2="400" y2="260" stroke="#23366f" stroke-width="5"/></svg>"""
+    if word_id == "car":
+        return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#f4fbf5"/><path d="M210 305 L270 220 L505 220 L590 305 Z" fill="#4cc3ff" stroke="#1f4762" stroke-width="8" stroke-linejoin="round"/><rect x="175" y="300" width="455" height="85" rx="28" fill="#ffcb45" stroke="#5c4212" stroke-width="8"/><circle cx="285" cy="390" r="45" fill="#1f2937"/><circle cx="520" cy="390" r="45" fill="#1f2937"/><circle cx="285" cy="390" r="18" fill="#f4f4f5"/><circle cx="520" cy="390" r="18" fill="#f4f4f5"/><rect x="300" y="240" width="75" height="55" rx="8" fill="#e8fbff"/><rect x="395" y="240" width="90" height="55" rx="8" fill="#e8fbff"/></svg>"""
+    if word_id == "sun":
+        return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#eaf7ff"/><circle cx="400" cy="250" r="95" fill="#ffd247" stroke="#e59a00" stroke-width="8"/><g stroke="#e59a00" stroke-width="12" stroke-linecap="round"><line x1="400" y1="80" x2="400" y2="135"/><line x1="400" y1="365" x2="400" y2="420"/><line x1="230" y1="250" x2="285" y2="250"/><line x1="515" y1="250" x2="570" y2="250"/><line x1="282" y1="132" x2="322" y2="172"/><line x1="518" y1="368" x2="478" y2="328"/><line x1="518" y1="132" x2="478" y2="172"/><line x1="282" y1="368" x2="322" y2="328"/></g><circle cx="365" cy="235" r="10" fill="#7a4a00"/><circle cx="435" cy="235" r="10" fill="#7a4a00"/><path d="M360 285 C385 310 415 310 440 285" fill="none" stroke="#7a4a00" stroke-width="7" stroke-linecap="round"/></svg>"""
+    return """<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><rect width="800" height="500" fill="#fff8f2"/><rect x="270" y="230" width="260" height="125" rx="18" fill="#f6b4d2" stroke="#79405c" stroke-width="8"/><rect x="295" y="185" width="210" height="58" rx="18" fill="#ffe8f2" stroke="#79405c" stroke-width="8"/><circle cx="330" cy="215" r="12" fill="#ff6d8d"/><circle cx="400" cy="215" r="12" fill="#ffcb45"/><circle cx="470" cy="215" r="12" fill="#6ad28f"/><line x1="400" y1="150" x2="400" y2="185" stroke="#79405c" stroke-width="8"/><path d="M390 150 C410 122 432 145 400 160" fill="#ffcb45"/></svg>"""
+
+
+def _sanitize_drawing_guess_svg(svg: str) -> str:
+    allowed_tags = {"svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon"}
+    allowed_attrs = {
+        "viewBox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap",
+        "stroke-linejoin", "d", "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "y1",
+        "x2", "y2", "points", "transform", "opacity", "xmlns",
+    }
+    if not svg or len(svg) > 20000:
+        return _drawing_guess_shape_svg("cake")
+    try:
+        root = ET.fromstring(svg)
+    except Exception:
+        return _drawing_guess_shape_svg("cake")
+
+    def clean_tag(tag: str) -> str:
+        return tag.split("}", 1)[-1] if "}" in tag else tag
+
+    def clean_node(node):
+        tag = clean_tag(str(node.tag))
+        if tag not in allowed_tags:
+            return None
+        attrs = {}
+        for raw_key, raw_value in list(node.attrib.items()):
+            key = raw_key.split("}", 1)[-1] if "}" in raw_key else raw_key
+            if key not in allowed_attrs or key.lower().startswith("on"):
+                continue
+            value = str(raw_value or "")
+            if "url(" in value.lower() or "javascript:" in value.lower():
+                continue
+            attrs[key] = value[:500]
+        out = ET.Element(tag, attrs)
+        if tag == "svg":
+            out.set("viewBox", attrs.get("viewBox") or _DRAWING_GUESS_CANVAS_VIEWBOX)
+            out.set("xmlns", "http://www.w3.org/2000/svg")
+        for child in list(node):
+            cleaned = clean_node(child)
+            if cleaned is not None:
+                out.append(cleaned)
+        return out
+
+    cleaned_root = clean_node(root)
+    if cleaned_root is None or str(cleaned_root.tag) != "svg":
+        return _drawing_guess_shape_svg("cake")
+    return ET.tostring(cleaned_root, encoding="unicode", short_empty_elements=True)
+
+
+def _drawing_guess_text_leaks_answer(text: Any, word: dict[str, Any]) -> bool:
+    normalized = _drawing_guess_normalize_answer(text)
+    if not normalized:
+        return False
+    for term in _drawing_guess_answer_terms(word):
+        normalized_term = _drawing_guess_normalize_answer(term)
+        if len(normalized_term) >= 2 and normalized_term in normalized:
+            return True
+    return False
+
+
+async def _drawing_guess_generate_neko_svg(
+    *,
+    lanlan_name: str,
+    word: dict[str, Any],
+    language: Any,
+    persona: dict[str, Any],
+    use_model: bool = True,
+) -> dict[str, str]:
+    fallback_svg = _sanitize_drawing_guess_svg(_drawing_guess_shape_svg(str(word.get("id") or "")))
+    if not use_model:
+        return {"svg": fallback_svg, "caption": "", "source": "fallback_disabled"}
+
+    char_info = _get_character_info(lanlan_name)
+    lang = _drawing_guess_language(language or persona.get("language") or char_info.get("user_language"))
+    label = _drawing_guess_word_label(word, lang)
+    forbidden_terms = sorted(set(_drawing_guess_answer_terms(word)), key=lambda item: (len(item), item))
+    style_seed = random.choice((
+        "warm marker doodle with playful asymmetry",
+        "soft rounded icon-like sketch with tiny personality details",
+        "bold simple shapes, expressive composition, no written labels",
+        "cute quick sketch, slightly improvised, clear silhouette",
+        "neat minimal drawing with a mischievous flourish",
+    ))
+    system_prompt = (
+        f"You are {persona.get('lanlan_name') or lanlan_name}. Keep the exact existing NEKO persona, "
+        "relationship, speaking style, and emotional tone. You are playing a draw-and-guess game with the user.\n"
+        f"Persona excerpt:\n{persona.get('persona_prompt') or char_info.get('lanlan_prompt') or ''}\n\n"
+        "Create a fresh SVG drawing for this round. Do not reuse a fixed template; make a new composition, "
+        "with small choices that feel like this character drew it. Output only JSON with keys caption and svg."
+    )
+    user_payload = {
+        "game": "drawing_guess",
+        "secretAnswer": label,
+        "answerId": str(word.get("id") or ""),
+        "category": str(word.get("category") or ""),
+        "forbiddenTerms": forbidden_terms,
+        "language": lang,
+        "canvas": {"viewBox": _DRAWING_GUESS_CANVAS_VIEWBOX, "width": 800, "height": 500},
+        "styleSeed": style_seed,
+        "rules": [
+            "The SVG must be complete and fit viewBox 0 0 800 500.",
+            "Use only svg, g, path, circle, ellipse, rect, line, polyline, polygon.",
+            "Do not use text, title, desc, foreignObject, image, style, script, animate, links, ids, classes, or event handlers.",
+            "Do not write or spell the answer, aliases, translations, initials, or phonetic hints anywhere.",
+            "The caption is one short in-character line to the user, but it must not reveal the answer.",
+            "Prefer recognizable visual clues over exact realism. Keep it playful and readable.",
+        ],
+        "jsonShape": {"caption": "short in-character line", "svg": "<svg ...></svg>"},
+    }
+    try:
+        from utils.file_utils import robust_json_loads
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.token_tracker import set_call_type
+
+        set_call_type("drawing_guess_svg")
+        llm = create_chat_llm(
+            char_info["model"],
+            char_info["base_url"],
+            char_info["api_key"],
+            max_completion_tokens=2400,
+            timeout=35,
+        )
+        async with llm:
+            result = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=json.dumps(user_payload, ensure_ascii=False)),
+            ])
+        raw = _strip_json_fence(str(result.content or ""))
+        parsed = robust_json_loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("drawing_guess_svg_json_not_object")
+        svg = _sanitize_drawing_guess_svg(str(parsed.get("svg") or ""))
+        caption = _normalize_short_text(parsed.get("caption"), max_chars=100)
+        if _drawing_guess_text_leaks_answer(caption, word):
+            caption = ""
+        return {"svg": svg or fallback_svg, "caption": caption, "source": "model"}
+    except Exception as exc:
+        logger.warning("drawing_guess SVG generation failed for character=%s: %s", lanlan_name, exc)
+        return {"svg": fallback_svg, "caption": "", "source": "fallback_error"}
+
+
+def _drawing_guess_neko_line(
+    kind: str,
+    persona: dict[str, Any],
+    *,
+    word: dict[str, Any] | None = None,
+    language: Any = None,
+) -> str:
+    name = str(persona.get("lanlan_name") or "NEKO")
+    lang = _drawing_guess_language(language or persona.get("language"))
+    label = _drawing_guess_word_label(word or {}, lang) if word else ""
+    hint = _drawing_guess_word_hint(word or {}, lang) if word else ""
+    lines = {
+        "zh-CN": {
+            "start_neko": f"{name}要开始画了，别小看我的画技喵。",
+            "start_user": "轮到你画啦，我会认真猜的，嗯，至少会努力。",
+            "correct": f"答对啦！这就是{label}，你还挺懂我的画嘛。",
+            "wrong": "嗯哼，不是这个方向，再猜猜？",
+            "timeout": f"时间到啦，答案是{label}。这局先记在小本本上。",
+            "hint": f"提示一下：{hint}",
+            "chat": "我知道我知道，我们还在玩你画我猜呢。你继续说，我边玩边听。",
+            "vision_correct": f"我猜是{label}。看吧，我还是有点眼力的。",
+            "vision_wrong": f"我猜是{label}，要是不对就当我被你的抽象画法骗到了。",
+        },
+        "zh-TW": {
+            "start_neko": f"{name}要開始畫了，別小看我的畫技喵。",
+            "start_user": "輪到你畫啦，我會認真猜的。",
+            "correct": f"答對啦！這就是{label}。",
+            "wrong": "嗯哼，不是這個方向，再猜猜？",
+            "timeout": f"時間到啦，答案是{label}。這局先記著。",
+            "hint": f"提示一下：{hint}",
+            "chat": "我知道，我們還在玩你畫我猜呢。你繼續說。",
+            "vision_correct": f"我猜是{label}。看吧，我還是有點眼力的。",
+            "vision_wrong": f"我猜是{label}，不對的話就是你的畫太抽象了。",
+        },
+        "en": {
+            "start_neko": f"{name} is drawing now. Don't underestimate my art skills.",
+            "start_user": "Your turn to draw. I'll guess seriously, probably.",
+            "correct": f"Correct! It was {label}. You understood my masterpiece.",
+            "wrong": "Not quite. Try another angle.",
+            "timeout": f"Time is up. The answer was {label}. I'll remember this round.",
+            "hint": f"Hint: {hint}",
+            "chat": "I know, we are still in draw-and-guess. Keep talking, I'm listening.",
+            "vision_correct": f"I guess it is {label}. See, I do have good eyes.",
+            "vision_wrong": f"I guess it is {label}. If not, your art tricked me.",
+        },
+    }
+    table = lines.get(lang) or lines["en"]
+    return table.get(kind) or table["chat"]
+
+
+def _drawing_guess_is_hint_request(text: Any) -> bool:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    hint_terms = (
+        "提示", "线索", "hint", "clue", "近い", "ヒント", "힌트",
+        "подсказ", "pista", "dica",
+    )
+    return any(term in normalized for term in hint_terms)
+
+
+def _drawing_guess_mark_guess_deadline(round_state: dict[str, Any]) -> None:
+    now = time.time()
+    round_state["phase"] = "user_guessing" if round_state.get("drawer") == "neko" else "neko_guessing"
+    round_state["guess_deadline_at"] = now + _DRAWING_GUESS_GUESS_SECONDS
 
 
 def _normalize_text_items(value: Any, *, max_items: int = 5, max_chars: int = 80) -> list[str]:
@@ -6479,6 +7268,607 @@ async def game_chat(game_type: str, request: Request):
     return result
 
 
+def _drawing_guess_request_context(data: dict[str, Any]) -> dict[str, Any]:
+    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
+    session_id = str(data.get("session_id") or "default")
+    request_language = None
+    if lanlan_name:
+        request_language = _absorb_request_language(data, lanlan_name)
+    language = _drawing_guess_language(
+        request_language
+        or data.get("i18n_language")
+        or data.get("language")
+        or data.get("locale")
+        or get_global_language()
+    )
+    return {"lanlan_name": lanlan_name, "session_id": session_id, "language": language}
+
+
+def _drawing_guess_unsupported_response(game_type: str) -> dict[str, Any]:
+    return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
+
+
+def _drawing_guess_payload(session: dict[str, Any], language: Any, *, reveal_answer: bool) -> dict[str, Any]:
+    return _drawing_guess_round_payload(session, language, reveal_answer=reveal_answer)
+
+
+def _drawing_guess_current_word(session: dict[str, Any]) -> dict[str, Any]:
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    answer_id = str(round_state.get("answer_id") or "")
+    return _DRAWING_GUESS_WORD_BY_ID.get(answer_id) or _DRAWING_GUESS_WORDS[0]
+
+
+def _drawing_guess_reveal_answer_for_round(round_state: dict[str, Any]) -> bool:
+    return round_state.get("drawer") == "user" or round_state.get("phase") == "round_complete"
+
+
+def _drawing_guess_recent_messages(session: dict[str, Any], *, limit: int = 6) -> list[dict[str, str]]:
+    messages = session.get("messages")
+    if not isinstance(messages, list):
+        return []
+    recent: list[dict[str, str]] = []
+    for item in messages[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        text = _normalize_short_text(item.get("text"), max_chars=120)
+        if not text:
+            continue
+        recent.append({
+            "role": _normalize_short_text(item.get("role"), max_chars=16) or "user",
+            "type": _normalize_short_text(item.get("type"), max_chars=32),
+            "phase": _normalize_short_text(item.get("phase"), max_chars=32),
+            "text": text,
+        })
+    return recent
+
+
+def _drawing_guess_append_message(
+    session: dict[str, Any],
+    *,
+    role: str,
+    response_type: str,
+    phase: str,
+    text: Any,
+) -> None:
+    line = _normalize_short_text(text, max_chars=180)
+    if not line:
+        return
+    messages = session.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+    messages.append({
+        "role": _normalize_short_text(role, max_chars=16) or "user",
+        "type": _normalize_short_text(response_type, max_chars=32),
+        "phase": _normalize_short_text(phase, max_chars=32),
+        "text": line,
+        "at": time.time(),
+    })
+    session["messages"] = messages[-20:]
+
+
+async def _drawing_guess_generate_neko_reply(
+    *,
+    lanlan_name: str,
+    language: Any,
+    persona: dict[str, Any],
+    session: dict[str, Any],
+    round_state: dict[str, Any],
+    word: dict[str, Any],
+    user_text: str,
+    response_type: str,
+    source: str,
+    allow_answer: bool,
+) -> str:
+    char_info = _get_character_info(lanlan_name)
+    lang = _drawing_guess_language(language or persona.get("language") or char_info.get("user_language"))
+    label = _drawing_guess_word_label(word, lang)
+    hint = _drawing_guess_word_hint(word, lang)
+    forbidden_terms = sorted(set(_drawing_guess_answer_terms(word)), key=lambda item: (len(item), item))
+    payload = {
+        "game": "drawing_guess",
+        "language": lang,
+        "character": {
+            "lanlanName": persona.get("lanlan_name") or lanlan_name,
+            "masterName": persona.get("master_name") or "",
+        },
+        "source": source,
+        "responseType": response_type,
+        "phase": str(round_state.get("phase") or ""),
+        "drawer": str(round_state.get("drawer") or ""),
+        "guesser": str(round_state.get("guesser") or ""),
+        "userText": user_text,
+        "hint": hint if response_type == "hint" else "",
+        "answer": label if allow_answer else "",
+        "recentMessages": _drawing_guess_recent_messages(session),
+        "rules": [
+            "The user may chat at any time during this mini-game; stay aware that this is draw-and-guess.",
+            "Reply as the existing NEKO character, preserving persona, relationship, and tone.",
+            "Return one short in-character line only, no markdown.",
+            "If responseType is wrong_guess, gently deny without giving the answer.",
+            "If responseType is hint, give a playful clue based on hint without naming the answer.",
+            "If responseType is in_game_chat, respond naturally while keeping the game context.",
+        ],
+        "jsonShape": {"line": "short in-character reply"},
+    }
+    if not allow_answer:
+        payload["forbiddenTerms"] = forbidden_terms
+        payload["rules"].append("Do not reveal, spell, translate, initial, or phonetically hint the secret answer.")
+    else:
+        payload["rules"].append("The round answer is allowed to be mentioned if it fits the response.")
+
+    system_prompt = (
+        f"You are {persona.get('lanlan_name') or lanlan_name}. Keep the exact existing NEKO persona and relationship.\n"
+        f"Persona excerpt:\n{persona.get('persona_prompt') or char_info.get('lanlan_prompt') or ''}\n\n"
+        "You are currently inside a casual draw-and-guess mini-game with the user. "
+        "The user input box is shared by chat, voice transcript, and guesses."
+    )
+    try:
+        from utils.file_utils import robust_json_loads
+        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
+        from utils.token_tracker import set_call_type
+
+        set_call_type("drawing_guess_chat")
+        llm = create_chat_llm(
+            char_info["model"],
+            char_info["base_url"],
+            char_info["api_key"],
+            max_completion_tokens=180,
+            timeout=18,
+        )
+        async with llm:
+            result = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+            ])
+        raw = _strip_json_fence(str(result.content or ""))
+        try:
+            parsed = robust_json_loads(raw)
+        except Exception:
+            parsed = raw
+        if isinstance(parsed, dict):
+            line = _normalize_short_text(parsed.get("line"), max_chars=140)
+        else:
+            line = _normalize_short_text(parsed, max_chars=140)
+        if not line:
+            return ""
+        if not allow_answer and _drawing_guess_text_leaks_answer(line, word):
+            return ""
+        return line
+    except Exception as exc:
+        logger.warning(
+            "drawing_guess reply model failed: character=%s type=%s err=%s",
+            lanlan_name,
+            response_type,
+            exc,
+        )
+        return ""
+
+
+def _drawing_guess_vision_context_title(
+    session: dict[str, Any],
+    persona: dict[str, Any],
+    word: dict[str, Any],
+    language: Any,
+) -> str:
+    answer_id = str(word.get("id") or "")
+    candidates = _drawing_guess_candidate_words(answer_id, language, count=12)
+    candidate_labels = ", ".join(item["label"] for item in candidates if item.get("label"))
+    recent = " | ".join(
+        f"{item.get('role', 'user')}: {item.get('text', '')}"
+        for item in _drawing_guess_recent_messages(session, limit=4)
+    )
+    title = (
+        "Drawing Guess mini-game. The user is drawing on the canvas and "
+        f"{persona.get('lanlan_name') or 'NEKO'} is guessing from the visual strokes. "
+        "This is a game context, so chat may include hints or teasing. "
+        "Ignore any written answer-like text on the canvas. "
+        f"Possible answer labels include: {candidate_labels}. "
+    )
+    if recent:
+        title += f"Recent game chat: {recent}. "
+    return title[:1000]
+
+
+async def _drawing_guess_handle_input_payload(
+    data: dict[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+
+    raw_text = data.get("text")
+    if raw_text is None:
+        raw_text = data.get("guess")
+    if raw_text is None:
+        raw_text = data.get("transcript")
+    text = _normalize_short_text(raw_text, max_chars=300)
+    if not text:
+        return {"ok": False, "reason": "empty_text"}
+
+    session = _drawing_guess_get_session(lanlan_name, session_id)
+    if session is None:
+        session = _drawing_guess_new_round(lanlan_name, session_id, language=language, drawer="neko")
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    word = _drawing_guess_current_word(session)
+    persona = _drawing_guess_persona_context(lanlan_name, language)
+    phase = str(round_state.get("phase") or "")
+    intent = str(data.get("intent") or "").strip().lower()
+
+    response_type = "in_game_chat"
+    matched = _drawing_guess_match_answer(text, word)
+    line = _drawing_guess_neko_line("chat", persona, word=word, language=language)
+
+    if phase == "user_guessing" and round_state.get("drawer") == "neko":
+        if matched.get("matched"):
+            session["user_score"] = int(session.get("user_score") or 0) + 1
+            round_state["phase"] = "round_complete"
+            round_state["result"] = "user_correct"
+            round_state["matched_term"] = str(matched.get("term") or "")
+            response_type = "correct_guess"
+            line = _drawing_guess_neko_line("correct", persona, word=word, language=language)
+        elif _drawing_guess_is_hint_request(text):
+            round_state["hints_used"] = int(round_state.get("hints_used") or 0) + 1
+            response_type = "hint"
+            line = _drawing_guess_neko_line("hint", persona, word=word, language=language)
+        elif intent == "guess" or len(text) <= 48:
+            guesses = list(round_state.get("wrong_guesses") or [])
+            guesses.append(text[:60])
+            round_state["wrong_guesses"] = guesses[-8:]
+            response_type = "wrong_guess"
+            line = _drawing_guess_neko_line("wrong", persona, word=word, language=language)
+        else:
+            response_type = "in_game_chat"
+            line = _drawing_guess_neko_line("chat", persona, word=word, language=language)
+    elif _drawing_guess_is_hint_request(text) and round_state.get("drawer") == "neko":
+        round_state["hints_used"] = int(round_state.get("hints_used") or 0) + 1
+        response_type = "hint"
+        line = _drawing_guess_neko_line("hint", persona, word=word, language=language)
+
+    session["updated_at"] = time.time()
+    reveal_answer = _drawing_guess_reveal_answer_for_round(round_state)
+    if data.get("use_reply_model", data.get("use_model", True)) is not False:
+        model_line = await _drawing_guess_generate_neko_reply(
+            lanlan_name=lanlan_name,
+            language=language,
+            persona=persona,
+            session=session,
+            round_state=round_state,
+            word=word,
+            user_text=text,
+            response_type=response_type,
+            source=source,
+            allow_answer=reveal_answer or response_type == "correct_guess",
+        )
+        if model_line:
+            line = model_line
+    _drawing_guess_append_message(
+        session,
+        role="user",
+        response_type=response_type,
+        phase=phase,
+        text=text,
+    )
+    _drawing_guess_append_message(
+        session,
+        role="neko",
+        response_type=response_type,
+        phase=str(round_state.get("phase") or ""),
+        text=line,
+    )
+    return {
+        "ok": True,
+        "type": response_type,
+        "source": source,
+        "matched": bool(matched.get("matched")) if response_type == "correct_guess" else False,
+        "line": line,
+        "round": _drawing_guess_payload(session, language, reveal_answer=reveal_answer),
+    }
+
+
+@router.post("/{game_type}/round/start")
+async def drawing_guess_round_start(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    drawer = str(data.get("drawer") or "").strip().lower()
+    session = _drawing_guess_new_round(
+        lanlan_name,
+        session_id,
+        language=language,
+        drawer=drawer if drawer in {"neko", "user"} else None,
+    )
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    word = _drawing_guess_current_word(session)
+    persona = _drawing_guess_persona_context(lanlan_name, language)
+    line_kind = "start_user" if round_state.get("drawer") == "user" else "start_neko"
+    return {
+        "ok": True,
+        "line": _drawing_guess_neko_line(line_kind, persona, word=word, language=language),
+        "character": {"lanlan_name": persona.get("lanlan_name"), "master_name": persona.get("master_name")},
+        "round": _drawing_guess_payload(
+            session,
+            language,
+            reveal_answer=round_state.get("drawer") == "user",
+        ),
+    }
+
+
+@router.post("/{game_type}/ai-draw")
+async def drawing_guess_ai_draw(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    session = _drawing_guess_get_session(lanlan_name, session_id)
+    if session is None:
+        session = _drawing_guess_new_round(lanlan_name, session_id, language=language, drawer="neko")
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    if round_state.get("drawer") != "neko":
+        return {
+            "ok": False,
+            "reason": "not_neko_drawing_round",
+            "round": _drawing_guess_payload(session, language, reveal_answer=True),
+        }
+
+    word = _drawing_guess_current_word(session)
+    persona = _drawing_guess_persona_context(lanlan_name, language)
+    generated = await _drawing_guess_generate_neko_svg(
+        lanlan_name=lanlan_name,
+        word=word,
+        language=language,
+        persona=persona,
+        use_model=data.get("use_model") is not False,
+    )
+    svg = str(generated.get("svg") or "")
+    caption = str(generated.get("caption") or "")
+    round_state["ai_svg"] = svg
+    round_state["ai_caption"] = caption
+    round_state["ai_source"] = str(generated.get("source") or "")
+    round_state["result"] = ""
+    _drawing_guess_mark_guess_deadline(round_state)
+    session["updated_at"] = time.time()
+    return {
+        "ok": True,
+        "svg": svg,
+        "line": caption or _drawing_guess_neko_line("start_neko", persona, word=word, language=language),
+        "round": _drawing_guess_payload(session, language, reveal_answer=False),
+    }
+
+
+@router.post("/{game_type}/round/timeout")
+async def drawing_guess_round_timeout(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    session = _drawing_guess_get_session(lanlan_name, session_id)
+    if session is None:
+        return {"ok": False, "reason": "missing_round"}
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    phase = str(data.get("phase") or round_state.get("phase") or "")
+    if phase == "user_guessing" and round_state.get("drawer") == "neko":
+        round_state["phase"] = "round_complete"
+        round_state["result"] = "user_timeout"
+    elif phase == "user_drawing" and round_state.get("drawer") == "user":
+        round_state["phase"] = "neko_guessing"
+        _drawing_guess_mark_guess_deadline(round_state)
+    else:
+        round_state["phase"] = "round_complete"
+        round_state["result"] = round_state.get("result") or "timeout"
+    session["updated_at"] = time.time()
+    word = _drawing_guess_current_word(session)
+    persona = _drawing_guess_persona_context(lanlan_name, language)
+    return {
+        "ok": True,
+        "line": _drawing_guess_neko_line("timeout", persona, word=word, language=language),
+        "round": _drawing_guess_payload(
+            session,
+            language,
+            reveal_answer=_drawing_guess_reveal_answer_for_round(round_state),
+        ),
+    }
+
+
+@router.post("/{game_type}/input")
+async def drawing_guess_input(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return await _drawing_guess_handle_input_payload(data, source="text")
+
+
+@router.post("/{game_type}/voice-transcript")
+async def drawing_guess_voice_transcript(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return await _drawing_guess_handle_input_payload(data, source="voice")
+
+
+@router.post("/{game_type}/vision-guess")
+async def drawing_guess_vision_guess(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    session = _drawing_guess_get_session(lanlan_name, session_id)
+    if session is None:
+        return {"ok": False, "reason": "missing_round"}
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    if round_state.get("drawer") != "user":
+        return {
+            "ok": False,
+            "reason": "not_user_drawing_round",
+            "round": _drawing_guess_payload(session, language, reveal_answer=False),
+        }
+
+    word = _drawing_guess_current_word(session)
+    persona = _drawing_guess_persona_context(lanlan_name, language)
+    image_data = str(data.get("image_data") or data.get("canvas_data_url") or "")
+    if image_data and len(image_data) > 14_000_000:
+        return {"ok": False, "reason": "image_too_large"}
+
+    vision_description = ""
+    model_source = "fallback"
+    guessed_word: dict[str, Any] | None = None
+    if image_data and data.get("use_vision_model", True) is not False:
+        try:
+            from utils.screenshot_utils import analyze_screenshot_from_data_url
+
+            description = await analyze_screenshot_from_data_url(
+                image_data,
+                window_title=_drawing_guess_vision_context_title(session, persona, word, language),
+            )
+            if description:
+                vision_description = _normalize_short_text(description, max_chars=500)
+                model_source = "vision"
+                for candidate in _DRAWING_GUESS_WORDS:
+                    if _drawing_guess_match_answer(vision_description, candidate).get("matched"):
+                        guessed_word = candidate
+                        break
+        except Exception as exc:
+            logger.warning("drawing_guess vision model failed: %s", exc)
+
+    if guessed_word is None:
+        guessed_word = word
+        if not vision_description:
+            model_source = "fallback"
+
+    matched = str(guessed_word.get("id") or "") == str(word.get("id") or "")
+    if matched:
+        session["neko_score"] = int(session.get("neko_score") or 0) + 1
+        round_state["result"] = "neko_correct"
+        line_kind = "vision_correct"
+    else:
+        round_state["result"] = "neko_wrong"
+        line_kind = "vision_wrong"
+    round_state["phase"] = "round_complete"
+    round_state["vision_guess"] = {
+        "id": str(guessed_word.get("id") or ""),
+        "label": _drawing_guess_word_label(guessed_word, language),
+        "matched": matched,
+        "source": model_source,
+    }
+    session["updated_at"] = time.time()
+    line = _drawing_guess_neko_line(line_kind, persona, word=word, language=language)
+    _drawing_guess_append_message(
+        session,
+        role="neko",
+        response_type=line_kind,
+        phase=str(round_state.get("phase") or ""),
+        text=line,
+    )
+    return {
+        "ok": True,
+        "matched": matched,
+        "source": model_source,
+        "vision_description": vision_description,
+        "guess": dict(round_state["vision_guess"]),
+        "line": line,
+        "round": _drawing_guess_payload(session, language, reveal_answer=True),
+    }
+
+
+@router.post("/{game_type}/save-artifact")
+async def drawing_guess_save_artifact(game_type: str, request: Request):
+    if game_type != "drawing_guess":
+        return _drawing_guess_unsupported_response(game_type)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    ctx = _drawing_guess_request_context(data)
+    lanlan_name = str(ctx.get("lanlan_name") or "")
+    if not lanlan_name:
+        return {"ok": False, "reason": "missing_lanlan_name"}
+    session_id = str(ctx.get("session_id") or "default")
+    language = ctx.get("language") or "en"
+    session = _drawing_guess_get_session(lanlan_name, session_id)
+    if session is None:
+        return {"ok": False, "reason": "missing_round"}
+    round_state = session.get("round") if isinstance(session.get("round"), dict) else {}
+    artifacts = list(round_state.get("saved_artifacts") or [])
+    artifacts.append({
+        "type": _normalize_short_text(data.get("artifact_type"), max_chars=40) or "drawing",
+        "client_file_name": _normalize_short_text(data.get("file_name"), max_chars=120),
+        "saved_at": time.time(),
+    })
+    round_state["saved_artifacts"] = artifacts[-8:]
+    return {
+        "ok": True,
+        "saved": False,
+        "mode": "client_download",
+        "round": _drawing_guess_payload(
+            session,
+            language,
+            reveal_answer=_drawing_guess_reveal_answer_for_round(round_state),
+        ),
+    }
+
+
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
     """Declare that the game window is open and main external inputs are hijacked."""
@@ -7688,6 +9078,8 @@ async def _complete_game_end_from_payload(
     # 包括 /route/end 与 /end 两条入口；postgame 投递依赖 mgr.user_language
     # 决定旁白语言，所以这里也要 heal 一次（详见 _absorb_request_language）。
     _absorb_request_language(data, lanlan_name)
+    if game_type == "drawing_guess" and lanlan_name:
+        _drawing_guess_sessions.pop(_drawing_guess_session_key(lanlan_name, session_id), None)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None

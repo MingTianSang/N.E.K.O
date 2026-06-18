@@ -4704,5 +4704,98 @@
             "label": "本局對話進入記憶（預設不啟用）",
             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
+    },
+    "drawingGuess": {
+        "title": "你畫我猜",
+        "subtitle": "和 NEKO 輪流畫畫猜詞",
+        "hud": {
+            "round": "回合",
+            "timer": "時間",
+            "user": "你"
+        },
+        "status": {
+            "ready": "準備好了",
+            "loading": "正在開始遊戲...",
+            "nekoDrawing": "{{name}} 正在畫",
+            "userGuessing": "猜猜 {{name}} 畫了什麼",
+            "userDrawing": "請畫：{{answer}}",
+            "nekoGuessing": "{{name}} 正在猜",
+            "complete": "本輪結束",
+            "ended": "遊戲結束"
+        },
+        "phase": {
+            "ready": "準備",
+            "nekoDrawing": "NEKO 作畫",
+            "userGuessing": "你來猜",
+            "userDrawing": "你來畫",
+            "nekoGuessing": "NEKO 來猜",
+            "roundComplete": "已結束"
+        },
+        "actions": {
+            "done": "畫好了",
+            "nextRound": "下一輪",
+            "end": "結束",
+            "saveUser": "保存我的畫",
+            "saveNeko": "保存 NEKO 的畫"
+        },
+        "tools": {
+            "brush": "畫筆",
+            "eraser": "橡皮擦",
+            "undo": "復原",
+            "redo": "重做",
+            "clear": "清空",
+            "size": "粗細"
+        },
+        "colors": {
+            "black": "黑色",
+            "red": "紅色",
+            "green": "綠色",
+            "blue": "藍色",
+            "yellow": "黃色"
+        },
+        "chat": {
+            "title": "遊戲聊天",
+            "placeholder": "輸入猜測，也可以和 NEKO 聊天",
+            "send": "送出",
+            "voice": "語音",
+            "placeholderReady": "??? NEKO ???????????",
+            "placeholderUserGuessing": "??????????????",
+            "placeholderUserDrawing": "????????NEKO ???",
+            "placeholderNekoGuessing": "NEKO ??????????????",
+            "placeholderComplete": "??????????????"
+        },
+        "messages": {
+            "welcome": "遊戲開始。這裡可以聊天、要提示，也可以直接提交猜測。",
+            "nekoDrawing": "{{name}} 正在用 SVG 畫圖。",
+            "userDrawing": "你的詞是 {{answer}}。畫出來，但不要直接寫答案。",
+            "userSaved": "你的畫已經下載。",
+            "nekoSaved": "NEKO 的畫已經下載。",
+            "noNekoDrawing": "還沒有可以保存的 NEKO 畫作。",
+            "noUserDrawing": "先畫點什麼再保存。",
+            "voiceUnavailable": "目前瀏覽器不支援語音輸入。",
+            "voiceListening": "正在聽...",
+            "timeout": "時間到。",
+            "routeFailed": "遊戲路由沒有啟動成功，但 demo 仍可繼續執行。"
+        },
+        "answer": {
+            "label": "答案"
+        },
+        "aria": {
+            "stage": "繪圖區",
+            "aiDrawing": "AI 畫作",
+            "userCanvas": "使用者畫布",
+            "tools": "繪圖工具",
+            "chat": "遊戲聊天"
+        },
+        "result": {
+            "title": "????",
+            "answer": "??",
+            "score": "??",
+            "userCorrect": "?????",
+            "userTimeout": "????????",
+            "nekoCorrect": "{{name}} ????",
+            "nekoWrong": "{{name}} ??????",
+            "generic": "???????"
+        }
     }
 }

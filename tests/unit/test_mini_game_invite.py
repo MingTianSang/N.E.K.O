@@ -1462,7 +1462,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] in ('soccer', 'basketball')
+    assert payload['game_type'] in ('soccer', 'basketball', 'drawing_guess')
 
 
 @pytest.mark.asyncio
@@ -1516,7 +1516,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in ('soccer', 'basketball')
+    assert payload['game_type'] in ('soccer', 'basketball', 'drawing_guess')
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']

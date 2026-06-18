@@ -4704,5 +4704,98 @@
             "label": "Сохранять этот матч в память (по умолчанию выключено)",
             "hint": "Когда выключено, ввод игрока, прямые ответы NEKO, реакции на события, итоги матча и продолжение разговора не попадают в память и не используются из неё."
         }
+    },
+    "drawingGuess": {
+        "title": "Нарисуй и угадай",
+        "subtitle": "Рисуйте и угадывайте по очереди с NEKO",
+        "hud": {
+            "round": "Раунд",
+            "timer": "Время",
+            "user": "Ты"
+        },
+        "status": {
+            "ready": "Готово",
+            "loading": "Запуск игры...",
+            "nekoDrawing": "{{name}} рисует",
+            "userGuessing": "Угадай, что нарисовала {{name}}",
+            "userDrawing": "Нарисуй: {{answer}}",
+            "nekoGuessing": "{{name}} угадывает",
+            "complete": "Раунд завершен",
+            "ended": "Игра окончена"
+        },
+        "phase": {
+            "ready": "Готово",
+            "nekoDrawing": "Рисует NEKO",
+            "userGuessing": "Твой ответ",
+            "userDrawing": "Ты рисуешь",
+            "nekoGuessing": "NEKO угадывает",
+            "roundComplete": "Готово"
+        },
+        "actions": {
+            "done": "Готово",
+            "nextRound": "Дальше",
+            "end": "Завершить",
+            "saveUser": "Сохранить мое",
+            "saveNeko": "Сохранить NEKO"
+        },
+        "tools": {
+            "brush": "Кисть",
+            "eraser": "Ластик",
+            "undo": "Отменить",
+            "redo": "Повторить",
+            "clear": "Очистить",
+            "size": "Размер"
+        },
+        "colors": {
+            "black": "Черный",
+            "red": "Красный",
+            "green": "Зеленый",
+            "blue": "Синий",
+            "yellow": "Желтый"
+        },
+        "chat": {
+            "title": "Игровой чат",
+            "placeholder": "Введи ответ или напиши NEKO",
+            "send": "Отправить",
+            "voice": "Голос",
+            "placeholderReady": "???????? ? NEKO ??? ????? ????????? ?????",
+            "placeholderUserGuessing": "????? ?????, ??????? ????????? ??? ?????? NEKO",
+            "placeholderUserDrawing": "????? ? ??? ??????? ?????? ? NEKO",
+            "placeholderNekoGuessing": "NEKO ???????. ????? ???? ????? ??? ????????",
+            "placeholderComplete": "????? ????????. ????? ?????????? ??? ?????? ?????????"
+        },
+        "messages": {
+            "welcome": "Игра началась. Здесь можно общаться, просить подсказки или отвечать.",
+            "nekoDrawing": "{{name}} рисует SVG-картинку.",
+            "userDrawing": "Твое слово: {{answer}}. Нарисуй его, не записывая ответ буквами.",
+            "userSaved": "Твой рисунок скачан.",
+            "nekoSaved": "Рисунок NEKO скачан.",
+            "noNekoDrawing": "Пока нет рисунка NEKO для сохранения.",
+            "noUserDrawing": "Сначала что-нибудь нарисуй.",
+            "voiceUnavailable": "В этом браузере нет голосового ввода.",
+            "voiceListening": "Слушаю...",
+            "timeout": "Время вышло.",
+            "routeFailed": "Игровой маршрут не запустился, но demo все еще может работать."
+        },
+        "answer": {
+            "label": "Ответ"
+        },
+        "aria": {
+            "stage": "Область рисования",
+            "aiDrawing": "Рисунок AI",
+            "userCanvas": "Холст пользователя",
+            "tools": "Инструменты рисования",
+            "chat": "Игровой чат"
+        },
+        "result": {
+            "title": "????? ????????",
+            "answer": "?????",
+            "score": "????",
+            "userCorrect": "?? ??????.",
+            "userTimeout": "????? ????? ?????? ?????.",
+            "nekoCorrect": "{{name}} ???????.",
+            "nekoWrong": "{{name}} ? ???? ??? ?? ???????.",
+            "generic": "????? ????????."
+        }
     }
 }

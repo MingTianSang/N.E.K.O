@@ -1,0 +1,1698 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-dg-i18n="drawingGuess.title">Drawing Guess</title>
+<script>
+  (function () {
+    var params = null;
+    try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
+    var queryLanlan = (params && params.get('lanlan_name')) || '';
+    var querySession = (params && params.get('session_id')) || '';
+    var queryLanguage = (params && (params.get('i18n_language') || params.get('ui_lang') || params.get('lang'))) || '';
+    if (queryLanguage) {
+      queryLanguage = queryLanguage.replace('_', '-');
+      if (/^zh/i.test(queryLanguage)) queryLanguage = /tw|hk|hant/i.test(queryLanguage) ? 'zh-TW' : 'zh-CN';
+      else queryLanguage = queryLanguage.split('-')[0].toLowerCase();
+      try { localStorage.setItem('i18nextLng', queryLanguage); } catch (_) {}
+      window.__nekoI18nLanguage = queryLanguage;
+      window.NEKO_I18N_LANGUAGE = queryLanguage;
+    }
+    window.lanlan_config = window.lanlan_config || {
+      lanlan_name: queryLanlan || '',
+      master_name: '',
+      model_type: 'live2d',
+      live3d_sub_type: ''
+    };
+    if (queryLanlan && !window.lanlan_config.lanlan_name) window.lanlan_config.lanlan_name = queryLanlan;
+    window.__nekoDrawingGuessSessionId = querySession || '';
+  })();
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f2ec;
+    --ink: #20242b;
+    --muted: #626a73;
+    --panel: #fffdfa;
+    --line: #d9d2c3;
+    --accent: #2e7d6b;
+    --accent-2: #d85f3f;
+    --accent-3: #3e6ea8;
+    --warn: #c08a1b;
+    --shadow: 0 12px 30px rgba(32, 36, 43, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    letter-spacing: 0;
+  }
+
+  body {
+    overflow: hidden;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  button {
+    border: 1px solid var(--line);
+    background: #ffffff;
+    color: var(--ink);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  button:focus-visible,
+  input:focus-visible {
+    outline: 2px solid rgba(46, 125, 107, 0.42);
+    outline-offset: 2px;
+  }
+
+  #app {
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .topbar {
+    min-height: 58px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfaf6;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border: 2px solid var(--ink);
+    border-radius: 8px;
+    background: #f7cf5c;
+    font-weight: 800;
+  }
+
+  .brand-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .brand-title {
+    font-size: 17px;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .brand-subtitle {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hud {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .hud-item {
+    height: 34px;
+    min-width: 84px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .hud-item strong {
+    font-size: 14px;
+  }
+
+  .workspace {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 390px);
+    gap: 16px;
+    padding: 16px;
+  }
+
+  .play-section,
+  .side-panel {
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+
+  .play-section {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .stage-header {
+    min-height: 44px;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .stage-status {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .round-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .primary-button {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
+  }
+
+  .danger-button {
+    background: var(--accent-2);
+    border-color: var(--accent-2);
+    color: #ffffff;
+  }
+
+  .stage-wrap {
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    background:
+      linear-gradient(90deg, rgba(217, 210, 195, 0.34) 1px, transparent 1px),
+      linear-gradient(0deg, rgba(217, 210, 195, 0.34) 1px, transparent 1px),
+      #f1eee6;
+    background-size: 28px 28px;
+  }
+
+  .stage {
+    position: relative;
+    width: min(100%, 940px, calc((100vh - 280px) * 1.6));
+    max-width: 940px;
+    aspect-ratio: 8 / 5;
+    border: 2px solid #2d3138;
+    border-radius: 8px;
+    background: #fffaf1;
+    overflow: hidden;
+  }
+
+  #ai-svg-layer,
+  #drawing-canvas,
+  .empty-stage {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  #ai-svg-layer {
+    display: none;
+    background: #fffaf1;
+  }
+
+  #ai-svg-layer svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  #ai-svg-layer.is-drawing svg * {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  #ai-svg-layer.is-drawing .dg-reveal-shape {
+    opacity: 0;
+    animation: dg-reveal-shape 420ms ease forwards;
+  }
+
+  #ai-svg-layer.is-drawing .dg-reveal-stroke {
+    opacity: 0;
+    stroke-dasharray: var(--dg-stroke-length, 120);
+    stroke-dashoffset: var(--dg-stroke-length, 120);
+    animation: dg-reveal-stroke 720ms ease forwards, dg-reveal-shape 220ms ease forwards;
+  }
+
+  @keyframes dg-reveal-shape {
+    from {
+      opacity: 0;
+      transform: scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes dg-reveal-stroke {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #ai-svg-layer.is-drawing .dg-reveal-shape,
+    #ai-svg-layer.is-drawing .dg-reveal-stroke {
+      animation-duration: 1ms;
+      animation-delay: 0ms !important;
+    }
+  }
+
+  #drawing-canvas {
+    display: none;
+    touch-action: none;
+    background: #fffaf1;
+  }
+
+  .empty-stage {
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    color: var(--muted);
+    text-align: center;
+    font-size: 14px;
+  }
+
+  .empty-stage.is-busy {
+    gap: 12px;
+  }
+
+  .empty-stage.is-busy::before {
+    content: "";
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 3px solid rgba(46, 125, 107, 0.18);
+    border-top-color: var(--accent);
+    animation: dg-spin 850ms linear infinite;
+  }
+
+  @keyframes dg-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .answer-badge {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    z-index: 4;
+    max-width: calc(100% - 20px);
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: rgba(255, 253, 250, 0.92);
+    border: 1px solid var(--line);
+    box-shadow: 0 8px 18px rgba(32, 36, 43, 0.12);
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tools {
+    min-height: 58px;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--line);
+  }
+
+  .tool-button {
+    width: 38px;
+    height: 38px;
+    display: inline-grid;
+    place-items: center;
+    font-weight: 800;
+  }
+
+  .tool-button svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+
+  .tool-button.active {
+    border-color: var(--accent);
+    background: #e6f1ed;
+    color: var(--accent);
+  }
+
+  .color-button {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    padding: 0;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+
+  .color-button.active {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+
+  .size-control {
+    width: 120px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .side-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .side-header {
+    min-height: 48px;
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .side-title {
+    font-weight: 800;
+  }
+
+  .phase-pill {
+    max-width: 160px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: #e8eef6;
+    color: #1e4973;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .message-list {
+    min-height: 0;
+    overflow: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #fffdfa;
+  }
+
+  .message {
+    max-width: 92%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #ffffff;
+    font-size: 13px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .message.user {
+    align-self: flex-end;
+    background: #eaf3ef;
+    border-color: #c8ddd5;
+  }
+
+  .message.neko {
+    align-self: flex-start;
+    background: #fff7e1;
+    border-color: #ead9a6;
+  }
+
+  .message.system {
+    align-self: center;
+    max-width: 100%;
+    color: var(--muted);
+    background: #f7f5ee;
+    font-size: 12px;
+  }
+
+  .input-bar {
+    min-height: 62px;
+    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    border-top: 1px solid var(--line);
+    background: #fbfaf6;
+  }
+
+  #chat-input {
+    height: 42px;
+    min-width: 0;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    padding: 0 12px;
+    background: #ffffff;
+  }
+
+  .voice-button.listening {
+    background: #fce8df;
+    border-color: var(--accent-2);
+    color: var(--accent-2);
+  }
+
+  .result-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(32, 36, 43, 0.28);
+  }
+
+  .result-backdrop[hidden] {
+    display: none;
+  }
+
+  .result-panel {
+    width: min(460px, 100%);
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #fffdfa;
+    box-shadow: 0 22px 60px rgba(32, 36, 43, 0.24);
+    overflow: hidden;
+  }
+
+  .result-header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .result-header h2 {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .result-body {
+    display: grid;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .result-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+  }
+
+  .result-line span:first-child {
+    color: var(--muted);
+  }
+
+  .result-line strong {
+    text-align: right;
+  }
+
+  .result-message {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f3f7f5;
+    color: #1d5e51;
+    font-weight: 700;
+    line-height: 1.45;
+  }
+
+  .result-actions {
+    padding: 12px 16px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  .result-actions button {
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  @media (max-width: 920px) {
+    body { overflow: auto; }
+    #app {
+      min-height: 100vh;
+      height: auto;
+      grid-template-rows: auto auto auto;
+    }
+    .topbar {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .hud {
+      justify-content: flex-start;
+    }
+    .workspace {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 420px;
+    }
+    .stage {
+      width: 100%;
+    }
+    .input-bar {
+      position: sticky;
+      bottom: 0;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    #send-button {
+      grid-column: 3;
+    }
+    #voice-button {
+      grid-column: 1;
+    }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">DG</div>
+      <div class="brand-copy">
+        <div class="brand-title" data-dg-i18n="drawingGuess.title">Drawing Guess</div>
+        <div class="brand-subtitle" id="subtitle" data-dg-i18n="drawingGuess.subtitle">Take turns drawing with NEKO</div>
+      </div>
+    </div>
+    <div class="hud" aria-live="polite">
+      <div class="hud-item"><span data-dg-i18n="drawingGuess.hud.round">Round</span><strong id="round-number">1</strong></div>
+      <div class="hud-item"><span data-dg-i18n="drawingGuess.hud.timer">Time</span><strong id="timer">60</strong></div>
+      <div class="hud-item"><span data-dg-i18n="drawingGuess.hud.user">You</span><strong id="user-score">0</strong></div>
+      <div class="hud-item"><span id="neko-score-name">NEKO</span><strong id="neko-score">0</strong></div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="play-section" aria-label="Drawing area" data-dg-i18n-aria="drawingGuess.aria.stage">
+      <div class="stage-header">
+        <div class="stage-status" id="stage-status" data-dg-i18n="drawingGuess.status.ready">Ready</div>
+        <div class="round-actions">
+          <button id="done-button" type="button" class="primary-button" data-dg-i18n="drawingGuess.actions.done">Done</button>
+          <button id="next-round-button" type="button" data-dg-i18n="drawingGuess.actions.nextRound">Next</button>
+          <button id="end-button" type="button" class="danger-button" data-dg-i18n="drawingGuess.actions.end">End</button>
+        </div>
+      </div>
+      <div class="stage-wrap">
+        <div class="stage" id="stage">
+          <div id="ai-svg-layer" aria-label="AI drawing" data-dg-i18n-aria="drawingGuess.aria.aiDrawing"></div>
+          <canvas id="drawing-canvas" width="800" height="500" aria-label="User drawing canvas" data-dg-i18n-aria="drawingGuess.aria.userCanvas"></canvas>
+          <div class="empty-stage" id="empty-stage" data-dg-i18n="drawingGuess.status.loading">Starting game...</div>
+          <div class="answer-badge" id="answer-badge"></div>
+        </div>
+      </div>
+      <div class="tools" aria-label="Drawing tools" data-dg-i18n-aria="drawingGuess.aria.tools">
+        <button id="brush-button" class="tool-button active" type="button" title="Brush" data-dg-i18n-title="drawingGuess.tools.brush"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 4.2l5.1 5.1-9.8 9.8H4.9v-5.1z"></path><path d="M13.4 5.5l5.1 5.1"></path></svg></button>
+        <button id="eraser-button" class="tool-button" type="button" title="Eraser" data-dg-i18n-title="drawingGuess.tools.eraser"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21h10"></path><path d="M4 15l8.5-8.5a2.1 2.1 0 0 1 3 0l2 2a2.1 2.1 0 0 1 0 3L9 20z"></path><path d="M9 10l5 5"></path></svg></button>
+        <button id="undo-button" class="tool-button" type="button" title="Undo" data-dg-i18n-title="drawingGuess.tools.undo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14l-5-5 5-5"></path><path d="M4 9h10a6 6 0 0 1 0 12h-2"></path></svg></button>
+        <button id="redo-button" class="tool-button" type="button" title="Redo" data-dg-i18n-title="drawingGuess.tools.redo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14l5-5-5-5"></path><path d="M20 9H10a6 6 0 0 0 0 12h2"></path></svg></button>
+        <button id="clear-button" class="tool-button" type="button" title="Clear" data-dg-i18n-title="drawingGuess.tools.clear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 15h10l1-15"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg></button>
+        <button class="color-button active" type="button" data-color="#20242b" title="Black" data-dg-i18n-title="drawingGuess.colors.black" style="background:#20242b"></button>
+        <button class="color-button" type="button" data-color="#d84535" title="Red" data-dg-i18n-title="drawingGuess.colors.red" style="background:#d84535"></button>
+        <button class="color-button" type="button" data-color="#2e7d6b" title="Green" data-dg-i18n-title="drawingGuess.colors.green" style="background:#2e7d6b"></button>
+        <button class="color-button" type="button" data-color="#326fb0" title="Blue" data-dg-i18n-title="drawingGuess.colors.blue" style="background:#326fb0"></button>
+        <button class="color-button" type="button" data-color="#f0b429" title="Yellow" data-dg-i18n-title="drawingGuess.colors.yellow" style="background:#f0b429"></button>
+        <label class="size-control">
+          <span data-dg-i18n="drawingGuess.tools.size">Size</span>
+          <input id="brush-size" type="range" min="2" max="34" step="1" value="8">
+        </label>
+        <button id="save-user-button" type="button" data-dg-i18n="drawingGuess.actions.saveUser">Save mine</button>
+        <button id="save-neko-button" type="button" data-dg-i18n="drawingGuess.actions.saveNeko">Save NEKO</button>
+      </div>
+    </section>
+
+    <aside class="side-panel" aria-label="Game chat" data-dg-i18n-aria="drawingGuess.aria.chat">
+      <div class="side-header">
+        <div class="side-title" data-dg-i18n="drawingGuess.chat.title">Game Chat</div>
+        <div class="phase-pill" id="phase-pill" data-dg-i18n="drawingGuess.phase.ready">Ready</div>
+      </div>
+      <div id="message-list" class="message-list" aria-live="polite"></div>
+    </aside>
+  </main>
+
+  <footer class="input-bar">
+    <button id="voice-button" type="button" class="tool-button voice-button" title="Voice" data-dg-i18n-title="drawingGuess.chat.voice"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path></svg></button>
+    <input id="chat-input" type="text" autocomplete="off" data-dg-i18n-placeholder="drawingGuess.chat.placeholder" placeholder="Type a guess or chat with NEKO">
+    <button id="send-button" type="button" class="primary-button" data-dg-i18n="drawingGuess.chat.send">Send</button>
+  </footer>
+</div>
+
+<div id="result-backdrop" class="result-backdrop" hidden>
+  <section class="result-panel" role="dialog" aria-modal="true" aria-labelledby="result-title">
+    <div class="result-header">
+      <h2 id="result-title" data-dg-i18n="drawingGuess.result.title">Round Complete</h2>
+    </div>
+    <div class="result-body">
+      <div id="result-message" class="result-message"></div>
+      <div class="result-line">
+        <span data-dg-i18n="drawingGuess.result.answer">Answer</span>
+        <strong id="result-answer">-</strong>
+      </div>
+      <div class="result-line">
+        <span data-dg-i18n="drawingGuess.result.score">Score</span>
+        <strong id="result-score">0 : 0</strong>
+      </div>
+    </div>
+    <div class="result-actions">
+      <button id="result-save-user-button" type="button" data-dg-i18n="drawingGuess.actions.saveUser">Save mine</button>
+      <button id="result-save-neko-button" type="button" data-dg-i18n="drawingGuess.actions.saveNeko">Save NEKO</button>
+      <button id="result-next-round-button" type="button" class="primary-button" data-dg-i18n="drawingGuess.actions.nextRound">Next</button>
+      <button id="result-end-button" type="button" class="danger-button" data-dg-i18n="drawingGuess.actions.end">End</button>
+    </div>
+  </section>
+</div>
+
+<script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+<script>
+(function () {
+  'use strict';
+
+  var params = new URLSearchParams(window.location.search);
+  var fallbackSession = 'drawing-guess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  var state = {
+    lanlanName: params.get('lanlan_name') || (window.lanlan_config && window.lanlan_config.lanlan_name) || 'NEKO',
+    sessionId: params.get('session_id') || window.__nekoDrawingGuessSessionId || fallbackSession,
+    language: params.get('i18n_language') || params.get('language') || '',
+    round: null,
+    nextDrawer: 'neko',
+    currentTool: 'brush',
+    color: '#20242b',
+    size: 8,
+    isDrawing: false,
+    drawingEnabled: false,
+    timerId: 0,
+    heartbeatId: 0,
+    undoStack: [],
+    redoStack: [],
+    lastPoint: null,
+    canvasRoundIndex: null,
+    resultRoundKey: '',
+    aiDrawSequence: 0,
+    recognition: null,
+    listening: false
+  };
+
+  var fallbackText = {
+    'title': 'Drawing Guess',
+    'subtitle': 'Take turns drawing with NEKO',
+    'hud.round': 'Round',
+    'hud.timer': 'Time',
+    'hud.user': 'You',
+    'status.ready': 'Ready',
+    'status.loading': 'Starting game...',
+    'status.nekoDrawing': '{{name}} is drawing',
+    'status.userGuessing': 'Guess what {{name}} drew',
+    'status.userDrawing': 'Draw: {{answer}}',
+    'status.nekoGuessing': '{{name}} is guessing',
+    'status.complete': 'Round complete',
+    'status.ended': 'Game ended',
+    'phase.ready': 'Ready',
+    'phase.nekoDrawing': 'NEKO draws',
+    'phase.userGuessing': 'Your guess',
+    'phase.userDrawing': 'Your drawing',
+    'phase.nekoGuessing': 'NEKO guesses',
+    'phase.roundComplete': 'Complete',
+    'actions.done': 'Done',
+    'actions.nextRound': 'Next',
+    'actions.end': 'End',
+    'actions.saveUser': 'Save mine',
+    'actions.saveNeko': 'Save NEKO',
+    'tools.brush': 'Brush',
+    'tools.eraser': 'Eraser',
+    'tools.undo': 'Undo',
+    'tools.redo': 'Redo',
+    'tools.clear': 'Clear',
+    'tools.size': 'Size',
+    'colors.black': 'Black',
+    'colors.red': 'Red',
+    'colors.green': 'Green',
+    'colors.blue': 'Blue',
+    'colors.yellow': 'Yellow',
+    'chat.title': 'Game Chat',
+    'chat.placeholder': 'Type a guess or chat with NEKO',
+    'chat.placeholderReady': 'Chat with NEKO or start drawing',
+    'chat.placeholderUserGuessing': 'Type a guess, ask for a hint, or chat',
+    'chat.placeholderUserDrawing': 'Draw here, and chat with NEKO if you want',
+    'chat.placeholderNekoGuessing': 'NEKO is looking. You can tease or hint here',
+    'chat.placeholderComplete': 'Round finished. Chat or start the next round',
+    'chat.send': 'Send',
+    'chat.voice': 'Voice',
+    'messages.welcome': 'Game started. You can chat, ask for hints, or guess here.',
+    'messages.nekoDrawing': '{{name}} is making an SVG drawing.',
+    'messages.userDrawing': 'Your word is {{answer}}. Draw it without writing the answer.',
+    'messages.userSaved': 'Your drawing was downloaded.',
+    'messages.nekoSaved': 'NEKO drawing was downloaded.',
+    'messages.noNekoDrawing': 'There is no NEKO drawing to save yet.',
+    'messages.noUserDrawing': 'Draw something before saving.',
+    'messages.voiceUnavailable': 'Voice input is not available in this browser.',
+    'messages.voiceListening': 'Listening...',
+    'messages.timeout': 'Time is up.',
+    'messages.routeFailed': 'Game route did not start, but the demo can still run.',
+    'answer.label': 'Answer',
+    'result.title': 'Round Complete',
+    'result.answer': 'Answer',
+    'result.score': 'Score',
+    'result.userCorrect': 'You guessed it.',
+    'result.userTimeout': 'Time ran out this round.',
+    'result.nekoCorrect': '{{name}} guessed it.',
+    'result.nekoWrong': '{{name}} missed this one.',
+    'result.generic': 'This round is done.',
+    'aria.stage': 'Drawing area',
+    'aria.aiDrawing': 'AI drawing',
+    'aria.userCanvas': 'User drawing canvas',
+    'aria.tools': 'Drawing tools',
+    'aria.chat': 'Game chat'
+  };
+
+  var fallbackTextByLanguage = {
+    'zh-CN': {
+      'title': '你画我猜',
+      'subtitle': '和 NEKO 轮流画画猜词',
+      'hud.round': '回合',
+      'hud.timer': '时间',
+      'hud.user': '你',
+      'status.ready': '准备好了',
+      'status.loading': '正在开始游戏...',
+      'status.nekoDrawing': '{{name}} 正在画',
+      'status.userGuessing': '猜猜 {{name}} 画了什么',
+      'status.userDrawing': '请画：{{answer}}',
+      'status.nekoGuessing': '{{name}} 正在猜',
+      'status.complete': '本轮结束',
+      'status.ended': '游戏结束',
+      'phase.ready': '准备',
+      'phase.nekoDrawing': 'NEKO 作画',
+      'phase.userGuessing': '你来猜',
+      'phase.userDrawing': '你来画',
+      'phase.nekoGuessing': 'NEKO 来猜',
+      'phase.roundComplete': '已结束',
+      'actions.done': '画好了',
+      'actions.nextRound': '下一轮',
+      'actions.end': '结束',
+      'actions.saveUser': '保存我的画',
+      'actions.saveNeko': '保存 NEKO 的画',
+      'tools.brush': '画笔',
+      'tools.eraser': '橡皮',
+      'tools.undo': '撤销',
+      'tools.redo': '重做',
+      'tools.clear': '清空',
+      'tools.size': '粗细',
+      'colors.black': '黑色',
+      'colors.red': '红色',
+      'colors.green': '绿色',
+      'colors.blue': '蓝色',
+      'colors.yellow': '黄色',
+      'chat.title': '游戏聊天',
+      'chat.placeholder': '输入猜测，也可以和 NEKO 聊天',
+      'chat.placeholderReady': '可以和 NEKO 聊天，也可以开始下一轮',
+      'chat.placeholderUserGuessing': '输入猜测，也可以要提示或聊天',
+      'chat.placeholderUserDrawing': '边画边聊也可以，NEKO 会等你',
+      'chat.placeholderNekoGuessing': 'NEKO 正在看图，可以给点提示或吐槽',
+      'chat.placeholderComplete': '本轮结束，可以聊天或开下一轮',
+      'chat.send': '发送',
+      'chat.voice': '语音',
+      'messages.welcome': '游戏开始。这里可以聊天、要提示，也可以直接提交猜测。',
+      'messages.nekoDrawing': '{{name}} 正在用 SVG 画图。',
+      'messages.userDrawing': '你的词是 {{answer}}。画出来，但不要直接写答案。',
+      'messages.userSaved': '你的画已经下载。',
+      'messages.nekoSaved': 'NEKO 的画已经下载。',
+      'messages.noNekoDrawing': '还没有可以保存的 NEKO 画作。',
+      'messages.noUserDrawing': '先画点什么再保存。',
+      'messages.voiceUnavailable': '当前浏览器不支持语音输入。',
+      'messages.voiceListening': '正在听...',
+      'messages.timeout': '时间到。',
+      'messages.routeFailed': '游戏路由没有启动成功，但 demo 仍可继续运行。',
+      'answer.label': '答案',
+      'result.title': '本轮结束',
+      'result.answer': '答案',
+      'result.score': '比分',
+      'result.userCorrect': '你猜对了。',
+      'result.userTimeout': '这一轮时间到了。',
+      'result.nekoCorrect': '{{name}} 猜对了。',
+      'result.nekoWrong': '{{name}} 这次没猜中。',
+      'result.generic': '这一轮结束啦。',
+      'aria.stage': '绘图区',
+      'aria.aiDrawing': 'AI 画作',
+      'aria.userCanvas': '用户画布',
+      'aria.tools': '绘图工具',
+      'aria.chat': '游戏聊天'
+    }
+  };
+
+  var els = {};
+  [
+    'round-number', 'timer', 'user-score', 'neko-score', 'neko-score-name',
+    'stage-status', 'phase-pill', 'message-list',
+    'ai-svg-layer', 'drawing-canvas', 'empty-stage', 'answer-badge',
+    'brush-button', 'eraser-button', 'undo-button', 'redo-button', 'clear-button',
+    'brush-size', 'save-user-button', 'save-neko-button', 'done-button',
+    'next-round-button', 'end-button', 'voice-button', 'chat-input', 'send-button',
+    'result-backdrop', 'result-message', 'result-answer', 'result-score',
+    'result-save-user-button', 'result-save-neko-button', 'result-next-round-button', 'result-end-button'
+  ].forEach(function (id) {
+    els[id] = document.getElementById(id);
+  });
+  var canvas = els['drawing-canvas'];
+  var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  function fillTemplate(text, params) {
+    return String(text || '').replace(/\{\{\s*(\w+)\s*\}\}/g, function (_, key) {
+      return params && params[key] != null ? String(params[key]) : '';
+    });
+  }
+
+  function usableTranslation(value, key, fullKey) {
+    if (typeof value !== 'string' || !value || value === key || value === fullKey) return false;
+    var compact = value.replace(/\s+/g, '');
+    if (compact && /^[?？]+$/.test(compact)) return false;
+    return true;
+  }
+
+  function t(key, fallback, params) {
+    var fullKey = key.indexOf('drawingGuess.') === 0 ? key : 'drawingGuess.' + key;
+    var rawKey = fullKey.slice('drawingGuess.'.length);
+    var langFallback = fallbackTextByLanguage[state.language] || {};
+    var base = langFallback[rawKey] || fallback || fallbackText[rawKey] || rawKey;
+    var options = Object.assign({}, params || {}, { defaultValue: base });
+    try {
+      var client = window.i18next || window.i18n;
+      if (client && typeof client.t === 'function') {
+        var translated = client.t(fullKey, options);
+        if (usableTranslation(translated, rawKey, fullKey)) return fillTemplate(translated, params);
+      }
+    } catch (_) {}
+    try {
+      if (typeof window.t === 'function') {
+        var translatedByWindow = window.t(fullKey, params || {});
+        if (usableTranslation(translatedByWindow, rawKey, fullKey)) return fillTemplate(translatedByWindow, params);
+      }
+    } catch (_) {}
+    return fillTemplate(base, params);
+  }
+
+  function applyStaticI18n() {
+    document.querySelectorAll('[data-dg-i18n]').forEach(function (node) {
+      var key = node.getAttribute('data-dg-i18n') || '';
+      if (!key) return;
+      node.textContent = t(key, node.textContent || '');
+    });
+    document.querySelectorAll('[data-dg-i18n-title]').forEach(function (node) {
+      var key = node.getAttribute('data-dg-i18n-title') || '';
+      if (!key) return;
+      node.title = t(key, node.title || '');
+      node.setAttribute('aria-label', node.title);
+    });
+    document.querySelectorAll('[data-dg-i18n-aria]').forEach(function (node) {
+      var key = node.getAttribute('data-dg-i18n-aria') || '';
+      if (!key) return;
+      node.setAttribute('aria-label', t(key, node.getAttribute('aria-label') || ''));
+    });
+    document.querySelectorAll('[data-dg-i18n-placeholder]').forEach(function (node) {
+      var key = node.getAttribute('data-dg-i18n-placeholder') || '';
+      if (!key) return;
+      node.setAttribute('placeholder', t(key, node.getAttribute('placeholder') || ''));
+    });
+  }
+
+  function resolveLanguage() {
+    var candidates = [
+      state.language,
+      params.get('lang'),
+      params.get('locale'),
+      window.__nekoI18nLanguage,
+      window.NEKO_I18N_LANGUAGE
+    ];
+    try { candidates.push(localStorage.getItem('i18nextLng')); } catch (_) {}
+    candidates.push(navigator.language || document.documentElement.lang || 'en');
+    for (var i = 0; i < candidates.length; i++) {
+      var value = String(candidates[i] || '').trim();
+      if (value) return value;
+    }
+    return 'en';
+  }
+
+  function normalizeLocale(raw) {
+    var value = String(raw || '').trim().replace('_', '-');
+    var lower = value.toLowerCase();
+    if (value === 'zh-CN' || value === 'zh-TW') return value;
+    if (lower.indexOf('zh') === 0) return /tw|hk|hant/.test(lower) ? 'zh-TW' : 'zh-CN';
+    if (lower.indexOf('ja') === 0) return 'ja';
+    if (lower.indexOf('ko') === 0) return 'ko';
+    if (lower.indexOf('ru') === 0) return 'ru';
+    if (lower.indexOf('es') === 0) return 'es';
+    if (lower.indexOf('pt') === 0) return 'pt';
+    return 'en';
+  }
+
+  function syncI18nLanguage() {
+    try { localStorage.setItem('i18nextLng', state.language); } catch (_) {}
+    var attempts = 0;
+    var timer = window.setInterval(function () {
+      attempts += 1;
+      if (typeof window.changeLanguage === 'function') {
+        window.changeLanguage(state.language).catch(function () {});
+        window.clearInterval(timer);
+      } else if (attempts >= 20) {
+        window.clearInterval(timer);
+      }
+    }, 250);
+  }
+
+  function payload(extra) {
+    return Object.assign({
+      lanlan_name: state.lanlanName,
+      session_id: state.sessionId,
+      i18n_language: state.language
+    }, extra || {});
+  }
+
+  function api(path) {
+    return '/api/game/drawing_guess' + path;
+  }
+
+  async function post(path, data, options) {
+    var response = await fetch(api(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload(data)),
+      keepalive: !!(options && options.keepalive)
+    });
+    var json = await response.json().catch(function () { return {}; });
+    if (!response.ok) throw new Error(json && json.reason ? json.reason : 'request_failed');
+    return json;
+  }
+
+  function addMessage(role, text) {
+    if (!text) return;
+    var item = document.createElement('div');
+    item.className = 'message ' + role;
+    item.textContent = text;
+    els['message-list'].appendChild(item);
+    els['message-list'].scrollTop = els['message-list'].scrollHeight;
+  }
+
+  function setStatus(text) {
+    els['stage-status'].textContent = text;
+  }
+
+  function setPhase(key) {
+    els['phase-pill'].textContent = t(key, fallbackText[key] || key, { name: state.lanlanName });
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  function clearTimer() {
+    if (state.timerId) window.clearInterval(state.timerId);
+    state.timerId = 0;
+  }
+
+  function startCountdown(seconds, onDone) {
+    clearTimer();
+    var remain = Math.max(0, Number(seconds) || 0);
+    els.timer.textContent = String(Math.ceil(remain));
+    var endsAt = Date.now() + remain * 1000;
+    state.timerId = window.setInterval(function () {
+      var left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+      els.timer.textContent = String(left);
+      if (left <= 0) {
+        clearTimer();
+        if (typeof onDone === 'function') onDone();
+      }
+    }, 250);
+  }
+
+  function updateToolState() {
+    els['brush-button'].classList.toggle('active', state.currentTool === 'brush');
+    els['eraser-button'].classList.toggle('active', state.currentTool === 'eraser');
+    document.querySelectorAll('.color-button').forEach(function (button) {
+      button.classList.toggle('active', button.getAttribute('data-color') === state.color);
+    });
+  }
+
+  function resetCanvas() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#fffaf1';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    state.undoStack = [];
+    state.redoStack = [];
+    pushUndo();
+    updateSaveButtons();
+  }
+
+  function pushUndo() {
+    try {
+      state.undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      if (state.undoStack.length > 24) state.undoStack.shift();
+      state.redoStack = [];
+    } catch (_) {}
+  }
+
+  function restoreImage(imageData) {
+    if (!imageData) return;
+    ctx.putImageData(imageData, 0, 0);
+    updateSaveButtons();
+  }
+
+  function undo() {
+    if (state.undoStack.length <= 1) return;
+    state.redoStack.push(state.undoStack.pop());
+    restoreImage(state.undoStack[state.undoStack.length - 1]);
+  }
+
+  function redo() {
+    if (!state.redoStack.length) return;
+    var imageData = state.redoStack.pop();
+    state.undoStack.push(imageData);
+    restoreImage(imageData);
+  }
+
+  function hasUserDrawing() {
+    try {
+      var data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (var i = 0; i < data.length; i += 4) {
+        if (!(data[i] > 245 && data[i + 1] > 240 && data[i + 2] > 230)) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function setDrawingEnabled(enabled) {
+    state.drawingEnabled = !!enabled;
+    canvas.style.pointerEvents = enabled ? 'auto' : 'none';
+    els['done-button'].disabled = !enabled;
+    els['brush-button'].disabled = !enabled;
+    els['eraser-button'].disabled = !enabled;
+    els['clear-button'].disabled = !enabled;
+    document.querySelectorAll('.color-button').forEach(function (button) { button.disabled = !enabled; });
+  }
+
+  function hasNekoDrawing() {
+    return !!(state.round && state.round.ai_svg) || !!els['ai-svg-layer'].innerHTML.trim();
+  }
+
+  function updateSaveButtons() {
+    var canSaveUser = hasUserDrawing();
+    var canSaveNeko = hasNekoDrawing();
+    els['save-user-button'].disabled = !canSaveUser;
+    els['result-save-user-button'].disabled = !canSaveUser;
+    els['save-neko-button'].disabled = !canSaveNeko;
+    els['result-save-neko-button'].disabled = !canSaveNeko;
+  }
+
+  function cleanupNekoDrawingAnimation() {
+    var layer = els['ai-svg-layer'];
+    layer.classList.remove('is-drawing');
+    layer.querySelectorAll('.dg-reveal-shape, .dg-reveal-stroke').forEach(function (node) {
+      node.classList.remove('dg-reveal-shape', 'dg-reveal-stroke');
+      node.style.animationDelay = '';
+      node.style.animationDuration = '';
+      node.style.strokeDasharray = '';
+      node.style.strokeDashoffset = '';
+      node.style.removeProperty('--dg-stroke-length');
+    });
+  }
+
+  function showAiLayer(svg) {
+    els['ai-svg-layer'].innerHTML = svg || '';
+    els['ai-svg-layer'].style.display = svg ? 'block' : 'none';
+    canvas.style.display = 'none';
+    els['empty-stage'].style.display = svg ? 'none' : 'grid';
+    els['empty-stage'].classList.remove('is-busy');
+    updateSaveButtons();
+  }
+
+  function showCanvasLayer() {
+    cleanupNekoDrawingAnimation();
+    els['ai-svg-layer'].style.display = 'none';
+    canvas.style.display = 'block';
+    els['empty-stage'].style.display = 'none';
+    els['empty-stage'].classList.remove('is-busy');
+    updateSaveButtons();
+  }
+
+  function showEmpty(text, busy) {
+    cleanupNekoDrawingAnimation();
+    els['ai-svg-layer'].style.display = 'none';
+    canvas.style.display = 'none';
+    els['empty-stage'].style.display = 'grid';
+    els['empty-stage'].textContent = text || '';
+    els['empty-stage'].classList.toggle('is-busy', !!busy);
+    updateSaveButtons();
+  }
+
+  async function playNekoDrawingProcess(svg) {
+    cleanupNekoDrawingAnimation();
+    showAiLayer(svg);
+    if (!svg) return;
+    state.aiDrawSequence += 1;
+    var sequence = state.aiDrawSequence;
+    clearTimer();
+    setDrawingEnabled(false);
+    setStatus(t('status.nekoDrawing', '{{name}} is drawing', { name: state.lanlanName }));
+    setPhase('phase.nekoDrawing');
+    var layer = els['ai-svg-layer'];
+    var svgEl = layer.querySelector('svg');
+    var nodes = svgEl ? Array.prototype.slice.call(svgEl.querySelectorAll('rect, path, circle, ellipse, line, polyline, polygon')) : [];
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!nodes.length || reduceMotion) {
+      await wait(280);
+      return;
+    }
+    layer.classList.add('is-drawing');
+    nodes.forEach(function (node, index) {
+      var delay = Math.min(index * 95, 2100);
+      var tag = String(node.tagName || '').toLowerCase();
+      var hasStroke = node.getAttribute('stroke') && node.getAttribute('stroke') !== 'none';
+      var canStroke = hasStroke && typeof node.getTotalLength === 'function' && /^(path|line|polyline|polygon)$/.test(tag);
+      if (canStroke) {
+        try {
+          var length = Math.max(1, Math.min(5000, node.getTotalLength()));
+          node.style.setProperty('--dg-stroke-length', String(length));
+          node.classList.add('dg-reveal-stroke');
+        } catch (_) {
+          node.classList.add('dg-reveal-shape');
+        }
+      } else {
+        node.classList.add('dg-reveal-shape');
+      }
+      node.style.animationDelay = delay + 'ms';
+    });
+    await wait(Math.min(5200, Math.max(1200, 760 + nodes.length * 95)));
+    if (sequence === state.aiDrawSequence) cleanupNekoDrawingAnimation();
+  }
+
+  function updateAnswerBadge(round) {
+    var answer = round && round.answer && round.answer.label;
+    if (!answer) {
+      els['answer-badge'].style.display = 'none';
+      els['answer-badge'].textContent = '';
+      return;
+    }
+    els['answer-badge'].textContent = t('answer.label', 'Answer') + ': ' + answer;
+    els['answer-badge'].style.display = 'inline-flex';
+  }
+
+  function inputPlaceholderKey(round) {
+    var phase = round && round.phase || '';
+    if (phase === 'user_guessing') return 'chat.placeholderUserGuessing';
+    if (phase === 'user_drawing') return 'chat.placeholderUserDrawing';
+    if (phase === 'neko_guessing') return 'chat.placeholderNekoGuessing';
+    if (phase === 'round_complete') return 'chat.placeholderComplete';
+    return 'chat.placeholderReady';
+  }
+
+  function updateInputPlaceholder(round) {
+    var key = inputPlaceholderKey(round);
+    els['chat-input'].setAttribute('placeholder', t(key, fallbackText[key] || fallbackText['chat.placeholder'], { name: state.lanlanName }));
+  }
+
+  function resultMessage(round) {
+    var result = String(round && round.result || '');
+    if (result === 'user_correct') return t('result.userCorrect', 'You guessed it.', { name: state.lanlanName });
+    if (result === 'user_timeout') return t('result.userTimeout', 'Time ran out this round.', { name: state.lanlanName });
+    if (result === 'neko_correct') return t('result.nekoCorrect', '{{name}} guessed it.', { name: state.lanlanName });
+    if (result === 'neko_wrong') return t('result.nekoWrong', '{{name}} missed this one.', { name: state.lanlanName });
+    return t('result.generic', 'This round is done.', { name: state.lanlanName });
+  }
+
+  function showResultPanel(round) {
+    if (!round || round.phase !== 'round_complete') return;
+    var key = [state.sessionId, round.round_index, round.result || 'complete'].join(':');
+    if (state.resultRoundKey === key) return;
+    state.resultRoundKey = key;
+    els['result-message'].textContent = resultMessage(round);
+    els['result-answer'].textContent = round.answer && round.answer.label || '-';
+    els['result-score'].textContent = String(round.score && round.score.user || 0) + ' : ' + String(round.score && round.score.neko || 0);
+    updateSaveButtons();
+    els['result-backdrop'].hidden = false;
+  }
+
+  function hideResultPanel() {
+    els['result-backdrop'].hidden = true;
+  }
+
+  function renderRound(round) {
+    if (!round) return;
+    state.round = round;
+    els['round-number'].textContent = String((round.round_index || 0) + 1);
+    els['user-score'].textContent = String(round.score && round.score.user || 0);
+    els['neko-score'].textContent = String(round.score && round.score.neko || 0);
+    els['neko-score-name'].textContent = state.lanlanName || 'NEKO';
+    updateAnswerBadge(round);
+    setDrawingEnabled(false);
+    updateInputPlaceholder(round);
+    if (round.phase !== 'round_complete') hideResultPanel();
+
+    if (round.phase === 'neko_drawing') {
+      showEmpty(t('messages.nekoDrawing', '{{name}} is making an SVG drawing.', { name: state.lanlanName }), true);
+      setStatus(t('status.nekoDrawing', '{{name}} is drawing', { name: state.lanlanName }));
+      setPhase('phase.nekoDrawing');
+      startCountdown(round.draw_seconds || 60);
+    } else if (round.phase === 'user_guessing') {
+      showAiLayer(round.ai_svg || '');
+      setStatus(t('status.userGuessing', 'Guess what {{name}} drew', { name: state.lanlanName }));
+      setPhase('phase.userGuessing');
+      startCountdown(round.guess_seconds || 60, handleGuessTimeout);
+    } else if (round.phase === 'user_drawing') {
+      showCanvasLayer();
+      if (state.canvasRoundIndex !== round.round_index) {
+        resetCanvas();
+        state.canvasRoundIndex = round.round_index;
+      }
+      setDrawingEnabled(true);
+      var answer = round.answer && round.answer.label || '';
+      setStatus(t('status.userDrawing', 'Draw: {{answer}}', { answer: answer }));
+      setPhase('phase.userDrawing');
+      startCountdown(round.draw_seconds || 60, submitVisionGuess);
+    } else if (round.phase === 'neko_guessing') {
+      showCanvasLayer();
+      setDrawingEnabled(false);
+      setStatus(t('status.nekoGuessing', '{{name}} is guessing', { name: state.lanlanName }));
+      setPhase('phase.nekoGuessing');
+      startCountdown(round.guess_seconds || 60);
+    } else if (round.phase === 'round_complete') {
+      setDrawingEnabled(false);
+      setStatus(t('status.complete', 'Round complete'));
+      setPhase('phase.roundComplete');
+      clearTimer();
+      updateSaveButtons();
+      showResultPanel(round);
+    }
+  }
+
+  async function startRoute() {
+    try {
+      await post('/route/start', {
+        gameStarted: true,
+        game_memory_enabled: false
+      });
+      state.heartbeatId = window.setInterval(function () {
+        post('/route/heartbeat', {
+          pageVisible: !document.hidden,
+          visibilityState: document.visibilityState || 'visible'
+        }).catch(function () {});
+      }, 8000);
+    } catch (_) {
+      addMessage('system', t('messages.routeFailed', 'Game route did not start, but the demo can still run.'));
+    }
+  }
+
+  async function startRound(drawer) {
+    clearTimer();
+    hideResultPanel();
+    showEmpty(t('status.loading', 'Starting game...'));
+    try {
+      var result = await post('/round/start', { drawer: drawer || state.nextDrawer });
+      if (result.character && result.character.lanlan_name) {
+        state.lanlanName = result.character.lanlan_name;
+      }
+      if (result.line) addMessage('neko', result.line);
+      renderRound(result.round);
+      state.nextDrawer = result.round && result.round.drawer === 'neko' ? 'user' : 'neko';
+      if (result.round && result.round.drawer === 'neko') {
+        await runAiDraw();
+      } else if (result.round && result.round.drawer === 'user') {
+        var answer = result.round.answer && result.round.answer.label || '';
+        addMessage('system', t('messages.userDrawing', 'Your word is {{answer}}. Draw it without writing the answer.', { answer: answer }));
+      }
+    } catch (error) {
+      showEmpty(String(error && error.message || error));
+    }
+  }
+
+  async function runAiDraw() {
+    try {
+      var result = await post('/ai-draw', {});
+      var svg = result.round && result.round.ai_svg || result.svg || '';
+      if (svg) await playNekoDrawingProcess(svg);
+      var caption = result.round && result.round.ai_caption || '';
+      if (caption) addMessage('neko', caption);
+      renderRound(result.round);
+    } catch (error) {
+      addMessage('system', String(error && error.message || error));
+    }
+  }
+
+  async function handleGuessTimeout() {
+    addMessage('system', t('messages.timeout', 'Time is up.'));
+    try {
+      var result = await post('/round/timeout', { phase: 'user_guessing' });
+      if (result.line) addMessage('neko', result.line);
+      renderRound(result.round);
+    } catch (_) {
+      if (state.round) {
+        state.round.phase = 'round_complete';
+        renderRound(state.round);
+      }
+    }
+  }
+
+  async function submitText(text, intent, silentUserEcho) {
+    var value = String(text == null ? els['chat-input'].value : text).trim();
+    if (!value) return;
+    if (!silentUserEcho) els['chat-input'].value = '';
+    addMessage('user', value);
+    try {
+      var result = await post('/input', {
+        text: value,
+        intent: intent || (state.round && state.round.phase === 'user_guessing' ? 'guess' : 'chat')
+      });
+      if (result.line) addMessage('neko', result.line);
+      if (result.round) renderRound(result.round);
+    } catch (error) {
+      addMessage('system', String(error && error.message || error));
+    }
+  }
+
+  async function submitVisionGuess() {
+    if (!state.round || state.round.drawer !== 'user') return;
+    clearTimer();
+    setDrawingEnabled(false);
+    setPhase('phase.nekoGuessing');
+    setStatus(t('status.nekoGuessing', '{{name}} is guessing', { name: state.lanlanName }));
+    try {
+      var dataUrl = canvas.toDataURL('image/png');
+      var result = await post('/vision-guess', { image_data: dataUrl });
+      if (result.guess && result.guess.label) {
+        addMessage('neko', (result.line || '') + ' ' + result.guess.label);
+      } else if (result.line) {
+        addMessage('neko', result.line);
+      }
+      if (result.round) renderRound(result.round);
+    } catch (error) {
+      addMessage('system', String(error && error.message || error));
+    }
+  }
+
+  function canvasPoint(event) {
+    var rect = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+
+  function pointerDown(event) {
+    if (!state.drawingEnabled) return;
+    event.preventDefault();
+    state.isDrawing = true;
+    state.lastPoint = canvasPoint(event);
+    pushUndo();
+  }
+
+  function pointerMove(event) {
+    if (!state.isDrawing || !state.drawingEnabled || !state.lastPoint) return;
+    event.preventDefault();
+    var point = canvasPoint(event);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = state.currentTool === 'eraser' ? Math.max(10, state.size * 1.8) : state.size;
+    if (state.currentTool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = state.color;
+    }
+    ctx.beginPath();
+    ctx.moveTo(state.lastPoint.x, state.lastPoint.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    ctx.restore();
+    state.lastPoint = point;
+  }
+
+  function pointerUp() {
+    state.isDrawing = false;
+    state.lastPoint = null;
+    updateSaveButtons();
+  }
+
+  function downloadBlob(blob, fileName) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 500);
+  }
+
+  function safeName(prefix, ext) {
+    return prefix + '-' + state.sessionId.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 36) + '-' + Date.now() + ext;
+  }
+
+  async function saveUserDrawing() {
+    if (!hasUserDrawing()) {
+      addMessage('system', t('messages.noUserDrawing', 'Draw something before saving.'));
+      return;
+    }
+    canvas.toBlob(async function (blob) {
+      if (!blob) return;
+      var fileName = safeName('drawing-guess-user', '.png');
+      downloadBlob(blob, fileName);
+      post('/save-artifact', { artifact_type: 'user_canvas', file_name: fileName }).catch(function () {});
+      addMessage('system', t('messages.userSaved', 'Your drawing was downloaded.'));
+    }, 'image/png');
+  }
+
+  function saveNekoDrawing() {
+    var svg = els['ai-svg-layer'].innerHTML.trim();
+    if (!svg) {
+      addMessage('system', t('messages.noNekoDrawing', 'There is no NEKO drawing to save yet.'));
+      return;
+    }
+    var fileName = safeName('drawing-guess-neko', '.svg');
+    downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), fileName);
+    post('/save-artifact', { artifact_type: 'neko_svg', file_name: fileName }).catch(function () {});
+    addMessage('system', t('messages.nekoSaved', 'NEKO drawing was downloaded.'));
+  }
+
+  function setupVoice() {
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+    state.recognition = new SpeechRecognition();
+    state.recognition.lang = state.language || navigator.language || 'en-US';
+    state.recognition.interimResults = false;
+    state.recognition.maxAlternatives = 1;
+    state.recognition.addEventListener('start', function () {
+      state.listening = true;
+      els['voice-button'].classList.add('listening');
+      addMessage('system', t('messages.voiceListening', 'Listening...'));
+    });
+    state.recognition.addEventListener('end', function () {
+      state.listening = false;
+      els['voice-button'].classList.remove('listening');
+    });
+    state.recognition.addEventListener('result', async function (event) {
+      var transcript = '';
+      try { transcript = event.results[0][0].transcript || ''; } catch (_) {}
+      transcript = transcript.trim();
+      if (!transcript) return;
+      addMessage('user', transcript);
+      try {
+        var result = await post('/voice-transcript', {
+          transcript: transcript,
+          intent: state.round && state.round.phase === 'user_guessing' ? 'guess' : 'chat'
+        });
+        if (result.line) addMessage('neko', result.line);
+        if (result.round) renderRound(result.round);
+      } catch (error) {
+        addMessage('system', String(error && error.message || error));
+      }
+    });
+  }
+
+  function bindEvents() {
+    els['brush-button'].addEventListener('click', function () {
+      state.currentTool = 'brush';
+      updateToolState();
+    });
+    els['eraser-button'].addEventListener('click', function () {
+      state.currentTool = 'eraser';
+      updateToolState();
+    });
+    els['undo-button'].addEventListener('click', undo);
+    els['redo-button'].addEventListener('click', redo);
+    els['clear-button'].addEventListener('click', function () {
+      resetCanvas();
+    });
+    els['brush-size'].addEventListener('input', function () {
+      state.size = Number(els['brush-size'].value) || 8;
+    });
+    document.querySelectorAll('.color-button').forEach(function (button) {
+      button.addEventListener('click', function () {
+        state.color = button.getAttribute('data-color') || '#20242b';
+        state.currentTool = 'brush';
+        updateToolState();
+      });
+    });
+    canvas.addEventListener('pointerdown', pointerDown);
+    canvas.addEventListener('pointermove', pointerMove);
+    window.addEventListener('pointerup', pointerUp);
+    window.addEventListener('pointercancel', pointerUp);
+    els['send-button'].addEventListener('click', function () { submitText(); });
+    els['chat-input'].addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') submitText();
+    });
+    els['done-button'].addEventListener('click', submitVisionGuess);
+    els['next-round-button'].addEventListener('click', function () { startRound(state.nextDrawer); });
+    els['end-button'].addEventListener('click', endGame);
+    els['save-user-button'].addEventListener('click', saveUserDrawing);
+    els['save-neko-button'].addEventListener('click', saveNekoDrawing);
+    els['result-save-user-button'].addEventListener('click', saveUserDrawing);
+    els['result-save-neko-button'].addEventListener('click', saveNekoDrawing);
+    els['result-next-round-button'].addEventListener('click', function () { startRound(state.nextDrawer); });
+    els['result-end-button'].addEventListener('click', endGame);
+    els['voice-button'].addEventListener('click', function () {
+      if (!state.recognition) {
+        addMessage('system', t('messages.voiceUnavailable', 'Voice input is not available in this browser.'));
+        return;
+      }
+      if (state.listening) {
+        state.recognition.stop();
+      } else {
+        state.recognition.start();
+      }
+    });
+    window.addEventListener('beforeunload', function () {
+      if (state.heartbeatId) window.clearInterval(state.heartbeatId);
+      try {
+        navigator.sendBeacon(
+          api('/route/end'),
+          new Blob([JSON.stringify(payload({ reason: 'page_unload' }))], { type: 'application/json' })
+        );
+      } catch (_) {}
+    });
+    window.addEventListener('localechange', function () {
+      applyStaticI18n();
+      updateInputPlaceholder(state.round);
+      if (state.round) {
+        setPhase(state.round.phase === 'neko_drawing' ? 'phase.nekoDrawing'
+          : state.round.phase === 'user_guessing' ? 'phase.userGuessing'
+          : state.round.phase === 'user_drawing' ? 'phase.userDrawing'
+          : state.round.phase === 'neko_guessing' ? 'phase.nekoGuessing'
+          : state.round.phase === 'round_complete' ? 'phase.roundComplete'
+          : 'phase.ready');
+      }
+    });
+  }
+
+  async function endGame() {
+    clearTimer();
+    hideResultPanel();
+    if (state.heartbeatId) window.clearInterval(state.heartbeatId);
+    state.heartbeatId = 0;
+    setDrawingEnabled(false);
+    setStatus(t('status.ended', 'Game ended'));
+    try {
+      await post('/end', {
+        reason: 'manual_end',
+        finalScore: state.round && state.round.score || {}
+      });
+    } catch (_) {}
+    addMessage('system', t('status.ended', 'Game ended'));
+  }
+
+  async function init() {
+    state.language = normalizeLocale(resolveLanguage());
+    document.documentElement.lang = state.language;
+    syncI18nLanguage();
+    applyStaticI18n();
+    updateInputPlaceholder(state.round);
+    els['neko-score-name'].textContent = state.lanlanName || 'NEKO';
+    resetCanvas();
+    setDrawingEnabled(false);
+    updateToolState();
+    updateSaveButtons();
+    setupVoice();
+    bindEvents();
+    addMessage('system', t('messages.welcome', 'Game started. You can chat, ask for hints, or guess here.'));
+    await startRoute();
+    await startRound('neko');
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

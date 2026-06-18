@@ -4704,5 +4704,98 @@
             "label": "Guardar este partido en la memoria (desactivado por defecto)",
             "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
+    },
+    "drawingGuess": {
+        "title": "Dibuja y adivina",
+        "subtitle": "Tú y NEKO dibujan por turnos",
+        "hud": {
+            "round": "Ronda",
+            "timer": "Tiempo",
+            "user": "Tú"
+        },
+        "status": {
+            "ready": "Ready",
+            "loading": "Starting game...",
+            "nekoDrawing": "{{name}} is drawing",
+            "userGuessing": "Guess what {{name}} drew",
+            "userDrawing": "Draw: {{answer}}",
+            "nekoGuessing": "{{name}} is guessing",
+            "complete": "Round complete",
+            "ended": "Game ended"
+        },
+        "phase": {
+            "ready": "Ready",
+            "nekoDrawing": "NEKO draws",
+            "userGuessing": "Your guess",
+            "userDrawing": "Your drawing",
+            "nekoGuessing": "NEKO guesses",
+            "roundComplete": "Complete"
+        },
+        "actions": {
+            "done": "Done",
+            "nextRound": "Next",
+            "end": "End",
+            "saveUser": "Save mine",
+            "saveNeko": "Save NEKO"
+        },
+        "tools": {
+            "brush": "Brush",
+            "eraser": "Eraser",
+            "undo": "Undo",
+            "redo": "Redo",
+            "clear": "Clear",
+            "size": "Size"
+        },
+        "colors": {
+            "black": "Black",
+            "red": "Red",
+            "green": "Green",
+            "blue": "Blue",
+            "yellow": "Yellow"
+        },
+        "chat": {
+            "title": "Chat del juego",
+            "placeholder": "Escribe una respuesta o habla con NEKO",
+            "send": "Enviar",
+            "voice": "Voz",
+            "placeholderReady": "Habla con NEKO o empieza la siguiente ronda",
+            "placeholderUserGuessing": "Escribe una respuesta, pide pista o charla",
+            "placeholderUserDrawing": "Dibuja y habla con NEKO si quieres",
+            "placeholderNekoGuessing": "NEKO est? mirando. Puedes dar una pista o bromear",
+            "placeholderComplete": "Ronda terminada. Charla o empieza la siguiente"
+        },
+        "messages": {
+            "welcome": "Game started. You can chat, ask for hints, or guess here.",
+            "nekoDrawing": "{{name}} is making an SVG drawing.",
+            "userDrawing": "Your word is {{answer}}. Draw it without writing the answer.",
+            "userSaved": "Your drawing was downloaded.",
+            "nekoSaved": "NEKO drawing was downloaded.",
+            "noNekoDrawing": "There is no NEKO drawing to save yet.",
+            "noUserDrawing": "Draw something before saving.",
+            "voiceUnavailable": "Voice input is not available in this browser.",
+            "voiceListening": "Listening...",
+            "timeout": "Time is up.",
+            "routeFailed": "Game route did not start, but the demo can still run."
+        },
+        "answer": {
+            "label": "Respuesta"
+        },
+        "aria": {
+            "stage": "Drawing area",
+            "aiDrawing": "AI drawing",
+            "userCanvas": "User drawing canvas",
+            "tools": "Drawing tools",
+            "chat": "Game chat"
+        },
+        "result": {
+            "title": "Ronda terminada",
+            "answer": "Respuesta",
+            "score": "Puntuaci?n",
+            "userCorrect": "Acertaste.",
+            "userTimeout": "Se acab? el tiempo de esta ronda.",
+            "nekoCorrect": "{{name}} acert?.",
+            "nekoWrong": "{{name}} no acert? esta vez.",
+            "generic": "Esta ronda termin?."
+        }
     }
 }

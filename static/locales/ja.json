@@ -4704,5 +4704,98 @@
             "label": "今回の試合内容を記憶に保存（デフォルトはオフ）",
             "hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
         }
+    },
+    "drawingGuess": {
+        "title": "お絵かき当て",
+        "subtitle": "NEKO と交代で描いて当てる",
+        "hud": {
+            "round": "ラウンド",
+            "timer": "時間",
+            "user": "あなた"
+        },
+        "status": {
+            "ready": "準備完了",
+            "loading": "ゲーム開始中...",
+            "nekoDrawing": "{{name}} が描いています",
+            "userGuessing": "{{name}} の絵を当てて",
+            "userDrawing": "描くお題：{{answer}}",
+            "nekoGuessing": "{{name}} が推理中",
+            "complete": "ラウンド終了",
+            "ended": "ゲーム終了"
+        },
+        "phase": {
+            "ready": "準備",
+            "nekoDrawing": "NEKO が描く",
+            "userGuessing": "あなたが当てる",
+            "userDrawing": "あなたが描く",
+            "nekoGuessing": "NEKO が当てる",
+            "roundComplete": "終了"
+        },
+        "actions": {
+            "done": "できた",
+            "nextRound": "次へ",
+            "end": "終了",
+            "saveUser": "自分の絵を保存",
+            "saveNeko": "NEKO の絵を保存"
+        },
+        "tools": {
+            "brush": "ブラシ",
+            "eraser": "消しゴム",
+            "undo": "元に戻す",
+            "redo": "やり直し",
+            "clear": "消去",
+            "size": "太さ"
+        },
+        "colors": {
+            "black": "黒",
+            "red": "赤",
+            "green": "緑",
+            "blue": "青",
+            "yellow": "黄"
+        },
+        "chat": {
+            "title": "ゲームチャット",
+            "placeholder": "答えを入力、または NEKO と話す",
+            "send": "送信",
+            "voice": "音声",
+            "placeholderReady": "NEKO ???????????????",
+            "placeholderUserGuessing": "??????????????????",
+            "placeholderUserDrawing": "????? NEKO ????????",
+            "placeholderNekoGuessing": "NEKO ???????????????????",
+            "placeholderComplete": "???????????????"
+        },
+        "messages": {
+            "welcome": "ゲーム開始。ここで会話、ヒントの依頼、回答ができます。",
+            "nekoDrawing": "{{name}} が SVG で絵を描いています。",
+            "userDrawing": "お題は {{answer}}。答えの文字は書かずに描いてね。",
+            "userSaved": "あなたの絵をダウンロードしました。",
+            "nekoSaved": "NEKO の絵をダウンロードしました。",
+            "noNekoDrawing": "保存できる NEKO の絵がまだありません。",
+            "noUserDrawing": "保存する前に何か描いてください。",
+            "voiceUnavailable": "このブラウザは音声入力に対応していません。",
+            "voiceListening": "聞いています...",
+            "timeout": "時間切れです。",
+            "routeFailed": "ゲームルートの開始に失敗しましたが、demo は続行できます。"
+        },
+        "answer": {
+            "label": "答え"
+        },
+        "aria": {
+            "stage": "描画エリア",
+            "aiDrawing": "AI の絵",
+            "userCanvas": "ユーザー用キャンバス",
+            "tools": "描画ツール",
+            "chat": "ゲームチャット"
+        },
+        "result": {
+            "title": "??????",
+            "answer": "??",
+            "score": "???",
+            "userCorrect": "?????",
+            "userTimeout": "??????????????",
+            "nekoCorrect": "{{name}} ???????",
+            "nekoWrong": "{{name}} ???????",
+            "generic": "?????????????"
+        }
     }
 }
