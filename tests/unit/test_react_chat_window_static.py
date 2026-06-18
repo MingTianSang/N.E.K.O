@@ -14,6 +14,7 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_FULL_SURFACE_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "FullChatSurface.tsx"
 REACT_CHAT_MESSAGE_SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 )
@@ -65,6 +66,19 @@ def inline_z_index(block: str) -> int:
     if not match:
         raise AssertionError(f"missing inline zIndex in block: {block[:240]!r}")
     return int(match.group(1))
+
+
+def test_choice_prompt_sources_have_distinct_accessibility_labels():
+    for path in (REACT_CHAT_APP_PATH, REACT_CHAT_FULL_SURFACE_PATH):
+        source = path.read_text(encoding="utf-8")
+        choice_prompt_block = source.split("data-choice-source={choicePrompt.source}", 1)[1].split(
+            "{choicePrompt.options.slice",
+            1,
+        )[0]
+        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
+        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
+        assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():
@@ -165,7 +179,9 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
-    assert "state.homeTutorialInteractionLocked || getEffectiveComposerHidden()" in submit_block
+    assert "state.homeTutorialInteractionLocked" in submit_block
+    assert "state.homeTutorialInputLocked" in submit_block
+    assert "getEffectiveComposerHidden()" in submit_block
     assert "syncGoodbyeComposerHidden('chat-surface-mode-change', { localOnly: true });" in set_mode_block
     assert "requestGoodbyeComposerHiddenState('chat-surface-mode-change');" in set_mode_block
     assert "options && options.localOnly && !hasLocalGoodbyeModeSource()" in source
@@ -494,7 +510,7 @@ def test_home_tutorial_host_wires_avatar_tool_requests():
     assert "host.rotateCompactToolWheel(payload && payload.direction" in interpage_source
 
 
-def test_day7_home_template_loads_delivered_daily_guide_scripts():
+def test_icebreaker_home_template_loads_delivered_daily_guide_scripts():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     for guide_script in [
@@ -509,10 +525,7 @@ def test_day7_home_template_loads_delivered_daily_guide_scripts():
         assert f'<script src="/static/{guide_script}' in source
         assert (Path(__file__).resolve().parents[2] / "static" / guide_script).exists()
 
-    for future_script in [
-        "tutorial/icebreaker/new-user-icebreaker.js",
-    ]:
-        assert f'<script src="/static/{future_script}' not in source
+    assert '<script src="/static/tutorial/icebreaker/new-user-icebreaker.js' in source
 
 
 def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
@@ -862,6 +875,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
+    assert "var tooltip = child.querySelector && child.querySelector('.compact-input-tool-tooltip');" in collector_block
+    assert "id: itemId + ':tooltip'" in collector_block
+    assert "visualRect: tooltipRect" in collector_block
+    assert "hitRect: null" in collector_block
+    assert "nativeRect: tooltipRect" in collector_block
+    assert "interactive: false" in collector_block
     assert "hitRect: nativeRect" in native_hit_block
     assert "interactive: true" in native_hit_block
     assert "hitRect: null" not in native_hit_block
@@ -871,6 +890,42 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116)" in script
     assert "Math.sqrt(Math.max(0" in script
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
+
+
+def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    tooltip_block = css_block(
+        styles,
+        ".compact-input-tool-fan .compact-input-tool-tooltip {",
+        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+    )
+    visible_block = css_block(
+        styles,
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        ".compact-input-tool-fan .compact-input-tool-item > img,",
+    )
+    dark_tooltip_block = css_block(
+        styles,
+        '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {',
+        '[data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {',
+    )
+
+    assert "pointer-events: none;" in tooltip_block
+    assert "user-select: none;" in tooltip_block
+    assert "left: calc(100% + 5px);" in tooltip_block
+    assert "top: calc(100% - 6px);" in tooltip_block
+    assert "border-radius: 0;" in tooltip_block
+    assert "background: #ffffff;" in tooltip_block
+    assert "box-shadow: none;" in tooltip_block
+    assert "scale(" not in tooltip_block
+    assert "transform-origin: 0 0;" in tooltip_block
+    assert "transform: translate(0, 0);" in visible_block
+    assert "scale(" not in visible_block
+    assert "border-color: #8b949e;" in dark_tooltip_block
+    assert "background: #202124;" in dark_tooltip_block
+    assert "color: #f3f4f6;" in dark_tooltip_block
 
 
 def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
@@ -1073,6 +1128,7 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
     assert "action === 'yui_guide_rotate_compact_tool_wheel'" in bypass_block
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_buttons_disabled'" in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(message.action, message)" in script
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action, event.data)" in script
     assert "case 'yui_guide_set_chat_cursor':" in script
     assert "case 'yui_guide_drag_chat_cursor':" in script

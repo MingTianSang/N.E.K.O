@@ -1107,22 +1107,41 @@ class LLMSessionManager:
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
-    def append_icebreaker_context(self, role: str, text: str) -> bool:
-        """Append guide icebreaker context to the active project session history."""
-        content = str(text or "").strip()
-        if not content:
-            return False
-        if not self.session or not hasattr(self.session, "_conversation_history"):
-            return False
+    def _append_icebreaker_context_to_new_session_cache(self, role: str, text: str) -> None:
+        if not getattr(self, "is_preparing_new_session", False):
+            return
+        cache = getattr(self, "message_cache_for_new_session", None)
+        if not isinstance(cache, list):
+            cache = []
+            self.message_cache_for_new_session = cache
+        speaker = (
+            getattr(self, "master_name", "user")
+            if role == "user"
+            else getattr(self, "lanlan_name", "assistant")
+        )
+        cache.append({"role": speaker, "text": text})
 
+    async def append_icebreaker_context_async(self, role: str, text: str) -> bool:
+        """Append icebreaker turns through the existing conversation/cache path."""
         normalized_role = str(role or "").strip().lower()
-        if normalized_role in {"assistant", "ai", "model"}:
-            message = AIMessage(content=content)
-        else:
-            message = HumanMessage(content=content)
+        content = str(text or "").strip()
+        if normalized_role not in {"assistant", "user"} or not content:
+            return False
+        self._append_icebreaker_context_to_new_session_cache(normalized_role, content)
 
-        self.session._conversation_history.append(message)
-        return True
+        session = getattr(self, "session", None)
+        history = getattr(session, "_conversation_history", None)
+        if isinstance(history, list):
+            message = AIMessage(content=content) if normalized_role == "assistant" else HumanMessage(content=content)
+            history.append(message)
+            return True
+
+        prime_context = getattr(session, "prime_context", None)
+        if callable(prime_context):
+            await prime_context(f"{normalized_role}: {content}", skipped=True)
+            return True
+
+        return bool(getattr(self, "is_preparing_new_session", False))
 
     def is_goodbye_silent(self) -> bool:
         """Whether cat-mode silence after being asked to leave is in effect."""
@@ -4394,7 +4413,7 @@ class LLMSessionManager:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
     async def _maybe_kick_activity_loop_for_context_prompt(self) -> None:
-        """Start the activity tracker's background heartbeat so the context prompt can fire.
+        """Start the activity tracker's background heartbeat.
 
         Context-prompt detection (entering gaming/entertainment / entering focused
         work) hangs off the tracker's 20s heartbeat, and the heartbeat lazy-starts
@@ -4402,15 +4421,16 @@ class LLMSessionManager:
         paths where proactive chat is on. Proactive chat defaults to off at first
         start, so without an explicit kick a user who hasn't enabled proactive chat
         would never detect entering a game and the prompt would never show. Here we
-        kick once when the session comes up (get_snapshot is idempotent and won't
-        start the loop twice).
+        kick once when the session comes up.
 
         The context prompt used to be gated to the vision_chat_default_off A/B group;
-        it's now merged into main and open to everyone, so the kick is no longer
-        branch-gated. It is still gated on the user having *explicitly* allowed
-        autonomous vision (privacy mode off) — see the persisted-pref check below.
+        it's now merged into main and open to everyone. OS signal collection is still
+        gated on the user having *explicitly* allowed autonomous vision (privacy mode
+        off), but the topic candidate heartbeat is privacy-independent and should
+        run even when vision is disabled.
         """
         try:
+            self._activity_tracker.ensure_activity_guess_loop_started()
             # 只有当 proactiveVisionEnabled 已被显式落盘为 True 才 kick：get_snapshot 会起
             # SystemSignalCollector 采集窗口/进程信号，且绕过隐私模式（loop 只跳过 LLM、
             # collector 仍在采）。不能用 is_privacy_mode_active()——它在 proactiveVisionEnabled
@@ -6969,15 +6989,13 @@ class LLMSessionManager:
         """Whether a background deep-topic hook may interrupt right now.
 
         Deep topic hooks are brand-new text openers — the most intrusive,
-        "better none than forced" kind of proactive content. They must honour the same
-        privacy accumulation gate and the same activity gate as
-        ``/api/proactive_chat``: privacy mode prevents accumulation upstream,
-        while delivery never surfaces when the user's propensity is ``closed``
-        (privacy blacklist) or ``restricted_screen_only`` (gaming /
-        focused_work). Unlike the proactive reminiscence path there is NO
-        open-thread exception — a fresh deep topic is not a follow-up to
-        something already on the table, so it shouldn't borrow that escape
-        hatch.
+        "better none than forced" kind of proactive content. They must honour
+        the same activity gate as ``/api/proactive_chat``: delivery never
+        surfaces when the user's propensity is ``closed`` or
+        ``restricted_screen_only`` (gaming / focused_work). Unlike the
+        proactive reminiscence path there is NO open-thread exception — a
+        fresh deep topic is not a follow-up to something already on the table,
+        so it shouldn't borrow that escape hatch.
 
         Voice sessions never receive deep topic hooks. A topic hook is a
         text-mode opener; injecting one mid voice conversation would cut across
@@ -6997,12 +7015,13 @@ class LLMSessionManager:
         already-pending / extras-only paths are closed separately in
         ``_reset_proactive_gate`` + ``_drop_pending_topic_hooks_for_voice``.
 
-        Privacy mode is deliberately NOT re-checked here: it gates
-        *accumulation* (the pool is wiped the moment privacy turns on, see
-        enrich_topic_pool), not delivery of a hook that was already built from
-        a pre-privacy snapshot. Activity snapshot lookup remains fail-open when
-        no snapshot is available, mirroring the proactive path's "snapshot None
-        ⇒ open propensity" default.
+        Privacy mode is deliberately NOT checked here and no longer gates the
+        deep-topic chain upstream either. Store/candidate/prepare/delivery all
+        proceed independently from that toggle; this method only answers
+        whether a prepared hook may interrupt the current activity context.
+        Activity snapshot lookup remains fail-open when no snapshot is
+        available, mirroring the proactive path's "snapshot None ⇒ open
+        propensity" default.
         """
         if self._voice_delivery_blocked():
             return False
@@ -7028,11 +7047,11 @@ class LLMSessionManager:
         """Live full-locale topic language, for re-resolving at delivery time.
 
         A topic hook captures its language when it is scheduled; if the
-        session language changes during the quiet window (``set_user_language``
-        with no new chat turn to reschedule the trigger), that captured value
-        goes stale. Topic delivery re-resolves from here so the hook renders in
-        the current locale (preserving zh-TW etc.). Returns None when no
-        dispatcher is available so the caller keeps the captured language.
+        session language changes while the material is pending delivery, that
+        captured value goes stale. Topic delivery re-resolves from here so the
+        hook renders in the current locale (preserving zh-TW etc.). Returns
+        None when no dispatcher is available so the caller keeps the captured
+        language.
         """
         dispatcher = getattr(self, '_turn_dispatcher', None)
         getter = getattr(dispatcher, 'current_language', None)
