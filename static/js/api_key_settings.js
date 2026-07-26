@@ -30,7 +30,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -3158,14 +3158,14 @@ function positionTooltip(iconElement, tooltipElement) {
 }
 
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
-    conversation: 'summary',
-    summary: 'conversation',
-    game: 'correction',
-    correction: 'game',
-    emotion: 'vision',
-    vision: 'emotion',
-    agent: 'omni',
-    omni: 'agent',
+    conversation: 'vision',
+    vision: 'conversation',
+    summary: 'correction',
+    correction: 'summary',
+    emotion: 'omni',
+    omni: 'emotion',
+    agent: 'tts',
+    tts: 'agent',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -3376,16 +3376,16 @@ const LightStatus = {
 
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
-        conversation: ['api.conversationModelConfig', '文本对话模型配置'],
-        summary: ['api.summaryModelConfig', '摘要模型配置'],
+        conversation: ['api.conversationModelConfig', '文本聊天模型'],
+        summary: ['api.summaryModelConfig', '摘要模型'],
         gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型配置'],
-        emotion: ['api.emotionModelConfig', '情感模型配置'],
-        vision: ['api.visionModelConfig', '视觉模型配置'],
-        agent: ['api.agentApiConfigTitle', 'Agent API 配置（需支持视觉功能）'],
-        omni: ['api.realtimeModelConfig', '实时模型配置（Local模式）'],
-        tts: ['api.ttsModelConfig', 'TTS模型配置（双工流式）'],
+        correction: ['api.correctionModelConfig', '纠错模型'],
+        emotion: ['api.emotionModelConfig', '情感模型'],
+        vision: ['api.visionModelConfig', '视觉聊天模型'],
+        agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
+        omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
+        tts: ['api.ttsModelConfig', 'TTS模型'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
