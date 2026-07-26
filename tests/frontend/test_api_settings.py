@@ -490,7 +490,7 @@ def test_key_book_shortcut_centers_and_selects_provider_input(
 def test_realtime_key_book_shortcut_stays_in_api_key_row(
     mock_page: Page, running_server: str
 ):
-    """Realtime's key-book shortcut should share the light/input flex row."""
+    """Realtime fields keep their localized label and aligned key-book shortcut."""
     mock_page.set_viewport_size({"width": 1280, "height": 1000})
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
@@ -519,12 +519,16 @@ def test_realtime_key_book_shortcut_stays_in_api_key_row(
             shortcutSharesRow: shortcut.parentElement === row,
             inputCenter: Math.round(inputBox.top + inputBox.height / 2),
             shortcutCenter: Math.round(shortcutBox.top + shortcutBox.height / 2),
+            urlLabelKey: document.querySelector(
+                'label[for="omniModelUrl"] [data-i18n]'
+            )?.dataset.i18n,
         };
     }""")
 
     assert state["rowClass"] == "connectivity-input-row"
     assert state["shortcutSharesRow"] is True
     assert abs(state["inputCenter"] - state["shortcutCenter"]) <= 1
+    assert state["urlLabelKey"] == "api.apiUrl"
 
 
 @pytest.mark.frontend
