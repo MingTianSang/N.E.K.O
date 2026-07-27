@@ -239,7 +239,15 @@ I.mod = window.appInterpage;
     var modelManagerCachedModelClientBounds = null;
     var modelManagerOverlapHidden = false;
     var modelManagerOverlapRefreshTimer = 0;
-    var mainUIHiddenOutsideModelManagerOverlap = false;
+    var mainUIHideOwners = Object.create(null);
+
+    function getMainUIHideOwner(options) {
+        return String((options && (options.owner || options.reason)) || 'legacy-main-ui');
+    }
+
+    function hasMainUIHideOwner() {
+        return Object.keys(mainUIHideOwners).length > 0;
+    }
 
     function normalizeModelManagerScreenRect(rect) {
         if (!rect || typeof rect !== 'object') return null;
@@ -1817,9 +1825,7 @@ I.mod = window.appInterpage;
         options = options || {};
         var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
         if (!skipHiddenStateUpdate) {
-            if (options.reason !== 'model-manager-overlap') {
-                mainUIHiddenOutsideModelManagerOverlap = true;
-            }
+            mainUIHideOwners[getMainUIHideOwner(options)] = true;
             setMainUIHiddenByModelManager(true);
         }
         console.log('[UI] 隐藏主界面并暂停渲染');
@@ -1927,12 +1933,8 @@ I.mod = window.appInterpage;
     I.handleShowMainUI = function handleShowMainUI(options) {
         if (!_isModelHostPage()) return;
         options = options || {};
-        if (options.reason === 'model-manager-overlap') {
-            if (mainUIHiddenOutsideModelManagerOverlap) return;
-        } else {
-            mainUIHiddenOutsideModelManagerOverlap = false;
-            if (modelManagerOverlapHidden) return;
-        }
+        delete mainUIHideOwners[getMainUIHideOwner(options)];
+        if (hasMainUIHideOwner()) return;
         setMainUIHiddenByModelManager(false);
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会

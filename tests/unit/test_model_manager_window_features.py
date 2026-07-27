@@ -69,7 +69,8 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "I.handleHideMainUI({ reason: 'model-manager-overlap' })" in overlap_body
     assert "I.handleShowMainUI({ reason: 'model-manager-overlap' })" in overlap_body
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
-    assert "mainUIHiddenOutsideModelManagerOverlap" in interpage_source
+    assert "mainUIHideOwners = Object.create(null)" in interpage_source
+    assert "delete mainUIHideOwners[getMainUIHideOwner(options)]" in interpage_source
 
 
 def test_model_manager_uses_one_non_focusing_window_instance():
@@ -95,6 +96,8 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
     assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
+    assert "handleHideMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
+    assert "handleShowMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
 
 
 def test_model_manager_pngtuber_import_supports_package_files_and_folders():

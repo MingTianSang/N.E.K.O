@@ -40,7 +40,7 @@
 
         if (typeof window.handleShowMainUI === 'function') {
             try {
-                window.handleShowMainUI();
+                window.handleShowMainUI({ owner: 'yui-page-handoff' });
             } catch (_) {}
         }
     }
@@ -104,7 +104,7 @@
         }
 
         if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
-            window.handleHideMainUI();
+            window.handleHideMainUI({ owner: 'yui-page-handoff' });
         }
 
         return Promise.resolve(childWin);
