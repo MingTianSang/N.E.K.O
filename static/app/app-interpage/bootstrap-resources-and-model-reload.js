@@ -172,7 +172,8 @@ I.mod = window.appInterpage;
     }
 
     I.isHighVolumeBroadcastChannelAction = function isHighVolumeBroadcastChannelAction(action) {
-        return action === 'idle_return_ball_state'
+        return action === 'model_manager_window_state'
+            || action === 'idle_return_ball_state'
             || action === 'idle_chat_minimized_state'
             || action === 'idle_chat_compact_surface_state'
             || action === 'idle_cat1_compact_mirror_state'
@@ -229,6 +230,212 @@ I.mod = window.appInterpage;
             }));
         } catch (_) {}
     }
+
+    // Browser/dev fallback for model-manager overlap tracking. Electron uses
+    // BrowserWindow bounds in the main process; regular web popups report their
+    // outer screen rect through the existing inter-page channel instead.
+    var MODEL_MANAGER_WINDOW_STATE_TTL_MS = 1200;
+    var modelManagerWindowStates = Object.create(null);
+    var modelManagerCachedModelClientBounds = null;
+    var modelManagerOverlapHidden = false;
+
+    function normalizeModelManagerScreenRect(rect) {
+        if (!rect || typeof rect !== 'object') return null;
+        var x = Number(rect.x);
+        var y = Number(rect.y);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(x) || !Number.isFinite(y) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { x: x, y: y, width: width, height: height };
+    }
+
+    function modelManagerRectFullyCovers(coverRect, targetRect) {
+        var cover = normalizeModelManagerScreenRect(coverRect);
+        var target = normalizeModelManagerScreenRect(targetRect);
+        if (!cover || !target) return false;
+        var tolerance = 1;
+        return target.x >= cover.x - tolerance &&
+            target.y >= cover.y - tolerance &&
+            target.x + target.width <= cover.x + cover.width + tolerance &&
+            target.y + target.height <= cover.y + cover.height + tolerance;
+    }
+
+    function isVisibleModelManagerElement(element) {
+        if (!element) return false;
+        try {
+            var style = window.getComputedStyle(element);
+            return style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                parseFloat(style.opacity || '1') !== 0;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function normalizeModelManagerClientRect(rect) {
+        if (!rect) return null;
+        var left = Number(rect.left ?? rect.x ?? rect.minX);
+        var top = Number(rect.top ?? rect.y ?? rect.minY);
+        var right = Number(rect.right ?? rect.maxX);
+        var bottom = Number(rect.bottom ?? rect.maxY);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(width) && Number.isFinite(left) && Number.isFinite(right)) width = right - left;
+        if (!Number.isFinite(height) && Number.isFinite(top) && Number.isFinite(bottom)) height = bottom - top;
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { x: left, y: top, width: width, height: height };
+    }
+
+    function getModelManagerPngTuberClientRect() {
+        var selectors = [
+            '#pngtuber-canvas',
+            '#pngtuber-container img.pngtuber-image',
+            '#pngtuber-container canvas.pngtuber-image',
+            '#pngtuber-container .pngtuber-image',
+            '.pngtuber-image',
+            '[data-pngtuber-interactive]'
+        ];
+        var union = null;
+        try {
+            document.querySelectorAll(selectors.join(', ')).forEach(function (element) {
+                if (!isVisibleModelManagerElement(element)) return;
+                var rect = normalizeModelManagerClientRect(element.getBoundingClientRect());
+                if (!rect) return;
+                if (!union) {
+                    union = rect;
+                    return;
+                }
+                var left = Math.min(union.x, rect.x);
+                var top = Math.min(union.y, rect.y);
+                var right = Math.max(union.x + union.width, rect.x + rect.width);
+                var bottom = Math.max(union.y + union.height, rect.y + rect.height);
+                union = { x: left, y: top, width: right - left, height: bottom - top };
+            });
+        } catch (_) {}
+        return union;
+    }
+
+    function isModelManagerActiveModelDragging() {
+        try {
+            var live2dModel = window.live2dManager?.getCurrentModel?.();
+            if (window.live2dManager?._isDraggingModel || live2dModel?.dragging) return true;
+            if (window.vrmManager?.interaction?.isDragging) return true;
+            if (window.mmdManager?.interaction?.isDragging) return true;
+            if (window.pngtuberManager?._isDraggingModel || window.pngtuberManager?.isDragging ||
+                window.pngtuberManager?.interaction?.isDragging) return true;
+        } catch (_) {}
+        return false;
+    }
+
+    function getModelManagerActiveModelClientRect(allowHidden) {
+        try {
+            var live2dContainer = document.getElementById('live2d-container');
+            if ((allowHidden || isVisibleModelManagerElement(live2dContainer)) && window.live2dManager) {
+                var live2dModel = window.live2dManager.getCurrentModel && window.live2dManager.getCurrentModel();
+                if (live2dModel && typeof live2dModel.getBounds === 'function') {
+                    var live2dBounds = normalizeModelManagerClientRect(live2dModel.getBounds());
+                    if (live2dBounds) return live2dBounds;
+                }
+            }
+
+            var vrmContainer = document.getElementById('vrm-container');
+            var vrmInteraction = window.vrmManager && window.vrmManager.interaction;
+            if ((allowHidden || isVisibleModelManagerElement(vrmContainer)) && vrmInteraction) {
+                if (typeof vrmInteraction.updateModelBoundsCache === 'function') vrmInteraction.updateModelBoundsCache();
+                var vrmBounds = normalizeModelManagerClientRect(vrmInteraction._cachedScreenBounds);
+                if (vrmBounds) return vrmBounds;
+            }
+
+            var mmdContainer = document.getElementById('mmd-container');
+            var mmdInteraction = window.mmdManager && window.mmdManager.interaction;
+            if ((allowHidden || isVisibleModelManagerElement(mmdContainer)) && mmdInteraction) {
+                if (typeof mmdInteraction.updateModelBoundsCache === 'function') mmdInteraction.updateModelBoundsCache();
+                else if (typeof mmdInteraction.updateScreenBounds === 'function') mmdInteraction.updateScreenBounds();
+                var mmdBounds = normalizeModelManagerClientRect(mmdInteraction._cachedScreenBounds);
+                if (mmdBounds) return mmdBounds;
+            }
+
+            var pngtuberContainer = document.getElementById('pngtuber-container');
+            if (isVisibleModelManagerElement(pngtuberContainer)) {
+                return getModelManagerPngTuberClientRect();
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function getModelManagerBrowserContentScreenOrigin() {
+        var outerX = Number(window.screenX) || 0;
+        var outerY = Number(window.screenY) || 0;
+        var horizontalFrame = Math.max(0, (Number(window.outerWidth) - Number(window.innerWidth)) / 2) || 0;
+        var verticalFrame = Math.max(0, Number(window.outerHeight) - Number(window.innerHeight) - horizontalFrame) || 0;
+        return { x: outerX + horizontalFrame, y: outerY + verticalFrame };
+    }
+
+    function getModelManagerActiveModelScreenRect() {
+        var clientRect = null;
+        if (!modelManagerOverlapHidden || isModelManagerActiveModelDragging()) {
+            clientRect = getModelManagerActiveModelClientRect(modelManagerOverlapHidden);
+        }
+        if (clientRect) modelManagerCachedModelClientBounds = clientRect;
+        else clientRect = modelManagerCachedModelClientBounds;
+        if (!clientRect) return null;
+        var origin = getModelManagerBrowserContentScreenOrigin();
+        return {
+            x: origin.x + clientRect.x,
+            y: origin.y + clientRect.y,
+            width: clientRect.width,
+            height: clientRect.height
+        };
+    }
+
+    function refreshModelManagerWindowOverlap() {
+        if (!_isModelHostPage()) return false;
+        var now = Date.now();
+        var modelBounds = getModelManagerActiveModelScreenRect();
+        var shouldHide = false;
+        Object.keys(modelManagerWindowStates).forEach(function (instanceId) {
+            var state = modelManagerWindowStates[instanceId];
+            if (!state || now - state.updatedAt > MODEL_MANAGER_WINDOW_STATE_TTL_MS) {
+                delete modelManagerWindowStates[instanceId];
+                return;
+            }
+            if (state.active && state.visible && modelManagerRectFullyCovers(state.bounds, modelBounds)) {
+                shouldHide = true;
+            }
+        });
+        if (shouldHide === modelManagerOverlapHidden) return shouldHide;
+        modelManagerOverlapHidden = shouldHide;
+        if (shouldHide) I.handleHideMainUI();
+        else I.handleShowMainUI();
+        if (!shouldHide) modelManagerCachedModelClientBounds = null;
+        return shouldHide;
+    }
+
+    I.handleModelManagerWindowState = function handleModelManagerWindowState(message) {
+        if (!_isModelHostPage() || !message) return;
+        var instanceId = String(message.instanceId || 'model-manager-window');
+        if (message.active === false) {
+            delete modelManagerWindowStates[instanceId];
+        } else {
+            modelManagerWindowStates[instanceId] = {
+                active: true,
+                visible: message.visible !== false,
+                bounds: normalizeModelManagerScreenRect(message.bounds),
+                updatedAt: Date.now()
+            };
+        }
+        refreshModelManagerWindowOverlap();
+    };
+
+    I.yuiGuideInterpageResources.setInterval(refreshModelManagerWindowOverlap, 500);
 
     I.applyTutorialChatIdentityOverride = function applyTutorialChatIdentityOverride(payload) {
         var detail = payload || {};

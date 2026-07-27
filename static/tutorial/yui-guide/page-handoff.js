@@ -97,9 +97,11 @@
         }
         window._openedWindows[fullName] = childWin;
 
-        try {
-            childWin.focus();
-        } catch (_) {}
+        if (!isModelManagerPageUrl(targetUrl)) {
+            try {
+                childWin.focus();
+            } catch (_) {}
+        }
 
         if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
             window.handleHideMainUI();

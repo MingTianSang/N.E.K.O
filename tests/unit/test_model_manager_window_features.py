@@ -46,14 +46,37 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "{ keepMainUIVisible: true }" in model_manager_block
 
 
-def test_model_manager_hide_show_cross_page_messages_are_removed():
+def test_model_manager_hides_main_model_only_while_fully_covered():
     model_manager_source = read_model_manager_source()
     interpage_source = read_js_parts(Path("static/app/app-interpage"))
 
-    assert "hide_main_ui" not in model_manager_source
-    assert "show_main_ui" not in model_manager_source
-    assert "hide_main_ui" not in interpage_source
-    assert "show_main_ui" not in interpage_source
+    assert "model_manager_window_state" in model_manager_source
+    assert "getModelManagerWindowScreenBounds" in model_manager_source
+    assert "nekoModelManagerVisibility" in model_manager_source
+    assert "modelManagerRectFullyCovers" in interpage_source
+    assert "getModelManagerActiveModelScreenRect" in interpage_source
+    assert "modelManagerCachedModelClientBounds" in interpage_source
+    assert "isModelManagerActiveModelDragging" in interpage_source
+    assert "handleHideMainUI()" in interpage_source
+    assert "handleShowMainUI()" in interpage_source
+
+
+def test_model_manager_uses_one_non_focusing_window_instance():
+    common_dialogs = Path("static/common_dialogs.js").read_text(encoding="utf-8")
+    character_manager = Path(
+        "static/js/character_card_manager/character-data-and-transfer.js"
+    ).read_text(encoding="utf-8")
+    tutorial_handoff = Path("static/tutorial/yui-guide/page-handoff.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
+    assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in common_dialogs
+    assert "if (!isModelManager) requestOpenedWindowRestore(newWindow);" in common_dialogs
+    assert "neko:restore-window-if-minimized" in common_dialogs
+    assert "window.open(url, '_blank'" not in character_manager
+    assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in character_manager
+    assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
 
 
 def test_model_manager_pngtuber_import_supports_package_files_and_folders():

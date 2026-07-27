@@ -16,6 +16,7 @@ try {
 // 用于页面间通信的事件处理
 function sendMessageToMainPage(action, payload = {}) {
     try {
+        const quiet = action === 'model_manager_window_state';
         const safePayload = {};
         if (payload && typeof payload === 'object') {
             for (const [key, value] of Object.entries(payload)) {
@@ -33,12 +34,12 @@ function sendMessageToMainPage(action, payload = {}) {
         // 优先使用 BroadcastChannel
         if (modelManagerBroadcastChannel) {
             modelManagerBroadcastChannel.postMessage(message);
-            console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+            if (!quiet) console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
         }
 
         // 方式1: 如果是在弹出窗口中，使用 postMessage（更可靠）
         if (window.opener && !window.opener.closed) {
-            console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
+            if (!quiet) console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
             window.opener.postMessage(message, window.location.origin);
         }
 
@@ -46,7 +47,7 @@ function sendMessageToMainPage(action, payload = {}) {
         try {
             localStorage.setItem('nekopage_message', JSON.stringify(message));
             localStorage.removeItem('nekopage_message'); // 立即移除以允许重复发送相同消息
-            console.log(`[消息发送] 使用 localStorage 发送消息: ${action}`);
+            if (!quiet) console.log(`[消息发送] 使用 localStorage 发送消息: ${action}`);
         } catch (e) {
             console.warn('localStorage 消息发送失败:', e);
         }
@@ -59,6 +60,80 @@ function sendMessageToMainPage(action, payload = {}) {
 
 function isModelManagerPopupWindow() {
     return window.opener !== null;
+}
+
+const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 200;
+const MODEL_MANAGER_ELECTRON_VISIBILITY_HEARTBEAT_MS = 1000;
+const MODEL_MANAGER_WINDOW_INSTANCE_ID = `model-manager-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+let modelManagerVisibilityHeartbeat = null;
+let modelManagerVisibilityTrackingActive = false;
+
+function getModelManagerWindowScreenBounds() {
+    const x = Number(window.screenX);
+    const y = Number(window.screenY);
+    const width = Number(window.outerWidth);
+    const height = Number(window.outerHeight);
+    if (!Number.isFinite(x) || !Number.isFinite(y) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+        return null;
+    }
+    return { x, y, width, height };
+}
+
+function publishModelManagerWindowState(active) {
+    const hostBridge = window.nekoModelManagerVisibility;
+    if (hostBridge && typeof hostBridge.setActive === 'function') {
+        try {
+            hostBridge.setActive(!!active);
+            return;
+        } catch (error) {
+            console.warn('[模型管理] Electron 遮挡状态桥接失败，改用页面通信:', error);
+        }
+    }
+    sendMessageToMainPage('model_manager_window_state', {
+        instanceId: MODEL_MANAGER_WINDOW_INSTANCE_ID,
+        active: !!active,
+        visible: !!active && !document.hidden,
+        bounds: active ? getModelManagerWindowScreenBounds() : null,
+    });
+}
+
+function stopModelManagerVisibilityTracking() {
+    if (!modelManagerVisibilityTrackingActive) return;
+    modelManagerVisibilityTrackingActive = false;
+    if (modelManagerVisibilityHeartbeat) {
+        clearInterval(modelManagerVisibilityHeartbeat);
+        modelManagerVisibilityHeartbeat = null;
+    }
+    publishModelManagerWindowState(false);
+}
+
+function startModelManagerVisibilityTracking() {
+    if (!isModelManagerPopupWindow() || modelManagerVisibilityTrackingActive) return;
+    modelManagerVisibilityTrackingActive = true;
+    publishModelManagerWindowState(true);
+    const hasElectronBridge = !!(
+        window.nekoModelManagerVisibility
+        && typeof window.nekoModelManagerVisibility.setActive === 'function'
+    );
+    modelManagerVisibilityHeartbeat = setInterval(() => {
+        if (!modelManagerVisibilityTrackingActive) return;
+        publishModelManagerWindowState(true);
+    }, hasElectronBridge
+        ? MODEL_MANAGER_ELECTRON_VISIBILITY_HEARTBEAT_MS
+        : MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS);
+}
+
+window.addEventListener('pagehide', stopModelManagerVisibilityTracking);
+window.addEventListener('pageshow', startModelManagerVisibilityTracking);
+document.addEventListener('visibilitychange', () => {
+    if (modelManagerVisibilityTrackingActive) publishModelManagerWindowState(true);
+});
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startModelManagerVisibilityTracking, { once: true });
+} else {
+    startModelManagerVisibilityTracking();
 }
 
 // 全局变量：跟踪未保存的更改
