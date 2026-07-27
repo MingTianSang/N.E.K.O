@@ -216,11 +216,20 @@
     async function getMutationHeaders() {
         const headers = { 'Content-Type': 'application/json' };
         const helper = host.nekoLocalMutationSecurity;
-        if (helper && typeof helper.getMutationHeaders === 'function') {
+        // page_config waits for this module's authoritative ready barrier. On a brand-new
+        // profile the initial server state must be created with PUT, so awaiting the shared
+        // helper here can form a cycle:
+        // seven-day ready -> mutation headers -> pageConfigReady -> seven-day ready.
+        // Reuse only an already-cached token; otherwise fetch the token directly.
+        if (helper && typeof helper.peekCachedToken === 'function') {
             try {
-                return Object.assign(headers, await helper.getMutationHeaders());
+                const cachedToken = String(helper.peekCachedToken() || '').trim();
+                if (cachedToken) {
+                    headers['X-CSRF-Token'] = cachedToken;
+                    return headers;
+                }
             } catch (error) {
-                console.warn('[SevenDayTutorialState] 获取写入安全头失败，尝试页面配置:', error);
+                console.warn('[SevenDayTutorialState] 读取已缓存写入令牌失败，尝试页面配置:', error);
             }
         }
 

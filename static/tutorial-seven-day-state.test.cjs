@@ -34,7 +34,12 @@ function createJsonResponse(payload, status = 200) {
     };
 }
 
-function loadBrowserStateApi({ storage, fetch, storageBarrier = Promise.resolve() }) {
+function loadBrowserStateApi({
+    storage,
+    fetch,
+    storageBarrier = Promise.resolve(),
+    mutationSecurity = null,
+}) {
     const window = {
         document: {},
         location: { origin: 'http://localhost:48911' },
@@ -42,6 +47,7 @@ function loadBrowserStateApi({ storage, fetch, storageBarrier = Promise.resolve(
         fetch,
         console,
         __nekoStorageLocationStartupBarrier: storageBarrier,
+        nekoLocalMutationSecurity: mutationSecurity,
     };
     vm.runInNewContext(stateSource, {
         window,
@@ -371,6 +377,47 @@ test('mutations are queued to the authoritative store after initial synchronizat
 
     assert.deepEqual(Array.from(writes.at(-1).completedRounds), [1]);
     assert.deepEqual(Array.from(writes.at(-1).skippedRounds), [2]);
+});
+
+test('first authoritative state creation does not wait on pageConfigReady mutation helper', async () => {
+    const requests = [];
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            const body = JSON.parse(options.body);
+            return createJsonResponse({
+                ok: true,
+                initialized: true,
+                revision: 1,
+                state: body.state,
+            });
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, initialized: false, revision: 0, state: null });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: 'first-run-token' });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const browserApi = loadBrowserStateApi({
+        storage: createMemoryStorage(),
+        fetch,
+        mutationSecurity: {
+            peekCachedToken() {
+                return '';
+            },
+            getMutationHeaders() {
+                return new Promise(() => {});
+            },
+        },
+    });
+
+    await browserApi.ready();
+
+    const putRequest = requests.find(item => item.options.method === 'PUT');
+    assert.ok(putRequest);
+    assert.equal(putRequest.options.headers['X-CSRF-Token'], 'first-run-token');
 });
 
 test('a reset made during startup wins over the initial authoritative read', async () => {
