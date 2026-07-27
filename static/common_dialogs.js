@@ -1543,7 +1543,7 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
-     * @param {{navigateOnReuse?: boolean}} [options] - 复用同名窗口时是否强制导航
+     * @param {{navigateOnReuse?: boolean, onReuse?: Function}} [options] - 复用同名窗口时的行为
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features, options) {
@@ -1561,6 +1561,9 @@
         const existingWindow = window._openedWindows[effectiveWindowName];
         if (existingWindow && !existingWindow.closed) {
             if (isModelManager) {
+                if (typeof normalizedOptions.onReuse === 'function') {
+                    normalizedOptions.onReuse();
+                }
                 requestOpenedWindowRestoreIfMinimized(existingWindow);
                 return existingWindow;
             }
@@ -1574,6 +1577,9 @@
         }
 
         if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(effectiveWindowName)) {
+            if (typeof normalizedOptions.onReuse === 'function') {
+                normalizedOptions.onReuse();
+            }
             requestSharedNamedWindowFocus(effectiveWindowName);
             return createSharedNamedWindowProxy(effectiveWindowName);
         }

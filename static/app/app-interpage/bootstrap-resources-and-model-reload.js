@@ -238,6 +238,8 @@ I.mod = window.appInterpage;
     var modelManagerWindowStates = Object.create(null);
     var modelManagerCachedModelClientBounds = null;
     var modelManagerOverlapHidden = false;
+    var modelManagerOverlapRefreshTimer = 0;
+    var mainUIHiddenOutsideModelManagerOverlap = false;
 
     function normalizeModelManagerScreenRect(rect) {
         if (!rect || typeof rect !== 'object') return null;
@@ -413,10 +415,18 @@ I.mod = window.appInterpage;
         });
         if (shouldHide === modelManagerOverlapHidden) return shouldHide;
         modelManagerOverlapHidden = shouldHide;
-        if (shouldHide) I.handleHideMainUI();
-        else I.handleShowMainUI();
+        if (shouldHide) I.handleHideMainUI({ reason: 'model-manager-overlap' });
+        else I.handleShowMainUI({ reason: 'model-manager-overlap' });
         if (!shouldHide) modelManagerCachedModelClientBounds = null;
         return shouldHide;
+    }
+
+    function scheduleModelManagerWindowOverlapRefresh() {
+        if (modelManagerOverlapRefreshTimer) return;
+        modelManagerOverlapRefreshTimer = I.yuiGuideInterpageResources.setTimeout(function () {
+            modelManagerOverlapRefreshTimer = 0;
+            refreshModelManagerWindowOverlap();
+        }, 100);
     }
 
     I.handleModelManagerWindowState = function handleModelManagerWindowState(message) {
@@ -432,7 +442,7 @@ I.mod = window.appInterpage;
                 updatedAt: Date.now()
             };
         }
-        refreshModelManagerWindowOverlap();
+        scheduleModelManagerWindowOverlapRefresh();
     };
 
     I.yuiGuideInterpageResources.setInterval(refreshModelManagerWindowOverlap, 500);
@@ -1807,6 +1817,9 @@ I.mod = window.appInterpage;
         options = options || {};
         var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
         if (!skipHiddenStateUpdate) {
+            if (options.reason !== 'model-manager-overlap') {
+                mainUIHiddenOutsideModelManagerOverlap = true;
+            }
             setMainUIHiddenByModelManager(true);
         }
         console.log('[UI] 隐藏主界面并暂停渲染');
@@ -1911,8 +1924,15 @@ I.mod = window.appInterpage;
     /**
      * Show main-page model rendering (returning to main page).
      */
-    I.handleShowMainUI = function handleShowMainUI() {
+    I.handleShowMainUI = function handleShowMainUI(options) {
         if (!_isModelHostPage()) return;
+        options = options || {};
+        if (options.reason === 'model-manager-overlap') {
+            if (mainUIHiddenOutsideModelManagerOverlap) return;
+        } else {
+            mainUIHiddenOutsideModelManagerOverlap = false;
+            if (modelManagerOverlapHidden) return;
+        }
         setMainUIHiddenByModelManager(false);
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会

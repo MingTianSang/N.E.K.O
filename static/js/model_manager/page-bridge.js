@@ -35,12 +35,14 @@ function sendMessageToMainPage(action, payload = {}) {
         if (modelManagerBroadcastChannel) {
             modelManagerBroadcastChannel.postMessage(message);
             if (!quiet) console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+            if (quiet) return;
         }
 
         // 方式1: 如果是在弹出窗口中，使用 postMessage（更可靠）
         if (window.opener && !window.opener.closed) {
             if (!quiet) console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
             window.opener.postMessage(message, window.location.origin);
+            if (quiet) return;
         }
 
         // 方式2: 使用localStorage事件机制发送消息给主页面（备用方案）
@@ -62,7 +64,7 @@ function isModelManagerPopupWindow() {
     return window.opener !== null;
 }
 
-const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 200;
+const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;
 const MODEL_MANAGER_ELECTRON_VISIBILITY_HEARTBEAT_MS = 1000;
 const MODEL_MANAGER_WINDOW_INSTANCE_ID = `model-manager-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 let modelManagerVisibilityHeartbeat = null;
@@ -81,6 +83,11 @@ function getModelManagerWindowScreenBounds() {
     return { x, y, width, height };
 }
 
+function isModelManagerWindowForeground() {
+    return !document.hidden &&
+        (typeof document.hasFocus !== 'function' || document.hasFocus());
+}
+
 function publishModelManagerWindowState(active) {
     const hostBridge = window.nekoModelManagerVisibility;
     if (hostBridge && typeof hostBridge.setActive === 'function') {
@@ -94,7 +101,7 @@ function publishModelManagerWindowState(active) {
     sendMessageToMainPage('model_manager_window_state', {
         instanceId: MODEL_MANAGER_WINDOW_INSTANCE_ID,
         active: !!active,
-        visible: !!active && !document.hidden,
+        visible: !!active && isModelManagerWindowForeground(),
         bounds: active ? getModelManagerWindowScreenBounds() : null,
     });
 }
@@ -128,6 +135,12 @@ function startModelManagerVisibilityTracking() {
 window.addEventListener('pagehide', stopModelManagerVisibilityTracking);
 window.addEventListener('pageshow', startModelManagerVisibilityTracking);
 document.addEventListener('visibilitychange', () => {
+    if (modelManagerVisibilityTrackingActive) publishModelManagerWindowState(true);
+});
+window.addEventListener('focus', () => {
+    if (modelManagerVisibilityTrackingActive) publishModelManagerWindowState(true);
+});
+window.addEventListener('blur', () => {
     if (modelManagerVisibilityTrackingActive) publishModelManagerWindowState(true);
 });
 if (document.readyState === 'loading') {

@@ -638,12 +638,21 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
 
     const modelManagerFeatures =
         'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0';
+    let reusedModelManagerWindow = false;
     const popup = typeof window.openOrFocusWindow === 'function'
-        ? window.openOrFocusWindow(url, 'neko_model_manager_singleton', modelManagerFeatures)
+        ? window.openOrFocusWindow(url, 'neko_model_manager_singleton', modelManagerFeatures, {
+            onReuse: () => { reusedModelManagerWindow = true; }
+        })
         : window.open(url, 'neko_model_manager_singleton', modelManagerFeatures);
     if (!popup) {
         if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
         // 弹窗被拦截：回滚本次及此前重命名遗留的 detached 临时角色，避免用户直接刷新/关页时残留空记录
+        if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
+            await rollbackAutoCreatedCatgirl(form);
+        }
+        return;
+    }
+    if (reusedModelManagerWindow) {
         if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
             await rollbackAutoCreatedCatgirl(form);
         }

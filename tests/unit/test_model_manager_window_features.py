@@ -1,5 +1,4 @@
 from pathlib import Path
-from tests.static_app_parts import read_js_parts
 
 
 MODEL_MANAGER_PART_NAMES = (
@@ -48,17 +47,29 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 def test_model_manager_hides_main_model_only_while_fully_covered():
     model_manager_source = read_model_manager_source()
-    interpage_source = read_js_parts(Path("static/app/app-interpage"))
+    interpage_source = Path(
+        "static/app/app-interpage/bootstrap-resources-and-model-reload.js"
+    ).read_text(encoding="utf-8")
+    overlap_start = interpage_source.index("function refreshModelManagerWindowOverlap()")
+    overlap_end = interpage_source.index(
+        "function scheduleModelManagerWindowOverlapRefresh()", overlap_start
+    )
+    overlap_body = interpage_source[overlap_start:overlap_end]
 
     assert "model_manager_window_state" in model_manager_source
     assert "getModelManagerWindowScreenBounds" in model_manager_source
     assert "nekoModelManagerVisibility" in model_manager_source
+    assert "document.hasFocus()" in model_manager_source
+    assert "const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;" in model_manager_source
+    assert model_manager_source.count("if (quiet) return;") >= 2
     assert "modelManagerRectFullyCovers" in interpage_source
     assert "getModelManagerActiveModelScreenRect" in interpage_source
     assert "modelManagerCachedModelClientBounds" in interpage_source
     assert "isModelManagerActiveModelDragging" in interpage_source
-    assert "handleHideMainUI()" in interpage_source
-    assert "handleShowMainUI()" in interpage_source
+    assert "I.handleHideMainUI({ reason: 'model-manager-overlap' })" in overlap_body
+    assert "I.handleShowMainUI({ reason: 'model-manager-overlap' })" in overlap_body
+    assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
+    assert "mainUIHiddenOutsideModelManagerOverlap" in interpage_source
 
 
 def test_model_manager_uses_one_non_focusing_window_instance():
@@ -69,6 +80,11 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     tutorial_handoff = Path("static/tutorial/yui-guide/page-handoff.js").read_text(
         encoding="utf-8"
     )
+    reuse_start = character_manager.index("if (reusedModelManagerWindow)")
+    reuse_end = character_manager.index(
+        "window._openSettingsWindows[url] = popup;", reuse_start
+    )
+    reuse_body = character_manager[reuse_start:reuse_end]
 
     assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
     assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in common_dialogs
@@ -76,6 +92,8 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "neko:restore-window-if-minimized" in common_dialogs
     assert "window.open(url, '_blank'" not in character_manager
     assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in character_manager
+    assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
+    assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
 
 
