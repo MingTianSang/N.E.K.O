@@ -381,6 +381,7 @@ test('mutations are queued to the authoritative store after initial synchronizat
 
 test('first authoritative state creation does not wait on pageConfigReady mutation helper', async () => {
     const requests = [];
+    let getMutationHeadersCalls = 0;
     const fetch = async (url, options = {}) => {
         requests.push({ url, options });
         if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
@@ -408,16 +409,40 @@ test('first authoritative state creation does not wait on pageConfigReady mutati
                 return '';
             },
             getMutationHeaders() {
+                getMutationHeadersCalls += 1;
                 return new Promise(() => {});
             },
         },
     });
 
-    await browserApi.ready();
+    let timeoutId;
+    try {
+        await Promise.race([
+            browserApi.ready(),
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(
+                    () => reject(new Error('first-run state creation must not wait for mutation helper')),
+                    1000,
+                );
+            }),
+        ]);
+    } finally {
+        clearTimeout(timeoutId);
+    }
 
     const putRequest = requests.find(item => item.options.method === 'PUT');
     assert.ok(putRequest);
     assert.equal(putRequest.options.headers['X-CSRF-Token'], 'first-run-token');
+    assert.equal(getMutationHeadersCalls, 0);
+
+    browserApi.markRoundOutcome(1, 'complete');
+    await browserApi.flush();
+
+    const pageConfigRequests = requests.filter(item => item.url === '/api/config/page_config');
+    const putRequests = requests.filter(item => item.options.method === 'PUT');
+    assert.equal(pageConfigRequests.length, 1);
+    assert.equal(putRequests.length, 2);
+    assert.equal(putRequests[1].options.headers['X-CSRF-Token'], 'first-run-token');
 });
 
 test('a reset made during startup wins over the initial authoritative read', async () => {

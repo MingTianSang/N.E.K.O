@@ -24,6 +24,7 @@
     let dirtyServerState = null;
     let dirtyServerGeneration = 0;
     let lastServerSyncError = null;
+    let cachedMutationToken = '';
 
     function getTodayLocalDate(now) {
         const value = now instanceof Date ? now : new Date();
@@ -225,6 +226,7 @@
             try {
                 const cachedToken = String(helper.peekCachedToken() || '').trim();
                 if (cachedToken) {
+                    cachedMutationToken = cachedToken;
                     headers['X-CSRF-Token'] = cachedToken;
                     return headers;
                 }
@@ -233,12 +235,20 @@
             }
         }
 
+        if (cachedMutationToken) {
+            headers['X-CSRF-Token'] = cachedMutationToken;
+            return headers;
+        }
+
         try {
             const response = await host.fetch('/api/config/page_config', { cache: 'no-store' });
             if (!response.ok) return headers;
             const payload = await response.json();
             if (payload && typeof payload.autostart_csrf_token === 'string' && payload.autostart_csrf_token) {
-                headers['X-CSRF-Token'] = payload.autostart_csrf_token;
+                cachedMutationToken = payload.autostart_csrf_token.trim();
+                if (cachedMutationToken) {
+                    headers['X-CSRF-Token'] = cachedMutationToken;
+                }
             }
         } catch (error) {
             console.warn('[SevenDayTutorialState] 读取页面配置失败，保留本地进度:', error);
