@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 MODEL_MANAGER_PART_NAMES = (
+    "named-window-registration.js",
     "runtime-loaders.js",
     "dropdown-manager.js",
     "page-bridge.js",
@@ -132,23 +133,16 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     registration_start = model_manager_source.index(
         "(function registerModelManagerNamedWindow()"
     )
-    registration_end = model_manager_source.index(
-        "// 用于页面间通信的事件处理", registration_start
+    registration_end = model_manager_source.index("})();", registration_start) + len(
+        "})();"
     )
     registration_body = model_manager_source[registration_start:registration_end]
-    popup_registration_start = registration_body.index(
-        "if (isModelManagerPopupWindow()) {"
+    model_manager_template = Path("templates/model_manager.html").read_text(
+        encoding="utf-8"
     )
-    popup_registration_end = registration_body.index(
-        "\n    }\n})();", popup_registration_start
-    ) + len("\n    }")
-    popup_registration_body = registration_body[
-        popup_registration_start:popup_registration_end
-    ]
-    outside_popup_registration = (
-        registration_body[:popup_registration_start]
-        + registration_body[popup_registration_end:]
-    )
+    parameter_editor_template = Path(
+        "templates/live2d_parameter_editor.html"
+    ).read_text(encoding="utf-8")
     send_start = model_manager_source.index("function sendMessageToMainPage(")
     send_end = model_manager_source.index(
         "function isModelManagerPopupWindow()", send_start
@@ -170,26 +164,26 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "neko:named-window-focus:" in registration_body
     assert "window.localStorage.setItem(registryKey" in registration_body
     assert "setInterval(markModelManagerNamedWindowActive, 1000)" in registration_body
-    assert "window.addEventListener('storage'" in popup_registration_body
+    assert (
+        "window.opener === null || window.name !== MODEL_MANAGER_SINGLETON_WINDOW_NAME"
+        in registration_body
+    )
+    assert "window.addEventListener('storage'" in registration_body
     assert (
         "window.addEventListener('pageshow', startModelManagerNamedWindowRegistration)"
-        in popup_registration_body
+        in registration_body
     )
     assert (
         "window.addEventListener('pagehide', stopModelManagerNamedWindowRegistration)"
-        in popup_registration_body
+        in registration_body
     )
-    assert (
-        "startModelManagerNamedWindowRegistration();" in popup_registration_body
-    )
-    assert "window.addEventListener('storage'" not in outside_popup_registration
-    assert (
-        "startModelManagerNamedWindowRegistration();" not in outside_popup_registration
-    )
+    assert "startModelManagerNamedWindowRegistration();" in registration_body
     assert "window.addEventListener('unload'" not in registration_body
     assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
     assert "api.restoreIfMinimized()" in registration_body
     assert "if (document.hidden === true) window.focus();" in registration_body
+    assert "named-window-registration.js" in model_manager_template
+    assert "named-window-registration.js" in parameter_editor_template
     assert "function isModelManagerHostPageWindow(targetWindow)" in send_body
     assert (
         "if (quiet && isModelManagerHostPageWindow(window.opener)) return;"
