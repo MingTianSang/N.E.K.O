@@ -63,6 +63,7 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;" in model_manager_source
     assert model_manager_source.count("if (quiet) return;") >= 2
     assert "modelManagerRectFullyCovers" in interpage_source
+    assert "clipModelManagerClientRectToViewport" in interpage_source
     assert "getModelManagerActiveModelScreenRect" in interpage_source
     assert "modelManagerCachedModelClientBounds" in interpage_source
     assert "isModelManagerActiveModelDragging" in interpage_source
@@ -88,6 +89,7 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     reuse_body = character_manager[reuse_start:reuse_end]
 
     assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
+    assert "pathname === '/model_manager' || pathname === '/l2d'" in common_dialogs
     assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in common_dialogs
     assert "if (!isModelManager) requestOpenedWindowRestore(newWindow);" in common_dialogs
     assert "neko:restore-window-if-minimized" in common_dialogs
@@ -96,6 +98,7 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
     assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
+    assert "pathname === '/model_manager' || pathname === '/l2d'" in tutorial_handoff
     assert "handleHideMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
     assert "handleShowMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
 

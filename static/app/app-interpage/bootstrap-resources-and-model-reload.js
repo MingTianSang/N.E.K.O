@@ -304,6 +304,23 @@ I.mod = window.appInterpage;
         return { x: left, y: top, width: width, height: height };
     }
 
+    function clipModelManagerClientRectToViewport(rect) {
+        var normalized = normalizeModelManagerClientRect(rect);
+        if (!normalized) return null;
+        var viewportWidth = Number(window.innerWidth);
+        var viewportHeight = Number(window.innerHeight);
+        if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) ||
+            viewportWidth <= 0 || viewportHeight <= 0) {
+            return normalized;
+        }
+        var left = Math.max(0, normalized.x);
+        var top = Math.max(0, normalized.y);
+        var right = Math.min(viewportWidth, normalized.x + normalized.width);
+        var bottom = Math.min(viewportHeight, normalized.y + normalized.height);
+        if (right <= left || bottom <= top) return null;
+        return { x: left, y: top, width: right - left, height: bottom - top };
+    }
+
     function getModelManagerPngTuberClientRect() {
         var selectors = [
             '#pngtuber-canvas',
@@ -396,6 +413,8 @@ I.mod = window.appInterpage;
         }
         if (clientRect) modelManagerCachedModelClientBounds = clientRect;
         else clientRect = modelManagerCachedModelClientBounds;
+        if (!clientRect) return null;
+        clientRect = clipModelManagerClientRectToViewport(clientRect);
         if (!clientRect) return null;
         var origin = getModelManagerBrowserContentScreenOrigin();
         return {

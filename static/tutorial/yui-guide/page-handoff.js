@@ -861,7 +861,8 @@
 
     function isModelManagerPageUrl(openUrl) {
         try {
-            return new URL(openUrl, window.location.origin).pathname === '/model_manager';
+            var pathname = new URL(openUrl, window.location.origin).pathname;
+            return pathname === '/model_manager' || pathname === '/l2d';
         } catch (_) {
             return false;
         }

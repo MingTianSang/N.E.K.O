@@ -1597,7 +1597,8 @@
 
     function isModelManagerWindowUrl(url) {
         try {
-            return new URL(url, window.location.href).pathname === '/model_manager';
+            const pathname = new URL(url, window.location.href).pathname;
+            return pathname === '/model_manager' || pathname === '/l2d';
         } catch (_) {
             return false;
         }
