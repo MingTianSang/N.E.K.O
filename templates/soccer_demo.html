@@ -1462,14 +1462,16 @@
   };
 
   // 开局时根据玩家相对球的站位估计出脚方向；球已经被踢出后则改用实际速度。
-  // 只采样 AI 当前横向位置附近的单次上下墙反弹路线，用来给原进攻目标增加
+  // 只采样 AI 当前横向位置附近的上下墙反弹路线，用来给原进攻目标增加
   // 有限的纵向偏移，而不是把 AI 直接变成精确追踪落点的守门员。
   function estimateOpeningAttackRouteY(ball, player, ai, fieldHeight, cfg, openingConfig) {
     const playerCx = player.x + cfg.charSize / 2;
     const playerCy = player.y + cfg.charSize / 2;
     const aiCx = ai.x + cfg.charSize / 2;
     const ballSpeed = Math.hypot(ball.vx, ball.vy);
-    const useLiveBallPath = ballSpeed >= openingConfig.liveBallSpeedMin && ball.vx > 0;
+    const hasLiveBallPath = ballSpeed >= openingConfig.liveBallSpeedMin;
+    if (hasLiveBallPath && ball.vx <= 0) return null;
+    const useLiveBallPath = hasLiveBallPath;
     const dirX = useLiveBallPath ? ball.vx : ball.x - playerCx;
     const dirY = useLiveBallPath ? ball.vy : ball.y - playerCy;
     const travelX = aiCx - ball.x;
@@ -1484,10 +1486,16 @@
     const bottom = fieldHeight - cfg.ballRadius;
     let routeY = ball.y + projectedDeltaY;
 
-    if (routeY < top) {
-      routeY = top + (top - routeY) * cfg.wallRestitution;
-    } else if (routeY > bottom) {
-      routeY = bottom - (routeY - bottom) * cfg.wallRestitution;
+    for (
+      let bounce = 0;
+      bounce < 4 && (routeY < top || routeY > bottom);
+      bounce += 1
+    ) {
+      if (routeY < top) {
+        routeY = top + (top - routeY) * cfg.wallRestitution;
+      } else {
+        routeY = bottom - (routeY - bottom) * cfg.wallRestitution;
+      }
     }
 
     return Math.max(top, Math.min(bottom, routeY));

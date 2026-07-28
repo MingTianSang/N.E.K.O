@@ -90,6 +90,8 @@ const lowerRoute = estimateRouteY(ball, playerAbove, ai, 720, cfg, openingConfig
 
 assert.ok(upperRoute < 360);
 assert.ok(lowerRoute > 360);
+assert.equal(upperRoute, 25.5);
+assert.equal(lowerRoute, 694.5);
 assert.ok(Math.abs((upperRoute + lowerRoute) - 720) < 0.001);
 assert.equal(
   estimateRouteY(ball, {{ x: 680, y: 460 }}, ai, 720, cfg, openingConfig),
@@ -104,7 +106,40 @@ const liveDownwardRoute = estimateRouteY(
   cfg,
   openingConfig,
 );
-assert.ok(liveDownwardRoute > 360);
+assert.equal(liveDownwardRoute, 694.5);
+
+assert.equal(
+  estimateRouteY(
+    {{ x: 640, y: 360, vx: 0, vy: 500 }},
+    playerBelow,
+    ai,
+    720,
+    cfg,
+    openingConfig,
+  ),
+  null,
+);
+assert.equal(
+  estimateRouteY(
+    {{ x: 640, y: 360, vx: -500, vy: 100 }},
+    playerBelow,
+    ai,
+    720,
+    cfg,
+    openingConfig,
+  ),
+  null,
+);
+
+const multipleBounceRoute = estimateRouteY(
+  {{ x: 640, y: 705, vx: 120, vy: 500 }},
+  playerBelow,
+  ai,
+  720,
+  cfg,
+  openingConfig,
+);
+assert.ok(Math.abs(multipleBounceRoute - 61.2) < 0.001);
 """
     result = _run_node(script)
 
