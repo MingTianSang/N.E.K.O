@@ -83,6 +83,7 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "nekoModelManagerVisibility" in model_manager_source
     assert "document.hasFocus()" in model_manager_source
     assert "const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;" in model_manager_source
+    assert "window.sendMessageToMainPage('model_manager_window_state'" in model_manager_source
     assert model_manager_source.count("if (quiet) return;") >= 1
     assert (
         "return modelManagerRectFullyCovers(state.bounds, modelBounds);"
@@ -169,15 +170,13 @@ def test_model_manager_uses_one_non_focusing_window_instance():
         in registration_body
     )
     assert "window.addEventListener('storage'" in registration_body
-    assert (
-        "window.addEventListener('pageshow', startModelManagerNamedWindowRegistration)"
-        in registration_body
-    )
-    assert (
-        "window.addEventListener('pagehide', stopModelManagerNamedWindowRegistration)"
-        in registration_body
-    )
+    assert "window.addEventListener('pageshow', () => {" in registration_body
+    assert "window.addEventListener('pagehide', () => {" in registration_body
+    assert "stopModelManagerVisibilityTracking();" in registration_body
+    assert "stopModelManagerNamedWindowRegistration();" in registration_body
     assert "startModelManagerNamedWindowRegistration();" in registration_body
+    assert "startModelManagerVisibilityTracking();" in registration_body
+    assert "publishModelManagerWindowState(false);" in registration_body
     assert "window.addEventListener('unload'" not in registration_body
     assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
     assert "api.restoreIfMinimized()" in registration_body
