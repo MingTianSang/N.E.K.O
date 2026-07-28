@@ -85,16 +85,17 @@ const MODEL_MANAGER_SINGLETON_WINDOW_NAME = 'neko_model_manager_singleton';
         }
     }
 
-    window.addEventListener('storage', event => {
-        if (event.key !== focusKey || !event.newValue) return;
-        try {
-            handleModelManagerNamedWindowMessage(JSON.parse(event.newValue));
-        } catch (_) {}
-    });
-    window.addEventListener('pageshow', startModelManagerNamedWindowRegistration);
-    window.addEventListener('pagehide', stopModelManagerNamedWindowRegistration);
-    window.addEventListener('unload', stopModelManagerNamedWindowRegistration);
-    startModelManagerNamedWindowRegistration();
+    if (isModelManagerPopupWindow()) {
+        window.addEventListener('storage', event => {
+            if (event.key !== focusKey || !event.newValue) return;
+            try {
+                handleModelManagerNamedWindowMessage(JSON.parse(event.newValue));
+            } catch (_) {}
+        });
+        window.addEventListener('pageshow', startModelManagerNamedWindowRegistration);
+        window.addEventListener('pagehide', stopModelManagerNamedWindowRegistration);
+        startModelManagerNamedWindowRegistration();
+    }
 })();
 
 // 用于页面间通信的事件处理

@@ -131,6 +131,8 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "neko:named-window-focus:" in registration_body
     assert "window.localStorage.setItem(registryKey" in registration_body
     assert "setInterval(markModelManagerNamedWindowActive, 1000)" in registration_body
+    assert "if (isModelManagerPopupWindow()) {" in registration_body
+    assert "window.addEventListener('unload'" not in registration_body
     assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
     assert "api.restoreIfMinimized()" in registration_body
     assert "if (document.hidden === true) window.focus();" in registration_body
