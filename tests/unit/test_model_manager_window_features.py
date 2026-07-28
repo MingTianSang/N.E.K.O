@@ -81,6 +81,7 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
 
 
 def test_model_manager_uses_one_non_focusing_window_instance():
+    model_manager_source = read_model_manager_source()
     common_dialogs = Path("static/common_dialogs.js").read_text(encoding="utf-8")
     character_manager = Path(
         "static/js/character_card_manager/character-data-and-transfer.js"
@@ -93,6 +94,13 @@ def test_model_manager_uses_one_non_focusing_window_instance():
         "window._openSettingsWindows[url] = popup;", reuse_start
     )
     reuse_body = character_manager[reuse_start:reuse_end]
+    registration_start = model_manager_source.index(
+        "(function registerModelManagerNamedWindow()"
+    )
+    registration_end = model_manager_source.index(
+        "// 用于页面间通信的事件处理", registration_start
+    )
+    registration_body = model_manager_source[registration_start:registration_end]
 
     assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
     assert "pathname === '/model_manager' || pathname === '/l2d'" in common_dialogs
@@ -105,6 +113,13 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "if (!hasNativeRestoreBridge)" in common_dialogs
     assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
     assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
+    assert "neko:named-window:" in registration_body
+    assert "neko:named-window-focus:" in registration_body
+    assert "window.localStorage.setItem(registryKey" in registration_body
+    assert "setInterval(markModelManagerNamedWindowActive, 1000)" in registration_body
+    assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
+    assert "api.restoreIfMinimized()" in registration_body
+    assert "if (document.hidden === true) window.focus();" in registration_body
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
     assert "pathname === '/model_manager' || pathname === '/l2d'" in tutorial_handoff
     assert "handleHideMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
