@@ -137,6 +137,9 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
 
 def test_model_manager_uses_one_non_focusing_window_instance():
     model_manager_source = read_model_manager_source()
+    parameter_editor_source = Path(
+        "static/js/live2d_parameter_editor.js"
+    ).read_text(encoding="utf-8")
     common_dialogs = Path("static/common_dialogs.js").read_text(encoding="utf-8")
     character_manager = Path(
         "static/js/character_card_manager/character-data-and-transfer.js"
@@ -213,6 +216,26 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "if (document.hidden === true) window.focus();" in registration_body
     assert "named-window-registration.js" in model_manager_template
     assert "named-window-registration.js" in parameter_editor_template
+    parameter_editor_send_start = parameter_editor_source.index(
+        "function sendMessageToMainPage("
+    )
+    parameter_editor_send_end = parameter_editor_source.index(
+        "// 翻译辅助函数", parameter_editor_send_start
+    )
+    parameter_editor_send_body = parameter_editor_source[
+        parameter_editor_send_start:parameter_editor_send_end
+    ]
+    assert (
+        "const quiet = action === 'model_manager_window_state';"
+        in parameter_editor_send_body
+    )
+    assert (
+        parameter_editor_send_body.index("if (quiet) return;")
+        < parameter_editor_send_body.index(
+            "localStorage.setItem('nekopage_message'"
+        )
+    )
+    assert "if (!quiet) {" in parameter_editor_send_body
     assert "function isModelManagerHostPageWindow(targetWindow)" in send_body
     assert (
         "if (quiet && isModelManagerHostPageWindow(window.opener)) return;"
