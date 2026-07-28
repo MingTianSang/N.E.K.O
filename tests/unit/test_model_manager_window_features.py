@@ -131,6 +131,13 @@ def test_model_manager_uses_one_non_focusing_window_instance():
         "window._openSettingsWindows[url] = popup;", reuse_start
     )
     reuse_body = character_manager[reuse_start:reuse_end]
+    cached_reuse_start = character_manager.index(
+        "if (existingWindow && !existingWindow.closed)"
+    )
+    cached_reuse_end = character_manager.index(
+        "delete window._openSettingsWindows[url];", cached_reuse_start
+    )
+    cached_reuse_body = character_manager[cached_reuse_start:cached_reuse_end]
     registration_start = model_manager_source.index(
         "(function registerModelManagerNamedWindow()"
     )
@@ -161,6 +168,11 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "if (!hasNativeRestoreBridge)" in common_dialogs
     assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
     assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
+    assert (
+        "await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);"
+        in cached_reuse_body
+    )
+    assert "form._autoCreatedDependentPopup = existingWindow" in cached_reuse_body
     assert "neko:named-window:" in registration_body
     assert "neko:named-window-focus:" in registration_body
     assert "window.localStorage.setItem(registryKey" in registration_body

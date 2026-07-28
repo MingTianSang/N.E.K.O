@@ -628,6 +628,9 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
     if (!window._openSettingsWindows) window._openSettingsWindows = {};
     const existingWindow = window._openSettingsWindows[url];
     if (existingWindow && !existingWindow.closed) {
+        if (form && form._autoCreatedDetachedName) {
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
+        }
         if (form && form._autoCreated) form._autoCreatedDependentPopup = existingWindow;
         if (typeof window.requestOpenedWindowRestoreIfMinimized === 'function') {
             window.requestOpenedWindowRestoreIfMinimized(existingWindow);
