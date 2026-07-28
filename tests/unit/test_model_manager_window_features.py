@@ -62,6 +62,13 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
         "function setModelManagerOverlapModelHidden(", overlap_style_start
     )
     overlap_style_body = interpage_source[overlap_style_start:overlap_style_end]
+    reload_success_start = interpage_source.index("if (reloadSucceeded) {")
+    reload_success_end = interpage_source.index(
+        "} else {", reload_success_start
+    )
+    reload_success_body = interpage_source[
+        reload_success_start:reload_success_end
+    ]
 
     assert "model_manager_window_state" in model_manager_source
     assert "getModelManagerWindowScreenBounds" in model_manager_source
@@ -87,6 +94,8 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "-floating-buttons" not in overlap_style_body
     assert "-lock-icon" not in overlap_style_body
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
+    assert "function invalidateModelManagerOverlapBounds()" in interpage_source
+    assert "invalidateModelManagerOverlapBounds();" in reload_success_body
     assert "mainUIHideOwners = Object.create(null)" in interpage_source
     assert "delete mainUIHideOwners[getMainUIHideOwner(options)]" in interpage_source
     assert overlap_body.index("if (!visibleModelManagerStates.length)") < overlap_body.index(
@@ -115,6 +124,19 @@ def test_model_manager_uses_one_non_focusing_window_instance():
         "// 用于页面间通信的事件处理", registration_start
     )
     registration_body = model_manager_source[registration_start:registration_end]
+    popup_registration_start = registration_body.index(
+        "if (isModelManagerPopupWindow()) {"
+    )
+    popup_registration_end = registration_body.index(
+        "\n    }\n})();", popup_registration_start
+    ) + len("\n    }")
+    popup_registration_body = registration_body[
+        popup_registration_start:popup_registration_end
+    ]
+    outside_popup_registration = (
+        registration_body[:popup_registration_start]
+        + registration_body[popup_registration_end:]
+    )
 
     assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
     assert "pathname === '/model_manager' || pathname === '/l2d'" in common_dialogs
@@ -131,7 +153,22 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "neko:named-window-focus:" in registration_body
     assert "window.localStorage.setItem(registryKey" in registration_body
     assert "setInterval(markModelManagerNamedWindowActive, 1000)" in registration_body
-    assert "if (isModelManagerPopupWindow()) {" in registration_body
+    assert "window.addEventListener('storage'" in popup_registration_body
+    assert (
+        "window.addEventListener('pageshow', startModelManagerNamedWindowRegistration)"
+        in popup_registration_body
+    )
+    assert (
+        "window.addEventListener('pagehide', stopModelManagerNamedWindowRegistration)"
+        in popup_registration_body
+    )
+    assert (
+        "startModelManagerNamedWindowRegistration();" in popup_registration_body
+    )
+    assert "window.addEventListener('storage'" not in outside_popup_registration
+    assert (
+        "startModelManagerNamedWindowRegistration();" not in outside_popup_registration
+    )
     assert "window.addEventListener('unload'" not in registration_body
     assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
     assert "api.restoreIfMinimized()" in registration_body

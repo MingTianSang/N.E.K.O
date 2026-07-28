@@ -259,6 +259,15 @@ I.mod = window.appInterpage;
         }
     }
 
+    function invalidateModelManagerOverlapBounds() {
+        modelManagerCachedModelClientBounds = null;
+        if (modelManagerOverlapHidden) {
+            modelManagerOverlapHidden = false;
+            setModelManagerOverlapModelHidden(false);
+        }
+        scheduleModelManagerWindowOverlapRefresh();
+    }
+
     // Browser/dev fallback for model-manager overlap tracking. Electron uses
     // BrowserWindow bounds in the main process; regular web popups report their
     // outer screen rect through the existing inter-page channel instead.
@@ -1591,6 +1600,7 @@ I.mod = window.appInterpage;
                 window._lastModelReloadKey = reloadKey;
                 window._lastModelReloadAt = Date.now();
                 window._lastModelReloadResult = true;
+                invalidateModelManagerOverlapBounds();
             } else {
                 window._lastModelReloadResult = false;
             }
