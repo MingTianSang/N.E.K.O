@@ -127,7 +127,7 @@ function sendMessageToMainPage(action, payload = {}) {
         if (window.opener && !window.opener.closed) {
             if (!quiet) console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
             window.opener.postMessage(message, window.location.origin);
-            if (quiet) return;
+            if (quiet && isModelManagerHostPageWindow(window.opener)) return;
         }
 
         // 方式2: 使用localStorage事件机制发送消息给主页面（备用方案）
@@ -143,7 +143,19 @@ function sendMessageToMainPage(action, payload = {}) {
     }
 }
 
-
+function isModelManagerHostPageWindow(targetWindow) {
+    try {
+        const targetDocument = targetWindow && targetWindow.document;
+        return !!targetDocument && !!(
+            targetDocument.getElementById('live2d-container') ||
+            targetDocument.getElementById('vrm-container') ||
+            targetDocument.getElementById('mmd-container') ||
+            targetDocument.getElementById('pngtuber-container')
+        );
+    } catch (_) {
+        return false;
+    }
+}
 
 function isModelManagerPopupWindow() {
     return window.opener !== null;

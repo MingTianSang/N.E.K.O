@@ -62,6 +62,13 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
         "function setModelManagerOverlapModelHidden(", overlap_style_start
     )
     overlap_style_body = interpage_source[overlap_style_start:overlap_style_end]
+    screen_rect_start = interpage_source.index(
+        "function getModelManagerActiveModelScreenRect()"
+    )
+    screen_rect_end = interpage_source.index(
+        "function refreshModelManagerWindowOverlap()", screen_rect_start
+    )
+    screen_rect_body = interpage_source[screen_rect_start:screen_rect_end]
     reload_success_start = interpage_source.index("if (reloadSucceeded) {")
     reload_success_end = interpage_source.index(
         "} else {", reload_success_start
@@ -75,7 +82,7 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "nekoModelManagerVisibility" in model_manager_source
     assert "document.hasFocus()" in model_manager_source
     assert "const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;" in model_manager_source
-    assert model_manager_source.count("if (quiet) return;") >= 2
+    assert model_manager_source.count("if (quiet) return;") >= 1
     assert (
         "return modelManagerRectFullyCovers(state.bounds, modelBounds);"
         in overlap_body
@@ -83,7 +90,11 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "clipModelManagerClientRectToViewport" in interpage_source
     assert "getModelManagerActiveModelScreenRect" in interpage_source
     assert "modelManagerCachedModelClientBounds" in interpage_source
-    assert "isModelManagerActiveModelDragging" in interpage_source
+    assert (
+        "getModelManagerActiveModelClientRect(modelManagerOverlapHidden)"
+        in screen_rect_body
+    )
+    assert "isModelManagerActiveModelDragging" not in interpage_source
     assert "setModelManagerOverlapModelHidden(shouldHide);" in overlap_body
     assert "setModelManagerOverlapModelHidden(false);" in overlap_body
     assert "I.handleHideMainUI(" not in overlap_body
@@ -93,6 +104,7 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "#react-chat-window-overlay" not in overlap_style_body
     assert "-floating-buttons" not in overlap_style_body
     assert "-lock-icon" not in overlap_style_body
+    assert "display: none" not in overlap_style_body
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
     assert "function invalidateModelManagerOverlapBounds()" in interpage_source
     assert "invalidateModelManagerOverlapBounds();" in reload_success_body
@@ -137,6 +149,11 @@ def test_model_manager_uses_one_non_focusing_window_instance():
         registration_body[:popup_registration_start]
         + registration_body[popup_registration_end:]
     )
+    send_start = model_manager_source.index("function sendMessageToMainPage(")
+    send_end = model_manager_source.index(
+        "function isModelManagerPopupWindow()", send_start
+    )
+    send_body = model_manager_source[send_start:send_end]
 
     assert "MODEL_MANAGER_SINGLETON_WINDOW_NAME" in common_dialogs
     assert "pathname === '/model_manager' || pathname === '/l2d'" in common_dialogs
@@ -173,6 +190,15 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "data.windowName !== MODEL_MANAGER_SINGLETON_WINDOW_NAME" in registration_body
     assert "api.restoreIfMinimized()" in registration_body
     assert "if (document.hidden === true) window.focus();" in registration_body
+    assert "function isModelManagerHostPageWindow(targetWindow)" in send_body
+    assert (
+        "if (quiet && isModelManagerHostPageWindow(window.opener)) return;"
+        in send_body
+    )
+    assert (
+        send_body.index("isModelManagerHostPageWindow(window.opener)")
+        < send_body.index("localStorage.setItem('nekopage_message'")
+    )
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
     assert "pathname === '/model_manager' || pathname === '/l2d'" in tutorial_handoff
     assert "handleHideMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff

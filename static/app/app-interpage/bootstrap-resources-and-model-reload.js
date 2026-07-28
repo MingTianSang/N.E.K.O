@@ -244,7 +244,6 @@ I.mod = window.appInterpage;
             'body.neko-model-hidden-by-manager-overlap #live2d-canvas,',
             'body.neko-model-hidden-by-manager-overlap #vrm-canvas,',
             'body.neko-model-hidden-by-manager-overlap #mmd-canvas {',
-            '  display: none !important;',
             '  visibility: hidden !important;',
             '  pointer-events: none !important;',
             '}'
@@ -358,7 +357,7 @@ I.mod = window.appInterpage;
         return { x: left, y: top, width: right - left, height: bottom - top };
     }
 
-    function getModelManagerPngTuberClientRect() {
+    function getModelManagerPngTuberClientRect(allowHidden) {
         var selectors = [
             '#pngtuber-canvas',
             '#pngtuber-container img.pngtuber-image',
@@ -370,7 +369,7 @@ I.mod = window.appInterpage;
         var union = null;
         try {
             document.querySelectorAll(selectors.join(', ')).forEach(function (element) {
-                if (!isVisibleModelManagerElement(element)) return;
+                if (!allowHidden && !isVisibleModelManagerElement(element)) return;
                 var rect = normalizeModelManagerClientRect(element.getBoundingClientRect());
                 if (!rect) return;
                 if (!union) {
@@ -385,18 +384,6 @@ I.mod = window.appInterpage;
             });
         } catch (_) {}
         return union;
-    }
-
-    function isModelManagerActiveModelDragging() {
-        try {
-            var live2dModel = window.live2dManager?.getCurrentModel?.();
-            if (window.live2dManager?._isDraggingModel || live2dModel?.dragging) return true;
-            if (window.vrmManager?.interaction?.isDragging) return true;
-            if (window.mmdManager?.interaction?.isDragging) return true;
-            if (window.pngtuberManager?._isDraggingModel || window.pngtuberManager?.isDragging ||
-                window.pngtuberManager?.interaction?.isDragging) return true;
-        } catch (_) {}
-        return false;
     }
 
     function getModelManagerActiveModelClientRect(allowHidden) {
@@ -428,8 +415,8 @@ I.mod = window.appInterpage;
             }
 
             var pngtuberContainer = document.getElementById('pngtuber-container');
-            if (isVisibleModelManagerElement(pngtuberContainer)) {
-                return getModelManagerPngTuberClientRect();
+            if (allowHidden || isVisibleModelManagerElement(pngtuberContainer)) {
+                return getModelManagerPngTuberClientRect(allowHidden);
             }
         } catch (_) {}
         return null;
@@ -444,10 +431,7 @@ I.mod = window.appInterpage;
     }
 
     function getModelManagerActiveModelScreenRect() {
-        var clientRect = null;
-        if (!modelManagerOverlapHidden || isModelManagerActiveModelDragging()) {
-            clientRect = getModelManagerActiveModelClientRect(modelManagerOverlapHidden);
-        }
+        var clientRect = getModelManagerActiveModelClientRect(modelManagerOverlapHidden);
         if (clientRect) modelManagerCachedModelClientBounds = clientRect;
         else clientRect = modelManagerCachedModelClientBounds;
         if (!clientRect) return null;
