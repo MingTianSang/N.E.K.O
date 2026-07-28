@@ -214,15 +214,16 @@
         );
     }
 
-    async function getMutationHeaders() {
+    async function getMutationHeaders(options) {
         const headers = { 'Content-Type': 'application/json' };
         const helper = host.nekoLocalMutationSecurity;
+        const forceRefresh = !!(options && options.forceRefresh);
         // page_config waits for this module's authoritative ready barrier. On a brand-new
         // profile the initial server state must be created with PUT, so awaiting the shared
         // helper here can form a cycle:
         // seven-day ready -> mutation headers -> pageConfigReady -> seven-day ready.
         // Reuse only an already-cached token; otherwise fetch the token directly.
-        if (helper && typeof helper.peekCachedToken === 'function') {
+        if (!forceRefresh && helper && typeof helper.peekCachedToken === 'function') {
             try {
                 const cachedToken = String(helper.peekCachedToken() || '').trim();
                 if (cachedToken) {
@@ -235,7 +236,7 @@
             }
         }
 
-        if (cachedMutationToken) {
+        if (!forceRefresh && cachedMutationToken) {
             headers['X-CSRF-Token'] = cachedMutationToken;
             return headers;
         }
@@ -357,10 +358,10 @@
         });
     }
 
-    async function writeServerState(state, expectedRevision) {
+    async function writeServerState(state, expectedRevision, isCsrfRetry) {
         const response = await host.fetch(SERVER_STATE_ENDPOINT, {
             method: 'PUT',
-            headers: await getMutationHeaders(),
+            headers: await getMutationHeaders({ forceRefresh: isCsrfRetry === true }),
             body: JSON.stringify({
                 state,
                 expectedRevision,
@@ -368,6 +369,12 @@
             keepalive: true,
         });
         const payload = await response.json().catch(() => null);
+        if (response.status === 403 && payload && payload.error_code === 'csrf_validation_failed') {
+            cachedMutationToken = '';
+            if (isCsrfRetry !== true) {
+                return writeServerState(state, expectedRevision, true);
+            }
+        }
         if (response.status === 409 && payload) {
             const conflict = new Error('seven-day tutorial state revision conflict');
             conflict.code = 'seven_day_tutorial_revision_conflict';

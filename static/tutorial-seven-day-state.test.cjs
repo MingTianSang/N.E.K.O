@@ -445,6 +445,55 @@ test('first authoritative state creation does not wait on pageConfigReady mutati
     assert.equal(putRequests[1].options.headers['X-CSRF-Token'], 'first-run-token');
 });
 
+test('a rejected cached token is refreshed once after a backend restart', async () => {
+    const requests = [];
+    let activeToken = 'initial-token';
+    let revision = 0;
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === stateApi.SERVER_STATE_ENDPOINT && options.method === 'PUT') {
+            if (options.headers['X-CSRF-Token'] !== activeToken) {
+                return createJsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+            }
+            revision += 1;
+            const body = JSON.parse(options.body);
+            return createJsonResponse({
+                ok: true,
+                initialized: true,
+                revision,
+                state: body.state,
+            });
+        }
+        if (url === stateApi.SERVER_STATE_ENDPOINT) {
+            return createJsonResponse({ ok: true, initialized: false, revision: 0, state: null });
+        }
+        if (url === '/api/config/page_config') {
+            return createJsonResponse({ autostart_csrf_token: activeToken });
+        }
+        return createJsonResponse({}, 404);
+    };
+    const browserApi = loadBrowserStateApi({
+        storage: createMemoryStorage(),
+        fetch,
+    });
+
+    await browserApi.ready();
+    activeToken = 'restarted-backend-token';
+    browserApi.markRoundOutcome(1, 'complete');
+    await browserApi.flush();
+
+    const pageConfigRequests = requests.filter(item => item.url === '/api/config/page_config');
+    const putTokens = requests
+        .filter(item => item.options.method === 'PUT')
+        .map(item => item.options.headers['X-CSRF-Token']);
+    assert.equal(pageConfigRequests.length, 2);
+    assert.deepEqual(putTokens, [
+        'initial-token',
+        'initial-token',
+        'restarted-backend-token',
+    ]);
+});
+
 test('a reset made during startup wins over the initial authoritative read', async () => {
     let releaseStorageBarrier;
     const storageBarrier = new Promise(resolve => {
