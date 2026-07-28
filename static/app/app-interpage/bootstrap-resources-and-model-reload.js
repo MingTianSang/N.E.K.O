@@ -231,6 +231,34 @@ I.mod = window.appInterpage;
         } catch (_) {}
     }
 
+    function ensureModelManagerOverlapHiddenStyle() {
+        if (document.getElementById('neko-model-hidden-by-manager-overlap-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-model-hidden-by-manager-overlap-style';
+        style.textContent = [
+            'body.neko-model-hidden-by-manager-overlap #live2d-container,',
+            'body.neko-model-hidden-by-manager-overlap #vrm-container,',
+            'body.neko-model-hidden-by-manager-overlap #mmd-container,',
+            'body.neko-model-hidden-by-manager-overlap #pngtuber-container,',
+            'body.neko-model-hidden-by-manager-overlap #pngtuber-container .pngtuber-image,',
+            'body.neko-model-hidden-by-manager-overlap #live2d-canvas,',
+            'body.neko-model-hidden-by-manager-overlap #vrm-canvas,',
+            'body.neko-model-hidden-by-manager-overlap #mmd-canvas {',
+            '  display: none !important;',
+            '  visibility: hidden !important;',
+            '  pointer-events: none !important;',
+            '}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setModelManagerOverlapModelHidden(hidden) {
+        ensureModelManagerOverlapHiddenStyle();
+        if (document.body) {
+            document.body.classList.toggle('neko-model-hidden-by-manager-overlap', !!hidden);
+        }
+    }
+
     // Browser/dev fallback for model-manager overlap tracking. Electron uses
     // BrowserWindow bounds in the main process; regular web popups report their
     // outer screen rect through the existing inter-page channel instead.
@@ -443,7 +471,7 @@ I.mod = window.appInterpage;
             modelManagerCachedModelClientBounds = null;
             if (!modelManagerOverlapHidden) return false;
             modelManagerOverlapHidden = false;
-            I.handleShowMainUI({ reason: 'model-manager-overlap' });
+            setModelManagerOverlapModelHidden(false);
             return false;
         }
         var modelBounds = getModelManagerActiveModelScreenRect();
@@ -452,8 +480,7 @@ I.mod = window.appInterpage;
         });
         if (shouldHide === modelManagerOverlapHidden) return shouldHide;
         modelManagerOverlapHidden = shouldHide;
-        if (shouldHide) I.handleHideMainUI({ reason: 'model-manager-overlap' });
-        else I.handleShowMainUI({ reason: 'model-manager-overlap' });
+        setModelManagerOverlapModelHidden(shouldHide);
         if (!shouldHide) modelManagerCachedModelClientBounds = null;
         return shouldHide;
     }

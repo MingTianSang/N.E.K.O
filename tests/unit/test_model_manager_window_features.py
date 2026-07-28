@@ -55,6 +55,13 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
         "function scheduleModelManagerWindowOverlapRefresh()", overlap_start
     )
     overlap_body = interpage_source[overlap_start:overlap_end]
+    overlap_style_start = interpage_source.index(
+        "function ensureModelManagerOverlapHiddenStyle()"
+    )
+    overlap_style_end = interpage_source.index(
+        "function setModelManagerOverlapModelHidden(", overlap_style_start
+    )
+    overlap_style_body = interpage_source[overlap_style_start:overlap_style_end]
 
     assert "model_manager_window_state" in model_manager_source
     assert "getModelManagerWindowScreenBounds" in model_manager_source
@@ -70,8 +77,15 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "getModelManagerActiveModelScreenRect" in interpage_source
     assert "modelManagerCachedModelClientBounds" in interpage_source
     assert "isModelManagerActiveModelDragging" in interpage_source
-    assert "I.handleHideMainUI({ reason: 'model-manager-overlap' })" in overlap_body
-    assert "I.handleShowMainUI({ reason: 'model-manager-overlap' })" in overlap_body
+    assert "setModelManagerOverlapModelHidden(shouldHide);" in overlap_body
+    assert "setModelManagerOverlapModelHidden(false);" in overlap_body
+    assert "I.handleHideMainUI(" not in overlap_body
+    assert "I.handleShowMainUI(" not in overlap_body
+    assert "#live2d-container" in overlap_style_body
+    assert "#pngtuber-container" in overlap_style_body
+    assert "#react-chat-window-overlay" not in overlap_style_body
+    assert "-floating-buttons" not in overlap_style_body
+    assert "-lock-icon" not in overlap_style_body
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
     assert "mainUIHideOwners = Object.create(null)" in interpage_source
     assert "delete mainUIHideOwners[getMainUIHideOwner(options)]" in interpage_source
