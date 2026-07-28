@@ -388,8 +388,18 @@ I.mod = window.appInterpage;
 
     function getModelManagerActiveModelClientRect(allowHidden) {
         try {
+            var configuredModelType = String(window.lanlan_config?.model_type || 'live2d').toLowerCase();
+            var activeModelType = configuredModelType;
+            if (configuredModelType === 'live3d') {
+                activeModelType = String(window.lanlan_config?.live3d_sub_type || 'vrm').toLowerCase() === 'mmd'
+                    ? 'mmd'
+                    : 'vrm';
+            }
+
             var live2dContainer = document.getElementById('live2d-container');
-            if ((allowHidden || isVisibleModelManagerElement(live2dContainer)) && window.live2dManager) {
+            if (activeModelType === 'live2d' &&
+                (allowHidden || isVisibleModelManagerElement(live2dContainer)) &&
+                window.live2dManager) {
                 var live2dModel = window.live2dManager.getCurrentModel && window.live2dManager.getCurrentModel();
                 if (live2dModel && typeof live2dModel.getBounds === 'function') {
                     var live2dBounds = normalizeModelManagerClientRect(live2dModel.getBounds());
@@ -399,7 +409,9 @@ I.mod = window.appInterpage;
 
             var vrmContainer = document.getElementById('vrm-container');
             var vrmInteraction = window.vrmManager && window.vrmManager.interaction;
-            if ((allowHidden || isVisibleModelManagerElement(vrmContainer)) && vrmInteraction) {
+            if (activeModelType === 'vrm' &&
+                (allowHidden || isVisibleModelManagerElement(vrmContainer)) &&
+                vrmInteraction) {
                 if (typeof vrmInteraction.updateModelBoundsCache === 'function') vrmInteraction.updateModelBoundsCache();
                 var vrmBounds = normalizeModelManagerClientRect(vrmInteraction._cachedScreenBounds);
                 if (vrmBounds) return vrmBounds;
@@ -407,7 +419,9 @@ I.mod = window.appInterpage;
 
             var mmdContainer = document.getElementById('mmd-container');
             var mmdInteraction = window.mmdManager && window.mmdManager.interaction;
-            if ((allowHidden || isVisibleModelManagerElement(mmdContainer)) && mmdInteraction) {
+            if (activeModelType === 'mmd' &&
+                (allowHidden || isVisibleModelManagerElement(mmdContainer)) &&
+                mmdInteraction) {
                 if (typeof mmdInteraction.updateModelBoundsCache === 'function') mmdInteraction.updateModelBoundsCache();
                 else if (typeof mmdInteraction.updateScreenBounds === 'function') mmdInteraction.updateScreenBounds();
                 var mmdBounds = normalizeModelManagerClientRect(mmdInteraction._cachedScreenBounds);
@@ -415,7 +429,8 @@ I.mod = window.appInterpage;
             }
 
             var pngtuberContainer = document.getElementById('pngtuber-container');
-            if (allowHidden || isVisibleModelManagerElement(pngtuberContainer)) {
+            if (activeModelType === 'pngtuber' &&
+                (allowHidden || isVisibleModelManagerElement(pngtuberContainer))) {
                 return getModelManagerPngTuberClientRect(allowHidden);
             }
         } catch (_) {}

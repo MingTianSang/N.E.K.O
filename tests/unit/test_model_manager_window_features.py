@@ -70,6 +70,13 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
         "function refreshModelManagerWindowOverlap()", screen_rect_start
     )
     screen_rect_body = interpage_source[screen_rect_start:screen_rect_end]
+    client_rect_start = interpage_source.index(
+        "function getModelManagerActiveModelClientRect("
+    )
+    client_rect_end = interpage_source.index(
+        "function getModelManagerBrowserContentScreenOrigin()", client_rect_start
+    )
+    client_rect_body = interpage_source[client_rect_start:client_rect_end]
     reload_success_start = interpage_source.index("if (reloadSucceeded) {")
     reload_success_end = interpage_source.index(
         "} else {", reload_success_start
@@ -97,6 +104,11 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
         in screen_rect_body
     )
     assert "isModelManagerActiveModelDragging" not in interpage_source
+    assert "configuredModelType === 'live3d'" in client_rect_body
+    assert "activeModelType === 'live2d'" in client_rect_body
+    assert "activeModelType === 'vrm'" in client_rect_body
+    assert "activeModelType === 'mmd'" in client_rect_body
+    assert "activeModelType === 'pngtuber'" in client_rect_body
     assert "setModelManagerOverlapModelHidden(shouldHide);" in overlap_body
     assert "setModelManagerOverlapModelHidden(false);" in overlap_body
     assert "I.handleHideMainUI(" not in overlap_body
