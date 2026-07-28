@@ -223,6 +223,19 @@
         // helper here can form a cycle:
         // seven-day ready -> mutation headers -> pageConfigReady -> seven-day ready.
         // Reuse only an already-cached token; otherwise fetch the token directly.
+        if (forceRefresh && helper && typeof helper.refreshToken === 'function') {
+            try {
+                const refreshedToken = String(await helper.refreshToken() || '').trim();
+                if (refreshedToken) {
+                    cachedMutationToken = refreshedToken;
+                    headers['X-CSRF-Token'] = refreshedToken;
+                    return headers;
+                }
+            } catch (error) {
+                console.warn('[SevenDayTutorialState] 刷新共享写入令牌失败，尝试页面配置:', error);
+            }
+        }
+
         if (!forceRefresh && helper && typeof helper.peekCachedToken === 'function') {
             try {
                 const cachedToken = String(helper.peekCachedToken() || '').trim();

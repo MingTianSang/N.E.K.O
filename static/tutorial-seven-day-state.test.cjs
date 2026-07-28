@@ -448,6 +448,8 @@ test('first authoritative state creation does not wait on pageConfigReady mutati
 test('a rejected cached token is refreshed once after a backend restart', async () => {
     const requests = [];
     let activeToken = 'initial-token';
+    let helperToken = activeToken;
+    let refreshTokenCalls = 0;
     let revision = 0;
     const fetch = async (url, options = {}) => {
         requests.push({ url, options });
@@ -475,21 +477,37 @@ test('a rejected cached token is refreshed once after a backend restart', async 
     const browserApi = loadBrowserStateApi({
         storage: createMemoryStorage(),
         fetch,
+        mutationSecurity: {
+            peekCachedToken() {
+                return helperToken;
+            },
+            async refreshToken() {
+                refreshTokenCalls += 1;
+                const response = await fetch('/api/config/page_config', { cache: 'no-store' });
+                const payload = await response.json();
+                helperToken = payload.autostart_csrf_token;
+                return helperToken;
+            },
+        },
     });
 
     await browserApi.ready();
     activeToken = 'restarted-backend-token';
     browserApi.markRoundOutcome(1, 'complete');
     await browserApi.flush();
+    browserApi.markRoundOutcome(2, 'complete');
+    await browserApi.flush();
 
     const pageConfigRequests = requests.filter(item => item.url === '/api/config/page_config');
     const putTokens = requests
         .filter(item => item.options.method === 'PUT')
         .map(item => item.options.headers['X-CSRF-Token']);
-    assert.equal(pageConfigRequests.length, 2);
+    assert.equal(refreshTokenCalls, 1);
+    assert.equal(pageConfigRequests.length, 1);
     assert.deepEqual(putTokens, [
         'initial-token',
         'initial-token',
+        'restarted-backend-token',
         'restarted-backend-token',
     ]);
 });
