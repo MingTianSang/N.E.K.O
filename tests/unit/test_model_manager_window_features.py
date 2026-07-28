@@ -62,7 +62,10 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "document.hasFocus()" in model_manager_source
     assert "const MODEL_MANAGER_VISIBILITY_HEARTBEAT_MS = 400;" in model_manager_source
     assert model_manager_source.count("if (quiet) return;") >= 2
-    assert "modelManagerRectFullyCovers" in interpage_source
+    assert (
+        "return modelManagerRectFullyCovers(state.bounds, modelBounds);"
+        in overlap_body
+    )
     assert "clipModelManagerClientRectToViewport" in interpage_source
     assert "getModelManagerActiveModelScreenRect" in interpage_source
     assert "modelManagerCachedModelClientBounds" in interpage_source
