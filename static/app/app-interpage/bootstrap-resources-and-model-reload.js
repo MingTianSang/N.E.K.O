@@ -428,17 +428,27 @@ I.mod = window.appInterpage;
     function refreshModelManagerWindowOverlap() {
         if (!_isModelHostPage()) return false;
         var now = Date.now();
-        var modelBounds = getModelManagerActiveModelScreenRect();
-        var shouldHide = false;
+        var visibleModelManagerStates = [];
         Object.keys(modelManagerWindowStates).forEach(function (instanceId) {
             var state = modelManagerWindowStates[instanceId];
             if (!state || now - state.updatedAt > MODEL_MANAGER_WINDOW_STATE_TTL_MS) {
                 delete modelManagerWindowStates[instanceId];
                 return;
             }
-            if (state.active && state.visible && modelManagerRectFullyCovers(state.bounds, modelBounds)) {
-                shouldHide = true;
+            if (state.active && state.visible && state.bounds) {
+                visibleModelManagerStates.push(state);
             }
+        });
+        if (!visibleModelManagerStates.length) {
+            modelManagerCachedModelClientBounds = null;
+            if (!modelManagerOverlapHidden) return false;
+            modelManagerOverlapHidden = false;
+            I.handleShowMainUI({ reason: 'model-manager-overlap' });
+            return false;
+        }
+        var modelBounds = getModelManagerActiveModelScreenRect();
+        var shouldHide = visibleModelManagerStates.some(function (state) {
+            return modelManagerRectFullyCovers(state.bounds, modelBounds);
         });
         if (shouldHide === modelManagerOverlapHidden) return shouldHide;
         modelManagerOverlapHidden = shouldHide;

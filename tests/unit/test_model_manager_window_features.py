@@ -72,6 +72,9 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
     assert "mainUIHideOwners = Object.create(null)" in interpage_source
     assert "delete mainUIHideOwners[getMainUIHideOwner(options)]" in interpage_source
+    assert overlap_body.index("if (!visibleModelManagerStates.length)") < overlap_body.index(
+        "getModelManagerActiveModelScreenRect()"
+    )
 
 
 def test_model_manager_uses_one_non_focusing_window_instance():
@@ -95,6 +98,8 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "neko:restore-window-if-minimized" in common_dialogs
     assert "window.open(url, '_blank'" not in character_manager
     assert "requestOpenedWindowRestoreIfMinimized(existingWindow)" in character_manager
+    assert "targetWindow.document.hidden === true" in common_dialogs
+    assert "if (!hasNativeRestoreBridge)" in common_dialogs
     assert "onReuse: () => { reusedModelManagerWindow = true; }" in character_manager
     assert "await rollbackAutoCreatedCatgirl(form);" in reuse_body
     assert "if (!isModelManagerPageUrl(targetUrl))" in tutorial_handoff
@@ -105,11 +110,11 @@ def test_model_manager_uses_one_non_focusing_window_instance():
 
 def test_model_manager_pngtuber_import_supports_package_files_and_folders():
     template = Path("templates/model_manager.html").read_text(encoding="utf-8")
-    source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    source = read_model_manager_source()
 
     assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
     assert 'id="pngtuber-package-upload"' in template
-    assert '.pngremix,.pngRemix,.save,.veadomini,.veado' in template
+    assert 'accept=".pngRemix,.pngremix,.save"' in template
     assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in source
     assert "showPNGTuberUploadChoice()" in source
     assert "let pngtuberUploadChoiceOpeningPicker = false;" in source

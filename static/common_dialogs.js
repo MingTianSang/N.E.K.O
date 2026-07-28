@@ -1753,9 +1753,24 @@
 
     function requestOpenedWindowRestoreIfMinimized(targetWindow) {
         if (!targetWindow || targetWindow.closed) return;
+        var hasNativeRestoreBridge = false;
+        try {
+            var targetWindowControl = targetWindow.nekoWindowControl;
+            hasNativeRestoreBridge = !!(
+                targetWindowControl &&
+                typeof targetWindowControl.restoreIfMinimized === 'function'
+            );
+        } catch (_) {}
         try {
             targetWindow.postMessage({ type: 'neko:restore-window-if-minimized' }, window.location.origin);
         } catch (_) {}
+        if (!hasNativeRestoreBridge) {
+            try {
+                if (targetWindow.document && targetWindow.document.hidden === true) {
+                    targetWindow.focus();
+                }
+            } catch (_) {}
+        }
     }
 
     window.requestOpenedWindowRestoreIfMinimized = requestOpenedWindowRestoreIfMinimized;
