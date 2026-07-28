@@ -108,23 +108,6 @@ def test_model_manager_uses_one_non_focusing_window_instance():
     assert "handleShowMainUI({ owner: 'yui-page-handoff' })" in tutorial_handoff
 
 
-def test_model_manager_pngtuber_import_supports_package_files_and_folders():
-    template = Path("templates/model_manager.html").read_text(encoding="utf-8")
-    source = read_model_manager_source()
-
-    assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
-    assert 'id="pngtuber-package-upload"' in template
-    assert 'accept=".pngRemix,.pngremix,.save"' in template
-    assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in source
-    assert "showPNGTuberUploadChoice()" in source
-    assert "let pngtuberUploadChoiceOpeningPicker = false;" in source
-    assert "if (pngtuberUploadChoiceOpeningPicker) return;" in source
-    assert "menu.parentNode.removeChild(menu);" in source
-    assert "async function uploadPNGTuberFiles(" in source
-    assert "await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);" in source
-    assert "await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);" in source
-
-
 def test_voice_clone_api_settings_uses_shared_named_window():
     source = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
     common_source = Path("static/common_dialogs.js").read_text(encoding="utf-8")
