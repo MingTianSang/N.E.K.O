@@ -120,6 +120,12 @@ def test_model_manager_hides_main_model_only_while_fully_covered():
     assert "-lock-icon" not in overlap_style_body
     assert "display: none" not in overlap_style_body
     assert "scheduleModelManagerWindowOverlapRefresh()" in interpage_source
+    assert (
+        "if (_isModelHostPage()) {\n"
+        "        I.yuiGuideInterpageResources.setInterval("
+        "refreshModelManagerWindowOverlap, 500);\n"
+        "    }"
+    ) in interpage_source
     assert "function invalidateModelManagerOverlapBounds()" in interpage_source
     assert "invalidateModelManagerOverlapBounds();" in reload_success_body
     assert "mainUIHideOwners = Object.create(null)" in interpage_source

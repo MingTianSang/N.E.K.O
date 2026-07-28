@@ -517,7 +517,9 @@ I.mod = window.appInterpage;
         scheduleModelManagerWindowOverlapRefresh();
     };
 
-    I.yuiGuideInterpageResources.setInterval(refreshModelManagerWindowOverlap, 500);
+    if (_isModelHostPage()) {
+        I.yuiGuideInterpageResources.setInterval(refreshModelManagerWindowOverlap, 500);
+    }
 
     I.applyTutorialChatIdentityOverride = function applyTutorialChatIdentityOverride(payload) {
         var detail = payload || {};
