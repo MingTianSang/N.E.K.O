@@ -1976,6 +1976,114 @@ class TestGptsovitsEnabledSaveMigration:
         )
 
     @pytest.mark.unit
+    def test_update_core_config_doubao_tts_masked_noop_preserves_owned_shared_key(
+        self,
+        config_manager,
+        monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        stored_key = 'ark-doubao-legacy-shared-key'
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': stored_key,
+            'assistApiKeyDoubaoTts': '',
+        })
+
+        loaded = asyncio.run(config_router.get_core_config_api())
+        assert loaded['ttsModelApiKey'] == config_router.CORE_CONFIG_SECRET_SENTINEL
+        assert (
+            loaded['assistApiKeyDoubaoTts']
+            == config_router.CORE_CONFIG_SECRET_SENTINEL
+        )
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': loaded['ttsModelApiKey'],
+            'assistApiKeyDoubaoTts': loaded['assistApiKeyDoubaoTts'],
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelApiKey'] == stored_key
+        assert saved['assistApiKeyDoubaoTts'] == ''
+        assert config_router.CORE_CONFIG_SECRET_SENTINEL not in json.dumps(saved)
+
+    @pytest.mark.unit
+    def test_update_core_config_doubao_tts_explicit_clear_removes_owned_shared_key(
+        self,
+        config_manager,
+        monkeypatch,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': 'ark-doubao-legacy-shared-key',
+            'assistApiKeyDoubaoTts': '',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': config_router.CORE_CONFIG_SECRET_SENTINEL,
+            'assistApiKeyDoubaoTts': '',
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelApiKey'] == ''
+        assert saved['assistApiKeyDoubaoTts'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('stored_provider', 'submitted_key'),
+        (
+            ('vllm_omni', 'ark-doubao-explicit-model-key'),
+            ('doubao_tts', ''),
+        ),
+    )
+    def test_update_core_config_doubao_tts_respects_explicit_model_key_update(
+        self,
+        config_manager,
+        monkeypatch,
+        stored_provider,
+        submitted_key,
+    ):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': stored_provider,
+            'ttsModelApiKey': 'previous-shared-key',
+            'assistApiKeyDoubaoTts': '',
+        })
+
+        resp = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            'enableCustomApi': True,
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'ttsModelProvider': 'doubao_tts',
+            'ttsModelApiKey': submitted_key,
+            'assistApiKeyDoubaoTts': config_router.CORE_CONFIG_SECRET_SENTINEL,
+        })))
+        assert resp.get('success') is True
+
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelApiKey'] == submitted_key
+        assert saved['assistApiKeyDoubaoTts'] == ''
+
+    @pytest.mark.unit
     def test_get_model_api_config_returns_kimi_code_provider_type(self, config_manager):
         _write_core_config(config_manager, {
             'coreApi': 'qwen',

@@ -119,6 +119,25 @@ test('editing or deleting the generic mask replaces the preserved secret state',
     assert.equal(context.getRealKey(input), '');
 });
 
+test('partial bullet input fallback cannot become a real key without beforeinput', () => {
+    const context = createInputContext();
+    const input = createFakeInput();
+    context.setMaskedInput(input, context.MASKED_SECRET_SENTINEL_FOR_TEST);
+    context.attachMaskBehavior(input);
+
+    context.document.activeElement = input;
+    input.dispatch('focus');
+    input.value = '••••••';
+    input.dispatch('input');
+    context.document.activeElement = null;
+    input.dispatch('blur');
+
+    assert.equal(input.dataset.realKey, '');
+    assert.equal(input.dataset.maskedSecret, 'true');
+    assert.equal(input.value, context.MASKED_SECRET_DISPLAY_FOR_TEST);
+    assert.equal(context.getRealKey(input), context.MASKED_SECRET_SENTINEL_FOR_TEST);
+});
+
 test('secret loading clears stale masked state when a reload returns an empty value', () => {
     const context = createInputContext();
     const input = createFakeInput();
@@ -137,6 +156,8 @@ test('legacy masks are recognized narrowly without treating arbitrary starred ke
     const context = createInputContext();
 
     assert.equal(context.isMaskedSecretValue(context.MASKED_SECRET_DISPLAY_FOR_TEST), true);
+    assert.equal(context.isMaskedSecretValue('•'), true);
+    assert.equal(context.isMaskedSecretValue('••••••'), true);
     assert.equal(context.isMaskedSecretValue('***'), true);
     assert.equal(context.isMaskedSecretValue('********'), true);
     assert.equal(context.isMaskedSecretValue('abcdef***ghijkl'), true);
@@ -244,4 +265,22 @@ test('all secret-bearing form fields use masked loading and masked save accessor
     assert.match(source, /if \(!coreResult\.secretMasked && coreCacheId/);
     assert.match(source, /if \(!assistResult\.secretMasked && assistCacheId/);
     assert.match(source, /if \(!customResult\.secretMasked && customCacheId/);
+});
+
+test('manual core and assist tests show a localized notice instead of testing masked secrets', () => {
+    const guardedBranches = source.match(
+        /if \(resolved\.secretMasked\) \{\s*showMaskedSecretConnectivityNotice\(\);\s*\} else if \(resolved\.cacheId\) \{/g,
+    ) || [];
+    assert.equal(guardedBranches.length, 2);
+    assert.match(
+        source,
+        /window\.t\('connectivity\.maskedSecretRetype', fallback\)/,
+    );
+
+    for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const localePath = path.join(PROJECT_ROOT, 'static', 'locales', `${locale}.json`);
+        const messages = JSON.parse(fs.readFileSync(localePath, 'utf8'));
+        assert.equal(typeof messages.connectivity.maskedSecretRetype, 'string', locale);
+        assert.notEqual(messages.connectivity.maskedSecretRetype.trim(), '', locale);
+    }
 });

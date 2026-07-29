@@ -466,6 +466,22 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
+        # Capture the stored provider and whether either Doubao TTS credential
+        # was explicitly changed before applying the submitted model fields.
+        # A masked value means "keep existing"; an empty string is an explicit
+        # clear and must remain distinguishable from that no-op.
+        stored_tts_model_provider = str(
+            core_cfg.get('ttsModelProvider') or ''
+        ).strip()
+        doubao_tts_key_was_explicitly_updated = (
+            'assistApiKeyDoubaoTts' in data
+            and not is_core_config_secret_placeholder(data['assistApiKeyDoubaoTts'])
+        )
+        tts_model_key_was_explicitly_updated = (
+            'ttsModelApiKey' in data
+            and not is_core_config_secret_placeholder(data['ttsModelApiKey'])
+        )
+
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
@@ -486,10 +502,19 @@ async def update_core_config(request: Request):
             core_cfg['gptsovitsEnabled'] = False
         if _incoming_tts_provider == 'doubao_tts':
             doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-            if doubao_key and not is_core_config_secret_placeholder(doubao_key):
+            if doubao_tts_key_was_explicitly_updated:
+                # The dedicated Key Book field is authoritative when the user
+                # explicitly edits it, including an explicit empty-string clear.
                 core_cfg['ttsModelApiKey'] = doubao_key
-            else:
-                core_cfg['ttsModelApiKey'] = ''
+            elif not tts_model_key_was_explicitly_updated:
+                if doubao_key and not is_core_config_secret_placeholder(doubao_key):
+                    core_cfg['ttsModelApiKey'] = doubao_key
+                elif stored_tts_model_provider != 'doubao_tts':
+                    # Switching from another provider must not reuse its shared
+                    # model key as a Doubao credential. When already on Doubao,
+                    # however, masked/no-op saves preserve the legacy key stored
+                    # only in ttsModelApiKey.
+                    core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 

@@ -381,15 +381,16 @@ function maskApiKey(key) {
 }
 
 /**
- * 判断后端保留哨兵或旧版遮罩。旧值只接受全星号，或 maskApiKey 生成的
- * “6 字符前缀 + 至少 3 个星号 + 6 字符后缀”完整形状，避免把任意内部
- * 含星号的用户输入误判成遮罩。
+ * 判断后端保留哨兵、通用圆点遮罩（含非空残片）或旧版遮罩。旧值只接受
+ * 全星号，或 maskApiKey 生成的“6 字符前缀 + 至少 3 个星号 + 6 字符后缀”
+ * 完整形状，避免把任意内部含星号的用户输入误判成遮罩。
  */
 function isMaskedSecretValue(value) {
     if (typeof value !== 'string') return false;
     const normalized = value.trim();
     return normalized === MASKED_SECRET_SENTINEL
         || normalized === MASKED_SECRET_DISPLAY
+        || /^•+$/.test(normalized)
         || /^\*{3,}$/.test(normalized)
         || /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized);
 }
@@ -4419,6 +4420,14 @@ const ConnectivityManager = {
 
 // ==================== 连通性测试：集成初始化 ====================
 
+function showMaskedSecretConnectivityNotice() {
+    const fallback = '密钥已保存但不可回显，请重新输入后再测试';
+    const message = window.t
+        ? window.t('connectivity.maskedSecretRetype', fallback)
+        : fallback;
+    showStatus(message, 'info');
+}
+
 /**
  * 初始化所有连通性指示灯、错误信息展示、测试按钮和事件绑定。
  * 在 initializePage() 中调用，负责 Tasks 6.1, 6.2, 6.3, 7.1, 7.2, 8.1, 8.2。
@@ -4540,7 +4549,9 @@ function initConnectivityLights() {
             coreTestBtn.disabled = true;
             coreTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'core' });
-            if (resolved.cacheId && !resolved.secretMasked) {
+            if (resolved.secretMasked) {
+                showMaskedSecretConnectivityNotice();
+            } else if (resolved.cacheId) {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const isFree = coreSelect && coreSelect.value === 'free';
                 ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
@@ -4600,7 +4611,9 @@ function initConnectivityLights() {
             assistTestBtn.disabled = true;
             assistTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
-            if (resolved.cacheId && !resolved.secretMasked) {
+            if (resolved.secretMasked) {
+                showMaskedSecretConnectivityNotice();
+            } else if (resolved.cacheId) {
                 const assistSelect = document.getElementById('assistApiSelect');
                 const isFree = assistSelect && assistSelect.value === 'free';
                 ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
