@@ -360,6 +360,7 @@ def test_windows_runtime_state_is_outside_the_replaceable_cloudsave_root(monkeyp
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows file-lock semantics")
 def test_windows_new_path_detects_a_holder_at_the_retired_cloudsave_path(monkeypatch, tmp_path):
     local_app_data = tmp_path / "LocalAppData"
     retired = local_app_data / single_instance.APP_SIGNATURE / "runtime"
