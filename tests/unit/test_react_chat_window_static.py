@@ -151,11 +151,19 @@ def test_model_settings_proactive_controls_use_right_aligned_sliders():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     settings_toggles_block = source.split("const settingsToggles = [", 1)[1].split("];", 1)[0]
 
-    assert settings_toggles_block.count("controlStyle: 'slider'") == 2
-    assert "id: 'proactive-chat'" in settings_toggles_block
-    assert "id: 'proactive-vision'" in settings_toggles_block
+    for toggle_id in ("proactive-chat", "proactive-vision"):
+        toggle_object = re.search(
+            rf"\{{[^{{}}]*id:\s*'{re.escape(toggle_id)}'[^{{}}]*\}}",
+            settings_toggles_block,
+        )
+        assert toggle_object, f"missing settings toggle object for {toggle_id}"
+        assert "controlStyle: 'slider'" in toggle_object.group(0)
 
     assert ".${prefix}-toggle-item.${prefix}-toggle-item-slider" in source
+    slider_label_style = source.split(
+        ".${prefix}-toggle-item-slider .${prefix}-toggle-label {", 1
+    )[1].split("}", 1)[0]
+    assert "flex: 1 1 auto;" in slider_label_style
     assert ".${prefix}-toggle-indicator.${prefix}-toggle-slider" in source
     assert "width: 36px;" in source
     assert "height: 20px;" in source
