@@ -1993,10 +1993,14 @@ function CompactChatApp({
     };
     const handleGameWindowStateChange = (event: Event) => {
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
-      if (detail?.action !== 'closed') {
+      const sessionId = detail?.sessionId ? String(detail.sessionId).trim() : '';
+      const gameType = detail?.gameType ? String(detail.gameType).trim() : '';
+      // The WS-connect reconciliation also dispatches `closed` when no route
+      // is active; that synthetic snapshot has neither identity field and may
+      // arrive while an ordinary assistant turn is already streaming.
+      if (detail?.action !== 'closed' || !sessionId || !gameType) {
         return;
       }
-      const sessionId = detail.sessionId ? String(detail.sessionId) : String(Date.now());
       setCompactCaptionState(null);
       compactSpeechPreviewIdRef.current = '';
       compactSpeechPreviewTextRef.current = '';

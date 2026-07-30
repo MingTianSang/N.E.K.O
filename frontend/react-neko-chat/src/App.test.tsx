@@ -4100,6 +4100,62 @@ describe('App', () => {
     }
   });
 
+  it('ignores an inactive game-route sync while an ordinary assistant caption is streaming', async () => {
+    vi.useFakeTimers();
+    const normalLine = '这是一条与小游戏无关的正常回复。';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'gemini_response_first_chunk',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            segmentId: 'ordinary-assistant-turn:segment:1',
+            text: normalLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      const visibleBeforeSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeSync.length).toBeGreaterThan(0);
+      expect(normalLine.startsWith(visibleBeforeSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterSync.length).toBeGreaterThanOrEqual(visibleBeforeSync.length);
+      expect(normalLine.startsWith(visibleAfterSync)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not flash the previous sentence when the next assistant sentence streams under a new turn id', async () => {
     vi.useFakeTimers();
     const firstSentence = '第一句话已经说完了，不能在第二句话开始时闪回来。';
