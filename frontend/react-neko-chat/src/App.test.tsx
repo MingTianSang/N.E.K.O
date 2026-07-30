@@ -3998,7 +3998,7 @@ describe('App', () => {
     }
   });
 
-  it('restores the compact empty state from the real game closed event without waiting for turn-end', async () => {
+  it('restores the compact empty state when active-route sync opens after the game turn starts', async () => {
     vi.useFakeTimers();
     const gameLine = '哈，这球终于被我拿下了！';
     const gameMessage = parseChatMessage({
@@ -4023,13 +4023,6 @@ describe('App', () => {
       );
 
       act(() => {
-        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
-          detail: {
-            action: 'opened',
-            gameType: 'badminton',
-            sessionId: 'badminton-session',
-          },
-        }));
         window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
           detail: {
             turnId: 'badminton-exit-turn',
@@ -4037,7 +4030,20 @@ describe('App', () => {
             meta: {
               source: 'game_route',
               kind: 'badminton',
+              session_id: 'badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'badminton-session',
+                event: {},
+              },
             },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
           },
         }));
       });
@@ -4053,6 +4059,71 @@ describe('App', () => {
             action: 'closed',
             gameType: 'badminton',
             sessionId: 'badminton-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state from an identity-less reconnect close for a tracked game', async () => {
+    vi.useFakeTimers();
+    const gameLine = '比赛已经结束啦！';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'gemini_response_first_chunk',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+              session_id: 'reconnected-badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'reconnected-badminton-session',
+                event: {},
+              },
+            },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            segmentId: 'reconnected-badminton-turn:segment:1',
+            text: gameLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').not.toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
           },
         }));
       });

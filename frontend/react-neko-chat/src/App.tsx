@@ -1954,7 +1954,21 @@ function CompactChatApp({
     const handleAssistantTurnStart = (event: Event) => {
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-${Date.now()}`;
-      compactAssistantTurnGameSessionIdRef.current = activeCompactGameSessionIdRef.current;
+      const meta = detail?.meta && typeof detail.meta === 'object'
+        ? detail.meta as Record<string, unknown>
+        : undefined;
+      const mirror = meta?.mirror && typeof meta.mirror === 'object'
+        ? meta.mirror as Record<string, unknown>
+        : undefined;
+      const metaSource = meta?.source ? String(meta.source).trim() : '';
+      const isGameMirror = metaSource === 'game_route'
+        || metaSource === 'game_llm'
+        || metaSource === 'game-llm-result';
+      const mirroredGameSessionId = isGameMirror && mirror?.session_id
+        ? String(mirror.session_id).trim()
+        : '';
+      compactAssistantTurnGameSessionIdRef.current = mirroredGameSessionId
+        || activeCompactGameSessionIdRef.current;
       setCompactCaptionState(current => (
         current?.turnId === turnId ? current : null
       ));
@@ -2004,16 +2018,24 @@ function CompactChatApp({
         }
         return;
       }
-      // The WS-connect reconciliation also dispatches `closed` when no route
-      // is active; that synthetic snapshot has neither identity field and may
-      // arrive while an ordinary assistant turn is already streaming.
-      if (detail?.action !== 'closed' || !sessionId || !gameType) {
+      if (detail?.action !== 'closed') {
         return;
       }
-      if (activeCompactGameSessionIdRef.current === sessionId) {
+      // A reconnect reconciliation reports an inactive route without identity.
+      // Consume that snapshot only when this component already tracks a game;
+      // the same identity-less snapshot during ordinary chat remains a no-op.
+      const trackedGameSessionId = compactAssistantTurnGameSessionIdRef.current
+        || activeCompactGameSessionIdRef.current;
+      const resolvedSessionId = sessionId && gameType
+        ? sessionId
+        : (!sessionId && !gameType ? trackedGameSessionId : '');
+      if (!resolvedSessionId) {
+        return;
+      }
+      if (activeCompactGameSessionIdRef.current === resolvedSessionId) {
         activeCompactGameSessionIdRef.current = '';
       }
-      if (compactAssistantTurnGameSessionIdRef.current !== sessionId) {
+      if (compactAssistantTurnGameSessionIdRef.current !== resolvedSessionId) {
         return;
       }
       compactAssistantTurnGameSessionIdRef.current = '';
@@ -2025,7 +2047,7 @@ function CompactChatApp({
       // with a distinct id so stale game streams stay hidden while the normal
       // empty-state copy becomes visible immediately after the window closes.
       setCompactAssistantStreamingGap({
-        turnId: `game-closed:${sessionId}`,
+        turnId: `game-closed:${resolvedSessionId}`,
         acceptStreaming: false,
         turnEnded: true,
       });

@@ -1869,6 +1869,13 @@
                         return;
                     }
                     var isNewMessage = response.isNewMessage || false;
+                    // Ordinary responses historically expose lifecycle metadata as
+                    // `meta`, while mirror responses (including game dialogue) use
+                    // `metadata`. Preserve the legacy field when present, but let
+                    // mirror turns carry their session identity into turn-start.
+                    var assistantResponseMeta = response.meta !== undefined
+                        ? response.meta
+                        : response.metadata;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -1908,7 +1915,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -1929,7 +1936,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
