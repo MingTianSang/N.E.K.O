@@ -3998,6 +3998,108 @@ describe('App', () => {
     }
   });
 
+  it('restores the compact empty state from the real game closed event without waiting for turn-end', async () => {
+    vi.useFakeTimers();
+    const gameLine = '哈，这球终于被我拿下了！';
+    const gameMessage = parseChatMessage({
+      id: 'assistant-badminton-exit-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '12:23',
+      createdAt: 2,
+      turnId: 'badminton-exit-turn',
+      blocks: [{ type: 'text', text: gameLine }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-exit-turn',
+            source: 'visible_gemini_bubble',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+            },
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" messages={[gameMessage]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state after a text-less assistant turn fully ends', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end_flush',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not flash the previous sentence when the next assistant sentence streams under a new turn id', async () => {
     vi.useFakeTimers();
     const firstSentence = '第一句话已经说完了，不能在第二句话开始时闪回来。';
