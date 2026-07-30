@@ -1012,6 +1012,8 @@ function CompactChatApp({
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
   const compactSpeechPreviewTurnIdRef = useRef('');
+  const activeCompactGameSessionIdRef = useRef('');
+  const compactAssistantTurnGameSessionIdRef = useRef('');
   // Identity of the turn the speech reveal is currently walking through (the
   // preview's turnStartId). Updated when the preview re-keys (messageId change),
   // so it holds the *previous* turn's anchor at the moment a new bubble arrives
@@ -1952,6 +1954,7 @@ function CompactChatApp({
     const handleAssistantTurnStart = (event: Event) => {
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-${Date.now()}`;
+      compactAssistantTurnGameSessionIdRef.current = activeCompactGameSessionIdRef.current;
       setCompactCaptionState(current => (
         current?.turnId === turnId ? current : null
       ));
@@ -1995,12 +1998,25 @@ function CompactChatApp({
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const sessionId = detail?.sessionId ? String(detail.sessionId).trim() : '';
       const gameType = detail?.gameType ? String(detail.gameType).trim() : '';
+      if (detail?.action === 'opened') {
+        if (sessionId && gameType) {
+          activeCompactGameSessionIdRef.current = sessionId;
+        }
+        return;
+      }
       // The WS-connect reconciliation also dispatches `closed` when no route
       // is active; that synthetic snapshot has neither identity field and may
       // arrive while an ordinary assistant turn is already streaming.
       if (detail?.action !== 'closed' || !sessionId || !gameType) {
         return;
       }
+      if (activeCompactGameSessionIdRef.current === sessionId) {
+        activeCompactGameSessionIdRef.current = '';
+      }
+      if (compactAssistantTurnGameSessionIdRef.current !== sessionId) {
+        return;
+      }
+      compactAssistantTurnGameSessionIdRef.current = '';
       setCompactCaptionState(null);
       compactSpeechPreviewIdRef.current = '';
       compactSpeechPreviewTextRef.current = '';

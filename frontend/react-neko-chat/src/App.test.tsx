@@ -4023,6 +4023,13 @@ describe('App', () => {
       );
 
       act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
         window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
           detail: {
             turnId: 'badminton-exit-turn',
@@ -4100,7 +4107,7 @@ describe('App', () => {
     }
   });
 
-  it('ignores an inactive game-route sync while an ordinary assistant caption is streaming', async () => {
+  it('ignores game state events that do not belong to the current assistant caption', async () => {
     vi.useFakeTimers();
     const normalLine = '这是一条与小游戏无关的正常回复。';
 
@@ -4151,6 +4158,30 @@ describe('App', () => {
       const visibleAfterSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
       expect(visibleAfterSync.length).toBeGreaterThanOrEqual(visibleBeforeSync.length);
       expect(normalLine.startsWith(visibleAfterSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterRealClose = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterRealClose.length).toBeGreaterThanOrEqual(visibleAfterSync.length);
+      expect(normalLine.startsWith(visibleAfterRealClose)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
