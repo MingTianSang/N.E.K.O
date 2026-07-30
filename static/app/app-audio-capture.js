@@ -398,6 +398,12 @@
 
         async function handleToggleClick(event) {
             event.stopPropagation();
+            var startPending = typeof window.isScreenSharingStartPending === 'function'
+                && window.isScreenSharingStartPending();
+            if (startPending && typeof window.stopScreenSharing === 'function') {
+                await window.stopScreenSharing();
+                return;
+            }
             if (button._nekoShareBusy) return;
             var active = isScreenShareActive();
             console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);

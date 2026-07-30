@@ -14,6 +14,7 @@ APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-capture.js
 APP_SCREEN_PATH = PROJECT_ROOT / "static" / "app" / "app-screen.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+COMMON_UI_PATH = PROJECT_ROOT / "static" / "common_ui.js"
 
 
 def _read(path: Path) -> str:
@@ -408,18 +409,21 @@ def test_screen_share_start_is_single_flight_across_ui_entry_points():
 
     source = _read(APP_SCREEN_PATH)
     wrapper = "async " + _js_function_block(source, "startScreenSharing")
-    assert "var screenSharingStartPromise = null;" in source
+    pending_check = _js_function_block(source, "isScreenSharingStartPending")
+    assert "var screenSharingStartAttempt = null;" in source
 
     node_harness = f"""
 const assert = require('assert');
-let screenSharingStartPromise = null;
+const S = {{ screenCaptureStream: null }};
+let screenSharingStartAttempt = null;
 let startCalls = 0;
 let releaseStart;
-async function startScreenSharingOnce() {{
+async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
-  return 'started';
+  return attempt.cancelled ? 'cancelled' : 'started';
 }}
+{pending_check}
 {wrapper}
 
 async function run() {{
@@ -427,14 +431,16 @@ async function run() {{
   const second = startScreenSharing();
   await Promise.resolve();
   assert.strictEqual(startCalls, 1, 'concurrent starts must share one capture attempt');
+  assert.strictEqual(isScreenSharingStartPending(), true, 'the shared attempt must be observable while pending');
   releaseStart();
   assert.deepStrictEqual(await Promise.all([first, second]), ['started', 'started']);
+  assert.strictEqual(isScreenSharingStartPending(), false, 'the attempt must clear after settling');
 
   let releaseRestart;
-  startScreenSharingOnce = async function () {{
+  startScreenSharingOnce = async function (attempt) {{
     startCalls += 1;
     await new Promise((resolve) => {{ releaseRestart = resolve; }});
-    return 'restarted';
+    return attempt.cancelled ? 'cancelled' : 'restarted';
   }};
   const third = startScreenSharing();
   await Promise.resolve();
@@ -460,6 +466,132 @@ run().catch((error) => {{
             "Node screen-share single-flight scenario failed:\n"
             f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
+
+
+def test_pending_screen_share_cancellation_releases_the_late_stream():
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+
+    source = _read(APP_SCREEN_PATH)
+    remember_stream = _js_function_block(
+        source, "rememberScreenSharingAttemptStream"
+    )
+    discard_start = _js_function_block(
+        source, "discardCancelledScreenSharingStart"
+    )
+
+    node_harness = f"""
+const assert = require('assert');
+const window = {{ t: (key) => key }};
+const S = {{
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: 123,
+  screenCaptureStreamIdleTimer: setTimeout(() => {{}}, 10000),
+}};
+{remember_stream}
+{discard_start}
+
+const track = {{ stopCalls: 0, onended: () => {{}}, stop() {{ this.stopCalls += 1; }} }};
+const lateStream = {{
+  getVideoTracks: () => [track],
+  getTracks: () => [track],
+}};
+const attempt = {{ cancelled: true, initialStream: null, acquiredStream: null }};
+S.screenCaptureStream = rememberScreenSharingAttemptStream(attempt, lateStream);
+
+assert.strictEqual(discardCancelledScreenSharingStart(attempt), true);
+assert.strictEqual(track.stopCalls, 1, 'a stream returned after cancellation must be stopped');
+assert.strictEqual(track.onended, null, 'late stream cleanup must not run the normal onended path');
+assert.strictEqual(S.screenCaptureStream, null);
+assert.strictEqual(S.screenCaptureStreamLastUsed, null);
+assert.strictEqual(S.screenCaptureStreamIdleTimer, null);
+assert.strictEqual(attempt.acquiredStream, null);
+
+const proactiveTrack = {{ stopCalls: 0, stop() {{ this.stopCalls += 1; }} }};
+const proactiveStream = {{
+  getVideoTracks: () => [proactiveTrack],
+  getTracks: () => [proactiveTrack],
+}};
+const lateTrack = {{ stopCalls: 0, stop() {{ this.stopCalls += 1; }} }};
+const secondLateStream = {{
+  getVideoTracks: () => [lateTrack],
+  getTracks: () => [lateTrack],
+}};
+const racedAttempt = {{ cancelled: true, initialStream: null, acquiredStream: null }};
+rememberScreenSharingAttemptStream(racedAttempt, secondLateStream);
+S.screenCaptureStream = proactiveStream;
+assert.strictEqual(discardCancelledScreenSharingStart(racedAttempt), true);
+assert.strictEqual(lateTrack.stopCalls, 1);
+assert.strictEqual(S.screenCaptureStream, proactiveStream, 'a concurrent proactive stream must be preserved');
+assert.strictEqual(proactiveTrack.stopCalls, 0);
+
+const cachedTrack = {{ stopCalls: 0, stop() {{ this.stopCalls += 1; }} }};
+const cachedStream = {{
+  getVideoTracks: () => [cachedTrack],
+  getTracks: () => [cachedTrack],
+}};
+const cachedAttempt = {{ cancelled: true, initialStream: cachedStream, acquiredStream: cachedStream }};
+S.screenCaptureStream = cachedStream;
+assert.strictEqual(discardCancelledScreenSharingStart(cachedAttempt), true);
+assert.strictEqual(cachedTrack.stopCalls, 0, 'cancellation must preserve a pre-existing cached stream');
+assert.strictEqual(S.screenCaptureStream, cachedStream);
+"""
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "Node pending screen-share cancellation scenario failed:\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+
+def test_every_screen_share_toggle_treats_a_pending_start_as_on():
+    screen_source = _read(APP_SCREEN_PATH)
+    common_ui_source = _read(COMMON_UI_PATH)
+    audio_capture_source = _read(APP_AUDIO_CAPTURE_PATH)
+
+    stop = _js_function_block(screen_source, "stopScreenSharing")
+    switch = screen_source.split(
+        "window.switchScreenSharing = async function () {", 1
+    )[1].split("\n    };", 1)[0]
+    assert "screenSharingStartAttempt.cancelled = true;" in stop
+    assert "if (isScreenSharingStartPending())" in switch
+
+    toggle = common_ui_source.split(
+        "window.toggleScreenShare = function () {", 1
+    )[1].split("\n};", 1)[0]
+    assert "window.isScreenSharingStartPending()" in toggle
+    assert "const isActiveOrPending = isActive || isStartPending;" in toggle
+    assert "detail: { active: !isActiveOrPending }" in toggle
+
+    inner_toggle = _js_function_block(audio_capture_source, "handleToggleClick")
+    assert inner_toggle.index("if (startPending") < inner_toggle.index(
+        "if (button._nekoShareBusy) return;"
+    )
+    assert "await window.stopScreenSharing();" in inner_toggle
+
+    start_once = "async " + _js_function_block(
+        screen_source, "startScreenSharingOnce"
+    )
+    assert "rememberScreenSharingAttemptStream(attempt" in start_once
+    assert "var captureStream = attempt.initialStream;" in start_once
+    activate = start_once.index("screenButton().classList.add('active')")
+    activation_guard = start_once.rfind(
+        "discardCancelledScreenSharingStart(attempt)", 0, activate
+    )
+    assert activation_guard > start_once.index("fetchBackendScreenshot()")
+    commit_stream = start_once.index("S.screenCaptureStream = captureStream;")
+    first_post_capture_guard = start_once.index(
+        "if (discardCancelledScreenSharingStart(attempt)) return;",
+        start_once.index("// 使用标准的getDisplayMedia"),
+    )
+    assert first_post_capture_guard < commit_stream
 
 
 def test_screen_share_toggle_has_blue_wave_and_four_point_sparkles():
