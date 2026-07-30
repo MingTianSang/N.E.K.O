@@ -1967,8 +1967,10 @@ function CompactChatApp({
       const mirroredGameSessionId = isGameMirror && mirror?.session_id
         ? String(mirror.session_id).trim()
         : '';
-      compactAssistantTurnGameSessionIdRef.current = mirroredGameSessionId
-        || activeCompactGameSessionIdRef.current;
+      // Only explicit mirror metadata owns a game turn. The active-window ref
+      // can be stale until reconnect reconciliation completes, so inheriting it
+      // would let an ordinary assistant response be cleared as game dialogue.
+      compactAssistantTurnGameSessionIdRef.current = mirroredGameSessionId;
       setCompactCaptionState(current => (
         current?.turnId === turnId ? current : null
       ));

@@ -4178,7 +4178,7 @@ describe('App', () => {
     }
   });
 
-  it('ignores game state events that do not belong to the current assistant caption', async () => {
+  it('does not bind an ordinary assistant caption to a stale active game session', async () => {
     vi.useFakeTimers();
     const normalLine = '这是一条与小游戏无关的正常回复。';
 
@@ -4186,6 +4186,13 @@ describe('App', () => {
       const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
 
       act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'stale-game-session',
+          },
+        }));
         window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
           detail: {
             turnId: 'ordinary-assistant-turn',
