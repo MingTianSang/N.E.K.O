@@ -659,12 +659,22 @@
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
         // 更新所有存在的 manager 的按钮状态
-        var managers = [window.live2dManager, window.vrmManager, window.mmdManager];
+        var managers = [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager];
 
         for (var i = 0; i < managers.length; i++) {
             var manager = managers[i];
-            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
-                var ref = manager._floatingButtons.screen;
+            if (!manager || !manager._floatingButtons) continue;
+            var screenRef = manager._floatingButtons.screen;
+            var quickRef = manager._floatingButtons['screen-share-quick'];
+            if (!screenRef && !quickRef) continue;
+
+            if (typeof manager.setButtonActive === 'function') {
+                manager.setButtonActive('screen', isActive);
+                continue;
+            }
+
+            if (screenRef) {
+                var ref = screenRef;
                 var button = ref.button;
                 var imgOff = ref.imgOff;
                 var imgOn = ref.imgOn;
@@ -678,6 +688,9 @@
                         manager.updateSeparatePopupTriggerIcon('screen');
                     }
                 }
+            }
+            if (quickRef && typeof quickRef.updateState === 'function') {
+                quickRef.updateState(isActive);
             }
         }
     }
@@ -959,7 +972,25 @@
     mod.getMobileCameraStream = getMobileCameraStream;
 
     // ======================== startScreenSharing ========================
+    // 所有入口共享同一个启动 Promise，避免授权弹窗未返回时重复创建捕获流。
+    var screenSharingStartPromise = null;
     async function startScreenSharing() {
+        if (screenSharingStartPromise) {
+            return screenSharingStartPromise;
+        }
+
+        var pendingStart = startScreenSharingOnce();
+        screenSharingStartPromise = pendingStart;
+        try {
+            return await pendingStart;
+        } finally {
+            if (screenSharingStartPromise === pendingStart) {
+                screenSharingStartPromise = null;
+            }
+        }
+    }
+
+    async function startScreenSharingOnce() {
         // 检查是否在录音状态
         if (!S.isRecording) {
             window.showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);

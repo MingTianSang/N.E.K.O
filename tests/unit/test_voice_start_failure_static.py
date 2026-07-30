@@ -11,6 +11,7 @@ from tests.node_harness import run_node_stdin
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-capture.js"
+APP_SCREEN_PATH = PROJECT_ROOT / "static" / "app" / "app-screen.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 
@@ -376,13 +377,16 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "window.t('app.screenShareRequiresVoice')" in toggle_factory
     assert toggle_factory.index(voice_guard) < toggle_factory.index(start_call)
 
-    # 启用动画：像素扫过填充（参考视频按钮的像素动画）
-    assert "neko-share-toggle-fill" in toggle_factory
+    # Activation animation: a blue wave fills from the knob, followed by sparkles.
+    assert "neko-share-toggle-wave" in toggle_factory
+    assert "createShareSparkleLayer()" in toggle_factory
     assert "isScreenShareActive()" in toggle_factory
-    cleanup = "shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });"
+    cleanup = "pruneShareToggleButtons();"
     register = "shareToggleButtonRegistry.push(button);"
     assert cleanup in toggle_factory
     assert toggle_factory.index(cleanup) < toggle_factory.index(register)
+    assert "button.setAttribute('aria-label', accessibleLabel);" in toggle_factory
+    assert "button.setAttribute('aria-busy', 'true');" in toggle_factory
 
     # 合并为一行：迷你胶囊开关嵌在「屏幕共享」设置行右侧（替换 chevron）
     render_start = source.index("window.renderFloatingMicList = async function")
@@ -397,42 +401,117 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "leftColumn.insertBefore(shareToggleButton, firstContent);" not in render
 
 
-def test_screen_share_toggle_has_pixel_sweep_animation():
+def test_screen_share_start_is_single_flight_across_ui_entry_points():
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+
+    source = _read(APP_SCREEN_PATH)
+    wrapper = "async " + _js_function_block(source, "startScreenSharing")
+    assert "var screenSharingStartPromise = null;" in source
+
+    node_harness = f"""
+const assert = require('assert');
+let screenSharingStartPromise = null;
+let startCalls = 0;
+let releaseStart;
+async function startScreenSharingOnce() {{
+  startCalls += 1;
+  await new Promise((resolve) => {{ releaseStart = resolve; }});
+  return 'started';
+}}
+{wrapper}
+
+async function run() {{
+  const first = startScreenSharing();
+  const second = startScreenSharing();
+  await Promise.resolve();
+  assert.strictEqual(startCalls, 1, 'concurrent starts must share one capture attempt');
+  releaseStart();
+  assert.deepStrictEqual(await Promise.all([first, second]), ['started', 'started']);
+
+  let releaseRestart;
+  startScreenSharingOnce = async function () {{
+    startCalls += 1;
+    await new Promise((resolve) => {{ releaseRestart = resolve; }});
+    return 'restarted';
+  }};
+  const third = startScreenSharing();
+  await Promise.resolve();
+  assert.strictEqual(startCalls, 2, 'the guard must clear after the first attempt settles');
+  releaseRestart();
+  assert.strictEqual(await third, 'restarted');
+}}
+
+run().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "Node screen-share single-flight scenario failed:\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+
+def test_screen_share_toggle_has_blue_wave_and_four_point_sparkles():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     styles = _js_function_block(source, "injectShareToggleStyles")
 
-    # 画布像素层：低分辨率画布 + pixelated 放大呈现马赛克块
-    assert "canvas.neko-share-toggle-fill" in styles
-    assert "image-rendering:pixelated;" in styles
-    assert ".neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill" in styles
+    # The fill is clipped from the resting knob centre and settles on a blue background.
+    assert ".neko-share-toggle-btn .neko-share-toggle-wave" in styles
+    assert "clip-path:circle(0 at var(--neko-share-wave-x) 50%)" in styles
+    assert "clip-path:circle(var(--neko-share-wave-radius) at var(--neko-share-wave-x) 50%)" in styles
+    assert "#61ccff" in styles and "#44b7fe" in styles and "#269fe8" in styles
+    assert "#8a5ce8" not in source
+    assert "neko-share-toggle-goal" not in source
+    assert "neko-share-toggle-fill" not in source
+    assert "image-rendering:pixelated" not in source
 
-    # 像素溶解引擎：随机马赛克从右向左扫过 + 填满后闪烁
-    fx = _js_function_block(source, "createSharePixelFx")
-    assert "SHARE_PIXEL_PALETTE" in fx
-    assert "SHARE_PIXEL_JITTER" in fx
-    assert "requestAnimationFrame" in fx
-    assert "activate" in fx and "deactivate" in fx
-    assert "startShimmer" in fx
+    # Stars start only after the wave completes and are removed after one pass.
+    fx = _js_function_block(source, "createShareWaveFx")
+    assert "SHARE_WAVE_FILL_MS" in fx
+    assert "setTimeout(startSparkles, SHARE_WAVE_FILL_MS)" in fx
+    assert "is-sparkling" in fx
+    assert "prefersReducedMotion" in fx
+    assert "setInterval" not in fx
+    sparkle_factory = _js_function_block(source, "createShareSparkleLayer")
+    assert "http://www.w3.org/2000/svg" in sparkle_factory
+    assert "M12 1.5C13.6 7.9" in sparkle_factory
+    assert "#00aeef" in sparkle_factory
+    assert "rgba(255,255,255,0.96)" in sparkle_factory
 
-    # 按钮使用画布填充层 + 滑块/紫色目标点（复刻参考视频，灰点按需求不实现）
+    # The real toggle uses the wave/sparkle layers; stopping never replays activation.
     toggle_factory = _js_function_block(source, "createScreenShareToggleButton")
-    assert "document.createElement('canvas')" in toggle_factory
+    assert "document.createElement('canvas')" not in toggle_factory
+    assert "neko-share-toggle-wave" in toggle_factory
     assert "neko-share-toggle-knob" in toggle_factory
-    assert "neko-share-toggle-dots" not in toggle_factory
-    assert "neko-share-toggle-goal" in toggle_factory
-    assert "pixelFx.activate" in toggle_factory
-    assert "pixelFx.deactivate" in toggle_factory
+    assert "waveFx.activate" in toggle_factory
+    assert "waveFx.deactivate" in toggle_factory
+    assert ".replay(" not in toggle_factory
 
-    # 滑块默认在左端，启用后滑到右端；像素前沿带软过渡与左端渐变尾；含迷你行内变体
-    styles = _js_function_block(source, "injectShareToggleStyles")
+    # Full and inline variants keep matching knob positions and wave origins.
     assert ".neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}" in styles
     assert ".neko-share-toggle-btn.neko-share-toggle-mini" in styles
     assert ".neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}" in styles
-    fx = _js_function_block(source, "createSharePixelFx")
-    assert "SHARE_PIXEL_FADE" in fx
-    assert "SHARE_PIXEL_MIN_ALPHA" in fx
+    assert "--neko-share-wave-x:20px" in styles
+    assert "--neko-share-wave-x:12px" in styles
+    assert "--neko-share-wave-radius:148%" in styles
+    assert "--neko-share-wave-radius:116%" in styles
+    assert "prefers-reduced-motion:reduce" in styles
 
-    # 状态与隐藏 #screenButton 的 .active class 同步
+    prune = _js_function_block(source, "pruneShareToggleButtons")
+    assert "btn._nekoShareFxCleanup()" in prune
+
+    # State remains sourced from the hidden #screenButton .active class.
     assert "isScreenShareActive" in source
     assert "MutationObserver" in source
     assert "syncShareToggleButtons" in source
@@ -453,6 +532,22 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "openScreenSourceSubwindow" in source
     assert "MIC_ACTION_HOVER_COLLAPSE_MS = 260" in source
     assert "wireMicSubwindowHoverBridge" in source
+    assert "textWrap.className = 'neko-mic-action-text';" in action_button
+    assert "if (iconText) {" in action_button
+    assert "screenActionButton.querySelector('.neko-mic-action-text')" in source
+    assert "var screenActionButton = createMainActionButton(\n                null," in source
+    assert "var micActionButton = createMainActionButton(\n                null," in source
+    subwindow = _js_function_block(source, "createMicSubwindow")
+    assert "if (iconText) {" in subwindow
+    assert "titleWrap.appendChild(icon);" in subwindow
+    assert (
+        "window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',\n"
+        "                    null,"
+    ) in source
+    assert (
+        "window.t ? window.t('buttons.screenShare') : 'Screen Share',\n"
+        "                    null,"
+    ) in source
 
 
 def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():

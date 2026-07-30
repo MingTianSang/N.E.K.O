@@ -161,7 +161,7 @@
 
     // ======================== 屏幕共享开关按钮（设置面板内嵌） ========================
     // 开关按钮从屏幕源子窗口底部移到「屏幕共享」与「选择麦克风」两个设置项中间；
-    // 启用时播放像素扫过动画（参考视频按钮的像素填充效果）。
+    // 启用时由滑块起点扩散蓝色波面，填满后浮出少量四角星光。
     // 共享状态以隐藏的 #screenButton 的 .active class 为准（见 common_ui.js）。
 
     var shareToggleButtonRegistry = [];
@@ -179,196 +179,150 @@
         style.id = 'neko-share-toggle-styles';
         style.textContent = [
             // 未启用：白色胶囊轨道（仿参考视频）
-            '.neko-share-toggle-btn{position:relative;overflow:hidden;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;}',
+            '.neko-share-toggle-btn{position:relative;isolation:isolate;overflow:visible;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;--neko-share-wave-x:20px;--neko-share-wave-radius:148%;}',
             '.neko-share-toggle-btn:hover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn:focus-visible{outline:2px solid var(--neko-popup-accent,#44b7fe);outline-offset:2px;}',
             '.neko-share-toggle-btn:active{transform:scale(.97);}',
             '.neko-share-toggle-btn:disabled{opacity:.6;cursor:default;}',
             // 未开语音会话时点击的抖动提示（明确反馈「点到了但不能用」）
             '@keyframes nekoShareToggleNudge{0%,100%{transform:translateX(0);}25%{transform:translateX(-3px);}75%{transform:translateX(3px);}}',
             '.neko-share-toggle-btn.is-nudged{animation:nekoShareToggleNudge .12s ease 2;}',
             '.neko-share-toggle-btn.is-active{color:#fff;}',
-            // 右端的紫色目标点
-            '.neko-share-toggle-btn .neko-share-toggle-goal{position:absolute;z-index:0;top:50%;right:16px;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#8a5ce8;pointer-events:none;}',
+            // 蓝色波面：以未开启时滑块中心为圆心，向外扩散并填满整个胶囊。
+            '.neko-share-toggle-btn .neko-share-toggle-wave{position:absolute;inset:0;z-index:0;border-radius:inherit;background:linear-gradient(105deg,#61ccff 0%,#44b7fe 52%,#269fe8 100%);clip-path:circle(0 at var(--neko-share-wave-x) 50%);pointer-events:none;transition:clip-path .64s cubic-bezier(.4,0,.2,1);}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-wave{clip-path:circle(var(--neko-share-wave-radius) at var(--neko-share-wave-x) 50%);}',
             '.neko-share-toggle-btn .neko-share-toggle-label{position:relative;z-index:1;display:block;text-align:center;pointer-events:none;transition:color .2s ease;}',
-            // 文字延迟变白：等像素填充波前扫到中部再切换，避免白字落在白轨道上
-            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .3s ease .35s;}',
-            // 白色滑块：默认在左端，启用后滑到右端（始终盖在像素层之上）
-            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:2;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .4s ease;}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .2s ease .16s;}',
+            // 白色滑块：默认在左端，启用后滑到右端。
+            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:3;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .46s cubic-bezier(.4,0,.2,1);}',
             '.neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}',
-            // 像素填充画布：低分辨率画布经 CSS 放大 + pixelated，呈现马赛克块感
-            '.neko-share-toggle-btn canvas.neko-share-toggle-fill{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .12s linear;image-rendering:pixelated;}',
-            '.neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill{opacity:1;}',
+            // 四角星光：波面填满后从背景中向上浮出，SVG 轮廓参考产品给定的星型。
+            '.neko-share-toggle-btn .neko-share-toggle-sparkles{position:absolute;inset:0;z-index:2;overflow:visible;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-spark{position:absolute;left:var(--neko-spark-x);bottom:var(--neko-spark-y);width:var(--neko-spark-size);height:var(--neko-spark-size);opacity:0;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-spark svg{display:block;width:100%;height:100%;overflow:visible;}',
+            '@keyframes nekoShareSparkRise{0%{opacity:0;transform:translate3d(0,4px,0) scale(.2) rotate(0deg);}18%{opacity:1;}68%{opacity:.92;}100%{opacity:0;transform:translate3d(var(--neko-spark-drift),var(--neko-spark-rise),0) scale(.92) rotate(18deg);}}',
+            '.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:nekoShareSparkRise var(--neko-spark-duration) cubic-bezier(.16,.8,.25,1) var(--neko-spark-delay) both;}',
             // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
-            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);--neko-share-wave-x:12px;--neko-share-wave-radius:116%;}',
             '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
             '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
             '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
-            '.neko-share-toggle-mini .neko-share-toggle-goal{right:8px;width:5px;height:5px;margin-top:-2.5px;}',
+            '.neko-share-toggle-btn.is-instant .neko-share-toggle-wave,.neko-share-toggle-btn.is-instant .neko-share-toggle-label,.neko-share-toggle-btn.is-instant .neko-share-toggle-knob{transition:none!important;}',
+            '@media (prefers-reduced-motion:reduce){.neko-share-toggle-btn .neko-share-toggle-wave,.neko-share-toggle-btn .neko-share-toggle-label,.neko-share-toggle-btn .neko-share-toggle-knob{transition:none!important;}.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:none!important;}}',
             '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
         ].join('\n');
         document.head.appendChild(style);
     }
 
-    // ---- 像素溶解引擎：仿参考视频的随机马赛克扫过效果 ----
-    // 色板以中深紫为主，浅紫仅作零星高光（与参考视频一致）
-    var SHARE_PIXEL_PALETTE = ['#8a5ce8', '#8f63ec', '#9772f0', '#9772f0', '#a181f5', '#a181f5', '#b79fff', '#cdbdff'];
-    var SHARE_PIXEL_CELL_PX = 3;      // 每个像素块的 CSS 尺寸
-    var SHARE_PIXEL_JITTER = 0.2;     // 填充前沿的随机抖动幅度（产生锯齿边缘与前置散点）
-    var SHARE_PIXEL_FADE = 0.15;      // 前沿软过渡宽度（像素透明度渐显，形成渐变边）
-    var SHARE_PIXEL_MIN_ALPHA = 0.3;  // 左端最终透明度上限（形成视频的浅紫渐变尾）
-    var SHARE_PIXEL_FILL_MS = 1300;   // 启用扫过时长
-    var SHARE_PIXEL_SHIMMER_MS = 100; // 填满后像素闪烁间隔
+    var SHARE_WAVE_FILL_MS = 640;
+    var SHARE_SPARKLE_LIFETIME_MS = 1200;
+    var SHARE_SPARKLE_CONFIGS = [
+        { x: '8%', y: '4px', size: '8px', drift: '-4px', rise: '-21px', delay: '0ms', duration: '760ms' },
+        { x: '28%', y: '10px', size: '6px', drift: '1px', rise: '-28px', delay: '110ms', duration: '800ms' },
+        { x: '48%', y: '3px', size: '10px', drift: '-2px', rise: '-24px', delay: '40ms', duration: '820ms' },
+        { x: '68%', y: '7px', size: '7px', drift: '3px', rise: '-30px', delay: '150ms', duration: '780ms' },
+        { x: '88%', y: '4px', size: '9px', drift: '1px', rise: '-22px', delay: '80ms', duration: '840ms' }
+    ];
 
-    function createSharePixelFx(canvas) {
-        var ctx = canvas.getContext('2d');
-        var cols = 0;
-        var rows = 0;
-        var seeds = null;   // 前沿抖动随机数
-        var tints = null;   // 每格颜色索引
-        var spans = null;   // 少量格子画成 2x2，模拟视频里大小不一的块
-        var progress = 0;
-        var rafId = null;
-        var shimmerTimer = null;
+    function createShareSparkleLayer() {
+        var layer = document.createElement('span');
+        layer.className = 'neko-share-toggle-sparkles';
+        layer.setAttribute('aria-hidden', 'true');
 
-        function resize() {
-            var host = canvas.parentElement;
-            var w = host ? host.clientWidth : 0;
-            var h = host ? host.clientHeight : 0;
-            var nextCols = Math.max(1, Math.round(w / SHARE_PIXEL_CELL_PX));
-            var nextRows = Math.max(1, Math.round(h / SHARE_PIXEL_CELL_PX));
-            if (nextCols === cols && nextRows === rows && seeds) return;
-            cols = nextCols;
-            rows = nextRows;
-            canvas.width = cols;
-            canvas.height = rows;
-            var count = cols * rows;
-            seeds = new Float32Array(count);
-            tints = new Uint8Array(count);
-            spans = new Uint8Array(count);
-            for (var i = 0; i < count; i++) {
-                seeds[i] = Math.random();
-                tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
-                spans[i] = Math.random() < 0.12 ? 1 : 0;
+        SHARE_SPARKLE_CONFIGS.forEach(function (config) {
+            var sparkle = document.createElement('span');
+            sparkle.className = 'neko-share-toggle-spark';
+            sparkle.style.setProperty('--neko-spark-x', config.x);
+            sparkle.style.setProperty('--neko-spark-y', config.y);
+            sparkle.style.setProperty('--neko-spark-size', config.size);
+            sparkle.style.setProperty('--neko-spark-drift', config.drift);
+            sparkle.style.setProperty('--neko-spark-rise', config.rise);
+            sparkle.style.setProperty('--neko-spark-delay', config.delay);
+            sparkle.style.setProperty('--neko-spark-duration', config.duration);
+
+            var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'M12 1.5C13.6 7.9 16.1 10.4 22.5 12C16.1 13.6 13.6 16.1 12 22.5C10.4 16.1 7.9 13.6 1.5 12C7.9 10.4 10.4 7.9 12 1.5Z');
+            path.setAttribute('fill', 'rgba(255,255,255,0.96)');
+            path.setAttribute('stroke', '#00aeef');
+            path.setAttribute('stroke-width', '0.9');
+            path.setAttribute('stroke-linejoin', 'round');
+            path.setAttribute('vector-effect', 'non-scaling-stroke');
+            svg.appendChild(path);
+            sparkle.appendChild(svg);
+            layer.appendChild(sparkle);
+        });
+
+        return layer;
+    }
+
+    function createShareWaveFx(button) {
+        var sparkleStartTimer = null;
+        var sparkleCleanupTimer = null;
+
+        function prefersReducedMotion() {
+            return typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        }
+
+        function stopSparkles() {
+            if (sparkleStartTimer) { clearTimeout(sparkleStartTimer); sparkleStartTimer = null; }
+            if (sparkleCleanupTimer) { clearTimeout(sparkleCleanupTimer); sparkleCleanupTimer = null; }
+            button.classList.remove('is-sparkling');
+        }
+
+        function startSparkles() {
+            sparkleStartTimer = null;
+            if (!button.isConnected || !button._nekoShareActive || prefersReducedMotion()) return;
+            button.classList.remove('is-sparkling');
+            void button.offsetWidth;
+            button.classList.add('is-sparkling');
+            sparkleCleanupTimer = setTimeout(function () {
+                sparkleCleanupTimer = null;
+                button.classList.remove('is-sparkling');
+            }, SHARE_SPARKLE_LIFETIME_MS);
+        }
+
+        function setActiveClass(active, instant) {
+            if (instant) button.classList.add('is-instant');
+            button.classList.toggle('is-active', active);
+            if (instant) {
+                void button.offsetWidth;
+                button.classList.remove('is-instant');
             }
-        }
-
-        function draw() {
-            resize();
-            ctx.clearRect(0, 0, cols, rows);
-            if (progress <= 0) return;
-            var spread = 1 - SHARE_PIXEL_JITTER;
-            for (var y = 0; y < rows; y++) {
-                for (var x = 0; x < cols; x++) {
-                    var i = y * cols + x;
-                    var xNorm = cols <= 1 ? 1 : x / (cols - 1);
-                    // 从右向左推进；阈值叠加随机抖动形成不规则前沿
-                    var threshold = (1 - xNorm) * spread + seeds[i] * SHARE_PIXEL_JITTER;
-                    // 前沿软过渡：刚越线的像素半透明，逐渐加深（视频的渐变边）
-                    var fade = (progress - threshold) / SHARE_PIXEL_FADE;
-                    if (fade > 0) {
-                        var alpha = fade >= 1 ? 1 : fade;
-                        // 越靠左透明度越低，填满后左端保留浅紫渐变尾
-                        alpha *= SHARE_PIXEL_MIN_ALPHA + (1 - SHARE_PIXEL_MIN_ALPHA) * xNorm;
-                        ctx.globalAlpha = alpha;
-                        ctx.fillStyle = SHARE_PIXEL_PALETTE[tints[i]];
-                        var big = spans[i];
-                        ctx.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
-                    }
-                }
-            }
-            ctx.globalAlpha = 1;
-        }
-
-        function stopShimmer() {
-            if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
-        }
-
-        function startShimmer() {
-            stopShimmer();
-            // 闪烁点随机出现，但整体沿一个从右向左移动的波前依次点亮（仿参考视频）
-            var sweepX = cols - 1;
-            var band = Math.max(2, Math.round(cols * 0.15));
-            shimmerTimer = setInterval(function () {
-                if (!canvas.isConnected) { stopShimmer(); return; }
-                // 随机改写少量格子的色阶，形成填满后的闪烁感（位置集中在波前附近）
-                var twinkles = Math.max(1, Math.round(cols * rows * 0.025));
-                for (var n = 0; n < twinkles; n++) {
-                    var x = sweepX + ((Math.random() * band) | 0);
-                    if (x >= cols) x = cols - 1;
-                    var y = (Math.random() * rows) | 0;
-                    var i = y * cols + x;
-                    tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
-                }
-                draw();
-                sweepX -= Math.max(1, Math.round(cols * 0.12));
-                if (sweepX < 0) sweepX = cols - 1;
-            }, SHARE_PIXEL_SHIMMER_MS);
-        }
-
-        function cancelAnimation() {
-            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        }
-
-        function animateTo(target, done) {
-            cancelAnimation();
-            var from = progress;
-            var distance = Math.abs(target - from);
-            if (distance <= 0) { if (done) done(); return; }
-            var duration = SHARE_PIXEL_FILL_MS * distance;
-            var startTime = null;
-            function frame(now) {
-                if (!canvas.isConnected) { rafId = null; return; }
-                if (startTime === null) startTime = now;
-                var t = Math.min(1, (now - startTime) / duration);
-                progress = from + (target - from) * t;
-                draw();
-                if (t < 1) {
-                    rafId = requestAnimationFrame(frame);
-                } else {
-                    rafId = null;
-                    if (done) done();
-                }
-            }
-            rafId = requestAnimationFrame(frame);
         }
 
         return {
             activate: function (instant) {
-                resize();
-                stopShimmer();
-                if (instant) {
-                    cancelAnimation();
-                    progress = 1;
-                    draw();
-                    startShimmer();
-                } else {
-                    animateTo(1, startShimmer);
+                stopSparkles();
+                setActiveClass(true, instant);
+                if (!instant && !prefersReducedMotion()) {
+                    sparkleStartTimer = setTimeout(startSparkles, SHARE_WAVE_FILL_MS);
                 }
             },
-            deactivate: function (instant, done) {
-                stopShimmer();
-                if (instant) {
-                    cancelAnimation();
-                    progress = 0;
-                    draw();
-                    if (done) done();
-                } else {
-                    animateTo(0, done);
-                }
+            deactivate: function (instant) {
+                stopSparkles();
+                setActiveClass(false, instant);
             },
-            // 已处于开启状态时再次点击：从头重播一次开启扫过动画
-            replay: function () {
-                resize();
-                stopShimmer();
-                progress = 0;
-                draw();
-                animateTo(1, startShimmer);
-            }
+            cleanup: stopSparkles
         };
     }
 
+    function pruneShareToggleButtons() {
+        var connectedButtons = [];
+        shareToggleButtonRegistry.forEach(function (btn) {
+            if (btn.isConnected) {
+                connectedButtons.push(btn);
+            } else if (typeof btn._nekoShareFxCleanup === 'function') {
+                btn._nekoShareFxCleanup();
+            }
+        });
+        shareToggleButtonRegistry = connectedButtons;
+    }
+
     function syncShareToggleButtons(instant) {
-        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        pruneShareToggleButtons();
         var active = isScreenShareActive();
         shareToggleButtonRegistry.forEach(function (btn) {
             if (typeof btn._nekoSetShareActive === 'function') btn._nekoSetShareActive(active, !!instant);
@@ -401,46 +355,44 @@
         button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
         button.setAttribute('role', 'button');
         button.setAttribute('tabindex', '0');
+        button.setAttribute('aria-busy', 'false');
         button.dataset.nekoScreenShareAction = 'toggle';
 
-        var fill = document.createElement('canvas');
-        fill.className = 'neko-share-toggle-fill';
-        fill.setAttribute('aria-hidden', 'true');
-
-        var goal = document.createElement('span');
-        goal.className = 'neko-share-toggle-goal';
-        goal.setAttribute('aria-hidden', 'true');
+        var wave = document.createElement('span');
+        wave.className = 'neko-share-toggle-wave';
+        wave.setAttribute('aria-hidden', 'true');
 
         var label = document.createElement('span');
         label.className = 'neko-share-toggle-label';
+
+        var sparkles = createShareSparkleLayer();
 
         var knob = document.createElement('span');
         knob.className = 'neko-share-toggle-knob';
         knob.setAttribute('aria-hidden', 'true');
 
-        button.appendChild(fill);
-        button.appendChild(goal);
+        button.appendChild(wave);
         button.appendChild(label);
+        button.appendChild(sparkles);
         button.appendChild(knob);
 
         function shareLabel() { return window.t ? window.t('buttons.screenShare') : 'Screen Share'; }
         function stopLabel() { return window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing'; }
 
-        var pixelFx = createSharePixelFx(fill);
+        var waveFx = createShareWaveFx(button);
+        button._nekoShareFxCleanup = waveFx.cleanup;
         button._nekoSetShareActive = function (active, instant) {
-            label.textContent = active ? stopLabel() : shareLabel();
+            var accessibleLabel = active ? stopLabel() : shareLabel();
+            label.textContent = accessibleLabel;
+            button.title = accessibleLabel;
+            button.setAttribute('aria-label', accessibleLabel);
             button.setAttribute('aria-pressed', active ? 'true' : 'false');
             if (button._nekoShareActive === active) return;
             button._nekoShareActive = active;
             if (active) {
-                button.classList.add('is-active');
-                pixelFx.activate(!!instant);
+                waveFx.activate(!!instant);
             } else {
-                // 反向溶解期间保持画布可见，结束后再隐藏
-                pixelFx.deactivate(!!instant, function () {
-                    if (!button._nekoShareActive) button.classList.remove('is-active');
-                });
-                if (instant) button.classList.remove('is-active');
+                waveFx.deactivate(!!instant);
             }
         };
 
@@ -449,12 +401,9 @@
             if (button._nekoShareBusy) return;
             var active = isScreenShareActive();
             console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
-            if (active) {
-                // 开启状态下每次点击都重播一次开启时的像素扫过动画
-                pixelFx.replay();
-            }
             button._nekoShareBusy = true;
             button.classList.add('is-busy');
+            button.setAttribute('aria-busy', 'true');
             try {
                 if (active && typeof window.stopScreenSharing === 'function') {
                     await window.stopScreenSharing();
@@ -478,6 +427,7 @@
             } finally {
                 button._nekoShareBusy = false;
                 button.classList.remove('is-busy');
+                button.setAttribute('aria-busy', 'false');
                 syncShareToggleButtons(false);
             }
         }
@@ -490,7 +440,7 @@
             }
         });
 
-        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        pruneShareToggleButtons();
         shareToggleButtonRegistry.push(button);
         // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
         button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());
@@ -3129,13 +3079,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 var titleWrap = document.createElement('div');
                 Object.assign(titleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0', color: '#4f8cff', fontSize: '13px', fontWeight: '600' });
-                var icon = document.createElement('span');
-                icon.textContent = iconText;
-                icon.style.fontSize = '14px';
                 var titleEl = document.createElement('span');
                 titleEl.textContent = title;
                 Object.assign(titleEl.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-                titleWrap.appendChild(icon);
+                if (iconText) {
+                    var icon = document.createElement('span');
+                    icon.textContent = iconText;
+                    icon.style.fontSize = '14px';
+                    titleWrap.appendChild(icon);
+                }
                 titleWrap.appendChild(titleEl);
 
                 var closeBtn = document.createElement('button');
@@ -3203,10 +3155,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     textAlign: 'left',
                     transition: 'background 0.2s ease'
                 });
-                var icon = document.createElement('span');
-                icon.textContent = iconText;
-                icon.style.fontSize = '15px';
                 var textWrap = document.createElement('span');
+                textWrap.className = 'neko-mic-action-text';
                 Object.assign(textWrap.style, { display: 'flex', flexDirection: 'column', minWidth: '0', width: '0', maxWidth: '100%', flex: '1 1 0%', overflow: 'hidden' });
                 var labelEl = document.createElement('span');
                 labelEl.textContent = label;
@@ -3226,7 +3176,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
                 textWrap.appendChild(labelEl);
                 if (subLabel) textWrap.appendChild(subEl);
-                button.appendChild(icon);
+                if (iconText) {
+                    var icon = document.createElement('span');
+                    icon.textContent = iconText;
+                    icon.style.fontSize = '15px';
+                    button.appendChild(icon);
+                }
                 button.appendChild(textWrap);
                 button.appendChild(arrow);
 
@@ -3281,7 +3236,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             async function openMicDeviceSubwindow() {
                 var panel = createMicSubwindow(
                     window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',
-                    '\uD83C\uDFA4',
+                    null,
                     '280px'
                 );
                 panel.classList.add('neko-mic-device-subwindow');
@@ -3328,7 +3283,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             async function openScreenSourceSubwindow() {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
-                    '\uD83D\uDDA5\uFE0F',
+                    null,
                     '360px'
                 );
                 var panelBody = panel._nekoMicSubwindowBody || panel;
@@ -3365,7 +3320,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return !!(toggle && toggle.matches(':hover'));
             }
             var screenActionButton = createMainActionButton(
-                '\uD83D\uDDA5\uFE0F',
+                null,
                 screenButtonLabel,
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
@@ -3380,14 +3335,14 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
-            var screenTextWrap = screenActionButton.children[1];
+            var screenTextWrap = screenActionButton.querySelector('.neko-mic-action-text');
             if (screenTextWrap && screenTextWrap.firstChild) {
                 screenTextWrap.firstChild.style.whiteSpace = 'normal';
                 screenTextWrap.firstChild.style.lineHeight = '1.2';
                 screenTextWrap.firstChild.style.overflow = 'visible';
             }
             var micActionButton = createMainActionButton(
-                '\uD83C\uDFA4',
+                null,
                 deviceButtonLabel,
                 currentMicLabel,
                 'device',

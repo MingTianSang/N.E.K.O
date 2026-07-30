@@ -474,10 +474,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
-            const muteData = this.createMicMuteButton(btnWrapper);
-            // 监听麦克风切换事件以更新静音按钮可见性
+            const quickControls = this.createVoiceSessionQuickControls(btnWrapper);
+            const muteData = quickControls && quickControls.mute;
+            // 监听麦克风切换事件以更新静音按钮可见性；屏幕分享快捷按钮在共享工厂中自行同步。
             const micToggleHandler = (e) => {
                 if (muteData && muteData.updateVisibility) {
                     muteData.updateVisibility(e.detail.active);
