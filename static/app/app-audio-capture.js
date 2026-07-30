@@ -396,20 +396,53 @@
             }
         };
 
+        var shareToggleOperationGeneration = 0;
+
+        function setShareToggleBusy(busy) {
+            button._nekoShareBusy = busy;
+            if (busy) {
+                button.classList.add('is-busy');
+                button.setAttribute('aria-busy', 'true');
+            } else {
+                button.classList.remove('is-busy');
+                button.setAttribute('aria-busy', 'false');
+            }
+        }
+
+        function finishShareToggleOperation(generation) {
+            // A cancelled browser picker can settle after a replacement start.
+            // Its old finally must not clear the replacement operation's state.
+            if (shareToggleOperationGeneration !== generation) return;
+            setShareToggleBusy(false);
+            syncShareToggleButtons(false);
+        }
+
         async function handleToggleClick(event) {
             event.stopPropagation();
             var startPending = typeof window.isScreenSharingStartPending === 'function'
                 && window.isScreenSharingStartPending();
             if (startPending && typeof window.stopScreenSharing === 'function') {
-                await window.stopScreenSharing();
+                if (button._nekoShareCancelBusy) return;
+                var cancelGeneration = ++shareToggleOperationGeneration;
+                button._nekoShareCancelBusy = true;
+                setShareToggleBusy(true);
+                try {
+                    await window.stopScreenSharing();
+                } catch (e) {
+                    console.warn('[屏幕共享开关] 取消待处理启动失败:', e);
+                } finally {
+                    if (shareToggleOperationGeneration === cancelGeneration) {
+                        button._nekoShareCancelBusy = false;
+                    }
+                    finishShareToggleOperation(cancelGeneration);
+                }
                 return;
             }
             if (button._nekoShareBusy) return;
             var active = isScreenShareActive();
             console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
-            button._nekoShareBusy = true;
-            button.classList.add('is-busy');
-            button.setAttribute('aria-busy', 'true');
+            var operationGeneration = ++shareToggleOperationGeneration;
+            setShareToggleBusy(true);
             try {
                 if (active && typeof window.stopScreenSharing === 'function') {
                     await window.stopScreenSharing();
@@ -431,10 +464,7 @@
                     await window.startScreenSharing();
                 }
             } finally {
-                button._nekoShareBusy = false;
-                button.classList.remove('is-busy');
-                button.setAttribute('aria-busy', 'false');
-                syncShareToggleButtons(false);
+                finishShareToggleOperation(operationGeneration);
             }
         }
 

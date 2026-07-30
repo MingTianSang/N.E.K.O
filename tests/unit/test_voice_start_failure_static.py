@@ -410,6 +410,7 @@ def test_screen_share_start_is_single_flight_across_ui_entry_points():
     source = _read(APP_SCREEN_PATH)
     wrapper = "async " + _js_function_block(source, "startScreenSharing")
     pending_check = _js_function_block(source, "isScreenSharingStartPending")
+    cancel_start = _js_function_block(source, "cancelPendingScreenSharingStart")
     assert "var screenSharingStartAttempt = null;" in source
 
     node_harness = f"""
@@ -418,12 +419,18 @@ const S = {{ screenCaptureStream: null }};
 let screenSharingStartAttempt = null;
 let startCalls = 0;
 let releaseStart;
+let discardCalls = 0;
+function discardCancelledScreenSharingStart(attempt) {{
+  discardCalls += 1;
+  return attempt.cancelled;
+}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
   return attempt.cancelled ? 'cancelled' : 'started';
 }}
 {pending_check}
+{cancel_start}
 {wrapper}
 
 async function run() {{
@@ -436,17 +443,37 @@ async function run() {{
   assert.deepStrictEqual(await Promise.all([first, second]), ['started', 'started']);
   assert.strictEqual(isScreenSharingStartPending(), false, 'the attempt must clear after settling');
 
-  let releaseRestart;
+  let releaseCancelled;
   startScreenSharingOnce = async function (attempt) {{
     startCalls += 1;
-    await new Promise((resolve) => {{ releaseRestart = resolve; }});
-    return attempt.cancelled ? 'cancelled' : 'restarted';
+    await new Promise((resolve) => {{ releaseCancelled = resolve; }});
+    return attempt.cancelled ? 'cancelled' : 'unexpected';
   }};
-  const third = startScreenSharing();
+  const cancelledStart = startScreenSharing();
   await Promise.resolve();
   assert.strictEqual(startCalls, 2, 'the guard must clear after the first attempt settles');
-  releaseRestart();
-  assert.strictEqual(await third, 'restarted');
+  assert.strictEqual(cancelPendingScreenSharingStart(), true);
+  assert.strictEqual(discardCalls, 1, 'cancellation must immediately clean any already-acquired stream');
+  assert.strictEqual(isScreenSharingStartPending(), false, 'a cancelled chooser must stop blocking retries immediately');
+
+  let releaseReplacement;
+  startScreenSharingOnce = async function (attempt) {{
+    startCalls += 1;
+    await new Promise((resolve) => {{ releaseReplacement = resolve; }});
+    return attempt.cancelled ? 'cancelled' : 'restarted';
+  }};
+  const replacement = startScreenSharing();
+  await Promise.resolve();
+  assert.strictEqual(startCalls, 3, 'a replacement start must not reuse the cancelled chooser');
+  assert.strictEqual(isScreenSharingStartPending(), true);
+
+  releaseCancelled();
+  assert.strictEqual(await cancelledStart, 'cancelled');
+  assert.strictEqual(isScreenSharingStartPending(), true, 'the old finally must not clear the replacement attempt');
+
+  releaseReplacement();
+  assert.strictEqual(await replacement, 'restarted');
+  assert.strictEqual(isScreenSharingStartPending(), false);
 }}
 
 run().catch((error) => {{
@@ -484,10 +511,13 @@ def test_pending_screen_share_cancellation_releases_the_late_stream():
     node_harness = f"""
 const assert = require('assert');
 const window = {{ t: (key) => key }};
+const safeT = (key, fallback) => fallback;
+const idleTimer = setTimeout(() => {{}}, 1000);
+idleTimer.unref();
 const S = {{
   screenCaptureStream: null,
   screenCaptureStreamLastUsed: 123,
-  screenCaptureStreamIdleTimer: setTimeout(() => {{}}, 10000),
+  screenCaptureStreamIdleTimer: idleTimer,
 }};
 {remember_stream}
 {discard_start}
@@ -536,6 +566,19 @@ S.screenCaptureStream = cachedStream;
 assert.strictEqual(discardCancelledScreenSharingStart(cachedAttempt), true);
 assert.strictEqual(cachedTrack.stopCalls, 0, 'cancellation must preserve a pre-existing cached stream');
 assert.strictEqual(S.screenCaptureStream, cachedStream);
+
+const throwingTrack = {{ onended: () => {{}}, stop() {{ throw new Error('stop failed'); }} }};
+const throwingStream = {{
+  getVideoTracks: () => [throwingTrack],
+  getTracks: () => [throwingTrack],
+}};
+const throwingAttempt = {{ cancelled: true, initialStream: null, acquiredStream: throwingStream }};
+S.screenCaptureStream = throwingStream;
+S.screenCaptureStreamLastUsed = 456;
+assert.strictEqual(discardCancelledScreenSharingStart(throwingAttempt), true);
+assert.strictEqual(S.screenCaptureStream, null, 'track stop errors must not prevent rollback');
+assert.strictEqual(S.screenCaptureStreamLastUsed, null);
+assert.strictEqual(throwingAttempt.acquiredStream, null);
 """
     result = run_node_stdin(
         node_executable,
@@ -551,6 +594,77 @@ assert.strictEqual(S.screenCaptureStream, cachedStream);
         )
 
 
+def test_stale_screen_video_play_cannot_replace_the_new_sender():
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+
+    source = _read(APP_SCREEN_PATH)
+    start_streaming = _js_function_block(source, "startScreenVideoStreaming")
+
+    node_harness = f"""
+const assert = require('assert');
+let nativeCaptureGeneration = 4;
+let releasePlay;
+let intervalCreations = 0;
+const video = {{
+  videoWidth: 0,
+  videoHeight: 0,
+  play: () => new Promise((resolve) => {{ releasePlay = resolve; }}),
+}};
+const document = {{ createElement: () => video }};
+const oldTrack = {{}};
+const oldStream = {{ getVideoTracks: () => [oldTrack] }};
+const replacementStream = {{ getVideoTracks: () => [{{}}] }};
+const S = {{
+  screenCaptureStream: oldStream,
+  screenCaptureStreamLastUsed: null,
+  screenCaptureStreamIdleTimer: null,
+  videoTrack: null,
+  videoSenderInterval: null,
+  socket: null,
+}};
+const C = {{ MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 }};
+const WebSocket = {{ OPEN: 1 }};
+function scheduleScreenCaptureIdleCheck() {{}}
+async function stopLiveVisionStreamIfBlocked() {{ return false; }}
+function captureCanvasFrame() {{ throw new Error('stale stream must not capture'); }}
+function buildStreamDataMessage() {{ throw new Error('stale stream must not send'); }}
+function setInterval() {{ intervalCreations += 1; return {{ id: intervalCreations }}; }}
+function clearInterval() {{}}
+{start_streaming}
+
+async function run() {{
+  startScreenVideoStreaming(oldStream, 'screen');
+  S.screenCaptureStream = replacementStream;
+  nativeCaptureGeneration += 1;
+  releasePlay();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(intervalCreations, 0, 'a stale video.play continuation must not create a sender');
+  assert.strictEqual(S.videoSenderInterval, null);
+  assert.strictEqual(S.screenCaptureStream, replacementStream);
+}}
+
+run().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "Node stale screen-video continuation scenario failed:\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+
 def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     screen_source = _read(APP_SCREEN_PATH)
     common_ui_source = _read(COMMON_UI_PATH)
@@ -560,7 +674,7 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     switch = screen_source.split(
         "window.switchScreenSharing = async function () {", 1
     )[1].split("\n    };", 1)[0]
-    assert "screenSharingStartAttempt.cancelled = true;" in stop
+    assert "cancelPendingScreenSharingStart();" in stop
     assert "if (isScreenSharingStartPending())" in switch
 
     toggle = common_ui_source.split(
@@ -574,13 +688,24 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     assert inner_toggle.index("if (startPending") < inner_toggle.index(
         "if (button._nekoShareBusy) return;"
     )
+    assert "if (button._nekoShareCancelBusy) return;" in inner_toggle
+    assert "finishShareToggleOperation(cancelGeneration);" in inner_toggle
     assert "await window.stopScreenSharing();" in inner_toggle
+    assert "取消待处理启动失败" in inner_toggle
 
     start_once = "async " + _js_function_block(
         screen_source, "startScreenSharingOnce"
     )
     assert "rememberScreenSharingAttemptStream(attempt" in start_once
     assert "var captureStream = attempt.initialStream;" in start_once
+    assert "startScreenVideoStreaming(captureStream, streamInputType);" in start_once
+    assert "captureStream.getVideoTracks()[0].onended" in start_once
+    onended = start_once.index("captureStream.getVideoTracks()[0].onended")
+    stale_guard = start_once.index(
+        "if (S.screenCaptureStream !== captureStream)", onended
+    )
+    onended_stop = start_once.index("stopScreening();", onended)
+    assert stale_guard < onended_stop
     activate = start_once.index("screenButton().classList.add('active')")
     activation_guard = start_once.rfind(
         "discardCancelledScreenSharingStart(attempt)", 0, activate

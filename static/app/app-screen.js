@@ -780,8 +780,15 @@
 
     // ======================== startScreenVideoStreaming ========================
     function startScreenVideoStreaming(stream, input_type) {
+        var generation = nativeCaptureGeneration;
+
+        function isCurrentStream() {
+            return generation === nativeCaptureGeneration
+                && stream === S.screenCaptureStream;
+        }
+
         // 更新最后使用时间并调度闲置检查
-        if (stream === S.screenCaptureStream) {
+        if (isCurrentStream()) {
             S.screenCaptureStreamLastUsed = Date.now();
             scheduleScreenCaptureIdleCheck();
         }
@@ -795,9 +802,11 @@
 
         // 定时抓取当前帧并编码为jpeg（使用统一的 captureCanvasFrame）
         video.play().then(async function () {
+            if (!isCurrentStream()) return;
             if (await stopLiveVisionStreamIfBlocked(input_type)) {
                 return;
             }
+            if (!isCurrentStream()) return;
             if (video.videoWidth && video.videoHeight) {
                 var vw = video.videoWidth, vh = video.videoHeight;
                 if (vw > C.MAX_SCREENSHOT_WIDTH || vh > C.MAX_SCREENSHOT_HEIGHT) {
@@ -806,20 +815,33 @@
                 }
             }
 
-            S.videoSenderInterval = setInterval(async function () {
+            var senderInterval = setInterval(async function () {
+                if (!isCurrentStream()) {
+                    clearInterval(senderInterval);
+                    if (S.videoSenderInterval === senderInterval) {
+                        S.videoSenderInterval = null;
+                    }
+                    return;
+                }
                 if (await stopLiveVisionStreamIfBlocked(input_type)) {
                     return;
                 }
+                if (!isCurrentStream()) return;
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
-                    if (stream === S.screenCaptureStream) {
+                    if (isCurrentStream()) {
                         S.screenCaptureStreamLastUsed = Date.now();
                     }
                 }
             }, 1000);
+            if (!isCurrentStream()) {
+                clearInterval(senderInterval);
+                return;
+            }
+            S.videoSenderInterval = senderInterval;
         }); // 每1000ms一帧
     }
     mod.startScreenVideoStreaming = startScreenVideoStreaming;
@@ -978,9 +1000,26 @@
     var screenSharingStartAttempt = null;
 
     function isScreenSharingStartPending() {
-        return !!screenSharingStartAttempt;
+        return !!screenSharingStartAttempt && !screenSharingStartAttempt.cancelled;
     }
     mod.isScreenSharingStartPending = isScreenSharingStartPending;
+
+    function cancelPendingScreenSharingStart() {
+        var attempt = screenSharingStartAttempt;
+        if (!attempt) return false;
+
+        attempt.cancelled = true;
+        // If acquisition already completed but activation is still awaiting a
+        // guard, release that attempt's stream before another start can reuse it.
+        discardCancelledScreenSharingStart(attempt);
+        // Detach immediately so the user can retry without waiting for an
+        // already-open browser chooser that JavaScript cannot dismiss.
+        if (screenSharingStartAttempt === attempt) {
+            screenSharingStartAttempt = null;
+        }
+        return true;
+    }
+    mod.cancelPendingScreenSharingStart = cancelPendingScreenSharingStart;
 
     function rememberScreenSharingAttemptStream(attempt, stream) {
         if (attempt && stream && stream !== attempt.initialStream) {
@@ -1025,8 +1064,13 @@
     }
 
     async function startScreenSharing() {
-        if (screenSharingStartAttempt) {
+        if (isScreenSharingStartPending()) {
             return screenSharingStartAttempt.promise;
+        }
+        // Defensive cleanup for attempts created before immediate detaching was
+        // introduced. Their own finally/cleanup still retains the attempt object.
+        if (screenSharingStartAttempt && screenSharingStartAttempt.cancelled) {
+            screenSharingStartAttempt = null;
         }
 
         var attempt = {
@@ -1187,6 +1231,7 @@
                                             }
                                         }
                                     }));
+                                    if (discardCancelledScreenSharingStart(attempt)) return;
                                     S.selectedScreenSourceId = fallbackSources[0].id;
                                     try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
                                     pushSelectedSourceToMain(fallbackSources[0].id);
@@ -1209,6 +1254,7 @@
                                         video: { cursor: 'always', frameRate: 1 },
                                         audio: false,
                                     }));
+                                    if (discardCancelledScreenSharingStart(attempt)) return;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
                                     pushSelectedSourceToMain(null);
@@ -1256,10 +1302,7 @@
                     nativeCapture.sourceId,
                     'screen'
                 );
-                if (discardCancelledScreenSharingStart(attempt)) {
-                    stopScreening();
-                    return;
-                }
+                if (discardCancelledScreenSharingStart(attempt)) return;
                 if (!nativeStreamStarted) {
                     return;
                 }
@@ -1267,33 +1310,48 @@
                 // 用户手势成功获取了流，重置自动弹窗失败标记
                 S.screenCaptureAutoPromptFailed = false;
                 // 正常流模式
-                S.screenCaptureStreamLastUsed = Date.now();
-                scheduleScreenCaptureIdleCheck();
+                if (S.screenCaptureStream === captureStream) {
+                    S.screenCaptureStreamLastUsed = Date.now();
+                    scheduleScreenCaptureIdleCheck();
+                }
 
                 var streamInputType = isMobile() ? 'camera' : 'screen';
                 if (await stopLiveVisionStreamIfBlocked(streamInputType)) {
                     return;
                 }
                 if (discardCancelledScreenSharingStart(attempt)) return;
-                startScreenVideoStreaming(S.screenCaptureStream, streamInputType);
+                if (S.screenCaptureStream !== captureStream) return;
+                startScreenVideoStreaming(captureStream, streamInputType);
 
                 // 当用户停止共享屏幕时
-                S.screenCaptureStream.getVideoTracks()[0].onended = function () {
+                captureStream.getVideoTracks()[0].onended = function () {
+                    if (S.screenCaptureStream !== captureStream) {
+                        if (typeof captureStream.getTracks === 'function') {
+                            captureStream.getTracks().forEach(function (track) {
+                                try { track.stop(); } catch (e) { }
+                            });
+                        }
+                        return;
+                    }
+
                     stopScreening();
                     screenButton().classList.remove('active');
                     syncFloatingScreenButtonState(false);
 
-                    if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
-                        S.screenCaptureStream.getTracks().forEach(function (track) {
+                    if (typeof captureStream.getTracks === 'function') {
+                        captureStream.getTracks().forEach(function (track) {
                             try { track.stop(); } catch (e) { }
                         });
                     }
-                    S.screenCaptureStream = null;
-                    S.screenCaptureStreamLastUsed = null;
 
-                    if (S.screenCaptureStreamIdleTimer) {
-                        clearTimeout(S.screenCaptureStreamIdleTimer);
-                        S.screenCaptureStreamIdleTimer = null;
+                    if (S.screenCaptureStream === captureStream) {
+                        S.screenCaptureStream = null;
+                        S.screenCaptureStreamLastUsed = null;
+
+                        if (S.screenCaptureStreamIdleTimer) {
+                            clearTimeout(S.screenCaptureStreamIdleTimer);
+                            S.screenCaptureStreamIdleTimer = null;
+                        }
                     }
                 };
             } else {
@@ -1335,10 +1393,7 @@
                 }, 1000);
             }
 
-            if (discardCancelledScreenSharingStart(attempt)) {
-                stopScreening();
-                return;
-            }
+            if (discardCancelledScreenSharingStart(attempt)) return;
 
             micButton().disabled = true;
             muteButton().disabled = false;
@@ -1403,9 +1458,7 @@
      * @param {boolean} forceRelease - 是否强制释放流。false时若主动视觉仍活跃则保留缓存流。
      */
     async function stopScreenSharing(forceRelease) {
-        if (screenSharingStartAttempt) {
-            screenSharingStartAttempt.cancelled = true;
-        }
+        cancelPendingScreenSharingStart();
         stopScreening();
 
         // 判断主动视觉是否活跃
