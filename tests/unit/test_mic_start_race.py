@@ -936,8 +936,39 @@ async function selectedMicrophoneReadFailureFallsBackCase() {
          'a selected-device read failure may recover through the system default');
   assert(env.getUserMediaCalls.length === 2,
          'an unreadable selected device must make exactly one default fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the read-failure fallback must omit deviceId and use the system default');
   assert(env.S.selectedMicrophoneId === null,
          'a successful read-failure fallback must commit the system default selection');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful read-failure fallback must clear the persisted selection');
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast && fallbackToast[2] && fallbackToast[2].important === true,
+         'a successful read-failure fallback must show the important fallback notice');
+}
+
+async function selectedMicrophoneConstraintFailureFallsBackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'incompatible-device';
+  const selectedError = new Error('selected microphone cannot satisfy constraints');
+  selectedError.name = 'OverconstrainedError';
+  env.failNextGetUserMedia(selectedError);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === true,
+         'a selected-device constraint failure may recover through the system default');
+  assert(env.getUserMediaCalls.length === 2,
+         'a constraint failure must make exactly one default fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the constraint-failure fallback must omit deviceId and use the system default');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful constraint fallback must commit the system default selection');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful constraint fallback must clear the persisted selection');
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast && fallbackToast[2] && fallbackToast[2].important === true,
+         'a successful constraint fallback must show the important fallback notice');
 }
 
 async function nonDeviceMicrophoneErrorDoesNotFallbackCase() {
@@ -1104,6 +1135,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
   await selectedMicrophoneReadFailureFallsBackCase();
+  await selectedMicrophoneConstraintFailureFallsBackCase();
   await nonDeviceMicrophoneErrorDoesNotFallbackCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();
   await fallbackOwnershipChangeCase();
