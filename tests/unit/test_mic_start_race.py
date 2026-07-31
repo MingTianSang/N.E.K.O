@@ -846,6 +846,8 @@ async function rapidDeviceSwitchBackRetriesFinalSelectionCase() {
          'the cancelled switch-back attempt must target the initial device A selection');
   assert(env.getUserMediaCalls[2].audio.deviceId.exact === 'first-device',
          'the retry must reopen the final device A selection');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the original microphone must be stopped when the switch-back begins');
   assert(env.streams[1].getTracks()[0].stopped === true,
          'the superseded switch-back attempt must stop its own microphone');
   assert(env.S.stream === env.streams[env.streams.length - 1],
@@ -919,6 +921,49 @@ async function selectedAndDefaultMicrophoneFailureCase() {
          'the success fallback toast must not appear when the default device also fails');
   assert(env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
          'the existing microphone error must be shown when the default device also fails');
+}
+
+async function selectedMicrophoneReadFailureFallsBackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'unreadable-device';
+  const selectedError = new Error('selected microphone cannot start');
+  selectedError.name = 'NotReadableError';
+  env.failNextGetUserMedia(selectedError);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === true,
+         'a selected-device read failure may recover through the system default');
+  assert(env.getUserMediaCalls.length === 2,
+         'an unreadable selected device must make exactly one default fallback attempt');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful read-failure fallback must commit the system default selection');
+}
+
+async function nonDeviceMicrophoneErrorDoesNotFallbackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'selected-device';
+  const permissionError = new Error('microphone permission denied');
+  permissionError.name = 'NotAllowedError';
+  env.failNextGetUserMedia(permissionError);
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown === permissionError,
+         'a permission error must be propagated without changing its identity');
+  assert(env.getUserMediaCalls.length === 1,
+         'a permission error must not trigger a system-default device request');
+  assert(env.S.selectedMicrophoneId === 'selected-device',
+         'a non-device error must preserve the selected microphone');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a non-device error must preserve the persisted selection');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a non-device error must not show the successful fallback notice');
 }
 
 async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
@@ -1058,6 +1103,8 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await rapidDeviceSwitchBackRetriesFinalSelectionCase();
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
+  await selectedMicrophoneReadFailureFallsBackCase();
+  await nonDeviceMicrophoneErrorDoesNotFallbackCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();
   await fallbackOwnershipChangeCase();
   await fallbackTokenInvalidationCase();

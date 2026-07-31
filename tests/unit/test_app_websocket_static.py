@@ -5850,11 +5850,13 @@ def test_microphone_switch_requires_a_live_committed_replacement():
     assert retry_marker in select_fn
     assert select_fn.index(await_marker) < select_fn.index(success_marker)
     assert select_fn.index(success_marker) < select_fn.index(retry_marker)
+    retry_condition = select_fn.split(retry_marker, 1)[1].split(");", 1)[0]
     assert (
-        "microphoneSelectionGeneration !== selectionGenerationForRestart" in select_fn
+        "microphoneSelectionGeneration !== selectionGenerationForRestart"
+        in retry_condition
     )
-    assert "micStartGeneration === expectedRestartGeneration" in select_fn
-    assert "S.voiceInputRouteBlocked !== true" in select_fn
+    assert "micStartGeneration === expectedRestartGeneration" in retry_condition
+    assert "S.voiceInputRouteBlocked !== true" in retry_condition
     assert select_fn.index(retry_marker) < select_fn.index(
         "await window.startScreenSharing();"
     )

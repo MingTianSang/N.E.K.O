@@ -1745,6 +1745,15 @@
         throw error;
     }
 
+    function isSelectedMicrophoneFallbackEligibleError(error) {
+        const errorName = error && error.name;
+        return (
+            errorName === 'NotFoundError'
+            || errorName === 'OverconstrainedError'
+            || errorName === 'NotReadableError'
+        );
+    }
+
     function applySystemDefaultMicrophoneSelection() {
         setSelectedMicrophoneId(null);
         updateMicListSelection();
@@ -1831,6 +1840,14 @@
                 || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
             ) {
                 return cancelledOpenResult();
+            }
+
+            // Permission, security-context, abort and programming errors apply
+            // to the capture request itself, not just the selected device.
+            // Retrying those against the default device would prompt/open
+            // unnecessarily and could erase a still-valid saved selection.
+            if (!isSelectedMicrophoneFallbackEligibleError(selectedMicrophoneError)) {
+                throw selectedMicrophoneError;
             }
 
             console.warn(
