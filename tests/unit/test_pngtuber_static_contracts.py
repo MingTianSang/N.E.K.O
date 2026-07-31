@@ -260,6 +260,28 @@ def test_layered_pngtuber_caps_render_resolution_without_changing_logical_coordi
     assert "ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);" in draw_block
 
 
+def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_runtime_canvas():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    snapshot_block = source[
+        source.index("        renderLayeredSnapshotCanvas("):
+        source.index("        drawLayeredState(stateName")
+    ]
+    draw_block = source[
+        source.index("        drawLayeredState(stateName"):
+        source.index("        showTransientImage(")
+    ]
+
+    assert "document.createElement('canvas')" in snapshot_block
+    assert "Number(this.layeredCanvasLogicalWidth)" in snapshot_block
+    assert "Number(this.layeredCanvasLogicalHeight)" in snapshot_block
+    assert "this.drawLayeredState(stateName, timestamp, {" in snapshot_block
+    assert "scaleX: 1" in snapshot_block
+    assert "scaleY: 1" in snapshot_block
+    assert "renderTarget?.canvas || this.canvasElement" in draw_block
+    assert "renderTarget?.scaleX ?? this.layeredCanvasScaleX" in draw_block
+    assert "renderTarget?.scaleY ?? this.layeredCanvasScaleY" in draw_block
+
+
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     attach_block = source[

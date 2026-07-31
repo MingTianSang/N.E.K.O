@@ -2393,13 +2393,32 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+            if (!this.isLayeredActive()) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const drawn = this.drawLayeredState(stateName, timestamp, {
+                canvas,
+                scaleX: 1,
+                scaleY: 1
+            });
+            return drawn ? canvas : null;
+        }
+
+        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now(), renderTarget = null) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
-            const canvas = this.canvasElement;
+            const canvas = renderTarget?.canvas || this.canvasElement;
             const ctx = canvas.getContext('2d');
             if (!ctx) return false;
-            const renderScaleX = Math.max(0.0001, Number(this.layeredCanvasScaleX) || 1);
-            const renderScaleY = Math.max(0.0001, Number(this.layeredCanvasScaleY) || 1);
+            const renderScaleX = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleX ?? this.layeredCanvasScaleX) || 1
+            );
+            const renderScaleY = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleY ?? this.layeredCanvasScaleY) || 1
+            );
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
