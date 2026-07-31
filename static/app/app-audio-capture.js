@@ -1269,7 +1269,7 @@
      * That is deliberate: this whole subsystem is fail-closed, and the only
      * consumer is startMicCapture below (the module export exists for tests).
      */
-    async function startAudioWorklet(mediaStream, startToken) {
+    async function startAudioWorklet(mediaStream, startToken, selectedMicrophoneIdAtStart) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
         // cold device open is slow; the newer attempt hits a warm one and
@@ -1280,7 +1280,11 @@
         // and a microphone that has stopped producing, while the UI still says
         // recording. Nothing has been allocated yet at this point, so bailing
         // costs only this attempt's own device handle.
-        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+        if (
+            startToken !== micStartGeneration
+            || S.voiceInputRouteBlocked === true
+            || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+        ) {
             console.log('[App] microphone start was superseded before opening; unwinding');
             try {
                 if (mediaStream && typeof mediaStream.getTracks === 'function') {
@@ -1533,7 +1537,11 @@
             // stopRecording() early-returned and could not prevent this. Unwind
             // instead of committing: without this the pending start re-claims a
             // lease the backend just revoked and feeds a blocked route.
-            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            if (
+                startToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+                || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+            ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
                 // this attempt built. There is no re-entrancy guard on
@@ -1856,6 +1864,7 @@
             // for the life of the page, and the `S.stream && S.audioContext &&
             // S.workletNode` liveness probes read dead against a live pipeline
             // and open a second microphone on top of it.
+            const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;
             const microphoneOpenResult = await openMicrophoneStreamWithFallback(
                 baseAudioConstraints,
                 micStartToken
@@ -1888,7 +1897,11 @@
                 throw new Error('没有可用的音频轨道');
             }
 
-            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
+            const micStartCommitted = await startAudioWorklet(
+                ownStream,
+                micStartToken,
+                selectedMicrophoneIdAtStart
+            );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave

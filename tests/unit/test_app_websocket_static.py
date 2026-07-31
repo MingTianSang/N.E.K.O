@@ -5834,10 +5834,14 @@ def test_in_flight_microphone_start_is_cancellable():
 
     # ...and the commit is gated on it.
     worklet = _block_after(
-        capture_source, "async function startAudioWorklet(mediaStream, startToken) {"
+        capture_source,
+        "async function startAudioWorklet("
+        "mediaStream, startToken, selectedMicrophoneIdAtStart"
+        ") {",
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
+    assert "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart" in worklet
     # TWO gates on that token, and both are load-bearing. The entry gate stops
     # an attempt that was superseded while still in getUserMedia from running
     # the old-pipeline teardown below it, which would close the WINNER's
@@ -5845,6 +5849,9 @@ def test_in_flight_microphone_start_is_cancellable():
     assert worklet.count("startToken !== micStartGeneration") == 2, (
         "expected an entry gate and a commit gate on the start token"
     )
+    assert worklet.count(
+        "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart"
+    ) == 2, "expected both gates to enforce microphone-selection ownership"
     assert worklet.index("superseded before opening") < worklet.index(
         "await previousContext.close()"
     ), "the entry gate must precede the old-pipeline teardown it protects"
@@ -5873,9 +5880,12 @@ def test_in_flight_microphone_start_is_cancellable():
     # before the token gate, where a loser whose getUserMedia settled last
     # could take the slot and then null it out from under the winner), so the
     # handoff goes through the local binding.
+    assert "const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;" in start_code_only
+    compact_start_code = "".join(start_code_only.split())
     assert (
-        "const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);"
-        in start_code_only
+        "constmicStartCommitted=awaitstartAudioWorklet("
+        "ownStream,micStartToken,selectedMicrophoneIdAtStart);"
+        in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only
     # ...and the bail happens before every success-path side effect.

@@ -863,6 +863,37 @@ async function fallbackTokenInvalidationCase() {
          'a normal token invalidation must remain a benign cancellation');
 }
 
+async function fallbackOwnershipChangeDuringWorkletCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  const release = env.parkAddModule();
+
+  const pending = env.mod.startMicCapture();
+  await settle();
+  assert(env.streams.length === 1,
+         'the default fallback should open before worklet setup is released');
+  assert(env.S.stream === null,
+         'the fallback must stay unpublished while worklet setup is pending');
+
+  env.S.selectedMicrophoneId = 'new-device';
+  release();
+  await pending;
+
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a fallback that loses selection ownership during worklet setup must be torn down');
+  assert(env.S.selectedMicrophoneId === 'new-device',
+         'the newer microphone selection must remain authoritative');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'the stale fallback must not publish after worklet setup');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a stale fallback must not announce a successful device switch');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'losing selection ownership during setup must remain a benign cancellation');
+}
+
 (async () => {
   await raceCase();
   await preWorkletSetupFailureCase();
@@ -880,6 +911,7 @@ async function fallbackTokenInvalidationCase() {
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();
   await fallbackOwnershipChangeCase();
   await fallbackTokenInvalidationCase();
+  await fallbackOwnershipChangeDuringWorkletCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));
