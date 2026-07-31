@@ -770,6 +770,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = (Number.isFinite(vrmFadeOpacity) && vrmFadeOpacity < 1)
                             ? String(vrmFadeOpacity)
                             : (isLockOverlapped ? '0.3' : '');
+                        lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

@@ -194,6 +194,7 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     this._lockIconLastTop = undefined;
     this._lockIconLastTransform = undefined;
     this._lockIconLastOpacity = undefined;
+    this._lockIconLastPointerEvents = undefined;
     this._lockIconLastOverlapScanAt = 0;
     this._lockIconElement = lockIcon;
     this._lockIconImages = {
@@ -311,6 +312,11 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             if (nextOpacity !== this._lockIconLastOpacity) {
                 this._lockIconLastOpacity = nextOpacity;
                 lockIcon.style.opacity = nextOpacity;
+            }
+            const nextPointerEvents = isOverlapped ? 'none' : 'auto';
+            if (nextPointerEvents !== this._lockIconLastPointerEvents) {
+                this._lockIconLastPointerEvents = nextPointerEvents;
+                lockIcon.style.pointerEvents = nextPointerEvents;
             }
         } catch (_) {}
     };

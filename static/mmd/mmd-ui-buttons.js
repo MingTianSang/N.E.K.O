@@ -888,6 +888,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = (Number.isFinite(mmdFadeOpacity) && mmdFadeOpacity < 1)
                             ? String(mmdFadeOpacity)
                             : (isLockOverlapped ? '0.3' : '');
+                        lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

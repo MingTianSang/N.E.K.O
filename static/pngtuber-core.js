@@ -2931,6 +2931,7 @@
             }
             const shouldFade = this.container && this.container.classList.contains('locked-hover-fade');
             lockIcon.style.opacity = shouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
         async resolveCurrentLanlanName() {

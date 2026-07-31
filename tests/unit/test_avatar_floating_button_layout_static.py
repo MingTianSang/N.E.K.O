@@ -108,6 +108,35 @@ def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
     assert "bottom: clampedTop + actualLockIconSize" in lock_icon_block
 
 
+def test_model_lock_icons_ignore_pointer_input_while_avatar_popups_overlap():
+    renderer_contracts = [
+        (
+            "static/live2d/live2d-ui-buttons.js",
+            "lockIcon.style.pointerEvents = nextPointerEvents;",
+        ),
+        (
+            "static/vrm/vrm-ui-buttons.js",
+            "lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';",
+        ),
+        (
+            "static/mmd/mmd-ui-buttons.js",
+            "lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';",
+        ),
+        (
+            "static/pngtuber-core.js",
+            "lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';",
+        ),
+    ]
+
+    for relative_path, pointer_guard in renderer_contracts:
+        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert pointer_guard in source
+
+    live2d_source = (PROJECT_ROOT / renderer_contracts[0][0]).read_text(encoding="utf-8")
+    assert "const nextPointerEvents = isOverlapped ? 'none' : 'auto';" in live2d_source
+    assert "this._lockIconLastPointerEvents = undefined;" in live2d_source
+
+
 def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():
     source = read_js_parts(APP_INTERPAGE_PATH)
     restore_block = _source_slice_between(
