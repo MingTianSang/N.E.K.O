@@ -95,6 +95,16 @@ function loadModule() {
   // Blink caps hardware AudioContexts per document (~6), so `new AudioContext()`
   // genuinely throws in the field once starts have leaked.
   let captureContextThrows = false;
+  let runDeferredTimeouts = false;
+
+  class FakeMediaStream {
+    constructor(id, track) {
+      this.id = id;
+      this.track = track;
+    }
+    getTracks() { return [this.track]; }
+    getAudioTracks() { return [this.track]; }
+  }
 
   function makeStream() {
     const track = {
@@ -105,7 +115,7 @@ function loadModule() {
       label: 'mic',
       stop() { this.stopped = true; this.readyState = 'ended'; },
     };
-    const stream = { id: streams.length + 1, getTracks: () => [track], getAudioTracks: () => [track] };
+    const stream = new FakeMediaStream(streams.length + 1, track);
     streams.push(stream);
     return stream;
   }
@@ -188,7 +198,10 @@ function loadModule() {
     // Every module-scope timer here is a deferred UI/permission side effect
     // (mic permission pre-request, floating list render). Suppressing them
     // keeps the harness to the capture pipeline and lets node exit cleanly.
-    setTimeout: () => 0,
+    setTimeout: (callback) => {
+      if (runDeferredTimeouts) Promise.resolve().then(callback);
+      return 0;
+    },
     clearTimeout: () => {},
     setInterval: () => 0,
     clearInterval: () => {},
@@ -211,7 +224,7 @@ function loadModule() {
         if (at >= 0) this.connected.splice(at, 1);
       }
     },
-    MediaStream: class {},
+    MediaStream: FakeMediaStream,
     WebSocket: { OPEN: 1 },
     CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
     localStorage: {
@@ -323,6 +336,9 @@ function loadModule() {
     },
     invalidateStartOnGetUserMediaCall(callNumber) {
       invalidateOnGetUserMediaCall = callNumber;
+    },
+    enableDeferredTimeouts() {
+      runDeferredTimeouts = true;
     },
     // stopProactiveChatSchedule is the LAST thing on the success path, so this
     // throws only after the pipeline has committed and published.
@@ -754,6 +770,49 @@ async function staleRecordingFlagDoesNotMasqueradeAsWinnerCase() {
          'cancelled replacement capture must restore the mic UI');
 }
 
+async function rapidDeviceSwitchRetriesLatestSelectionCase() {
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the initial microphone must be live');
+
+  env.enableDeferredTimeouts();
+  const releaseFirstSwitchOpen = env.parkGetUserMedia();
+  const firstSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.getUserMediaCalls.length === 2,
+         'the first switch must be opening its replacement device');
+
+  // This call updates and persists the latest selection, then observes the
+  // switch lock and leaves the in-flight owner responsible for the retry.
+  const secondSwitch = env.mod.selectMicrophone('latest-device');
+  await settle();
+  assert(env.S.selectedMicrophoneId === 'latest-device',
+         'the second selection must become authoritative immediately');
+
+  releaseFirstSwitchOpen();
+  await firstSwitch;
+  await secondSwitch;
+
+  assert(env.S.isRecording === true,
+         'the switch owner must restore capture after retrying the latest selection');
+  assert(env.S.selectedMicrophoneId === 'latest-device',
+         'the retry must preserve the latest selected device');
+  assert(env.getUserMediaCalls.length === 3,
+         'one cancelled replacement must be followed by exactly one retry');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'first-device',
+         'the cancelled switch attempt must target the original selection');
+  assert(env.getUserMediaCalls[2].audio.deviceId.exact === 'latest-device',
+         'the retry must open the newest selected microphone');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the switch must stop the previously committed microphone');
+  assert(env.streams[1].getTracks()[0].stopped === true,
+         'the superseded replacement attempt must stop its own microphone');
+  assert(env.S.stream === env.streams[env.streams.length - 1],
+         'the latest retry stream must be the committed pipeline');
+  assert(env.S.stream.getTracks()[0].stopped === false,
+         'the latest selected microphone must remain live');
+}
+
 async function selectedMicrophoneFallbackCase() {
   const env = loadModule();
   env.S.selectedMicrophoneId = 'missing-device';
@@ -954,6 +1013,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await stopRecordingCancelsAnInFlightStartCase();
   await entryTeardownReconcilesIsRecordingCase();
   await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
+  await rapidDeviceSwitchRetriesLatestSelectionCase();
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();

@@ -926,10 +926,27 @@
                 }
 
                 if (wasRecording) {
-                    const microphoneStarted = await startMicCapture();
-                    if (microphoneStarted !== true) {
-                        console.log('[App] microphone switch restart was cancelled before commit');
-                        return;
+                    while (true) {
+                        const selectedMicrophoneIdForRestart = S.selectedMicrophoneId;
+                        // startMicCapture claims the next generation
+                        // synchronously, before its first await. If anything
+                        // else advances the counter, a stop/takeover occurred
+                        // and this switch must not reopen the microphone.
+                        const expectedRestartGeneration = micStartGeneration + 1;
+                        const microphoneStarted = await startMicCapture();
+                        if (microphoneStarted === true) {
+                            break;
+                        }
+                        const latestSelectionNeedsRetry = (
+                            S.selectedMicrophoneId !== selectedMicrophoneIdForRestart
+                            && micStartGeneration === expectedRestartGeneration
+                            && S.voiceInputRouteBlocked !== true
+                        );
+                        if (!latestSelectionNeedsRetry) {
+                            console.log('[App] microphone switch restart was cancelled before commit');
+                            return;
+                        }
+                        console.log('[App] microphone selection changed while opening; retrying the latest device');
                     }
 
                     // 重启屏幕共享（如果之前正在共享）

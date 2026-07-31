@@ -5842,11 +5842,18 @@ def test_microphone_switch_requires_a_live_committed_replacement():
         _block_after(capture_source, "async function selectMicrophone(deviceId) {")
     )
     await_marker = "const microphoneStarted = await startMicCapture();"
-    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "if (microphoneStarted === true) {"
+    retry_marker = "const latestSelectionNeedsRetry = ("
+    assert "while (true) {" in select_fn
     assert await_marker in select_fn
-    assert cancellation_marker in select_fn
-    assert select_fn.index(await_marker) < select_fn.index(cancellation_marker)
-    assert select_fn.index(cancellation_marker) < select_fn.index(
+    assert success_marker in select_fn
+    assert retry_marker in select_fn
+    assert select_fn.index(await_marker) < select_fn.index(success_marker)
+    assert select_fn.index(success_marker) < select_fn.index(retry_marker)
+    assert "S.selectedMicrophoneId !== selectedMicrophoneIdForRestart" in select_fn
+    assert "micStartGeneration === expectedRestartGeneration" in select_fn
+    assert "S.voiceInputRouteBlocked !== true" in select_fn
+    assert select_fn.index(retry_marker) < select_fn.index(
         "await window.startScreenSharing();"
     )
 
