@@ -2364,9 +2364,9 @@
                         return;
                     }
                     var microphoneStarted = await window.startMicCapture();
-                    if (microphoneStarted === false) {
+                    if (microphoneStarted !== true) {
                         var microphoneStartCancelled = new Error(
-                            'Microphone start cancelled after the selected device changed'
+                            'Microphone start cancelled before capture committed'
                         );
                         microphoneStartCancelled.microphoneStartCancelled = true;
                         throw microphoneStartCancelled;

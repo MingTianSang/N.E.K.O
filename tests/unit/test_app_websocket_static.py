@@ -5686,7 +5686,7 @@ def test_blocked_route_refuses_to_open_the_microphone():
     start_fn = capture_source.split("async function startMicCapture() {", 1)[1]
     head = start_fn.split("const _mic = micButton();", 1)[0]
     assert "S.voiceInputRouteBlocked === true" in head
-    assert "return;" in head
+    assert "return false;" in head
 
     # A refused start must unwind the starting-voice UI rather than throw --
     # throwing would replace the accurate ASR toast with a generic failure.

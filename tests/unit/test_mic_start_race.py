@@ -361,7 +361,8 @@ async function raceCase() {
   env.unparkAddModule();
   const second = env.mod.startMicCapture();
   await settle();
-  await second;
+  const secondStarted = await second;
+  assert(secondStarted === true, 'the winning attempt must report capture success');
   assert(env.S.stream === env.streams[1], 'attempt #2 should have published its stream');
   assert(env.S.isRecording === true, 'attempt #2 should have committed');
   assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
@@ -382,7 +383,9 @@ async function raceCase() {
 
   // Only now let the superseded attempt resume and unwind.
   releaseFirst();
-  await first;
+  const firstObservedPipeline = await first;
+  assert(firstObservedPipeline === true,
+         'a superseded attempt must observe and preserve the winning pipeline');
 
   assert(env.streams[0].getTracks()[0].stopped === true,
          'the superseded attempt must stop its OWN stream');
@@ -690,13 +693,15 @@ async function stopRecordingCancelsAnInFlightStartCase() {
 
   env.mod.stopRecording({ notifyServer: false });
   release();
-  await attempt;
+  const started = await attempt;
 
   assert(env.S.isRecording === false,
          'a stop during the open window must cancel the start, not be overwritten by it');
   assert(env.streams[0].getTracks()[0].stopped === true,
          'the cancelled start must release the device it opened');
   assert(env.S.stream === null, 'a cancelled start must not publish its stream');
+  assert(started === false,
+         'stopRecording cancellation must propagate to the outer voice starter');
 }
 
 async function entryTeardownReconcilesIsRecordingCase() {
@@ -820,15 +825,10 @@ async function fallbackOwnershipChangeCase() {
   env.failNextGetUserMedia(selectedError);
   env.changeSelectionOnGetUserMediaCall(2, 'new-device');
 
-  let thrown = null;
-  try {
-    await env.mod.startMicCapture();
-  } catch (error) {
-    thrown = error;
-  }
+  const started = await env.mod.startMicCapture();
 
-  assert(thrown === selectedError,
-         'an ownership change during fallback must reject the stale start');
+  assert(started === false,
+         'an ownership change during fallback must cancel the stale start');
   assert(env.getUserMediaCalls.length === 2,
          'the ownership race should happen after opening the default fallback');
   assert(env.streams.length === 1,
@@ -841,6 +841,8 @@ async function fallbackOwnershipChangeCase() {
          'the stale fallback must never commit as the live capture pipeline');
   assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
          'a stale fallback must not announce a successful device switch');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'an ownership cancellation must not be reported as a device error');
 }
 
 async function fallbackTokenInvalidationCase() {
@@ -851,7 +853,7 @@ async function fallbackTokenInvalidationCase() {
   env.failNextGetUserMedia(selectedError);
   env.invalidateStartOnGetUserMediaCall(2);
 
-  await env.mod.startMicCapture();
+  const started = await env.mod.startMicCapture();
 
   assert(env.streams.length === 1,
          'the invalidation race should happen after the default stream opens');
@@ -863,6 +865,8 @@ async function fallbackTokenInvalidationCase() {
          'a cancelled fallback must leave the saved device selection unchanged');
   assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
          'a normal token invalidation must remain a benign cancellation');
+  assert(started === false,
+         'a token-invalidated fallback must propagate cancellation');
 }
 
 async function fallbackOwnershipChangeDuringWorkletCase() {

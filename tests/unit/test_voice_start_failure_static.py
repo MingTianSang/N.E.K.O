@@ -1098,7 +1098,7 @@ def test_selection_change_cancellation_does_not_publish_voice_start_success():
     start_flow = _mic_button_start_flow(source)
 
     await_marker = "var microphoneStarted = await window.startMicCapture();"
-    cancellation_marker = "if (microphoneStarted === false) {"
+    cancellation_marker = "if (microphoneStarted !== true) {"
     success_marker = "window.dispatchEvent(new CustomEvent('neko:voice-session-started'));"
     assert await_marker in start_flow
     assert cancellation_marker in start_flow

@@ -1716,21 +1716,55 @@
     async function openMicrophoneStreamWithFallback(baseAudioConstraints, micStartToken) {
         const selectedMicrophoneId = S.selectedMicrophoneId;
         const defaultConstraints = { audio: baseAudioConstraints };
+        const startStillOwnsMicrophoneRequest = () => (
+            micStartToken === micStartGeneration
+            && S.voiceInputRouteBlocked !== true
+            && S.selectedMicrophoneId === selectedMicrophoneId
+        );
+        const cancelledOpenResult = () => ({
+            stream: null,
+            fallbackFromMicrophoneId: null,
+            cancelled: true
+        });
+        const requestOwnedMicrophoneStream = async (constraints) => {
+            try {
+                const stream = await requestUsableMicrophoneStream(constraints);
+                if (!startStillOwnsMicrophoneRequest()) {
+                    stopMicrophoneStreamTracks(stream);
+                    return null;
+                }
+                return stream;
+            } catch (error) {
+                if (!startStillOwnsMicrophoneRequest()) {
+                    return null;
+                }
+                throw error;
+            }
+        };
+
         if (!selectedMicrophoneId) {
+            const defaultStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!defaultStream) {
+                return cancelledOpenResult();
+            }
             return {
-                stream: await requestUsableMicrophoneStream(defaultConstraints),
+                stream: defaultStream,
                 fallbackFromMicrophoneId: null
             };
         }
 
         try {
+            const selectedStream = await requestOwnedMicrophoneStream({
+                audio: {
+                    ...baseAudioConstraints,
+                    deviceId: { exact: selectedMicrophoneId }
+                }
+            });
+            if (!selectedStream) {
+                return cancelledOpenResult();
+            }
             return {
-                stream: await requestUsableMicrophoneStream({
-                    audio: {
-                        ...baseAudioConstraints,
-                        deviceId: { exact: selectedMicrophoneId }
-                    }
-                }),
+                stream: selectedStream,
                 fallbackFromMicrophoneId: null
             };
         } catch (selectedMicrophoneError) {
@@ -1741,7 +1775,7 @@
                 || S.voiceInputRouteBlocked === true
                 || S.selectedMicrophoneId !== selectedMicrophoneId
             ) {
-                throw selectedMicrophoneError;
+                return cancelledOpenResult();
             }
 
             console.warn(
@@ -1749,27 +1783,9 @@
                 selectedMicrophoneError
             );
 
-            const fallbackStream = await requestUsableMicrophoneStream(defaultConstraints);
-            if (
-                micStartToken !== micStartGeneration
-                || S.voiceInputRouteBlocked === true
-            ) {
-                // Preserve the existing benign-cancellation path: the entry
-                // gate in startAudioWorklet will observe the stale token/blocked
-                // route and return false without turning a normal teardown into
-                // a user-visible start failure.
-                stopMicrophoneStreamTracks(fallbackStream);
-                return {
-                    stream: fallbackStream,
-                    fallbackFromMicrophoneId: null
-                };
-            }
-            if (S.selectedMicrophoneId !== selectedMicrophoneId) {
-                // The user selected another device without changing the start
-                // token. Reject this stale default stream instead of committing
-                // it under UI/localStorage that now point at the new device.
-                stopMicrophoneStreamTracks(fallbackStream);
-                throw selectedMicrophoneError;
+            const fallbackStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!fallbackStream) {
+                return cancelledOpenResult();
             }
 
             // Commit the selection change and notification only after the
@@ -1797,7 +1813,7 @@
         // the mic on a dead route, and one guard covers all five.
         if (S.voiceInputRouteBlocked === true) {
             console.log('[App] voice route is fail-closed; refusing to open the microphone');
-            return;
+            return false;
         }
         // Claim this attempt BEFORE the first await. Anything that invalidates
         // pending starts from here on makes the commit at the end of
@@ -1869,6 +1885,23 @@
                 baseAudioConstraints,
                 micStartToken
             );
+            if (microphoneOpenResult.cancelled === true) {
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return false;
+            }
             ownStream = microphoneOpenResult.stream;
 
             // 检查音频轨道状态
@@ -1903,9 +1936,6 @@
                 selectedMicrophoneIdAtStart
             );
             if (!micStartCommitted) {
-                const microphoneSelectionChanged = (
-                    S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
-                );
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave
                 // WITHOUT the success path below. Not an error -- no toast, and
@@ -1916,7 +1946,7 @@
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
                 if (S.isRecording === true) {
-                    return;
+                    return true;
                 }
                 if (_mic) {
                     _mic.classList.remove('recording');
@@ -1932,13 +1962,10 @@
                 if (typeof window.syncFloatingMicButtonState === 'function') {
                     window.syncFloatingMicButtonState(false);
                 }
-                // Selection changes are distinct from the existing token/route
-                // cancellation paths: selectMicrophone() cannot restart while
-                // S.isRecording is still false, and the outer voice starter
-                // otherwise treats this normal return as a successful capture.
-                // `false` lets that lifecycle close the accepted backend
-                // session and restore its UI without reporting a device error.
-                return microphoneSelectionChanged ? false : undefined;
+                // A normal cancellation has no device/worklet error to
+                // propagate, but the outer voice starter must distinguish it
+                // from a committed capture before publishing session success.
+                return false;
             }
             if (
                 microphoneOpenResult.fallbackFromMicrophoneId
