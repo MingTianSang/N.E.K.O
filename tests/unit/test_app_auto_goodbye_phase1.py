@@ -199,14 +199,17 @@ def test_app_auto_goodbye_phase1_harness():
           }};
 
           // Simulate the existing goodbye / return base chain.
-          win.addEventListener('live2d-goodbye-click', (event) => {{
+          const applySurfaceGoodbye = (event) => {{
             if (options.applyGoodbyeImmediately !== false) {{
               win.live2dManager._goodbyeClicked = true;
               win.vrmManager._goodbyeClicked = true;
               win.mmdManager._goodbyeClicked = true;
             }}
             goodbyeEvents.push(event.detail || {{}});
-          }});
+          }};
+          if (options.goodbyeListenerOrder !== 'after-controller') {{
+            win.addEventListener('live2d-goodbye-click', applySurfaceGoodbye);
+          }}
           win.addEventListener('live2d-return-click', () => {{
             win.live2dManager._goodbyeClicked = false;
             win.vrmManager._goodbyeClicked = false;
@@ -238,6 +241,9 @@ def test_app_auto_goodbye_phase1_harness():
 
           vm.createContext(context);
           vm.runInContext(source, context);
+          if (options.goodbyeListenerOrder === 'after-controller') {{
+            win.addEventListener('live2d-goodbye-click', applySurfaceGoodbye);
+          }}
 
           return {{
             win,
@@ -393,7 +399,7 @@ def test_app_auto_goodbye_phase1_harness():
           // The auto latch must survive until the surface applies its manager flags.
           const deferredGoodbye = createHarness('/', {{
             barrierResolved: true,
-            applyGoodbyeImmediately: false
+            goodbyeListenerOrder: 'after-controller'
           }});
           await deferredGoodbye.flush();
           deferredGoodbye.setSocketOpen(true);
@@ -404,6 +410,28 @@ def test_app_auto_goodbye_phase1_harness():
           assert(deferredGoodbye.goodbyeEvents.length === 1, 'deferred surface should receive one auto-goodbye request');
           assert(beforeSurfaceGoodbyeApply.autoGoodbyeTriggered === true, 'surface listener order must not clear the auto latch');
           assert(beforeSurfaceGoodbyeApply.visualTier === 'cat1', 'surface listener order must not clear the auto tier');
+
+          // A busy model-to-cat transition can reject the surface request. The
+          // controller must roll back its latch and silent state so a later tick retries.
+          const rejectedGoodbye = createHarness('/', {{
+            barrierResolved: true,
+            goodbyeListenerOrder: 'after-controller',
+            applyGoodbyeImmediately: false
+          }});
+          await rejectedGoodbye.flush();
+          rejectedGoodbye.setSocketOpen(true);
+          rejectedGoodbye.tickAll();
+          rejectedGoodbye.advance(AUTO_GOODBYE_MS);
+          rejectedGoodbye.tickAll();
+          const afterRejectedGoodbye = rejectedGoodbye.win.nekoAutoGoodbye.getState();
+          assert(rejectedGoodbye.goodbyeEvents.length === 1, 'surface should receive the rejected auto-goodbye request');
+          assert(afterRejectedGoodbye.autoGoodbyeTriggered === false, 'rejected surface request should clear the auto latch');
+          assert(afterRejectedGoodbye.visualTier === 'none', 'rejected surface request should clear the speculative cat tier');
+          const rejectedSilentStates = rejectedGoodbye.sentMessages.filter((message) => message && message.action === 'goodbye_state');
+          assert(rejectedSilentStates.at(-1).active === false, 'rejected surface request should restore goodbye silence to inactive');
+          rejectedGoodbye.advance(500);
+          rejectedGoodbye.tickAll();
+          assert(rejectedGoodbye.goodbyeEvents.length === 2, 'a later idle tick should retry after surface rejection');
 
           // Desktop can keep conversation/system blockers alive after the model is hidden;
           // those blockers must not freeze the goodbye cat in CAT1.

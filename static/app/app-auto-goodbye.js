@@ -694,6 +694,23 @@
                 reason: state.lastReason,
             },
         }));
+        if (!isGoodbyeActive()) {
+            const rejectedReason = state.lastReason;
+            state.autoGoodbyeTriggered = false;
+            state.goodbyeEnteredAt = 0;
+            state.goodbyeWasAuto = false;
+            state.lastReason = 'auto-goodbye-rejected';
+            clearDragTierMemory();
+            setVisualTier(TIER_NONE, {
+                source: 'auto-goodbye-rejected',
+                reason: rejectedReason,
+            });
+            syncGoodbyeSilentState(false, 'auto-goodbye-rejected');
+            emitStateChange('auto-goodbye-rejected', {
+                reason: rejectedReason,
+            });
+            return false;
+        }
         emitStateChange('auto-goodbye-triggered', {
             reason: state.lastReason,
         });
