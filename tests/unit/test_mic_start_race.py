@@ -90,6 +90,8 @@ function loadModule() {
   const getUserMediaFailures = [];
   const statusToasts = [];
   const removedStorageKeys = [];
+  let selectionChangeOnGetUserMediaCall = null;
+  let invalidateOnGetUserMediaCall = null;
   // Blink caps hardware AudioContexts per document (~6), so `new AudioContext()`
   // genuinely throws in the field once starts have leaked.
   let captureContextThrows = false;
@@ -223,6 +225,17 @@ function loadModule() {
         getUserMedia: async (constraints) => {
           getUserMediaCalls.push(constraints);
           await getUserMediaGate;
+          if (
+            selectionChangeOnGetUserMediaCall
+            && selectionChangeOnGetUserMediaCall.callNumber === getUserMediaCalls.length
+          ) {
+            appState.selectedMicrophoneId = selectionChangeOnGetUserMediaCall.deviceId;
+            selectionChangeOnGetUserMediaCall = null;
+          }
+          if (invalidateOnGetUserMediaCall === getUserMediaCalls.length) {
+            sandbox.window.invalidatePendingMicStart();
+            invalidateOnGetUserMediaCall = null;
+          }
           if (getUserMediaFailures.length > 0) {
             throw getUserMediaFailures.shift();
           }
@@ -303,6 +316,12 @@ function loadModule() {
     },
     failNextGetUserMedia(error) {
       getUserMediaFailures.push(error || new Error('getUserMedia failed'));
+    },
+    changeSelectionOnGetUserMediaCall(callNumber, deviceId) {
+      selectionChangeOnGetUserMediaCall = { callNumber, deviceId };
+    },
+    invalidateStartOnGetUserMediaCall(callNumber) {
+      invalidateOnGetUserMediaCall = callNumber;
     },
     // stopProactiveChatSchedule is the LAST thing on the success path, so this
     // throws only after the pipeline has committed and published.
@@ -791,6 +810,59 @@ async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
          'the accurate worklet setup error must remain visible');
 }
 
+async function fallbackOwnershipChangeCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.changeSelectionOnGetUserMediaCall(2, 'new-device');
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown === selectedError,
+         'an ownership change during fallback must reject the stale start');
+  assert(env.getUserMediaCalls.length === 2,
+         'the ownership race should happen after opening the default fallback');
+  assert(env.streams.length === 1,
+         'only the successful default fallback should have produced a stream');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the stale default fallback stream must be torn down');
+  assert(env.S.selectedMicrophoneId === 'new-device',
+         'the newer microphone selection must remain authoritative');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'the stale fallback must never commit as the live capture pipeline');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a stale fallback must not announce a successful device switch');
+}
+
+async function fallbackTokenInvalidationCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.invalidateStartOnGetUserMediaCall(2);
+
+  await env.mod.startMicCapture();
+
+  assert(env.streams.length === 1,
+         'the invalidation race should happen after the default stream opens');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a fallback owned by a stale start token must be torn down');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'a token-invalidated fallback must not commit');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'a cancelled fallback must leave the saved device selection unchanged');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'a normal token invalidation must remain a benign cancellation');
+}
+
 (async () => {
   await raceCase();
   await preWorkletSetupFailureCase();
@@ -806,6 +878,8 @@ async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();
+  await fallbackOwnershipChangeCase();
+  await fallbackTokenInvalidationCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

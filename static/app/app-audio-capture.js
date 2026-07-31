@@ -1742,6 +1742,27 @@
             );
 
             const fallbackStream = await requestUsableMicrophoneStream(defaultConstraints);
+            if (
+                micStartToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+            ) {
+                // Preserve the existing benign-cancellation path: the entry
+                // gate in startAudioWorklet will observe the stale token/blocked
+                // route and return false without turning a normal teardown into
+                // a user-visible start failure.
+                stopMicrophoneStreamTracks(fallbackStream);
+                return {
+                    stream: fallbackStream,
+                    fallbackFromMicrophoneId: null
+                };
+            }
+            if (S.selectedMicrophoneId !== selectedMicrophoneId) {
+                // The user selected another device without changing the start
+                // token. Reject this stale default stream instead of committing
+                // it under UI/localStorage that now point at the new device.
+                stopMicrophoneStreamTracks(fallbackStream);
+                throw selectedMicrophoneError;
+            }
 
             // Commit the selection change and notification only after the
             // worklet pipeline also commits. Otherwise an important fallback
