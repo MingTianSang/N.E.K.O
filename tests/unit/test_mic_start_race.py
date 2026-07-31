@@ -224,15 +224,16 @@ function loadModule() {
       mediaDevices: {
         getUserMedia: async (constraints) => {
           getUserMediaCalls.push(constraints);
+          const callNumber = getUserMediaCalls.length;
           await getUserMediaGate;
           if (
             selectionChangeOnGetUserMediaCall
-            && selectionChangeOnGetUserMediaCall.callNumber === getUserMediaCalls.length
+            && selectionChangeOnGetUserMediaCall.callNumber === callNumber
           ) {
             appState.selectedMicrophoneId = selectionChangeOnGetUserMediaCall.deviceId;
             selectionChangeOnGetUserMediaCall = null;
           }
-          if (invalidateOnGetUserMediaCall === getUserMediaCalls.length) {
+          if (invalidateOnGetUserMediaCall === callNumber) {
             sandbox.window.invalidatePendingMicStart();
             invalidateOnGetUserMediaCall = null;
           }
@@ -731,6 +732,28 @@ async function entryTeardownReconcilesIsRecordingCase() {
   assert(env.S.isRecording === true, 'a successful restart still ends up recording');
 }
 
+async function staleRecordingFlagDoesNotMasqueradeAsWinnerCase() {
+  // The device-switch path can leave the recording flag true while its old
+  // graph is already gone and the replacement is opening. A second selection
+  // change cancels that replacement; the stale flag alone must not be mistaken
+  // for a concurrently committed winning pipeline.
+  const env = loadModule();
+  env.S.isRecording = true;
+  env.S.selectedMicrophoneId = 'first-device';
+  env.changeSelectionOnGetUserMediaCall(1, 'newer-device');
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === false,
+         'a stale recording flag without a live pipeline must not report success');
+  assert(env.S.isRecording === false,
+         'cancelled replacement capture must reconcile the stale recording flag');
+  assert(env.S.stream === null && env.S.audioContext === null && env.S.workletNode === null,
+         'cancelled replacement capture must leave no published pipeline');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === false,
+         'cancelled replacement capture must restore the mic UI');
+}
+
 async function selectedMicrophoneFallbackCase() {
   const env = loadModule();
   env.S.selectedMicrophoneId = 'missing-device';
@@ -788,6 +811,8 @@ async function selectedAndDefaultMicrophoneFailureCase() {
          'the second failed attempt must still target the system default');
   assert(env.S.selectedMicrophoneId === 'missing-device',
          'an unsuccessful fallback must not silently rewrite the saved selection');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'an unsuccessful fallback must not clear the persisted device selection');
   assert(env.S.isRecording === false,
          'the capture pipeline must remain stopped when the default device also fails');
   assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
@@ -815,6 +840,8 @@ async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
          'a worklet failure after opening the default device must reach the caller');
   assert(env.S.selectedMicrophoneId === 'missing-device',
          'the default selection must not commit before the full pipeline commits');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a worklet failure must not clear the persisted device selection');
   assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
          'an important fallback-success toast must not hide a later setup failure');
   assert(env.statusToasts.some((args) => args[0] === 'app.audioWorkletFailed'),
@@ -841,6 +868,8 @@ async function fallbackOwnershipChangeCase() {
          'the stale default fallback stream must be torn down');
   assert(env.S.selectedMicrophoneId === 'new-device',
          'the newer microphone selection must remain authoritative');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'an ownership cancellation must not clear the persisted device selection');
   assert(env.S.stream === null && env.S.isRecording === false,
          'the stale fallback must never commit as the live capture pipeline');
   assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
@@ -867,6 +896,10 @@ async function fallbackTokenInvalidationCase() {
          'a token-invalidated fallback must not commit');
   assert(env.S.selectedMicrophoneId === 'missing-device',
          'a cancelled fallback must leave the saved device selection unchanged');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a token-invalidated fallback must not clear the persisted device selection');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a token-invalidated fallback must not announce a successful device switch');
   assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
          'a normal token invalidation must remain a benign cancellation');
   assert(started === false,
@@ -896,6 +929,8 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
          'a fallback that loses selection ownership during worklet setup must be torn down');
   assert(env.S.selectedMicrophoneId === 'new-device',
          'the newer microphone selection must remain authoritative');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a worklet-window ownership change must not clear the persisted selection');
   assert(env.S.stream === null && env.S.isRecording === false,
          'the stale fallback must not publish after worklet setup');
   assert(started === false,
@@ -918,6 +953,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await addModuleFailureCase();
   await stopRecordingCancelsAnInFlightStartCase();
   await entryTeardownReconcilesIsRecordingCase();
+  await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();

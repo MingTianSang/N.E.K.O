@@ -5836,6 +5836,28 @@ def test_auto_restart_unwinds_a_cancelled_microphone_start():
     assert "window.syncFloatingMicButtonState(false)" in catch_code
 
 
+def test_microphone_switch_requires_a_live_committed_replacement():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    select_fn = _code_only(
+        _block_after(capture_source, "async function selectMicrophone(deviceId) {")
+    )
+    await_marker = "const microphoneStarted = await startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    assert await_marker in select_fn
+    assert cancellation_marker in select_fn
+    assert select_fn.index(await_marker) < select_fn.index(cancellation_marker)
+    assert select_fn.index(cancellation_marker) < select_fn.index(
+        "await window.startScreenSharing();"
+    )
+
+    start_fn = _code_only(
+        _block_after(capture_source, "async function startMicCapture() {")
+    )
+    assert start_fn.count("if (hasLiveCommittedMicrophonePipeline()) {") == 2
+    assert start_fn.count("S.isRecording = false;") >= 2
+    assert start_fn.count("window.isRecording = false;") >= 2
+
+
 def test_in_flight_microphone_start_is_cancellable():
     # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
     # getUserMedia() and audioWorklet.addModule() have both awaited, so every

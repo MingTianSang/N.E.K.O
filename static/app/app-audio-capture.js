@@ -926,7 +926,11 @@
                 }
 
                 if (wasRecording) {
-                    await startMicCapture();
+                    const microphoneStarted = await startMicCapture();
+                    if (microphoneStarted !== true) {
+                        console.log('[App] microphone switch restart was cancelled before commit');
+                        return;
+                    }
 
                     // 重启屏幕共享（如果之前正在共享）
                     if (shouldRestartScreening) {
@@ -1682,6 +1686,17 @@
         return stream.getAudioTracks().some(track => track && track.readyState !== 'ended');
     }
 
+    function hasLiveCommittedMicrophonePipeline() {
+        return (
+            S.isRecording === true
+            && S.voiceInputRouteBlocked !== true
+            && hasLiveMicrophoneTrack(S.stream)
+            && !!S.audioContext
+            && S.audioContext.state !== 'closed'
+            && !!S.workletNode
+        );
+    }
+
     async function requestUsableMicrophoneStream(constraints) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (hasLiveMicrophoneTrack(stream)) {
@@ -1890,9 +1905,11 @@
                 // getUserMedia. Its pipeline and UI are shared globals, so the
                 // late loser must report the live winner instead of painting
                 // "not recording" over it.
-                if (S.isRecording === true) {
+                if (hasLiveCommittedMicrophonePipeline()) {
                     return true;
                 }
+                S.isRecording = false;
+                window.isRecording = false;
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
@@ -1952,9 +1969,11 @@
                 // global, same as the S.* fields the unwind is careful about,
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
-                if (S.isRecording === true) {
+                if (hasLiveCommittedMicrophonePipeline()) {
                     return true;
                 }
+                S.isRecording = false;
+                window.isRecording = false;
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
