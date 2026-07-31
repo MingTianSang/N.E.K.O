@@ -890,7 +890,15 @@
             if (detail.autoGoodbye === true) {
                 state.autoGoodbyeTriggered = true;
                 state.lastReason = typeof detail.reason === 'string' ? detail.reason : 'idle-timeout';
-                syncVisualTierFromCurrentState('goodbye-event');
+                // The surface listener applies its manager-level goodbye flags after this
+                // controller in some Electron startup orders. Derive the tier from the
+                // idle clock directly so a not-yet-applied UI flag cannot clear the
+                // auto-goodbye latch in the same dispatch.
+                const targetTier = getTargetTierForElapsed(getVisualTierElapsedForCurrentState());
+                setVisualTier(targetTier === TIER_NONE ? TIER_CAT1 : targetTier, {
+                    source: 'goodbye-event',
+                    reason: state.lastReason,
+                });
             } else {
                 const isStartupDefaultCat = detail.startupDefaultForm === 'cat';
                 state.autoGoodbyeTriggered = false;
@@ -915,6 +923,10 @@
             // Returning is an explicit user override of any startup request still waiting for avatar readiness.
             cancelStartupDefaultCatRequest(true);
             syncGoodbyeSilentState(false, 'return-click');
+            // Commit is the first accepted user-return boundary. Refresh the idle
+            // clock here rather than waiting for the asynchronous model settle so
+            // the interval cannot dispatch another goodbye during that gap.
+            markIdleBaseline('return-click');
             if (!state.pendingReturnSnapshot) {
                 state.pendingReturnSnapshot = {
                     hadCatCycle: detail.hadCatCycle === true,
