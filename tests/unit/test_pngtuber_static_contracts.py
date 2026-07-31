@@ -277,6 +277,8 @@ def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_r
     assert "this.drawLayeredState(stateName, timestamp, {" in snapshot_block
     assert "scaleX: 1" in snapshot_block
     assert "scaleY: 1" in snapshot_block
+    assert "return drawn ? canvas : null;" in snapshot_block
+    assert "this.canvasElement =" not in snapshot_block
     assert "renderTarget?.canvas || this.canvasElement" in draw_block
     assert "renderTarget?.scaleX ?? this.layeredCanvasScaleX" in draw_block
     assert "renderTarget?.scaleY ?? this.layeredCanvasScaleY" in draw_block

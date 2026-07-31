@@ -347,6 +347,7 @@ def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_exp
 
     assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
     assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
+    assert "if (snapshot) return snapshot;" in get_canvas_block
     assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
 
 
