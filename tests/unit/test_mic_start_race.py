@@ -86,6 +86,10 @@ function loadModule() {
   // and getUserMedia() (device open / permission).
   let addModuleGate = Promise.resolve();
   let getUserMediaGate = Promise.resolve();
+  const getUserMediaCalls = [];
+  const getUserMediaFailures = [];
+  const statusToasts = [];
+  const removedStorageKeys = [];
   // Blink caps hardware AudioContexts per document (~6), so `new AudioContext()`
   // genuinely throws in the field once starts have leaked.
   let captureContextThrows = false;
@@ -208,10 +212,22 @@ function loadModule() {
     MediaStream: class {},
     WebSocket: { OPEN: 1 },
     CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: {
+      getItem: () => null,
+      setItem() {},
+      removeItem(key) { removedStorageKeys.push(key); },
+    },
+    fetch: async () => ({ ok: true }),
     navigator: {
       mediaDevices: {
-        getUserMedia: async () => { await getUserMediaGate; return makeStream(); },
+        getUserMedia: async (constraints) => {
+          getUserMediaCalls.push(constraints);
+          await getUserMediaGate;
+          if (getUserMediaFailures.length > 0) {
+            throw getUserMediaFailures.shift();
+          }
+          return makeStream();
+        },
         enumerateDevices: async () => [],
         addEventListener() {},
       },
@@ -238,7 +254,7 @@ function loadModule() {
     appUtils: { isMobile: () => false, dbToLinear: (db) => db },
     AudioContext: FakeAudioContext,
     addEventListener() {}, dispatchEvent() {},
-    showStatusToast() {}, t: (key) => key,
+    showStatusToast(...args) { statusToasts.push(args); }, t: (key) => key,
     localStorage: sandbox.localStorage,
     syncFloatingMicButtonState(on) { micButtonStates.push(on); },
     syncVoiceChatComposerHidden() {},
@@ -256,6 +272,9 @@ function loadModule() {
     workletNodes,
     nodes,
     micButtonStates,
+    getUserMediaCalls,
+    statusToasts,
+    removedStorageKeys,
     // `addModule: () => addModuleGate` reads the gate at CALL time, so an
     // attempt already parked keeps awaiting the promise it captured even
     // after `unpark()` swaps the gate for the next attempt. That is what lets
@@ -281,6 +300,9 @@ function loadModule() {
     },
     failCaptureContext() {
       captureContextThrows = true;
+    },
+    failNextGetUserMedia(error) {
+      getUserMediaFailures.push(error || new Error('getUserMedia failed'));
     },
     // stopProactiveChatSchedule is the LAST thing on the success path, so this
     // throws only after the pipeline has committed and published.
@@ -681,6 +703,94 @@ async function entryTeardownReconcilesIsRecordingCase() {
   assert(env.S.isRecording === true, 'a successful restart still ends up recording');
 }
 
+async function selectedMicrophoneFallbackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+
+  await env.mod.startMicCapture();
+
+  assert(env.getUserMediaCalls.length === 2,
+         'a failed selected microphone must be followed by exactly one default-device attempt');
+  assert(env.getUserMediaCalls[0].audio.deviceId.exact === 'missing-device',
+         'the first attempt must keep the selected microphone exact constraint');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the fallback attempt must omit deviceId so the browser uses the system default');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful fallback must switch the in-memory setting to system default');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful fallback must clear the persisted selected-device id');
+  assert(env.S.isRecording === true,
+         'a successful default-device fallback must continue the voice start');
+
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast, 'a successful fallback must show the main-page status toast');
+  assert(fallbackToast[1] === 6000,
+         'the fallback toast must stay visible long enough to be read');
+  assert(fallbackToast[2] && fallbackToast[2].important === true,
+         'the fallback toast must use the important/primary notification level');
+}
+
+async function selectedAndDefaultMicrophoneFailureCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  const defaultError = new Error('default microphone unavailable');
+  defaultError.name = 'NotReadableError';
+  env.failNextGetUserMedia(selectedError);
+  env.failNextGetUserMedia(defaultError);
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown === defaultError,
+         'when both devices fail, the default microphone error must reach the caller');
+  assert(env.getUserMediaCalls.length === 2,
+         'a selected-device failure must make only one default-device fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the second failed attempt must still target the system default');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'an unsuccessful fallback must not silently rewrite the saved selection');
+  assert(env.S.isRecording === false,
+         'the capture pipeline must remain stopped when the default device also fails');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'the success fallback toast must not appear when the default device also fails');
+  assert(env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'the existing microphone error must be shown when the default device also fails');
+}
+
+async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.failAddModule(new Error('worklet setup failed'));
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown && thrown.voiceWorkletSetupFailed === true,
+         'a worklet failure after opening the default device must reach the caller');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'the default selection must not commit before the full pipeline commits');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'an important fallback-success toast must not hide a later setup failure');
+  assert(env.statusToasts.some((args) => args[0] === 'app.audioWorkletFailed'),
+         'the accurate worklet setup error must remain visible');
+}
+
 (async () => {
   await raceCase();
   await preWorkletSetupFailureCase();
@@ -693,6 +803,9 @@ async function entryTeardownReconcilesIsRecordingCase() {
   await addModuleFailureCase();
   await stopRecordingCancelsAnInFlightStartCase();
   await entryTeardownReconcilesIsRecordingCase();
+  await selectedMicrophoneFallbackCase();
+  await selectedAndDefaultMicrophoneFailureCase();
+  await fallbackWorkletFailureDoesNotHideSetupErrorCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

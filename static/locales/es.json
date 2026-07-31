@@ -2319,6 +2319,7 @@
         "freeApiAutoCloseNotice": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "deviceSelected": "Seleccionado {{device}}",
         "micAccessDenied": "No puedo acceder al micrófono",
+        "microphoneFallbackToDefault": "El micrófono seleccionado no está disponible. Se usará el micrófono predeterminado del sistema.",
         "gameVoiceSttMicPermissionDenied": "La transcripción de voz del juego no tiene permiso para usar el micrófono. Revisa los permisos del navegador.",
         "gameVoiceSttNotSupported": "Este navegador no admite la transcripción de voz del juego. Usa la entrada de texto por ahora.",
         "micMuted": "Micrófono silenciado",

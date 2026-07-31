@@ -2319,6 +2319,7 @@
         "freeApiAutoCloseNotice": "무료 API에서 오랫동안 음성 입력이 없어 음성 세션을 자동으로 종료했습니다",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "microphoneFallbackToDefault": "선택한 마이크를 사용할 수 없어 시스템 기본 마이크로 전환했습니다.",
         "gameVoiceSttMicPermissionDenied": "게임 음성 전사에 마이크 권한이 없습니다. 브라우저 권한을 확인하세요.",
         "gameVoiceSttNotSupported": "현재 브라우저는 게임 음성 전사를 지원하지 않습니다. 당분간 텍스트 입력을 사용하세요.",
         "micMuted": "마이크가 음소거되었습니다",

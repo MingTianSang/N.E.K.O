@@ -2319,6 +2319,7 @@
         "freeApiAutoCloseNotice": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
+        "microphoneFallbackToDefault": "選択したマイクを使用できないため、システムの既定のマイクに切り替えました。",
         "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
         "gameVoiceSttNotSupported": "このブラウザはゲーム音声文字起こしに対応していません。しばらくテキスト入力を使ってください。",
         "micMuted": "マイクをミュートしました",
