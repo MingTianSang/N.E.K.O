@@ -5850,7 +5850,9 @@ def test_microphone_switch_requires_a_live_committed_replacement():
     assert retry_marker in select_fn
     assert select_fn.index(await_marker) < select_fn.index(success_marker)
     assert select_fn.index(success_marker) < select_fn.index(retry_marker)
-    assert "S.selectedMicrophoneId !== selectedMicrophoneIdForRestart" in select_fn
+    assert (
+        "microphoneSelectionGeneration !== selectionGenerationForRestart" in select_fn
+    )
     assert "micStartGeneration === expectedRestartGeneration" in select_fn
     assert "S.voiceInputRouteBlocked !== true" in select_fn
     assert select_fn.index(retry_marker) < select_fn.index(
@@ -5859,6 +5861,11 @@ def test_microphone_switch_requires_a_live_committed_replacement():
 
     start_fn = _code_only(
         _block_after(capture_source, "async function startMicCapture() {")
+    )
+    assert "let microphoneSelectionGeneration = 0;" in capture_source
+    assert "microphoneSelectionGeneration += 1;" in capture_source
+    assert len(re.findall(r"S\.selectedMicrophoneId\s*=(?!=)", capture_source)) == 1, (
+        "all microphone-selection writes must go through the generation-tracked helper"
     )
     assert start_fn.count("if (hasLiveCommittedMicrophonePipeline()) {") == 2
     assert start_fn.count("S.isRecording = false;") >= 2
@@ -5894,13 +5901,20 @@ def test_in_flight_microphone_start_is_cancellable():
     # ...and the commit is gated on it.
     worklet = _block_after(
         capture_source,
-        "async function startAudioWorklet("
-        "mediaStream, startToken, selectedMicrophoneIdAtStart"
-        ") {",
+        "async function startAudioWorklet(\n"
+        "        mediaStream,\n"
+        "        startToken,\n"
+        "        selectedMicrophoneIdAtStart,\n"
+        "        microphoneSelectionGenerationAtStart\n"
+        "    ) {",
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
     assert "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart" in worklet
+    assert (
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+        in worklet
+    )
     # TWO gates on that token, and both are load-bearing. The entry gate stops
     # an attempt that was superseded while still in getUserMedia from running
     # the old-pipeline teardown below it, which would close the WINNER's
@@ -5911,6 +5925,9 @@ def test_in_flight_microphone_start_is_cancellable():
     assert worklet.count(
         "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart"
     ) == 2, "expected both gates to enforce microphone-selection ownership"
+    assert worklet.count(
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+    ) == 2, "expected both gates to preserve intermediate selection changes"
     assert worklet.index("superseded before opening") < worklet.index(
         "await previousContext.close()"
     ), "the entry gate must precede the old-pipeline teardown it protects"
@@ -5943,7 +5960,8 @@ def test_in_flight_microphone_start_is_cancellable():
     compact_start_code = "".join(start_code_only.split())
     assert (
         "constmicStartCommitted=awaitstartAudioWorklet("
-        "ownStream,micStartToken,selectedMicrophoneIdAtStart);"
+        "ownStream,micStartToken,selectedMicrophoneIdAtStart,"
+        "microphoneSelectionGenerationAtStart);"
         in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only

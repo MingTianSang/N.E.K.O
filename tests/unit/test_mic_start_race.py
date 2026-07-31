@@ -813,6 +813,47 @@ async function rapidDeviceSwitchRetriesLatestSelectionCase() {
          'the latest selected microphone must remain live');
 }
 
+async function rapidDeviceSwitchBackRetriesFinalSelectionCase() {
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the initial microphone must be live');
+
+  env.enableDeferredTimeouts();
+  const releaseFirstSwitchOpen = env.parkGetUserMedia();
+  const firstSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.getUserMediaCalls.length === 2,
+         'the first switch-back attempt must be opening device A');
+
+  const secondSwitch = env.mod.selectMicrophone('latest-device');
+  const thirdSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.S.selectedMicrophoneId === 'first-device',
+         'the final switch-back selection must become authoritative');
+
+  releaseFirstSwitchOpen();
+  await firstSwitch;
+  await secondSwitch;
+  await thirdSwitch;
+
+  assert(env.S.isRecording === true,
+         'the switch owner must restore capture after an A -> B -> A sequence');
+  assert(env.S.selectedMicrophoneId === 'first-device',
+         'the retry must preserve the final switch-back selection');
+  assert(env.getUserMediaCalls.length === 3,
+         'an intermediate selection change must cancel and retry even when the final id matches');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'first-device',
+         'the cancelled switch-back attempt must target the initial device A selection');
+  assert(env.getUserMediaCalls[2].audio.deviceId.exact === 'first-device',
+         'the retry must reopen the final device A selection');
+  assert(env.streams[1].getTracks()[0].stopped === true,
+         'the superseded switch-back attempt must stop its own microphone');
+  assert(env.S.stream === env.streams[env.streams.length - 1],
+         'the switch-back retry stream must be the committed pipeline');
+  assert(env.S.stream.getTracks()[0].stopped === false,
+         'the final selected microphone must remain live');
+}
+
 async function selectedMicrophoneFallbackCase() {
   const env = loadModule();
   env.S.selectedMicrophoneId = 'missing-device';
@@ -1014,6 +1055,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await entryTeardownReconcilesIsRecordingCase();
   await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
   await rapidDeviceSwitchRetriesLatestSelectionCase();
+  await rapidDeviceSwitchBackRetriesFinalSelectionCase();
   await selectedMicrophoneFallbackCase();
   await selectedAndDefaultMicrophoneFailureCase();
   await fallbackWorkletFailureDoesNotHideSetupErrorCase();

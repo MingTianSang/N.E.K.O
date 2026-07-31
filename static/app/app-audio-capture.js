@@ -35,9 +35,19 @@
     // compares equal again and commits -- re-claiming through refreshMicLease()
     // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
+    // Device ids are not a sufficient change token: a rapid A -> B -> A
+    // sequence ends at the same id while still superseding the in-flight
+    // selection attempt. Increment this on every authoritative selection write
+    // so async ownership checks cannot lose intermediate changes.
+    let microphoneSelectionGeneration = 0;
 
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
+    }
+
+    function setSelectedMicrophoneId(deviceId) {
+        S.selectedMicrophoneId = deviceId;
+        microphoneSelectionGeneration += 1;
     }
 
     function currentVoiceInputControlState() {
@@ -826,7 +836,7 @@
     // ======================== 麦克风设备选择 ========================
 
     async function selectMicrophone(deviceId) {
-        S.selectedMicrophoneId = deviceId;
+        setSelectedMicrophoneId(deviceId);
 
         // 获取设备名称用于状态提示
         let deviceName = '系统默认麦克风';
@@ -927,7 +937,7 @@
 
                 if (wasRecording) {
                     while (true) {
-                        const selectedMicrophoneIdForRestart = S.selectedMicrophoneId;
+                        const selectionGenerationForRestart = microphoneSelectionGeneration;
                         // startMicCapture claims the next generation
                         // synchronously, before its first await. If anything
                         // else advances the counter, a stop/takeover occurred
@@ -938,7 +948,7 @@
                             break;
                         }
                         const latestSelectionNeedsRetry = (
-                            S.selectedMicrophoneId !== selectedMicrophoneIdForRestart
+                            microphoneSelectionGeneration !== selectionGenerationForRestart
                             && micStartGeneration === expectedRestartGeneration
                             && S.voiceInputRouteBlocked !== true
                         );
@@ -1090,11 +1100,11 @@
         try {
             const saved = localStorage.getItem('neko_selected_microphone');
             if (saved) {
-                S.selectedMicrophoneId = saved;
+                setSelectedMicrophoneId(saved);
                 console.log(`已加载麦克风设置: ${saved}`);
             }
         } catch (e) {
-            S.selectedMicrophoneId = null;
+            setSelectedMicrophoneId(null);
         }
     }
 
@@ -1290,7 +1300,12 @@
      * That is deliberate: this whole subsystem is fail-closed, and the only
      * consumer is startMicCapture below (the module export exists for tests).
      */
-    async function startAudioWorklet(mediaStream, startToken, selectedMicrophoneIdAtStart) {
+    async function startAudioWorklet(
+        mediaStream,
+        startToken,
+        selectedMicrophoneIdAtStart,
+        microphoneSelectionGenerationAtStart
+    ) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
         // cold device open is slow; the newer attempt hits a warm one and
@@ -1305,6 +1320,7 @@
             startToken !== micStartGeneration
             || S.voiceInputRouteBlocked === true
             || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+            || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
         ) {
             console.log('[App] microphone start was superseded before opening; unwinding');
             try {
@@ -1562,6 +1578,7 @@
                 startToken !== micStartGeneration
                 || S.voiceInputRouteBlocked === true
                 || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
             ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
@@ -1729,7 +1746,7 @@
     }
 
     function applySystemDefaultMicrophoneSelection() {
-        S.selectedMicrophoneId = null;
+        setSelectedMicrophoneId(null);
         updateMicListSelection();
 
         const defaultLabel = window.t
@@ -1745,13 +1762,18 @@
         void saveSelectedMicrophone(null);
     }
 
-    async function openMicrophoneStreamWithFallback(baseAudioConstraints, micStartToken) {
-        const selectedMicrophoneId = S.selectedMicrophoneId;
+    async function openMicrophoneStreamWithFallback(
+        baseAudioConstraints,
+        micStartToken,
+        selectedMicrophoneId,
+        microphoneSelectionGenerationAtStart
+    ) {
         const defaultConstraints = { audio: baseAudioConstraints };
         const startStillOwnsMicrophoneRequest = () => (
             micStartToken === micStartGeneration
             && S.voiceInputRouteBlocked !== true
             && S.selectedMicrophoneId === selectedMicrophoneId
+            && microphoneSelectionGeneration === microphoneSelectionGenerationAtStart
         );
         const cancelledOpenResult = () => ({
             stream: null,
@@ -1806,6 +1828,7 @@
                 micStartToken !== micStartGeneration
                 || S.voiceInputRouteBlocked === true
                 || S.selectedMicrophoneId !== selectedMicrophoneId
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
             ) {
                 return cancelledOpenResult();
             }
@@ -1913,9 +1936,12 @@
             // S.workletNode` liveness probes read dead against a live pipeline
             // and open a second microphone on top of it.
             const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;
+            const microphoneSelectionGenerationAtStart = microphoneSelectionGeneration;
             const microphoneOpenResult = await openMicrophoneStreamWithFallback(
                 baseAudioConstraints,
-                micStartToken
+                micStartToken,
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
             );
             if (microphoneOpenResult.cancelled === true) {
                 // A newer attempt can commit while this one is still awaiting
@@ -1974,7 +2000,8 @@
             const micStartCommitted = await startAudioWorklet(
                 ownStream,
                 micStartToken,
-                selectedMicrophoneIdAtStart
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
             );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
