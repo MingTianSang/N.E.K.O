@@ -2940,7 +2940,21 @@
                                         // Let the ASR failure toast stand as the explanation.
                                         return;
                                     }
-                                    if (typeof window.startMicCapture === 'function') await window.startMicCapture();
+                                    var microphoneStarted = false;
+                                    if (typeof window.startMicCapture === 'function') {
+                                        microphoneStarted = await window.startMicCapture();
+                                    }
+                                    if (microphoneStarted !== true) {
+                                        // startMicCapture uses false for a benign
+                                        // ownership cancellation. The backend has
+                                        // already accepted this restart, though, so
+                                        // route the cancellation through the common
+                                        // unwind below instead of reporting success
+                                        // with no committed microphone pipeline.
+                                        var microphoneStartCancelled = new Error('Microphone start cancelled');
+                                        microphoneStartCancelled.microphoneStartCancelled = true;
+                                        throw microphoneStartCancelled;
+                                    }
                                     if (S.screenCaptureStream != null) {
                                         if (typeof window.startScreenSharing === 'function') await window.startScreenSharing();
                                     }
@@ -2965,7 +2979,12 @@
                                         window.showStatusToast(window.t ? window.t('app.restartComplete', { name: window.lanlan_config.lanlan_name }) : ('重启完成，' + window.lanlan_config.lanlan_name + '回来了！'), 4000);
                                     }
                                 } catch (error) {
-                                    console.error(window.t('console.restartError'), error);
+                                    var isMicrophoneStartCancelled = !!(
+                                        error && error.microphoneStartCancelled
+                                    );
+                                    if (!isMicrophoneStartCancelled) {
+                                        console.error(window.t('console.restartError'), error);
+                                    }
 
                                     // Only tear down THIS restart's slot.
                                     if (window.sessionStartIsCurrent(restartStartOwner)) {
@@ -2992,7 +3011,8 @@
                                     }
 
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                                    if (typeof window.showStatusToast === 'function') {
+                                    if (!isMicrophoneStartCancelled
+                                            && typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(window.t ? window.t('app.restartFailed', { error: error.message }) : ('重启失败: ' + error.message), 5000);
                                     }
 

@@ -5806,6 +5806,36 @@ def test_auto_restart_does_not_claim_success_on_a_blocked_route():
     assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart
 
 
+def test_auto_restart_unwinds_a_cancelled_microphone_start():
+    # startMicCapture returns false for an ownership cancellation. The restart's
+    # backend session has already been accepted by then, so it must enter the
+    # common teardown without showing a generic failure toast or continuing to
+    # the floating-control/restartComplete success path.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    restart = websocket_source.split("await sessionStartPromise;", 1)[1].split(
+        "} catch (error) {", 1
+    )[0]
+    restart_code = _code_only(restart)
+    await_marker = "microphoneStarted = await window.startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "window.syncFloatingMicButtonState(true)"
+    assert await_marker in restart_code
+    assert cancellation_marker in restart_code
+    assert restart_code.index(await_marker) < restart_code.index(cancellation_marker)
+    assert restart_code.index(cancellation_marker) < restart_code.index(success_marker)
+    assert "microphoneStartCancelled.microphoneStartCancelled = true;" in restart_code
+    assert "throw microphoneStartCancelled;" in restart_code
+
+    catch = websocket_source.split("} catch (error) {", 1)[1].split(
+        "}, 7500);", 1
+    )[0]
+    catch_code = _code_only(catch)
+    assert "error && error.microphoneStartCancelled" in catch_code
+    assert "if (!isMicrophoneStartCancelled" in catch_code
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in catch_code
+    assert "window.syncFloatingMicButtonState(false)" in catch_code
+
+
 def test_in_flight_microphone_start_is_cancellable():
     # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
     # getUserMedia() and audioWorklet.addModule() have both awaited, so every

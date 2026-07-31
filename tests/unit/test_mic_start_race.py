@@ -473,7 +473,9 @@ async function streamPublishOrderCase() {
   // Only NOW does the loser's device open finish -- so its stream write, if
   // there were one, would land last.
   releaseGum();
-  await first;
+  const firstObservedPipeline = await first;
+  assert(firstObservedPipeline === true,
+         'the late loser must observe and preserve the winning pipeline');
 
   assert(env.S.stream === winnerStream,
          "a loser whose getUserMedia settles last must not take over S.stream");
@@ -482,6 +484,8 @@ async function streamPublishOrderCase() {
   assert(env.S.audioContext === winnerContext,
          "the winner's context must survive the late loser");
   assert(env.S.isRecording === true, 'the winner must still be recording');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
+         'a getUserMedia loser must not paint "not recording" over the winner');
   const loserStream = env.streams.find((s) => s !== winnerStream);
   assert(loserStream && loserStream.getTracks()[0].stopped === true,
          'the late loser must still stop its own device');

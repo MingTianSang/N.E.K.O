@@ -1886,6 +1886,13 @@
                 micStartToken
             );
             if (microphoneOpenResult.cancelled === true) {
+                // A newer attempt can commit while this one is still awaiting
+                // getUserMedia. Its pipeline and UI are shared globals, so the
+                // late loser must report the live winner instead of painting
+                // "not recording" over it.
+                if (S.isRecording === true) {
+                    return true;
+                }
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
