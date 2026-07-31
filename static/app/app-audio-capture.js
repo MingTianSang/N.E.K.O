@@ -1903,6 +1903,9 @@
                 selectedMicrophoneIdAtStart
             );
             if (!micStartCommitted) {
+                const microphoneSelectionChanged = (
+                    S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+                );
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave
                 // WITHOUT the success path below. Not an error -- no toast, and
@@ -1929,7 +1932,13 @@
                 if (typeof window.syncFloatingMicButtonState === 'function') {
                     window.syncFloatingMicButtonState(false);
                 }
-                return;
+                // Selection changes are distinct from the existing token/route
+                // cancellation paths: selectMicrophone() cannot restart while
+                // S.isRecording is still false, and the outer voice starter
+                // otherwise treats this normal return as a successful capture.
+                // `false` lets that lifecycle close the accepted backend
+                // session and restore its UI without reporting a device error.
+                return microphoneSelectionChanged ? false : undefined;
             }
             if (
                 microphoneOpenResult.fallbackFromMicrophoneId
@@ -1972,6 +1981,7 @@
             if (typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
+            return true;
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             // A worklet setup failure already showed its own, more accurate

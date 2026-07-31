@@ -729,7 +729,7 @@ async function selectedMicrophoneFallbackCase() {
   selectedError.name = 'NotFoundError';
   env.failNextGetUserMedia(selectedError);
 
-  await env.mod.startMicCapture();
+  const started = await env.mod.startMicCapture();
 
   assert(env.getUserMediaCalls.length === 2,
          'a failed selected microphone must be followed by exactly one default-device attempt');
@@ -743,6 +743,8 @@ async function selectedMicrophoneFallbackCase() {
          'a successful fallback must clear the persisted selected-device id');
   assert(env.S.isRecording === true,
          'a successful default-device fallback must continue the voice start');
+  assert(started === true,
+         'a committed capture must report success to the outer voice starter');
 
   const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
   assert(fallbackToast, 'a successful fallback must show the main-page status toast');
@@ -880,7 +882,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
 
   env.S.selectedMicrophoneId = 'new-device';
   release();
-  await pending;
+  const started = await pending;
 
   assert(env.streams[0].getTracks()[0].stopped === true,
          'a fallback that loses selection ownership during worklet setup must be torn down');
@@ -888,6 +890,8 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
          'the newer microphone selection must remain authoritative');
   assert(env.S.stream === null && env.S.isRecording === false,
          'the stale fallback must not publish after worklet setup');
+  assert(started === false,
+         'a selection-change cancellation must propagate to the outer voice starter');
   assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
          'a stale fallback must not announce a successful device switch');
   assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
