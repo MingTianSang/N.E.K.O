@@ -71,7 +71,7 @@ def test_cross_night_transition_expires_at_24_hours():
 
     assert "At least 24 hours" in prompt
     assert "have expired" in prompt
-    assert "reconnect neutrally" in prompt
+    assert "reconnect naturally and in character" in prompt
 
     before_boundary = get_startup_greeting_guidance(
         24 * 60 * 60 - 1,
@@ -181,8 +181,36 @@ def test_chinese_long_gap_prompts_remove_waiting_pressure_and_activity_guessing(
     for old_phrase in (
         "等了挺久",
         "终于看到",
+        "终于等到你",
         "一直在想Master去哪了",
         "非常非常想念",
         "心里百感交集",
     ):
         assert old_phrase not in rendered
+
+
+def test_very_long_gap_prompt_uses_dynamic_reunion_context():
+    rendered = get_greeting_prompt(7 * 24 * 60 * 60, "zh").format(
+        elapsed="7天",
+        name="Neko",
+        master="动态称呼",
+        time_hint="现在是上午。",
+        holiday_hint="",
+    )
+    guidance = get_startup_greeting_guidance(
+        7 * 24 * 60 * 60,
+        "zh",
+        master="动态称呼",
+        observed_at=datetime(2026, 8, 2, 9, 0),
+    )
+
+    assert "距离你和动态称呼上次有聊天已经过了7天。" in rendered
+    assert "现在是上午。" in rendered
+    assert (
+        "请用符合设定的方式表达你再次见到动态称呼时想说的话，"
+        "不要猜测动态称呼离线期间的生活。"
+    ) in rendered
+    assert "碳基生物" not in rendered
+    assert "按当前时段和角色设定自然重连" in guidance
+    assert "表达情绪时遵循角色设定" in guidance
+    assert "不要借间隔责怪或催促动态称呼" in guidance

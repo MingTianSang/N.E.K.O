@@ -4339,63 +4339,55 @@ GREETING_PROMPT_LONG = {
     "======Acima está o aviso de ambiente======",
 }
 
-# 24小时以上：久别重连，但不制造等待压力
+# 24小时以上：久别重连
 GREETING_PROMPT_VERY_LONG = {
     "zh": "======以下是环境提示======\n"
-    "距离你和{master}上次有记录的对话已经过了{elapsed}。\n"
+    "距离你和{master}上次有聊天已经过了{elapsed}。\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "这只说明很久没有记录到对话。不要猜测{master}离线期间的生活，也不要用“终于等到你”一类制造内疚或压力的说法。\n"
-    "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "请用符合设定的方式表达你再次见到{master}时想说的话，不要猜测{master}离线期间的生活。\n"
     "======以上是环境提示======",
     "zh-TW": "======以下为環境提示======\n"
-    "距離你和{master}上次有記錄的對話已經過了{elapsed}。\n"
+    "距離你和{master}上次聊天已經過了{elapsed}。\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "這只說明很久沒有記錄到對話。不要猜測{master}離線期間的生活，也不要用「終於等到你」一類製造內疚或壓力的說法。\n"
-    "用符合你性格的方式主動和{master}搭話吧。直接說出你想說的話，簡短自然即可，不要產生思考過程。\n"
+    "請用符合設定的方式表達你再次見到{master}時想說的話，不要猜測{master}離線期間的生活。\n"
     "======以上为環境提示======",
     "en": "======Below is Environment Notice======\n"
-    "It has been {elapsed} since the last recorded conversation with {master}.\n"
+    "It has been {elapsed} since you last chatted with {master}.\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "This only means no conversation was recorded for a long time. Do not guess about {master}'s offline life or use guilt-inducing lines such as 'finally, you are back.'\n"
-    "Go ahead and talk to {master} in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "In a way that fits your character, express what you want to say upon seeing {master} again. Do not guess about {master}'s life while offline.\n"
     "======Above is Environment Notice======",
     "ja": "======以下は環境通知======\n"
-    "{master}との最後に記録された会話から{elapsed}が経った。\n"
+    "{master}と最後に話してから{elapsed}が経った。\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "これは長い間会話が記録されていないことだけを示す。{master}の不在中の生活を推測せず、「やっと戻った」のように罪悪感や圧力を与える言い方もしないこと。\n"
-    "自分らしいやり方で{master}に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "設定に合った形で、{master}に再会して伝えたいことを表現して。{master}がオフラインの間の生活を推測しないこと。\n"
     "======以上は環境通知======",
     "ko": "======아래는 환경 알림======\n"
-    "{master}와 마지막으로 기록된 대화 후 {elapsed}이 지났다.\n"
+    "{master}와 마지막으로 대화한 지 {elapsed}이 지났다.\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "이는 오랫동안 대화가 기록되지 않았다는 뜻일 뿐이다. {master}의 부재 중 생활을 추측하거나 '드디어 돌아왔네'처럼 죄책감이나 부담을 주는 표현을 쓰지 마.\n"
-    "너다운 방식으로 {master}에게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "설정에 맞는 방식으로 {master}를 다시 만났을 때 하고 싶은 말을 표현해. {master}가 오프라인인 동안의 생활을 추측하지 마.\n"
     "======위는 환경 알림======",
     "ru": "======Ниже Уведомление======\n"
-    "С последнего записанного разговора с {master} прошло {elapsed}.\n"
+    "С последнего разговора между тобой и {master} прошло {elapsed}.\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "Это означает лишь, что разговор давно не записывался. Не выдумывай жизнь {master} в отсутствие общения и не используй вызывающие вину фразы вроде «наконец-то ты вернулся».\n"
-    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "В соответствии со своим образом вырази то, что хочется сказать при новой встрече с {master}. Не выдумывай, как {master} жил вне сети.\n"
     "======Выше Уведомление======",
     "es": "======Abajo está el aviso de entorno======\n"
-    "Han pasado {elapsed} desde la última conversación registrada con {master}.\n"
+    "Han pasado {elapsed} desde la última vez que hablaste con {master}.\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "Esto solo significa que no se registró conversación durante mucho tiempo. No inventes la vida de {master} fuera de línea ni uses frases que causen culpa o presión, como «por fin volviste».\n"
-    "Habla con {master} a tu manera. Di directamente lo que quieres decir, breve y natural. No generes proceso de pensamiento.\n"
+    "Expresa, de una forma acorde con tu personaje, lo que quieres decir al volver a ver a {master}. No imagines cómo fue la vida de {master} mientras estuvo fuera de línea.\n"
     "======Arriba está el aviso de entorno======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
-    "Já faz {elapsed} desde a última conversa registrada com {master}.\n"
+    "Já se passaram {elapsed} desde a última vez que você conversou com {master}.\n"
     "{time_hint}\n"
     "{holiday_hint}"
-    "Isso só significa que nenhuma conversa foi registrada por muito tempo. Não invente a vida de {master} fora da conversa nem use frases que causem culpa ou pressão, como 'finalmente você voltou'.\n"
-    "Fale com {master} do seu jeito. Diga diretamente o que quer dizer, breve e natural. Não gere processo de pensamento.\n"
+    "Expresse, de uma forma coerente com seu personagem, o que quer dizer ao ver {master} novamente. Não imagine como foi a vida de {master} enquanto esteve offline.\n"
     "======Acima está o aviso de ambiente======",
 }
 
@@ -4523,14 +4515,14 @@ _STARTUP_GREETING_VARIANTS: dict[str, dict[str, str]] = {
 
 _STARTUP_TEMPORAL_CONTEXT = {
     "stale": {
-        "zh": "距离上次记录已达到 24 小时。晚安、稍后或明天继续等一次性转场已过期；请按当前时段中性重连，不复述旧转场，也不猜测离线活动。",
-        "zh-TW": "距離上次記錄已達到 24 小時。晚安、稍後或明天繼續等一次性轉場已過期；請按目前時段中性重連，不複述舊轉場，也不猜測離線活動。",
-        "en": "At least 24 hours have passed since the last record. One-time transitions such as goodnight, later, or tomorrow have expired; reconnect neutrally for the current time without replaying them or guessing offline activity.",
-        "ja": "最後の記録から24時間以上経っている。「おやすみ」「また後で」「明日」など一度きりの流れは期限切れとして、繰り返したり不在中を推測せず、現在の時間帯に合う中立な挨拶にする。",
-        "ko": "마지막 기록 후 24시간 이상 지났다. 잘 자, 나중에, 내일 같은 일회성 전환은 만료되었으니 반복하거나 부재 중 활동을 추측하지 말고 현재 시간대에 맞춰 중립적으로 다시 인사해.",
-        "ru": "С последней записи прошло не менее 24 часов. Одноразовые переходы вроде «доброй ночи», «позже» или «завтра» уже истекли; поздоровайся нейтрально по текущему времени, не повторяя их и не выдумывая жизнь вне диалога.",
-        "es": "Han pasado 24 horas o más desde el último registro. Las transiciones de una sola vez, como buenas noches, luego o mañana, ya caducaron; reconecta de forma neutral según la hora actual, sin repetirlas ni inventar actividad fuera de línea.",
-        "pt": "Passaram 24 horas ou mais desde o último registro. Transições de uso único, como boa noite, mais tarde ou amanhã, expiraram; reconecte de forma neutra para o horário atual, sem repeti-las nem inventar atividade fora da conversa.",
+        "zh": "距离上次记录已达到 24 小时。晚安、稍后或明天继续等一次性转场已过期；请按当前时段和角色设定自然重连，不复述旧转场，也不猜测离线活动。",
+        "zh-TW": "距離上次記錄已達到 24 小時。晚安、稍後或明天繼續等一次性轉場已過期；請按目前時段和角色設定自然重連，不複述舊轉場，也不猜測離線活動。",
+        "en": "At least 24 hours have passed since the last record. One-time transitions such as goodnight, later, or tomorrow have expired; reconnect naturally and in character for the current time without replaying them or guessing offline activity.",
+        "ja": "最後の記録から24時間以上経っている。「おやすみ」「また後で」「明日」など一度きりの流れは期限切れとして、繰り返したり不在中を推測せず、現在の時間帯と設定に合う自然な再会の挨拶にする。",
+        "ko": "마지막 기록 후 24시간 이상 지났다. 잘 자, 나중에, 내일 같은 일회성 전환은 만료되었으니 반복하거나 부재 중 활동을 추측하지 말고 현재 시간대와 설정에 맞춰 자연스럽게 다시 인사해.",
+        "ru": "С последней записи прошло не менее 24 часов. Одноразовые переходы вроде «доброй ночи», «позже» или «завтра» уже истекли; поздоровайся естественно, в соответствии с образом и текущим временем, не повторяя их и не выдумывая жизнь вне диалога.",
+        "es": "Han pasado 24 horas o más desde el último registro. Las transiciones de una sola vez, como buenas noches, luego o mañana, ya caducaron; reconecta de forma natural y acorde con el personaje según la hora actual, sin repetirlas ni inventar actividad fuera de línea.",
+        "pt": "Passaram 24 horas ou mais desde o último registro. Transições de uso único, como boa noite, mais tarde ou amanhã, expiraram; reconecte de forma natural e coerente com o personagem para o horário atual, sem repeti-las nem inventar atividade fora da conversa.",
     },
     "crossed": {
         "zh": "这段间隔跨过了本地早晨 6 点的对话日边界。若近期对话明确以晚安、休息、稍后或明天继续收尾，应承认这个已知转场，不要再追问对方去了哪里。",
@@ -4563,7 +4555,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "间隔只代表没有记录到对话。不得据此声称{master}刚睡醒、刚开机、刚忙完、消失了，或让你一直等待。\n"
     "若近期对话以晚安、休息、解决了、稍后或明天继续明确收尾，不要把它误当成未完成问题。\n"
-    "避免复述或近义改写最近的启动问候；不要使用“终于等到你”“怎么这么久”等施压表达。\n"
+    "避免复述或近义改写最近的启动问候；表达情绪时遵循角色设定，不要借间隔责怪或催促{master}。\n"
     "最终只输出一句简短自然的话，最多一个轻问题，不输出思考过程。\n"
     "======以上为启动问候约束======",
     "zh-TW": "======以下為啟動問候約束======\n"
@@ -4573,7 +4565,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "間隔只代表沒有記錄到對話。不得據此聲稱{master}剛睡醒、剛開機、剛忙完、消失了，或讓你一直等待。\n"
     "若近期對話以晚安、休息、解決了、稍後或明天繼續明確收尾，不要把它誤當成未完成問題。\n"
-    "避免複述或近義改寫最近的啟動問候；不要使用「終於等到你」「怎麼這麼久」等施壓表達。\n"
+    "避免複述或近義改寫最近的啟動問候；表達情緒時遵循角色設定，不要藉間隔責怪或催促{master}。\n"
     "最終只輸出一句簡短自然的話，最多一個輕問題，不輸出思考過程。\n"
     "======以上为啟動問候約束======",
     "en": "======以下为启动问候约束======\n"
@@ -4583,7 +4575,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "The gap only means no conversation was recorded. Never claim from it that {master} just woke up, started the device, finished being busy, disappeared, or kept you waiting.\n"
     "If recent context clearly ended with goodnight, rest, solved, later, or tomorrow, do not misread that closure as an unfinished problem.\n"
-    "Do not repeat or closely paraphrase recent startup greetings, and avoid pressure such as 'finally' or 'what took so long.'\n"
+    "Do not repeat or closely paraphrase recent startup greetings. Keep emotion consistent with the character, and do not use the gap to blame or pressure {master}.\n"
     "Output only one short natural message, with at most one light question and no reasoning.\n"
     "======以上为启动问候约束======",
     "ja": "======以下为启动问候约束======\n"
@@ -4593,7 +4585,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "間隔は会話が記録されていないことだけを示す。そこから{master}が起きたばかり、端末を起動したばかり、忙しさを終えた、消えていた、あなたを待たせたとは言わない。\n"
     "直近の会話が、おやすみ、休む、解決済み、また後で、明日などで明確に終わったなら、未完了の問題と誤解しない。\n"
-    "最近の起動挨拶を繰り返したり近い言い換えをせず、「やっと」「遅かったね」など圧力になる表現も避ける。\n"
+    "最近の起動挨拶を繰り返したり近い言い換えをしない。感情表現はキャラクター設定に従い、間が空いたことを理由に{master}を責めたり返事を催促したりしない。\n"
     "最終出力は短く自然な一言だけ。軽い質問は最大一つ、思考過程は出さない。\n"
     "======以上为启动问候约束======",
     "ko": "======以下为启动问候约束======\n"
@@ -4603,7 +4595,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "간격은 대화가 기록되지 않았다는 뜻일 뿐이다. 이것만으로 {master}가 방금 일어났거나 기기를 켰거나 바쁜 일을 마쳤거나 사라졌거나 너를 기다리게 했다고 말하지 마.\n"
     "최근 대화가 잘 자, 쉬기, 해결됨, 나중에, 내일로 명확히 끝났다면 미완성 문제로 오해하지 마.\n"
-    "최근 시작 인사를 반복하거나 비슷하게 바꾸지 말고, '드디어'나 '왜 이렇게 오래' 같은 부담 표현도 피하라.\n"
+    "최근 시작 인사를 반복하거나 비슷하게 바꾸지 마. 감정 표현은 캐릭터 설정을 따르고, 대화의 공백을 이유로 {master}를 탓하거나 재촉하지 마.\n"
     "최종 출력은 짧고 자연스러운 한마디만, 가벼운 질문은 최대 하나, 사고 과정은 출력하지 마.\n"
     "======以上为启动问候约束======",
     "ru": "======以下为启动问候约束======\n"
@@ -4613,7 +4605,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "Промежуток означает лишь отсутствие записанного разговора. Не утверждай по нему, что {master} только что проснулся, включил устройство, освободился, исчез или заставил тебя ждать.\n"
     "Если недавний разговор явно завершился пожеланием доброй ночи, отдыхом, решением вопроса, «позже» или «завтра», не считай это незавершённой проблемой.\n"
-    "Не повторяй и близко не перефразируй недавние стартовые приветствия; избегай давления вроде «наконец-то» или «почему так долго».\n"
+    "Не повторяй и близко не перефразируй недавние стартовые приветствия. Выражай эмоции в соответствии с образом и не используй перерыв как повод винить или торопить {master}.\n"
     "Выведи только одну короткую естественную реплику, максимум с одним лёгким вопросом и без рассуждений.\n"
     "======以上为启动问候约束======",
     "es": "======以下为启动问候约束======\n"
@@ -4623,7 +4615,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "El intervalo solo significa que no se registró conversación. No afirmes por ello que {master} acaba de despertar, encender el dispositivo, desocuparse, desaparecer o hacerte esperar.\n"
     "Si el contexto reciente terminó claramente con buenas noches, descanso, asunto resuelto, luego o mañana, no lo confundas con un problema pendiente.\n"
-    "No repitas ni parafrasees de cerca los saludos de inicio recientes; evita presión como «por fin» o «por qué tardaste tanto».\n"
+    "No repitas ni parafrasees de cerca los saludos de inicio recientes. Expresa las emociones de acuerdo con el personaje y no uses el intervalo para culpar ni apremiar a {master}.\n"
     "Genera solo un mensaje breve y natural, con como máximo una pregunta ligera y sin razonamiento.\n"
     "======以上为启动问候约束======",
     "pt": "======以下为启动问候约束======\n"
@@ -4633,7 +4625,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "{reference_block}"
     "O intervalo só significa que nenhuma conversa foi registrada. Não afirme por isso que {master} acabou de acordar, ligar o dispositivo, ficar livre, desaparecer ou fazer você esperar.\n"
     "Se o contexto recente terminou claramente com boa noite, descanso, assunto resolvido, mais tarde ou amanhã, não confunda isso com um problema pendente.\n"
-    "Não repita nem parafraseie de perto saudações de início recentes; evite pressão como 'finalmente' ou 'por que demorou tanto'.\n"
+    "Não repita nem parafraseie de perto saudações de início recentes. Expresse emoções de acordo com o personagem e não use o intervalo para culpar nem pressionar {master}.\n"
     "Gere apenas uma mensagem curta e natural, com no máximo uma pergunta leve e sem raciocínio.\n"
     "======以上为启动问候约束======",
 }
