@@ -204,6 +204,11 @@ def test_model_lock_icons_ignore_pointer_input_while_avatar_overlays_overlap():
         "                dispatchAvatarSidePanelVisibilityChanged(container);"
     ) == 2
     assert "if (panel._visibilitySettledTimer)" in popup_source
+    interval_control = popup_source[popup_source.index("function createIntervalControl") :]
+    interval_collapse = interval_control[interval_control.index("container._collapse = () => {") :]
+    assert interval_collapse.index("container.style.pointerEvents = 'none';") < (
+        interval_collapse.index("container.style.opacity = '0';")
+    )
 
 
 def test_shared_avatar_overlay_overlap_detects_owned_sidepanels_by_geometry():
@@ -221,7 +226,7 @@ const vrmPopup = {{
 }};
 const vrmSidePanel = {{
   style: {{ display: 'flex', visibility: 'visible', opacity: '1' }},
-  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
+  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '1' }},
   getBoundingClientRect: () => ({{ left: 30, top: 30, right: 80, bottom: 80, width: 50, height: 50 }})
 }};
 const overlaysByPrefix = {{ vrm: [vrmPopup, vrmSidePanel], mmd: [] }};

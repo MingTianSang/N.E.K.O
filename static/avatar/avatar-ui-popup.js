@@ -2066,6 +2066,7 @@ function createIntervalControl(manager, prefix, toggle) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
         dispatchAvatarSidePanelVisibilityChanged(container);
