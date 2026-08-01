@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from main_logic.core.greeting import (
+from main_logic.startup_greeting_policy import (
     _select_startup_followup,
     _select_startup_greeting_variant,
     _startup_greeting_burst_age,
@@ -64,7 +64,9 @@ def test_followup_selection_skips_recent_sensitive_blank_and_malformed_topics():
         [
             None,
             {"id": "ref_used", "text": "继续上次的话题"},
-            {"id": "ref_private", "text": "隐私内容", "sensitive": True},
+            {"id": "ref_sensitive", "text": "敏感内容", "sensitive": True},
+            {"id": "ref_private", "text": "隐私内容", "private": True},
+            {"id": "ref_rejected", "text": "已拒绝话题", "rejected": True},
             {"id": "ref_blank", "text": "   "},
             {"id": "ref_ok", "text": "  下次继续聊那本书的结尾  "},
         ],
@@ -94,6 +96,12 @@ def test_real_user_engagement_ends_the_startup_burst():
     assert (
         _startup_greeting_burst_age(
             recent, observed_at=1000.0, last_user_engagement_at=950.0
+        )
+        is None
+    )
+    assert (
+        _startup_greeting_burst_age(
+            recent, observed_at=2701.0, last_user_engagement_at=None
         )
         is None
     )

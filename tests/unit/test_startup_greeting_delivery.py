@@ -156,7 +156,9 @@ def _patch_dependencies(
 
 
 @pytest.mark.asyncio
-async def test_startup_greeting_records_followup_only_after_text_commit(monkeypatch):
+async def test_startup_greeting_records_followup_only_after_text_commit(
+    monkeypatch, capsys
+):
     session = _GreetingSession(delivered=True)
     manager = _make_manager(session)
     memory_client = _GreetingMemoryClient(
@@ -174,6 +176,9 @@ async def test_startup_greeting_records_followup_only_after_text_commit(monkeypa
 
     assert len(session.instructions) == 1
     assert "Continue discussing the book ending." in session.instructions[0]
+    captured = capsys.readouterr()
+    assert "Continue discussing the book ending." not in captured.out
+    assert "Continue discussing the book ending." not in captured.err
     history.stage_committed.assert_called_once_with(
         "Test",
         "A different committed startup greeting.",
@@ -196,6 +201,59 @@ async def test_startup_greeting_records_followup_only_after_text_commit(monkeypa
     ]
     holiday_commit.assert_called_once_with("Test", "holiday-token")
     assert manager.state.phase is ProactivePhase.IDLE
+
+
+@pytest.mark.asyncio
+async def test_startup_greeting_preserves_traditional_chinese_prompt_locale(
+    monkeypatch,
+):
+    session = _GreetingSession(delivered=False)
+    manager = _make_manager(session)
+    manager.user_language = "zh-TW"
+    memory_client = _GreetingMemoryClient()
+    history = _HistoryDouble()
+    anti_repeat = _AntiRepeatDouble()
+    holiday_commit = MagicMock()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, holiday_commit
+    )
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+
+    assert len(session.instructions) == 1
+    assert "距離你和Master上次有記錄的對話" in session.instructions[0]
+    assert "請結合已經載入的近期對話" in session.instructions[0]
+    assert "======以上为啟動問候約束======" in session.instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_memory_followup_cooldown_skips_followup_topics_request(monkeypatch):
+    session = _GreetingSession(delivered=False)
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient(
+        topics=[{"id": "unused", "text": "This endpoint should not be queried."}]
+    )
+    history = _HistoryDouble(
+        records=[
+            StartupGreetingRecord(
+                ts=1000.0,
+                text="A prior memory follow-up.",
+                variant_key="memory_followup",
+                topic_key="used-topic",
+            )
+        ]
+    )
+    anti_repeat = _AntiRepeatDouble()
+    holiday_commit = MagicMock()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, holiday_commit
+    )
+    patch_module_clock(monkeypatch, greeting_module, time=lambda: 4000.0)
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+
+    assert len(session.instructions) == 1
+    assert all("/followup_topics/" not in url for url, _timeout in memory_client.get_calls)
 
 
 @pytest.mark.asyncio

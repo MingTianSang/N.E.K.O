@@ -409,6 +409,26 @@ def test_prompt_ephemeral_committed_text_callback_skips_nonverbal_only_output():
     assert committed_texts == []
 
 
+def test_prompt_ephemeral_committed_text_callback_failure_does_not_skip_done():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([SimpleNamespace(content="欢迎回来")])
+
+    def _raise_on_committed_text(_text: str) -> None:
+        raise RuntimeError("callback failed")
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=_raise_on_committed_text,
+        )
+    )
+
+    assert committed is True
+    c.on_response_done.assert_awaited_once_with()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. finish_proactive_delivery(vision_screenshot_b64=...) —— stage only on commit
 # ─────────────────────────────────────────────────────────────────────────────

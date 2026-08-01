@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,6 +71,7 @@ def test_startup_avoidance_survives_trigger_gap_and_expires_after_24_hours(tmp_p
 
     assert history.recent("Neko", now=10_901.0)
     assert history.recent("Neko", now=10_000.0 + 86_399.0)
+    assert history.recent("Neko", now=10_000.0 + 86_400.0) == []
     assert history.recent("Neko", now=10_000.0 + 86_401.0) == []
 
 
@@ -90,23 +92,70 @@ def test_history_is_newest_first_and_count_capped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_corrupt_history_fails_open(tmp_path):
+@pytest.mark.parametrize(
+    "persisted_bytes",
+    [
+        b'{"records":',
+        json.dumps({"records": "not-a-list"}).encode(),
+        b'\xff\xfeinvalid utf-8',
+    ],
+    ids=["bad-json", "bad-schema", "bad-encoding"],
+)
+async def test_corrupt_history_is_backed_up_and_self_heals(
+    tmp_path, persisted_bytes
+):
     history = _build_history(tmp_path)
     path = history._file_path("Neko")
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump({"records": "not-a-list"}, file)
+    with open(path, "wb") as file:
+        file.write(persisted_bytes)
 
     await history.apreload("Neko")
 
     assert history.recent("Neko", now=100.0) == []
+    assert history._cache["Neko"] == []
+    with open(f"{path}.corrupt.bak", "rb") as file:
+        assert file.read() == persisted_bytes
+
+    token = history.try_reserve("Neko", now=100.0)
+    assert token
+    staged = history.stage_committed(
+        "Neko",
+        "A recovered opening.",
+        variant_key="simple_presence",
+        committed_at=101.0,
+        reservation_token=token,
+    )
+    await history.aflush_staged(staged)
+
+    reloaded = _build_history(tmp_path)
+    await reloaded.apreload("Neko")
+    assert [record.text for record in reloaded.recent("Neko", now=102.0)] == [
+        "A recovered opening."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transient_read_oserror_keeps_cache_absent_and_denies_reservation(
+    tmp_path, monkeypatch
+):
+    history = _build_history(tmp_path)
+    path = history._file_path("Neko")
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump({"version": 1, "records": []}, file)
+
+    def _raise_oserror(_path):
+        raise PermissionError("temporarily unavailable")
+
+    monkeypatch.setattr(
+        "memory.startup_greeting_history.read_json_tolerating_replace",
+        _raise_oserror,
+    )
+
+    await history.apreload("Neko")
+
     assert "Neko" not in history._cache
-    with pytest.raises(ValueError, match="invalid records"):
-        history.stage_committed(
-            "Neko",
-            "must not overwrite the corrupt last-known file",
-            variant_key="simple_presence",
-            committed_at=101.0,
-        )
+    assert history.try_reserve("Neko", now=100.0) is None
+    assert not os.path.exists(f"{path}.corrupt.bak")
 
 
 @pytest.mark.asyncio

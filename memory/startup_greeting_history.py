@@ -25,13 +25,14 @@ replies or scheduled proactive chats.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import threading
 import time
-from uuid import uuid4
 from dataclasses import dataclass
 from typing import Any, Optional
+from uuid import uuid4
 
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json, read_json_tolerating_replace
@@ -57,6 +58,10 @@ class StartupGreetingRecord:
 
 
 StageHandle = tuple[str, dict[str, Any], int]
+
+
+class _CorruptStartupGreetingHistory(ValueError):
+    """The file was read successfully, but its persisted content is unusable."""
 
 
 def _resolve_name(name: Optional[str]) -> str:
@@ -146,12 +151,25 @@ class StartupGreetingHistory:
 
     def _read_records_from_disk(self, name: str) -> list[StartupGreetingRecord]:
         path = self._file_path(name)
-        if not os.path.exists(path):
+        try:
+            os.stat(path)
+        except FileNotFoundError:
             return []
-        raw = read_json_tolerating_replace(path)
-        items = raw.get("records") if isinstance(raw, dict) else None
+        try:
+            raw = read_json_tolerating_replace(path)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise _CorruptStartupGreetingHistory(
+                "startup greeting history is not valid UTF-8 JSON"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise _CorruptStartupGreetingHistory(
+                "startup greeting history root must be an object"
+            )
+        items = raw.get("records")
         if not isinstance(items, list):
-            raise ValueError("startup greeting history has an invalid records field")
+            raise _CorruptStartupGreetingHistory(
+                "startup greeting history has an invalid records field"
+            )
         records = [
             record for item in items if (record := _normalize_record(item)) is not None
         ]
@@ -159,6 +177,24 @@ class StartupGreetingHistory:
         # correction can move time backwards, but the latest commit must remain
         # the latest record and must not be pruned as if it were old.
         return records[-_MAX_RECORDS:]
+
+    def _backup_corrupt_file(self, name: str) -> str | None:
+        """Best-effort, non-destructive backup of invalid persisted bytes.
+
+        A hard link is atomic and does not rewrite or remove the source.  The
+        stable suffix also prevents repeated startups from accumulating an
+        unbounded number of copies when no new greeting is committed yet.
+        """
+
+        path = self._file_path(name)
+        backup_path = f"{path}.corrupt.bak"
+        try:
+            os.link(path, backup_path)
+        except FileExistsError:
+            return backup_path
+        except OSError:
+            return None
+        return backup_path
 
     def _load_unlocked(self, name: str) -> list[StartupGreetingRecord]:
         if name not in self._cache:
@@ -202,15 +238,41 @@ class StartupGreetingHistory:
                 return
         try:
             records = await asyncio.to_thread(self._read_records_from_disk, resolved)
+        except _CorruptStartupGreetingHistory:
+            backup_path = await asyncio.to_thread(
+                self._backup_corrupt_file,
+                resolved,
+            )
+            logger.warning(
+                "[StartupGreetingHistory] invalid persisted data for %s; "
+                "starting with empty history (backup_saved=%s)",
+                resolved,
+                backup_path is not None,
+            )
+            # Content/schema/encoding damage is deterministic: keeping the
+            # cache absent would disable greetings forever.  Start from a
+            # known empty in-memory history so the next committed greeting can
+            # atomically replace the bad file.  The original bytes remain in
+            # the best-effort sibling backup above.
+            records = []
+        except OSError as exc:
+            logger.warning(
+                "[StartupGreetingHistory] preload I/O failed for %s: %s",
+                resolved,
+                exc,
+            )
+            # A permission/share/replace failure may be temporary.  Do not
+            # install an empty cache: try_reserve must fail closed, and a later
+            # preload may recover the last-known-good file without overwriting
+            # it.
+            return
         except Exception as exc:
             logger.warning(
                 "[StartupGreetingHistory] preload failed for %s: %s",
                 resolved,
                 exc,
             )
-            # Do not install an empty last-known-good window.  A later commit
-            # must not overwrite a valid file just because this read hit a
-            # transient Windows replace/permission error or malformed JSON.
+            # Unknown failures remain conservative as well.
             return
         with self._get_lock(resolved):
             self._cache.setdefault(resolved, records)

@@ -23,11 +23,16 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from memory.anti_repeat import get_anti_repeat_corpus
-from memory.startup_greeting_history import (
-    StartupGreetingRecord,
-    get_startup_greeting_history,
+from main_logic.startup_greeting_policy import (
+    _STARTUP_GREETING_BURST_SECONDS,
+    _STARTUP_GREETING_HISTORY_SECONDS,
+    _STARTUP_GREETING_VARIANT_MEMORY,
+    _select_startup_followup,
+    _select_startup_greeting_variant,
+    _startup_greeting_burst_age,
 )
+from memory.anti_repeat import get_anti_repeat_corpus
+from memory.startup_greeting_history import get_startup_greeting_history
 from config.prompts.avatar_interaction_contract import (
     normalize_avatar_interaction_payload,
 )
@@ -40,94 +45,6 @@ from utils.config_manager import get_config_manager
 from utils.language_utils import normalize_language_code, get_global_language
 from uuid import uuid4
 from ._shared import logger, _proactive_expected_sid
-
-
-_STARTUP_GREETING_HISTORY_SECONDS = 24 * 60 * 60
-_STARTUP_GREETING_BURST_SECONDS = 30 * 60
-_STARTUP_GREETING_VARIANT_MEMORY = "memory_followup"
-_STARTUP_GREETING_GENERIC_VARIANTS = (
-    "recent_continuity",
-    "personal_share",
-    "light_question",
-    "simple_presence",
-)
-
-
-def _startup_greeting_burst_age(
-    recent_records: list[StartupGreetingRecord],
-    *,
-    observed_at: float,
-    last_user_engagement_at: float | None = None,
-) -> float | None:
-    if not recent_records:
-        return None
-    if (
-        last_user_engagement_at is not None
-        and float(last_user_engagement_at) > float(recent_records[0].ts)
-    ):
-        return None
-    age = float(observed_at) - float(recent_records[0].ts)
-    if 0.0 <= age <= _STARTUP_GREETING_BURST_SECONDS:
-        return age
-    return None
-
-
-def _select_startup_greeting_variant(
-    recent_records: list[StartupGreetingRecord],
-    *,
-    has_followup: bool,
-) -> str:
-    """Choose a different opening angle before the one existing LLM call."""
-
-    recent_variants = [record.variant_key for record in recent_records]
-    if has_followup and _STARTUP_GREETING_VARIANT_MEMORY not in recent_variants:
-        return _STARTUP_GREETING_VARIANT_MEMORY
-
-    for variant in _STARTUP_GREETING_GENERIC_VARIANTS:
-        if variant not in recent_variants:
-            return variant
-
-    most_recent_generic = next(
-        (
-            variant
-            for variant in recent_variants
-            if variant in _STARTUP_GREETING_GENERIC_VARIANTS
-        ),
-        None,
-    )
-    if most_recent_generic is None:
-        return _STARTUP_GREETING_GENERIC_VARIANTS[0]
-    current_index = _STARTUP_GREETING_GENERIC_VARIANTS.index(most_recent_generic)
-    return _STARTUP_GREETING_GENERIC_VARIANTS[
-        (current_index + 1) % len(_STARTUP_GREETING_GENERIC_VARIANTS)
-    ]
-
-
-def _select_startup_followup(
-    raw_topics,
-    *,
-    recently_used_topic_keys: set[str],
-) -> tuple[str, str] | None:
-    """Select one bounded reflection cue that has not been used in 24 hours."""
-
-    if not isinstance(raw_topics, list):
-        return None
-    from main_logic.topic.common import clean_text
-
-    for topic in raw_topics[:10]:
-        if not isinstance(topic, dict):
-            continue
-        if any(bool(topic.get(flag)) for flag in ("sensitive", "private", "rejected")):
-            continue
-        topic_key = str(topic.get("id") or "").strip()[:160]
-        if not topic_key or topic_key in recently_used_topic_keys:
-            continue
-        # This runs on the event loop, so use the deterministic character bound
-        # instead of synchronously cold-starting the tokenizer here.
-        text = clean_text(topic.get("text"), limit=120)
-        if text:
-            return topic_key, text
-    return None
 
 
 class GreetingMixin:
@@ -439,8 +356,8 @@ class GreetingMixin:
             recent_greetings = []
 
         # 同一个逻辑启动 burst 最多说一次。15 分钟内原 gap gate 已覆盖，这里保守
-        # 补齐 15~30 分钟的反复启动/多窗口重连。claim 后还会在锁内重读一次，避免
-        # 两个错峰启动任务都拿到同一份空快照。
+        # 补齐 15~30 分钟的反复启动/多窗口重连。投递前的原子 reservation 会再
+        # 校验一次已提交历史，避免两个错峰启动任务都拿到同一份空快照。
         burst_age = _startup_greeting_burst_age(
             recent_greetings,
             observed_at=observed_at,
@@ -462,6 +379,10 @@ class GreetingMixin:
             return
 
         _lang = normalize_language_code(self.user_language, format='short')
+        # Keep the region for startup prompt selection so Traditional Chinese
+        # reaches the dedicated zh-TW templates.  Formatting helpers that only
+        # support short codes continue to use ``_lang``.
+        _prompt_lang = normalize_language_code(self.user_language, format='full')
         from config.prompts.prompts_proactive import (
             get_greeting_prompt,
             get_startup_greeting_guidance,
@@ -469,7 +390,7 @@ class GreetingMixin:
         )
         from utils.time_format import format_elapsed as _format_elapsed
         from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
-        template = get_greeting_prompt(gap_seconds, _lang)
+        template = get_greeting_prompt(gap_seconds, _prompt_lang)
         if not template:
             return
 
@@ -506,30 +427,35 @@ class GreetingMixin:
             record.topic_key for record in recent_greetings if record.topic_key
         }
         startup_followup = None
-        try:
-            followup_resp = await _mem_client.get(
-                f"http://127.0.0.1:{greeting_memory_server_port}/followup_topics/{greeting_name}",
-                timeout=5.0,
-            )
-            if followup_resp.is_success:
-                startup_followup = _select_startup_followup(
-                    followup_resp.json().get("topics", []),
-                    recently_used_topic_keys=recently_used_topic_keys,
+        memory_variant_available = all(
+            record.variant_key != _STARTUP_GREETING_VARIANT_MEMORY
+            for record in recent_greetings
+        )
+        if memory_variant_available:
+            try:
+                followup_resp = await _mem_client.get(
+                    f"http://127.0.0.1:{greeting_memory_server_port}/followup_topics/{greeting_name}",
+                    timeout=5.0,
                 )
-            else:
+                if followup_resp.is_success:
+                    startup_followup = _select_startup_followup(
+                        followup_resp.json().get("topics", []),
+                        recently_used_topic_keys=recently_used_topic_keys,
+                    )
+                else:
+                    logger.debug(
+                        "[%s] trigger_greeting: followup topics returned %s",
+                        greeting_name,
+                        followup_resp.status_code,
+                    )
+            except Exception as e:
+                # Memory enrichment is optional; a transient reflection failure must
+                # never suppress a safe ordinary greeting.
                 logger.debug(
-                    "[%s] trigger_greeting: followup topics returned %s",
-                    self.lanlan_name,
-                    followup_resp.status_code,
+                    "[%s] trigger_greeting: followup topics unavailable: %s",
+                    greeting_name,
+                    e,
                 )
-        except Exception as e:
-            # Memory enrichment is optional; a transient reflection failure must
-            # never suppress a safe ordinary greeting.
-            logger.debug(
-                "[%s] trigger_greeting: followup topics unavailable: %s",
-                self.lanlan_name,
-                e,
-            )
 
         startup_variant = _select_startup_greeting_variant(
             recent_greetings,
@@ -542,7 +468,7 @@ class GreetingMixin:
 
         # 投递通道已就绪，构建 instruction（节日预算仅 preview，不消费）
         elapsed = _format_elapsed(_lang, gap_seconds)
-        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+        time_hint = get_time_of_day_hint(_prompt_lang).format(master=self.master_name)
 
         _holiday_token = None
         try:
@@ -558,7 +484,7 @@ class GreetingMixin:
         )
         instruction += "\n" + get_startup_greeting_guidance(
             gap_seconds,
-            _lang,
+            _prompt_lang,
             variant_key=startup_variant,
             master=self.master_name,
             memory_cue=startup_memory_cue,
@@ -657,8 +583,16 @@ class GreetingMixin:
             if surfaced_topic_key or _holiday_token is not None:
                 self._fire_task(_record_committed_side_effects())
 
-        print(f"[trigger_greeting] instruction:\n{instruction}")
-        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", self.lanlan_name, gap_seconds, elapsed)
+        logger.debug(
+            "[%s] trigger_greeting: instruction built "
+            "(len=%d variant=%s has_memory_cue=%s recent_openings=%d)",
+            greeting_name,
+            len(instruction),
+            startup_variant,
+            bool(startup_memory_cue),
+            min(len(recent_greetings), 3),
+        )
+        logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", greeting_name, gap_seconds, elapsed)
 
         # ── 投递前最终检查：构建 instruction 期间（holiday hint 等 await）语音可能已接管 ──
         if self._is_voice_session_active_or_starting():
@@ -676,41 +610,6 @@ class GreetingMixin:
 
         try:
             async with self._proactive_write_lock:
-                # Re-read while this task owns the proactive claim/write lock.  A
-                # concurrent trigger may have committed after our early snapshot;
-                # its in-memory history lands before terminal/DONE, so it is visible
-                # here and prevents a second greeting in the same startup burst.
-                try:
-                    locked_now = time.time()
-                    locked_recent = greeting_history.recent(
-                        greeting_name,
-                        now=locked_now,
-                        max_age_seconds=_STARTUP_GREETING_HISTORY_SECONDS,
-                        limit=1,
-                    )
-                    locked_burst_age = _startup_greeting_burst_age(
-                        locked_recent,
-                        observed_at=locked_now,
-                        last_user_engagement_at=getattr(
-                            self, "last_user_engagement_time", None
-                        ),
-                    )
-                except Exception as e:
-                    logger.debug(
-                        "[%s] trigger_greeting: locked history recheck failed: %s",
-                        self.lanlan_name,
-                        e,
-                    )
-                    locked_burst_age = None
-                if locked_burst_age is not None:
-                    logger.info(
-                        "[%s] trigger_greeting: concurrent startup suppressed "
-                        "(age=%.0fs)",
-                        self.lanlan_name,
-                        locked_burst_age,
-                    )
-                    return
-
                 # 持锁后仍需检查：_proactive_write_lock 等待期间语音可能已启动
                 if self._is_voice_session_active_or_starting():
                     logger.info("[%s] trigger_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)

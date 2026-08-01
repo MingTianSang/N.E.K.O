@@ -9,6 +9,7 @@ from config.prompts.prompts_proactive import (
     _classify_hour,
     get_greeting_prompt,
     get_startup_greeting_guidance,
+    get_time_of_day_hint,
     startup_crossed_conversation_day,
 )
 
@@ -61,15 +62,42 @@ def test_startup_reference_cannot_forge_a_system_prompt_watermark():
     assert prompt.count("======以上为") == 1
 
 
-def test_cross_night_transition_expires_after_24_hours():
+def test_cross_night_transition_expires_at_24_hours():
     prompt = get_startup_greeting_guidance(
-        25 * 60 * 60,
+        24 * 60 * 60,
         "en",
         observed_at=datetime(2026, 8, 2, 8, 0),
     )
 
+    assert "At least 24 hours" in prompt
     assert "have expired" in prompt
     assert "reconnect neutrally" in prompt
+
+    before_boundary = get_startup_greeting_guidance(
+        24 * 60 * 60 - 1,
+        "en",
+        observed_at=datetime(2026, 8, 2, 8, 0),
+    )
+    assert "At least 24 hours" not in before_boundary
+
+
+def test_startup_getters_reach_traditional_chinese_templates():
+    time_hint = get_time_of_day_hint("zh-TW")
+    base_prompt = get_greeting_prompt(901, "zh-TW")
+    guidance = get_startup_greeting_guidance(
+        3600,
+        "zh-TW",
+        master="對方",
+        observed_at=datetime(2026, 8, 1, 12, 0),
+    )
+
+    assert "現在" in time_hint
+    assert "距离" not in base_prompt
+    assert "距離" in base_prompt
+    assert "======以下为環境提示======" in base_prompt
+    assert "======以上为環境提示======" in base_prompt
+    assert "請結合" in guidance
+    assert "======以上为啟動問候約束======" in guidance
 
 
 def test_crossed_conversation_day_uses_six_am_boundary_and_year_rollover():
@@ -91,12 +119,19 @@ def test_crossed_conversation_day_uses_six_am_boundary_and_year_rollover():
     ("hour", "period"),
     (
         (0, "late_night"),
+        (5, "late_night"),
         (6, "early_morning"),
+        (8, "early_morning"),
         (9, "morning"),
+        (11, "morning"),
         (12, "noon"),
+        (13, "noon"),
         (14, "afternoon"),
+        (17, "afternoon"),
         (18, "evening"),
+        (20, "evening"),
         (21, "night"),
+        (23, "night"),
     ),
 )
 def test_time_period_boundaries(hour, period):

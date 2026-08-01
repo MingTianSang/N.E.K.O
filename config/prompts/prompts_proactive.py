@@ -1289,20 +1289,18 @@ proactive_generate_ru = """Ваша роль:
 
 
 def _normalize_prompt_language(lang: str) -> str:
-    """Normalize a language code to a proactive-prompt dict key.
+    """Normalize a language code for the module's general prompt dictionaries.
 
-    ``keep_traditional=False`` because no dict in this module carries a
-    ``'zh-TW'`` template yet; resolving to ``zh-TW`` here would send Traditional
-    Chinese users straight to the English fallback. Flip it together with the
-    templates. See issue #2500.
-
-    Flipping it also turns tests/unit/test_proactive_text_does_not_dehumanize.py
-    red — that file asserts the collapse directly
-    (``get_cat_greeting_episode_scene(..., 'zh-TW') == zh``). That failure is
-    expected once the templates exist: update the assertion, do not restore the
-    collapse.
+    Keep Traditional Chinese collapsed to ``zh`` because most dictionaries in
+    this module still do not provide a ``zh-TW`` template. Startup greetings are
+    the scoped exception and use ``_normalize_startup_greeting_language``.
     """
     return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=False)
+
+
+def _normalize_startup_greeting_language(lang: str) -> str:
+    """Normalize a locale for startup-greeting dictionaries, which include zh-TW."""
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
 
 
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
@@ -4155,7 +4153,7 @@ def get_time_of_day_hint(lang: str = "zh") -> str:
 
     hour = datetime.now().hour
     period = _classify_hour(hour)
-    lang_key = _normalize_prompt_language(lang)
+    lang_key = _normalize_startup_greeting_language(lang)
     hints = _TIME_OF_DAY_HINTS[period]
     return hints.get(lang_key, hints.get("en", hints["zh"]))
 
@@ -4170,7 +4168,7 @@ GREETING_PROMPT_SHORT = {
     "你想简单打个招呼。\n"
     "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "======以上是环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下为環境提示======\n"
     "距離你和{master}上次有記錄的對話已經過了{elapsed}，現在又有了說話的機會。\n"
     "{time_hint}\n"
     "{holiday_hint}"
@@ -4230,7 +4228,7 @@ GREETING_PROMPT_MEDIUM = {
     "这段间隔只说明没有记录到对话，不说明{master}去了哪里或做了什么。\n"
     "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "======以上是环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下为環境提示======\n"
     "距離你和{master}上次有記錄的對話已經過了{elapsed}，現在又有了說話的機會。\n"
     "{time_hint}\n"
     "{holiday_hint}"
@@ -4290,7 +4288,7 @@ GREETING_PROMPT_LONG = {
     "间隔较长也不能说明{master}在忙、睡觉、离开或刚刚开机；请只根据已有对话自然衔接。\n"
     "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "======以上是环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下为環境提示======\n"
     "距離你和{master}上次有記錄的對話已經過了{elapsed}。\n"
     "{time_hint}\n"
     "{holiday_hint}"
@@ -4350,7 +4348,7 @@ GREETING_PROMPT_VERY_LONG = {
     "这只说明很久没有记录到对话。不要猜测{master}离线期间的生活，也不要用“终于等到你”一类制造内疚或压力的说法。\n"
     "用符合你性格的方式主动和{master}搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "======以上是环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下为環境提示======\n"
     "距離你和{master}上次有記錄的對話已經過了{elapsed}。\n"
     "{time_hint}\n"
     "{holiday_hint}"
@@ -4457,7 +4455,7 @@ def get_greeting_prompt(gap_seconds: float, lang: str = "zh") -> str | None:
     """
     if gap_seconds < 900:  # < 15分钟
         return None
-    lang_key = _normalize_prompt_language(lang)
+    lang_key = _normalize_startup_greeting_language(lang)
     if gap_seconds < 3600:  # 15min ~ 1h
         table = GREETING_PROMPT_SHORT
     elif gap_seconds < 18000:  # 1h ~ 5h
@@ -4525,14 +4523,14 @@ _STARTUP_GREETING_VARIANTS: dict[str, dict[str, str]] = {
 
 _STARTUP_TEMPORAL_CONTEXT = {
     "stale": {
-        "zh": "距离上次记录已超过 24 小时。晚安、稍后或明天继续等一次性转场已过期；请按当前时段中性重连，不复述旧转场，也不猜测离线活动。",
-        "zh-TW": "距離上次記錄已超過 24 小時。晚安、稍後或明天繼續等一次性轉場已過期；請按目前時段中性重連，不複述舊轉場，也不猜測離線活動。",
-        "en": "More than 24 hours have passed since the last record. One-time transitions such as goodnight, later, or tomorrow have expired; reconnect neutrally for the current time without replaying them or guessing offline activity.",
-        "ja": "最後の記録から24時間を超えている。「おやすみ」「また後で」「明日」など一度きりの流れは期限切れとして、繰り返したり不在中を推測せず、現在の時間帯に合う中立な挨拶にする。",
-        "ko": "마지막 기록 후 24시간이 넘었다. 잘 자, 나중에, 내일 같은 일회성 전환은 만료되었으니 반복하거나 부재 중 활동을 추측하지 말고 현재 시간대에 맞춰 중립적으로 다시 인사해.",
-        "ru": "С последней записи прошло больше 24 часов. Одноразовые переходы вроде «доброй ночи», «позже» или «завтра» уже истекли; поздоровайся нейтрально по текущему времени, не повторяя их и не выдумывая жизнь вне диалога.",
-        "es": "Han pasado más de 24 horas desde el último registro. Las transiciones de una sola vez, como buenas noches, luego o mañana, ya caducaron; reconecta de forma neutral según la hora actual, sin repetirlas ni inventar actividad fuera de línea.",
-        "pt": "Passaram mais de 24 horas desde o último registro. Transições de uso único, como boa noite, mais tarde ou amanhã, expiraram; reconecte de forma neutra para o horário atual, sem repeti-las nem inventar atividade fora da conversa.",
+        "zh": "距离上次记录已达到 24 小时。晚安、稍后或明天继续等一次性转场已过期；请按当前时段中性重连，不复述旧转场，也不猜测离线活动。",
+        "zh-TW": "距離上次記錄已達到 24 小時。晚安、稍後或明天繼續等一次性轉場已過期；請按目前時段中性重連，不複述舊轉場，也不猜測離線活動。",
+        "en": "At least 24 hours have passed since the last record. One-time transitions such as goodnight, later, or tomorrow have expired; reconnect neutrally for the current time without replaying them or guessing offline activity.",
+        "ja": "最後の記録から24時間以上経っている。「おやすみ」「また後で」「明日」など一度きりの流れは期限切れとして、繰り返したり不在中を推測せず、現在の時間帯に合う中立な挨拶にする。",
+        "ko": "마지막 기록 후 24시간 이상 지났다. 잘 자, 나중에, 내일 같은 일회성 전환은 만료되었으니 반복하거나 부재 중 활동을 추측하지 말고 현재 시간대에 맞춰 중립적으로 다시 인사해.",
+        "ru": "С последней записи прошло не менее 24 часов. Одноразовые переходы вроде «доброй ночи», «позже» или «завтра» уже истекли; поздоровайся нейтрально по текущему времени, не повторяя их и не выдумывая жизнь вне диалога.",
+        "es": "Han pasado 24 horas o más desde el último registro. Las transiciones de una sola vez, como buenas noches, luego o mañana, ya caducaron; reconecta de forma neutral según la hora actual, sin repetirlas ni inventar actividad fuera de línea.",
+        "pt": "Passaram 24 horas ou mais desde o último registro. Transições de uso único, como boa noite, mais tarde ou amanhã, expiraram; reconecte de forma neutra para o horário atual, sem repeti-las nem inventar atividade fora da conversa.",
     },
     "crossed": {
         "zh": "这段间隔跨过了本地早晨 6 点的对话日边界。若近期对话明确以晚安、休息、稍后或明天继续收尾，应承认这个已知转场，不要再追问对方去了哪里。",
@@ -4690,7 +4688,7 @@ def get_startup_greeting_guidance(
     observed_at=None,
 ) -> str:
     """Render factual, varied constraints for one ordinary startup greeting."""
-    lang_key = _normalize_prompt_language(lang)
+    lang_key = _normalize_startup_greeting_language(lang)
     template = _STARTUP_GREETING_CONSTRAINTS.get(
         lang_key,
         _STARTUP_GREETING_CONSTRAINTS.get("en", _STARTUP_GREETING_CONSTRAINTS["zh"]),
@@ -4702,7 +4700,7 @@ def get_startup_greeting_guidance(
         lang_key, variant_table.get("en", variant_table["zh"])
     )
     variant_guidance = variant_guidance.format(master=master)
-    if gap_seconds > 24 * 60 * 60:
+    if gap_seconds >= 24 * 60 * 60:
         temporal_key = "stale"
     else:
         temporal_key = (
