@@ -15,12 +15,17 @@
         _sidePanels.delete(panel);
     }
 
-    function isOverlayVisible(element) {
-        if (!element) return false;
+    function getVisibleOverlayRect(element) {
+        if (!element) return null;
         const style = window.getComputedStyle(element);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        const opacity = Number.parseFloat(style.opacity || '1');
+        if (style.display === 'none' || style.visibility === 'hidden' || opacity <= 0) return null;
         const rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
+        return rect.width > 0 && rect.height > 0 ? rect : null;
+    }
+
+    function isOverlayVisible(element) {
+        return getVisibleOverlayRect(element) !== null;
     }
 
     function hasVisiblePopup(ownerPrefix = '') {
@@ -39,6 +44,22 @@
 
     function hasVisibleOverlay(ownerPrefix = '') {
         return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix);
+    }
+
+    function isRectOverlappedByVisibleOverlay(rect, ownerPrefix = '') {
+        if (!rect) return false;
+        const popupSelector = ownerPrefix
+            ? `[id^="${ownerPrefix}-popup-"]`
+            : '[id*="-popup-"]';
+        const sidePanelSelector = ownerPrefix
+            ? `[data-neko-sidepanel-owner^="${ownerPrefix}-popup-"]`
+            : '[data-neko-sidepanel-owner]';
+        return Array.from(document.querySelectorAll(`${popupSelector}, ${sidePanelSelector}`)).some(element => {
+            const overlayRect = getVisibleOverlayRect(element);
+            return overlayRect &&
+                rect.right > overlayRect.left && rect.left < overlayRect.right &&
+                rect.bottom > overlayRect.top && rect.top < overlayRect.bottom;
+        });
     }
 
     function clearSidePanelTimers(panel) {
@@ -601,6 +622,7 @@
         formatSidePanelTransform,
         hasVisiblePopup,
         hasVisibleSidePanel,
-        hasVisibleOverlay
+        hasVisibleOverlay,
+        isRectOverlappedByVisibleOverlay
     };
 })();
