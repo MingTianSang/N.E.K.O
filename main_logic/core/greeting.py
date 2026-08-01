@@ -21,7 +21,7 @@ Method-only mixin: every instance attribute is assigned in
 import asyncio
 import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
 from main_logic.session_state import SessionEvent
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
@@ -44,7 +44,11 @@ from config.prompts.prompts_avatar_interaction import (
 from utils.config_manager import get_config_manager
 from utils.language_utils import normalize_language_code, get_global_language
 from uuid import uuid4
-from ._shared import logger, _proactive_expected_sid
+from ._shared import (
+    logger,
+    _proactive_expected_sid,
+    _proactive_published_text_chunks,
+)
 
 
 class GreetingMixin:
@@ -527,18 +531,28 @@ class GreetingMixin:
 
         greeting_commit_seen = False
         greeting_reservation_token = None
+        greeting_published_text_chunks: list[str] = []
 
         def _on_greeting_committed(committed_text: str) -> None:
             nonlocal greeting_commit_seen
             if greeting_commit_seen:
                 return
+            published_text = _strip_nonverbal_directives(
+                "".join(greeting_published_text_chunks)
+            ).strip()
             # prompt_ephemeral can still build a local assistant_message after a
             # user turn has stolen the speech id; the transport drops those deltas.
-            # Only the sid that actually owns this proactive turn is commit evidence.
+            # A prefix recorded at send_lanlan_response's sync-queue boundary is
+            # irrevocable commit evidence even if the final sid was preempted.
             if (
                 greeting_reservation_token is None
-                or self.state.is_proactive_preempted()
-                or self.current_speech_id != proactive_sid
+                or (
+                    not published_text
+                    and (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                )
             ):
                 logger.info(
                     "[%s] trigger_greeting: committed-text bookkeeping rejected "
@@ -547,6 +561,7 @@ class GreetingMixin:
                 )
                 return
             greeting_commit_seen = True
+            bookkeeping_text = published_text or committed_text
 
             # Both in-memory stages happen before prompt_ephemeral emits its
             # terminal callback.  Disk writes are detached so a cancellation after
@@ -554,7 +569,7 @@ class GreetingMixin:
             try:
                 staged_greeting = greeting_history.stage_committed(
                     greeting_name,
-                    committed_text,
+                    bookkeeping_text,
                     variant_key=startup_variant,
                     topic_key=surfaced_topic_key,
                     reservation_token=greeting_reservation_token,
@@ -569,7 +584,7 @@ class GreetingMixin:
             try:
                 staged_anti_repeat = anti_repeat_corpus.stage_output(
                     greeting_name,
-                    committed_text,
+                    bookkeeping_text,
                     is_proactive=True,
                 )
                 anti_repeat_corpus.flush_staged_detached(staged_anti_repeat)
@@ -637,6 +652,9 @@ class GreetingMixin:
                     )
                     return
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
+                _published_text_token = _proactive_published_text_chunks.set(
+                    greeting_published_text_chunks
+                )
                 try:
                     # 防御 stale session: 4429 start_session 之后到这里又过了
                     # 多次 await（holiday hint / try_start_proactive /
@@ -681,6 +699,7 @@ class GreetingMixin:
                             greeting_name, greeting_reservation_token
                         )
                 finally:
+                    _proactive_published_text_chunks.reset(_published_text_token)
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
         finally:

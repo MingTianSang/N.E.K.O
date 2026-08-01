@@ -407,6 +407,65 @@ async def test_user_sid_preemption_does_not_commit_hidden_local_text(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_user_preemption_commits_only_already_published_greeting_prefix(
+    monkeypatch,
+):
+    manager = None
+
+    class _PartiallyPublishedSession(_GreetingSession):
+        async def prompt_ephemeral(
+            self,
+            instruction,
+            *,
+            images=None,
+            on_committed=None,
+            on_committed_text=None,
+        ):
+            self.instructions.append(instruction)
+            published_chunks = core_module._proactive_published_text_chunks.get()
+            assert published_chunks is not None
+            published_chunks.append("This prefix reached the user.")
+            manager.current_speech_id = "user-sid"
+            await manager.state.fire(SessionEvent.USER_INPUT, sid="user-sid")
+            on_committed_text(
+                "This prefix reached the user. This suffix stayed local."
+            )
+            return True
+
+    session = _PartiallyPublishedSession()
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient(
+        topics=[{"id": "ref_book", "text": "Continue the book."}]
+    )
+    history = _HistoryDouble()
+    anti_repeat = _AntiRepeatDouble()
+    holiday_commit = MagicMock()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, holiday_commit
+    )
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+    await asyncio.gather(*manager._post_commit_tasks)
+
+    history.stage_committed.assert_called_once_with(
+        "Test",
+        "This prefix reached the user.",
+        variant_key="memory_followup",
+        topic_key="ref_book",
+        reservation_token="reservation-token",
+    )
+    anti_repeat.stage_output.assert_called_once_with(
+        "Test", "This prefix reached the user.", is_proactive=True
+    )
+    assert memory_client.post_calls
+    holiday_commit.assert_called_once_with("Test", "holiday-token")
+    history.release_reservation.assert_called_once_with(
+        "Test", "reservation-token"
+    )
+    assert manager.state.phase is ProactivePhase.IDLE
+
+
+@pytest.mark.asyncio
 async def test_concurrent_managers_share_one_atomic_startup_reservation(
     monkeypatch, tmp_path
 ):
