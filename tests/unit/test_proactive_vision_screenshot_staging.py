@@ -370,6 +370,45 @@ def test_prompt_ephemeral_no_visible_text_keeps_staged_screenshot():
     assert c._proactive_image_to_inject == "SCREEN_B64"
 
 
+def test_prompt_ephemeral_committed_text_callback_receives_sanitized_text_once():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([
+        SimpleNamespace(content="[play_music:demo] "),
+        SimpleNamespace(content="欢迎回来 "),
+    ])
+    committed_texts = []
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=committed_texts.append,
+        )
+    )
+
+    assert committed is True
+    assert committed_texts == ["欢迎回来"]
+
+
+def test_prompt_ephemeral_committed_text_callback_skips_nonverbal_only_output():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([SimpleNamespace(content="[play_music:demo]")])
+    committed_texts = []
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=committed_texts.append,
+        )
+    )
+
+    assert committed is False
+    assert committed_texts == []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. finish_proactive_delivery(vision_screenshot_b64=...) —— stage only on commit
 # ─────────────────────────────────────────────────────────────────────────────

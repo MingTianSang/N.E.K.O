@@ -144,6 +144,7 @@ class _LifecycleMixin:
         completion_mode: str = "proactive",
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
+        on_committed_text: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -176,6 +177,9 @@ class _LifecycleMixin:
         - ``on_committed``:
           Called after visible text is confirmed but before completion
           callbacks flush proactive state.
+        - ``on_committed_text``:
+          Called at the same commit boundary with the sanitized visible text
+          (nonverbal directives removed). Callback failures never fail the turn.
 
         Returns True if any user-visible text was generated, False if aborted
         or only nonverbal directives were emitted.
@@ -435,11 +439,19 @@ class _LifecycleMixin:
                     getattr(self, "model", None),
                     completion_mode,
                 )
-            elif on_committed:
-                try:
-                    on_committed()
-                except Exception:
-                    logger.exception("prompt_ephemeral on_committed callback failed")
+            else:
+                if on_committed_text:
+                    try:
+                        on_committed_text(committed_text)
+                    except Exception:
+                        logger.exception(
+                            "prompt_ephemeral on_committed_text callback failed"
+                        )
+                if on_committed:
+                    try:
+                        on_committed()
+                    except Exception:
+                        logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
