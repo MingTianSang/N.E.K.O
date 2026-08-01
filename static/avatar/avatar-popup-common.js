@@ -18,8 +18,10 @@
     function getVisibleOverlayRect(element) {
         if (!element) return null;
         const style = window.getComputedStyle(element);
-        const opacity = Number.parseFloat(style.opacity || '1');
-        if (style.display === 'none' || style.visibility === 'hidden' || opacity <= 0) return null;
+        const computedOpacity = Number.parseFloat(style.opacity || '1');
+        const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+        if (style.display === 'none' || style.visibility === 'hidden' ||
+            (computedOpacity <= 0 && targetOpacity <= 0)) return null;
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0 ? rect : null;
     }
@@ -75,6 +77,10 @@
         if (panel._hoverCollapseTimer) {
             clearTimeout(panel._hoverCollapseTimer);
             panel._hoverCollapseTimer = null;
+        }
+        if (panel._visibilitySettledTimer) {
+            clearTimeout(panel._visibilitySettledTimer);
+            panel._visibilitySettledTimer = null;
         }
         if (typeof panel._stopHoverPointerTracking === 'function') {
             panel._stopHoverPointerTracking();

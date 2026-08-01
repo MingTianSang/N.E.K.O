@@ -196,6 +196,14 @@ def test_model_lock_icons_ignore_pointer_input_while_avatar_overlays_overlap():
     assert "this.updateLockIconPosition();" in pngtuber_source
     assert f"new CustomEvent('{overlay_event}'" in popup_source
     assert "dispatchAvatarSidePanelVisibilityChanged(container);" in popup_source
+    assert popup_source.count(
+        "scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);"
+    ) == 2
+    assert popup_source.count(
+        "container.style.display = 'none';\n"
+        "                dispatchAvatarSidePanelVisibilityChanged(container);"
+    ) == 2
+    assert "if (panel._visibilitySettledTimer)" in popup_source
 
 
 def test_shared_avatar_overlay_overlap_detects_owned_sidepanels_by_geometry():
@@ -208,10 +216,12 @@ const source = {json.dumps(source)};
 const lockRect = {{ left: 10, top: 10, right: 42, bottom: 42 }};
 const vrmPopup = {{
   style: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
+  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
   getBoundingClientRect: () => ({{ left: 0, top: 0, right: 50, bottom: 50, width: 50, height: 50 }})
 }};
 const vrmSidePanel = {{
   style: {{ display: 'flex', visibility: 'visible', opacity: '1' }},
+  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
   getBoundingClientRect: () => ({{ left: 30, top: 30, right: 80, bottom: 80, width: 50, height: 50 }})
 }};
 const overlaysByPrefix = {{ vrm: [vrmPopup, vrmSidePanel], mmd: [] }};
@@ -227,7 +237,7 @@ global.document = {{
   querySelector() {{ return null; }}
 }};
 global.window = {{
-  getComputedStyle(element) {{ return element.style; }},
+  getComputedStyle(element) {{ return element.computedStyle || element.style; }},
   innerWidth: 1920,
   innerHeight: 1080
 }};
@@ -237,6 +247,9 @@ assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'mm
 assert.match(queriedSelectors[0], /\[id\^="vrm-popup-"\]/);
 assert.match(queriedSelectors[0], /data-neko-sidepanel-owner\^="vrm-popup-"/);
 vrmSidePanel.style.opacity = '0';
+vrmSidePanel.computedStyle.opacity = '1';
+assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'vrm'), true);
+vrmSidePanel.computedStyle.opacity = '0';
 assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'vrm'), false);
 """
     result = _run_node_harness(script)

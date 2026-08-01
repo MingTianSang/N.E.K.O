@@ -883,8 +883,10 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                             ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'mmd')
                             : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]')).some(element => {
                                 const style = window.getComputedStyle(element);
-                                const opacity = Number.parseFloat(style.opacity || '1');
-                                if (style.display === 'none' || style.visibility === 'hidden' || opacity <= 0) return false;
+                                const computedOpacity = Number.parseFloat(style.opacity || '1');
+                                const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                                if (style.display === 'none' || style.visibility === 'hidden' ||
+                                    (computedOpacity <= 0 && targetOpacity <= 0)) return false;
                                 const overlayRect = element.getBoundingClientRect();
                                 return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
                                     lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
