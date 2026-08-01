@@ -402,13 +402,6 @@ class _LifecycleMixin:
             return False
         finally:
             self._is_responding = False
-            # Clear the thinking bubble if this proactive/greeting/avatar turn
-            # pulsed it but committed no visible text — unlike stream_text, there
-            # is no external unconditional clear bracketing this call (Codex P2).
-            # Passing the owner seq suppresses the clear when a newer user turn
-            # interleaved and re-pulsed. No-op when nothing pulsed or it was
-            # already cleared on the first visible token (idempotent).
-            await self._notify_reasoning_done(_reasoning_owner_seq)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
@@ -468,6 +461,13 @@ class _LifecycleMixin:
                     )
                 except Exception as _exc:  # pragma: no cover
                     logger.debug("[AntiRepeat] stage reply skipped: %s", _exc)
+            # Everything above is synchronous commit-point bookkeeping.  Keep it
+            # before the first cleanup await so cancellation cannot make visible
+            # text disappear from callbacks/history while still reaching the user.
+            # Passing the owner seq suppresses the reasoning-bubble clear when a
+            # newer user turn interleaved and re-pulsed; the call is otherwise
+            # idempotent when nothing pulsed or the first token already cleared it.
+            await self._notify_reasoning_done(_reasoning_owner_seq)
             if completion_mode == "response":
                 if self.on_response_done:
                     await self.on_response_done()
