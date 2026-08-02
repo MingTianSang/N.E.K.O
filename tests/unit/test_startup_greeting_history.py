@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+from glob import glob
 from unittest.mock import MagicMock
 
 import pytest
@@ -147,7 +147,9 @@ async def test_corrupt_history_is_backed_up_and_self_heals(
 
     assert history.recent("Neko", now=100.0) == []
     assert history._cache["Neko"] == []
-    with open(f"{path}.corrupt.bak", "rb") as file:
+    backup_paths = glob(f"{path}.corrupt.*.bak")
+    assert len(backup_paths) == 1
+    with open(backup_paths[0], "rb") as file:
         assert file.read() == persisted_bytes
 
     token = history.try_reserve("Neko", now=100.0)
@@ -160,6 +162,8 @@ async def test_corrupt_history_is_backed_up_and_self_heals(
         reservation_token=token,
     )
     await history.aflush_staged(staged)
+    with open(backup_paths[0], "rb") as file:
+        assert file.read() == persisted_bytes
 
     reloaded = _build_history(tmp_path)
     await reloaded.apreload("Neko")
@@ -169,28 +173,32 @@ async def test_corrupt_history_is_backed_up_and_self_heals(
 
 
 @pytest.mark.asyncio
-async def test_corrupt_history_falls_back_to_copy_when_hard_links_fail(
-    tmp_path, monkeypatch
-):
+async def test_stale_legacy_backup_does_not_mask_current_corruption(tmp_path):
     history = _build_history(tmp_path)
     path = history._file_path("Neko")
-    persisted_bytes = b'{"records":'
+    legacy_backup_path = f"{path}.corrupt.bak"
+    earlier_corruption = b'{"records":"earlier"}'
+    current_corruption = b'{"records":'
+    with open(legacy_backup_path, "wb") as file:
+        file.write(earlier_corruption)
     with open(path, "wb") as file:
-        file.write(persisted_bytes)
-
-    def _reject_hard_link(_source, _target):
-        raise OSError("hard links unsupported")
-
-    monkeypatch.setattr(
-        "memory.startup_greeting_history.os.link",
-        _reject_hard_link,
-    )
+        file.write(current_corruption)
 
     await history.apreload("Neko")
 
     assert history._cache["Neko"] == []
-    with open(f"{path}.corrupt.bak", "rb") as file:
-        assert file.read() == persisted_bytes
+    with open(legacy_backup_path, "rb") as file:
+        assert file.read() == earlier_corruption
+    backup_paths = glob(f"{path}.corrupt.*.bak")
+    assert len(backup_paths) == 1
+    with open(backup_paths[0], "rb") as file:
+        assert file.read() == current_corruption
+
+    retry = _build_history(tmp_path)
+    await retry.apreload("Neko")
+    assert retry._cache["Neko"] == []
+    assert glob(f"{path}.corrupt.*.bak") == backup_paths
+
     token = history.try_reserve("Neko", now=100.0)
     assert token
     staged = history.stage_committed(
@@ -202,8 +210,10 @@ async def test_corrupt_history_falls_back_to_copy_when_hard_links_fail(
     )
     await history.aflush_staged(staged)
 
-    with open(f"{path}.corrupt.bak", "rb") as file:
-        assert file.read() == persisted_bytes
+    with open(legacy_backup_path, "rb") as file:
+        assert file.read() == earlier_corruption
+    with open(backup_paths[0], "rb") as file:
+        assert file.read() == current_corruption
     reloaded = _build_history(tmp_path)
     await reloaded.apreload("Neko")
     assert [record.text for record in reloaded.recent("Neko", now=102.0)] == [
@@ -221,19 +231,12 @@ async def test_corrupt_history_backup_failure_denies_reservation(
     with open(path, "wb") as file:
         file.write(persisted_bytes)
 
-    def _reject_hard_link(_source, _target):
-        raise OSError("hard links unsupported")
-
-    def _reject_copy(_source, _target):
-        raise PermissionError("backup copy unavailable")
+    def _reject_fsync(_file_descriptor):
+        raise PermissionError("backup sync unavailable")
 
     monkeypatch.setattr(
-        "memory.startup_greeting_history.os.link",
-        _reject_hard_link,
-    )
-    monkeypatch.setattr(
-        "memory.startup_greeting_history.shutil.copyfileobj",
-        _reject_copy,
+        "memory.startup_greeting_history.os.fsync",
+        _reject_fsync,
     )
 
     await history.apreload("Neko")
@@ -242,7 +245,7 @@ async def test_corrupt_history_backup_failure_denies_reservation(
     assert history.try_reserve("Neko", now=100.0) is None
     with open(path, "rb") as file:
         assert file.read() == persisted_bytes
-    assert not os.path.exists(f"{path}.corrupt.bak")
+    assert glob(f"{path}.corrupt.*.bak") == []
 
 
 @pytest.mark.asyncio
@@ -266,7 +269,7 @@ async def test_transient_read_oserror_keeps_cache_absent_and_denies_reservation(
 
     assert "Neko" not in history._cache
     assert history.try_reserve("Neko", now=100.0) is None
-    assert not os.path.exists(f"{path}.corrupt.bak")
+    assert glob(f"{path}.corrupt.*.bak") == []
 
 
 @pytest.mark.asyncio

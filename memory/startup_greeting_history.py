@@ -25,10 +25,10 @@ replies or scheduled proactive chats.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
-import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -187,36 +187,42 @@ class StartupGreetingHistory:
     def _backup_corrupt_file(self, name: str) -> str | None:
         """Best-effort, non-destructive backup of invalid persisted bytes.
 
-        Prefer a hard link because it is atomic and does not rewrite or remove
-        the source.  Filesystems without hard-link support fall back to an
-        exclusive byte copy.  The stable suffix prevents repeated startups
-        from accumulating an unbounded number of copies when no new greeting
-        is committed yet.
+        The content-derived suffix reuses one backup when the same malformed
+        bytes are encountered repeatedly, while keeping later, distinct
+        corruptions separate from older recovery artifacts.
         """
 
         path = self._file_path(name)
-        backup_path = f"{path}.corrupt.bak"
         try:
-            os.link(path, backup_path)
-        except FileExistsError:
-            return backup_path
+            with open(path, "rb") as source:
+                persisted_bytes = source.read()
         except OSError:
-            created_backup = False
+            return None
+
+        digest = hashlib.sha256(persisted_bytes).hexdigest()[:16]
+        backup_path = f"{path}.corrupt.{digest}.bak"
+        created_backup = False
+        try:
+            with open(backup_path, "xb") as target:
+                created_backup = True
+                target.write(persisted_bytes)
+                target.flush()
+                os.fsync(target.fileno())
+        except FileExistsError:
             try:
-                with open(path, "rb") as source, open(backup_path, "xb") as target:
-                    created_backup = True
-                    shutil.copyfileobj(source, target)
-                    target.flush()
-                    os.fsync(target.fileno())
-            except FileExistsError:
-                return backup_path
+                with open(backup_path, "rb") as existing:
+                    if existing.read() == persisted_bytes:
+                        return backup_path
             except OSError:
-                if created_backup:
-                    try:
-                        os.unlink(backup_path)
-                    except OSError:
-                        pass
-                return None
+                pass
+            return None
+        except OSError:
+            if created_backup:
+                try:
+                    os.unlink(backup_path)
+                except OSError:
+                    pass
+            return None
         return backup_path
 
     def _load_unlocked(self, name: str) -> list[StartupGreetingRecord]:
