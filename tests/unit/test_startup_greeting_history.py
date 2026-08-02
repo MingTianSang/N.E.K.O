@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from memory import startup_greeting_history as startup_history_module
 from memory.startup_greeting_history import StartupGreetingHistory
 
 
@@ -222,6 +223,63 @@ async def test_stale_legacy_backup_does_not_mask_current_corruption(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recovery_backs_up_parsed_snapshot_and_retries_changed_source(
+    tmp_path, monkeypatch
+):
+    history = _build_history(tmp_path)
+    path = history._file_path("Neko")
+    corrupt_bytes = b'{"records":'
+    replacement_bytes = json.dumps(
+        {
+            "version": 1,
+            "records": [
+                {
+                    "ts": 90.0,
+                    "text": "A concurrent valid opening.",
+                    "variant_key": "simple_presence",
+                }
+            ],
+        }
+    ).encode()
+    with open(path, "wb") as file:
+        file.write(corrupt_bytes)
+
+    real_read = startup_history_module.read_bytes_tolerating_replace
+    first_read = True
+
+    def _replace_after_first_read(target_path):
+        nonlocal first_read
+        persisted_bytes = real_read(target_path)
+        if first_read:
+            first_read = False
+            with open(target_path, "wb") as file:
+                file.write(replacement_bytes)
+        return persisted_bytes
+
+    monkeypatch.setattr(
+        startup_history_module,
+        "read_bytes_tolerating_replace",
+        _replace_after_first_read,
+    )
+
+    await history.apreload("Neko")
+
+    assert "Neko" not in history._cache
+    backup_paths = glob(f"{path}.corrupt.*.bak")
+    assert len(backup_paths) == 1
+    with open(backup_paths[0], "rb") as file:
+        assert file.read() == corrupt_bytes
+    with open(path, "rb") as file:
+        assert file.read() == replacement_bytes
+
+    await history.apreload("Neko")
+
+    assert [record.text for record in history.recent("Neko", now=100.0)] == [
+        "A concurrent valid opening."
+    ]
+
+
+@pytest.mark.asyncio
 async def test_corrupt_history_backup_failure_denies_reservation(
     tmp_path, monkeypatch
 ):
@@ -261,7 +319,7 @@ async def test_transient_read_oserror_keeps_cache_absent_and_denies_reservation(
         raise PermissionError("temporarily unavailable")
 
     monkeypatch.setattr(
-        "memory.startup_greeting_history.read_json_tolerating_replace",
+        "memory.startup_greeting_history.read_bytes_tolerating_replace",
         _raise_oserror,
     )
 

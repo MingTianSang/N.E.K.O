@@ -36,7 +36,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json, read_json_tolerating_replace
+from utils.file_utils import atomic_write_json, read_bytes_tolerating_replace
 from utils.logger_config import get_module_logger
 
 
@@ -63,6 +63,10 @@ StageHandle = tuple[str, dict[str, Any], int]
 
 class _CorruptStartupGreetingHistory(ValueError):
     """The file was read successfully, but its persisted content is unusable."""
+
+    def __init__(self, message: str, persisted_bytes: bytes) -> None:
+        super().__init__(message)
+        self.persisted_bytes = persisted_bytes
 
 
 def _resolve_name(name: Optional[str]) -> str:
@@ -156,27 +160,32 @@ class StartupGreetingHistory:
             os.stat(path)
         except FileNotFoundError:
             return []
+        persisted_bytes = read_bytes_tolerating_replace(path)
         try:
-            raw = read_json_tolerating_replace(path)
+            raw = json.loads(persisted_bytes.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise _CorruptStartupGreetingHistory(
-                "startup greeting history is not valid UTF-8 JSON"
+                "startup greeting history is not valid UTF-8 JSON",
+                persisted_bytes,
             ) from exc
         if not isinstance(raw, dict):
             raise _CorruptStartupGreetingHistory(
-                "startup greeting history root must be an object"
+                "startup greeting history root must be an object",
+                persisted_bytes,
             )
         items = raw.get("records")
         if not isinstance(items, list):
             raise _CorruptStartupGreetingHistory(
-                "startup greeting history has an invalid records field"
+                "startup greeting history has an invalid records field",
+                persisted_bytes,
             )
         records: list[StartupGreetingRecord] = []
         for index, item in enumerate(items):
             record = _normalize_record(item)
             if record is None:
                 raise _CorruptStartupGreetingHistory(
-                    f"startup greeting history has an invalid record at index {index}"
+                    f"startup greeting history has an invalid record at index {index}",
+                    persisted_bytes,
                 )
             records.append(record)
         # JSON list order is commit order.  Do not sort by wall clock: an NTP
@@ -184,7 +193,11 @@ class StartupGreetingHistory:
         # the latest record and must not be pruned as if it were old.
         return records[-_MAX_RECORDS:]
 
-    def _backup_corrupt_file(self, name: str) -> str | None:
+    def _backup_corrupt_file(
+        self,
+        name: str,
+        persisted_bytes: bytes,
+    ) -> str | None:
         """Best-effort, non-destructive backup of invalid persisted bytes.
 
         The content-derived suffix reuses one backup when the same malformed
@@ -193,12 +206,6 @@ class StartupGreetingHistory:
         """
 
         path = self._file_path(name)
-        try:
-            with open(path, "rb") as source:
-                persisted_bytes = source.read()
-        except OSError:
-            return None
-
         digest = hashlib.sha256(persisted_bytes).hexdigest()[:16]
         backup_path = f"{path}.corrupt.{digest}.bak"
         created_backup = False
@@ -267,10 +274,11 @@ class StartupGreetingHistory:
                 return
         try:
             records = await asyncio.to_thread(self._read_records_from_disk, resolved)
-        except _CorruptStartupGreetingHistory:
+        except _CorruptStartupGreetingHistory as exc:
             backup_path = await asyncio.to_thread(
                 self._backup_corrupt_file,
                 resolved,
+                exc.persisted_bytes,
             )
             if backup_path is None:
                 logger.warning(
@@ -281,6 +289,25 @@ class StartupGreetingHistory:
                 # Never install an empty cache unless the malformed source was
                 # preserved.  Without a cache, try_reserve fails closed and no
                 # later greeting can overwrite the only recoverable copy.
+                return
+            try:
+                current_bytes = await asyncio.to_thread(
+                    read_bytes_tolerating_replace,
+                    self._file_path(resolved),
+                )
+            except OSError:
+                logger.warning(
+                    "[StartupGreetingHistory] invalid persisted data for %s; "
+                    "source changed or became unavailable during recovery",
+                    resolved,
+                )
+                return
+            if current_bytes != exc.persisted_bytes:
+                logger.warning(
+                    "[StartupGreetingHistory] persisted data changed during "
+                    "recovery for %s; leaving history unavailable for retry",
+                    resolved,
+                )
                 return
             logger.warning(
                 "[StartupGreetingHistory] invalid persisted data for %s; "
