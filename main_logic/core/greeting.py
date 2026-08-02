@@ -54,6 +54,14 @@ from ._shared import (
 class GreetingMixin:
     """Greeting and avatar-interaction methods (see module docstring)."""
 
+    @staticmethod
+    def _greeting_locale_keys(language: str | None) -> tuple[str, str]:
+        """Return the short prompt locale and full regional holiday locale."""
+        return (
+            normalize_language_code(language, format='short'),
+            normalize_language_code(language, format='full'),
+        )
+
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
         if interaction_id in self._recent_avatar_interaction_id_set:
             return
@@ -382,18 +390,15 @@ class GreetingMixin:
             logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
 
-        _lang = normalize_language_code(self.user_language, format='short')
-        # Keep the region for startup prompt selection so Traditional Chinese
-        # reaches the dedicated zh-TW templates.  Formatting helpers that only
-        # support short codes continue to use ``_lang``.
-        _prompt_lang = normalize_language_code(self.user_language, format='full')
-        from config.prompts.prompts_proactive import (
-            get_greeting_prompt,
-            get_startup_greeting_guidance,
-            get_time_of_day_hint,
-        )
+        _lang, _holiday_lang = self._greeting_locale_keys(self.user_language)
+        from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
+        from config.prompts.prompts_proactive import get_startup_greeting_guidance
         from utils.time_format import format_elapsed as _format_elapsed
         from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
+        # Keep the region for startup prompt selection so Traditional Chinese
+        # reaches the dedicated zh-TW templates. Formatting helpers that only
+        # support short codes continue to use ``_lang``.
+        _prompt_lang = _holiday_lang
         template = get_greeting_prompt(gap_seconds, _prompt_lang)
         if not template:
             return
@@ -476,7 +481,10 @@ class GreetingMixin:
 
         _holiday_token = None
         try:
-            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(_lang, greeting_name)
+            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(
+                _holiday_lang,
+                self.lanlan_name,
+            )
         except Exception as e:
             logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
             holiday_hint_text = None
