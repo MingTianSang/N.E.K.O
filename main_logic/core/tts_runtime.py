@@ -585,6 +585,9 @@ class TtsRuntimeMixin:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
+        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
+        if notified_error_keys is not None:
+            notified_error_keys.clear()
         self._tts_done_queued_for_turn = False
         self._tts_fallback_uses_default_voice = False
         self._reset_tts_replay_state()
@@ -997,7 +1000,13 @@ class TtsRuntimeMixin:
     async def tts_response_handler(self):
         q = self.tts_response_queue
         pending_failed_speech_id = ""
-        notified_error_keys: set[tuple[str, str]] = set()
+        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
+        if notified_error_keys is None:
+            # Some tests and compatibility callers construct the manager with
+            # ``__new__``. Lazily initialize while keeping normal runtimes on
+            # the manager-owned set created in ``LLMSessionManager.__init__``.
+            notified_error_keys = set()
+            self._tts_notified_error_keys = notified_error_keys
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
             try:
@@ -1042,10 +1051,11 @@ class TtsRuntimeMixin:
                         await self.send_audio_done(data[1])
                         completed_speech_id = str(data[1] or "")
                         if completed_speech_id:
-                            notified_error_keys = {
+                            completed_keys = {
                                 key for key in notified_error_keys
-                                if key[0] != completed_speech_id
+                                if key[0] == completed_speech_id
                             }
+                            notified_error_keys.difference_update(completed_keys)
                         continue
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
