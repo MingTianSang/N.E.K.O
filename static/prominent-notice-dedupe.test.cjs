@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
 const browserNoticeSource = fs.readFileSync(
@@ -21,42 +22,93 @@ function sourceBetween(source, startMarker, endMarker) {
     return source.slice(start, end);
 }
 
-test('browser prominent notices merge an active or queued duplicate', () => {
-    const showBlock = sourceBetween(
-        browserNoticeSource,
-        'function showProminentNotice(noticeOrMessage)',
-        'I.mod.showProminentNotice = showProminentNotice',
+function buildNoticeHarness({ source, stateStart, renderName, showName }) {
+    const stateAndKey = sourceBetween(
+        source,
+        stateStart,
+        `function ${renderName}(`,
     );
-    const drainBlock = sourceBetween(
-        browserNoticeSource,
-        'function _drainProminentNoticeQueue()',
-        'function _renderProminentNotice(',
+    const showFunction = sourceBetween(
+        source,
+        `function ${showName}(`,
+        source === desktopToastSource ? '// ===== IPC' : 'I.mod.showProminentNotice',
     );
+    const rendered = [];
+    let dismissActive = null;
+    const context = {
+        rendered,
+        Promise,
+        String,
+        JSON,
+        setRenderCallback(callback) {
+            dismissActive = callback;
+        },
+    };
 
-    assert.match(showBlock, /_prominentNoticeDedupeKey\(notice\)/);
-    assert.match(showBlock, /_prominentNoticeQueue\.some/);
-    assert.match(showBlock, /_prominentNoticeActiveKey === dedupeKey/);
-    assert.match(showBlock, /resolve\(\);\s*return;/);
-    assert.match(drainBlock, /_prominentNoticeActiveKey = dedupeKey/);
-    assert.match(drainBlock, /_prominentNoticeActiveKey = ''/);
+    vm.runInNewContext(`
+        ${stateAndKey}
+        function ${renderName}(notice, onDismiss) {
+            rendered.push(JSON.parse(JSON.stringify(notice)));
+            setRenderCallback(onDismiss);
+        }
+        ${showFunction}
+        globalThis.noticeHarness = {
+            show: ${showName}
+        };
+    `, context);
+
+    return {
+        rendered,
+        show: context.noticeHarness.show,
+        dismiss() {
+            assert.equal(typeof dismissActive, 'function', 'expected an active notice');
+            const callback = dismissActive;
+            dismissActive = null;
+            callback();
+        },
+    };
+}
+
+test('browser prominent notices render one duplicate and advance after dismissal', async () => {
+    const harness = buildNoticeHarness({
+        source: browserNoticeSource,
+        stateStart: 'const _prominentNoticeQueue = [];',
+        renderName: '_renderProminentNotice',
+        showName: 'showProminentNotice',
+    });
+    const first = { code: 'API_KEY_REJECTED', message: 'invalid key' };
+    const second = { code: 'API_RATE_LIMIT', message: 'slow down' };
+
+    const firstDone = harness.show(first);
+    await harness.show({ ...first });
+    const secondDone = harness.show(second);
+    await harness.show({ ...second });
+
+    assert.deepEqual(harness.rendered, [first]);
+    harness.dismiss();
+    await firstDone;
+    assert.deepEqual(harness.rendered, [first, second]);
+    harness.dismiss();
+    await secondDone;
 });
 
-test('desktop prominent notices merge an active or queued duplicate', () => {
-    const showBlock = sourceBetween(
-        desktopToastSource,
-        'function showProminentNotice(notice)',
-        '// ===== IPC',
-    );
-    const drainBlock = sourceBetween(
-        desktopToastSource,
-        'function drainPnQueue()',
-        'function renderProminentNotice(',
-    );
+test('desktop prominent notices render one duplicate and advance after dismissal', () => {
+    const harness = buildNoticeHarness({
+        source: desktopToastSource,
+        stateStart: 'var pnQueue = [];',
+        renderName: 'renderProminentNotice',
+        showName: 'showProminentNotice',
+    });
+    const first = { code: 'API_KEY_REJECTED', message: 'invalid key' };
+    const second = { code: 'API_RATE_LIMIT', message: 'slow down' };
 
-    assert.match(showBlock, /prominentNoticeDedupeKey\(notice\)/);
-    assert.match(showBlock, /pnQueue\.some/);
-    assert.match(showBlock, /pnActiveKey === dedupeKey/);
-    assert.match(showBlock, /return;/);
-    assert.match(drainBlock, /pnActiveKey = item\.dedupeKey/);
-    assert.match(drainBlock, /pnActiveKey = ''/);
+    harness.show(first);
+    harness.show({ ...first });
+    harness.show(second);
+    harness.show({ ...second });
+
+    assert.deepEqual(harness.rendered, [first]);
+    harness.dismiss();
+    assert.deepEqual(harness.rendered, [first, second]);
+    harness.dismiss();
 });
