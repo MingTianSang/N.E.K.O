@@ -62,7 +62,7 @@ def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
     assert 'live2d_idle_animation' not in editable_keys
 
 
-def test_pngtuber_legacy_fields_are_reserved_and_hidden_from_editable_fields():
+def test_pngtuber_flat_legacy_fields_survive_create_filter_and_migrate():
     pngtuber_config = {
         'idle_image': '/user_pngtuber/avatar/idle.png',
         'talking_image': '/user_pngtuber/avatar/talking.png',
@@ -71,27 +71,23 @@ def test_pngtuber_legacy_fields_are_reserved_and_hidden_from_editable_fields():
         'angry_image': '/user_pngtuber/avatar/angry.png',
         'surprised_image': '/user_pngtuber/avatar/surprised.png',
     }
-    reserved_fields = {
-        'pngtuber',
-        *(f'pngtuber_{key}' for key in pngtuber_config),
+    legacy_fields = {
+        f'pngtuber_{key}': value
+        for key, value in pngtuber_config.items()
     }
-    assert reserved_fields <= set(CHARACTER_RESERVED_FIELDS)
+    assert characters_crud_module._filter_mutable_catgirl_fields(legacy_fields) == legacy_fields
+    assert characters_crud_module._filter_mutable_catgirl_fields(
+        {'pngtuber': dict(pngtuber_config)}
+    ) == {'pngtuber': pngtuber_config}
 
-    catgirl = {
-        '性格': '开朗',
-        'pngtuber': dict(pngtuber_config),
-        **{f'pngtuber_{key}': value for key, value in pngtuber_config.items()},
-    }
-
+    catgirl = dict(legacy_fields)
     assert migrate_catgirl_reserved(catgirl) is True
-    assert reserved_fields.isdisjoint(catgirl)
+    assert all(field not in catgirl for field in legacy_fields)
     assert get_reserved(catgirl, 'avatar', 'pngtuber') == pngtuber_config
 
     flattened = flatten_reserved(catgirl)
     assert flattened['pngtuber'] == pngtuber_config
     assert all(flattened[f'pngtuber_{key}'] == value for key, value in pngtuber_config.items())
-    editable_keys = [key for key in flattened if key not in CHARACTER_RESERVED_FIELDS]
-    assert reserved_fields.isdisjoint(editable_keys)
 
 
 def _build_characters_fixture():
