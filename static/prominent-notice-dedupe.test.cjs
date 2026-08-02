@@ -90,6 +90,10 @@ test('browser prominent notices render one duplicate and advance after dismissal
     assert.deepEqual(harness.rendered, [first, second]);
     harness.dismiss();
     await secondDone;
+    const repeatedAfterDismissDone = harness.show({ ...second });
+    assert.deepEqual(harness.rendered, [first, second, second]);
+    harness.dismiss();
+    await repeatedAfterDismissDone;
 });
 
 test('desktop prominent notices render one duplicate and advance after dismissal', () => {
@@ -110,5 +114,8 @@ test('desktop prominent notices render one duplicate and advance after dismissal
     assert.deepEqual(harness.rendered, [first]);
     harness.dismiss();
     assert.deepEqual(harness.rendered, [first, second]);
+    harness.dismiss();
+    harness.show({ ...second });
+    assert.deepEqual(harness.rendered, [first, second, second]);
     harness.dismiss();
 });
