@@ -63,6 +63,26 @@ def test_character_card_manager_parts_load_in_dependency_order():
     assert script_positions == sorted(script_positions)
 
 
+def test_character_card_manager_hides_pngtuber_compatibility_fields_with_frontend_fallbacks():
+    reserved_utils = (PROJECT_ROOT / "static" / "js" / "reserved_fields_utils.js").read_text(encoding="utf-8")
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    fallback_block = reserved_utils.split("const SYSTEM_RESERVED_FIELDS_FALLBACK", 1)[1].split("]);", 1)[0]
+    force_hidden_block = core.split("const FRONTEND_FORCE_HIDDEN_FIELDS", 1)[1].split("];", 1)[0]
+    pngtuber_fields = (
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
+    )
+
+    for field in pngtuber_fields:
+        assert f"'{field}'" in fallback_block
+        assert f"'{field}'" in force_hidden_block
+
+
 def test_character_card_import_keeps_non_blocking_progress_visible_until_completion():
     core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
     styles = (PROJECT_ROOT / "static" / "css" / "character_card_manager.css").read_text(encoding="utf-8")

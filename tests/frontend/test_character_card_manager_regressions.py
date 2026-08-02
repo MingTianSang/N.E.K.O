@@ -8,6 +8,39 @@ def _open_character_card_manager(page: Page, running_server: str) -> None:
     page.wait_for_selector("body")
 
 
+@pytest.mark.frontend
+def test_character_card_manager_hides_pngtuber_internal_fields(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    rendered_fields = mock_page.evaluate(
+        """
+        () => {
+            const host = document.createElement('div');
+            document.body.appendChild(host);
+            buildCatgirlDetailForm('PNGTuber角色', {
+                '性格': '开朗',
+                'pngtuber': {
+                    idle_image: '/user_pngtuber/avatar/idle.png',
+                    talking_image: '/user_pngtuber/avatar/talking.png'
+                },
+                'pngtuber_idle_image': '/user_pngtuber/avatar/idle.png',
+                'pngtuber_talking_image': '/user_pngtuber/avatar/talking.png',
+                'pngtuber_happy_image': '/user_pngtuber/avatar/happy.png',
+                'pngtuber_sad_image': '/user_pngtuber/avatar/sad.png',
+                'pngtuber_angry_image': '/user_pngtuber/avatar/angry.png',
+                'pngtuber_surprised_image': '/user_pngtuber/avatar/surprised.png'
+            }, false, host);
+            return [...host.querySelectorAll('textarea[name]')].map(field => field.name);
+        }
+        """
+    )
+
+    assert rendered_fields == ['性格']
+
+
 def _mount_steam_preview_dom(page: Page) -> None:
     page.evaluate(
         """

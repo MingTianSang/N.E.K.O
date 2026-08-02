@@ -10,6 +10,13 @@ const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_
 const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'live2d_item_id',
     'live2d_idle_animation',
+    'pngtuber',
+    'pngtuber_idle_image',
+    'pngtuber_talking_image',
+    'pngtuber_happy_image',
+    'pngtuber_sad_image',
+    'pngtuber_angry_image',
+    'pngtuber_surprised_image',
     '_reserved',
     '_field_order',
     'item_id',
