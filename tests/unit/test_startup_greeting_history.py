@@ -98,8 +98,42 @@ def test_history_is_newest_first_and_count_capped(tmp_path):
         b'{"records":',
         json.dumps({"records": "not-a-list"}).encode(),
         b'\xff\xfeinvalid utf-8',
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "ts": 99.0,
+                        "text": "A valid opening.",
+                        "variant_key": "simple_presence",
+                    },
+                    {"ts": 100.0, "text": "Missing its variant."},
+                ]
+            }
+        ).encode(),
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "ts": 99.0,
+                        "text": "A valid opening.",
+                        "variant_key": "simple_presence",
+                    },
+                    {
+                        "ts": "not-a-timestamp",
+                        "text": "Invalid timestamp.",
+                        "variant_key": "simple_presence",
+                    },
+                ]
+            }
+        ).encode(),
     ],
-    ids=["bad-json", "bad-schema", "bad-encoding"],
+    ids=[
+        "bad-json",
+        "bad-schema",
+        "bad-encoding",
+        "bad-record-missing-field",
+        "bad-record-timestamp",
+    ],
 )
 async def test_corrupt_history_is_backed_up_and_self_heals(
     tmp_path, persisted_bytes

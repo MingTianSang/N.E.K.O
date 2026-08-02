@@ -170,9 +170,14 @@ class StartupGreetingHistory:
             raise _CorruptStartupGreetingHistory(
                 "startup greeting history has an invalid records field"
             )
-        records = [
-            record for item in items if (record := _normalize_record(item)) is not None
-        ]
+        records: list[StartupGreetingRecord] = []
+        for index, item in enumerate(items):
+            record = _normalize_record(item)
+            if record is None:
+                raise _CorruptStartupGreetingHistory(
+                    f"startup greeting history has an invalid record at index {index}"
+                )
+            records.append(record)
         # JSON list order is commit order.  Do not sort by wall clock: an NTP
         # correction can move time backwards, but the latest commit must remain
         # the latest record and must not be pruned as if it were old.
