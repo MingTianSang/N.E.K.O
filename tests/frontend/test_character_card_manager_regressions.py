@@ -9,13 +9,13 @@ def _open_character_card_manager(page: Page, running_server: str) -> None:
 
 
 @pytest.mark.frontend
-def test_character_card_manager_hides_pngtuber_internal_fields(
+def test_character_card_manager_hides_pngtuber_fields_without_filtering_workshop_payloads(
     mock_page: Page,
     running_server: str,
 ):
     _open_character_card_manager(mock_page, running_server)
 
-    rendered_fields = mock_page.evaluate(
+    state = mock_page.evaluate(
         """
         () => {
             const host = document.createElement('div');
@@ -33,12 +33,35 @@ def test_character_card_manager_hides_pngtuber_internal_fields(
                 'pngtuber_angry_image': '/user_pngtuber/avatar/angry.png',
                 'pngtuber_surprised_image': '/user_pngtuber/avatar/surprised.png'
             }, false, host);
-            return [...host.querySelectorAll('textarea[name]')].map(field => field.name);
+            const pngtuberFields = [
+                'pngtuber',
+                'pngtuber_idle_image',
+                'pngtuber_talking_image',
+                'pngtuber_happy_image',
+                'pngtuber_sad_image',
+                'pngtuber_angry_image',
+                'pngtuber_surprised_image'
+            ];
+            return {
+                renderedFields: [...host.querySelectorAll('textarea[name]')].map(field => field.name),
+                hiddenFields: pngtuberFields.filter(field => getWorkshopHiddenFields().includes(field)),
+                workshopReservedFields: pngtuberFields.filter(field => getWorkshopReservedFields().includes(field))
+            };
         }
         """
     )
 
-    assert rendered_fields == ['性格']
+    assert state["renderedFields"] == ['性格']
+    assert state["hiddenFields"] == [
+        'pngtuber',
+        'pngtuber_idle_image',
+        'pngtuber_talking_image',
+        'pngtuber_happy_image',
+        'pngtuber_sad_image',
+        'pngtuber_angry_image',
+        'pngtuber_surprised_image',
+    ]
+    assert state["workshopReservedFields"] == []
 
 
 def _mount_steam_preview_dom(page: Page) -> None:
