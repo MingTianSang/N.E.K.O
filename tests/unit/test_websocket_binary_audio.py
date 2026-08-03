@@ -366,6 +366,57 @@ async def test_documented_legacy_audio_flow_authorizes_before_session_and_pcm(
 
 
 @pytest.mark.asyncio
+async def test_same_socket_reclaims_voice_after_text_route_revokes_lease(
+    monkeypatch,
+) -> None:
+    class _TextRouteRevokesLeaseManager(_ProtocolManager):
+        async def _ensure_voice_input_session_authorized(
+            self,
+            connection_id: str,
+        ) -> bool:
+            self.calls.append(("authorize", connection_id))
+            return connection_id == self._voice_lease_connection_id
+
+        async def start_session(self, *_args, **_kwargs) -> None:
+            input_mode = _args[2]
+            self.calls.append(("start_session", input_mode))
+            if input_mode == "text":
+                # Mirrors _start_independent_asr_if_enabled: a text session
+                # fail-closes the microphone route and vacates the lease while
+                # the browser WebSocket itself remains connected.
+                await self._revoke_voice_input_connection(
+                    self._voice_lease_connection_id
+                )
+
+    manager = _TextRouteRevokesLeaseManager()
+    websocket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "audio"},
+            {"action": "start_session", "input_type": "text"},
+            {"action": "start_session", "input_type": "audio"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [
+        payload for name, payload in manager.calls if name == "start_session"
+    ] == ["audio", "text", "audio"]
+    begin_calls = [payload for name, payload in manager.calls if name == "begin"]
+    authorize_calls = [
+        payload for name, payload in manager.calls if name == "authorize"
+    ]
+    assert len(begin_calls) == 2
+    assert authorize_calls == begin_calls
+    assert manager.statuses == []
+
+
+@pytest.mark.asyncio
 async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
     monkeypatch,
 ) -> None:
