@@ -78,17 +78,22 @@ Live2DManager.prototype._startIdleMotion = async function(model, groupName, inde
         this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.IDLE);
         return false;
     }
+    const actionActive = this.hasActiveActionMotion(model);
     if (
         this.currentModel !== model
         || model.destroyed
         || this._idleMotionRequestGeneration !== generation
-        || this.hasActiveActionMotion(model)
+        || actionActive
     ) {
-        // SDK 允许加载中的 Idle 越过 NORMAL 预留。只停掉刚启动的过期
-        // Idle，并保留普通动作的预留。
-        if (Number(motionManager.state.currentPriority) === LIVE2D_MOTION_PRIORITY.IDLE) {
+        const state = motionManager.state;
+        const ownsCurrentIdle = Number(state.currentPriority) === LIVE2D_MOTION_PRIORITY.IDLE
+            && state.currentGroup === groupName
+            && (index == null || state.currentIndex === index);
+        // NORMAL 加载期间保留当前 Idle，由 SDK 在动作真正开始时原子替换；
+        // 其他失效请求只停止自己刚启动的 Idle，不能误停更新的 Idle。
+        if (!actionActive && ownsCurrentIdle) {
             motionManager._stopAllMotions();
-            motionManager.state.complete();
+            state.complete();
         }
         return false;
     }
@@ -97,8 +102,8 @@ Live2DManager.prototype._startIdleMotion = async function(model, groupName, inde
 
 /**
  * 播放一个主界面动作。普通动作统一使用 NORMAL 优先级；当另一个普通动作
- * 正在加载或播放时拒绝本次请求。Idle 可以被接管，但会先立即停止，避免
- * SDK 的淡出阶段把 Idle 与新动作叠在一起。
+ * 正在加载或播放时拒绝本次请求。Idle 会保留到普通动作加载完成，再由
+ * SDK 原子替换，避免加载空窗触发 SDK 自动 Idle。
  */
 Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     const model = this.currentModel;
@@ -111,7 +116,19 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
         return false;
     }
     this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
-    this._stopIdleMotion(model);
+    this._idleLoopRequestGeneration = (this._idleLoopRequestGeneration || 0) + 1;
+
+    const state = motionManager.state;
+    if (
+        Number(state.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE) === LIVE2D_MOTION_PRIORITY.IDLE
+        || state.reservedIdleGroup !== undefined
+    ) {
+        if (typeof this._clearMotionTimer === 'function') this._clearMotionTimer();
+    }
+    // MotionState.shouldRequestIdleMotion() 不检查 NORMAL reservation。用一个
+    // 仅在本次动作加载期间存在的 Idle reservation 阻止 SDK 自动启动 Idle。
+    const idleBlock = {};
+    state.setReservedIdle(idleBlock, undefined);
 
     let started;
     try {
@@ -123,6 +140,10 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     } catch (error) {
         this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
         throw error;
+    } finally {
+        if (state.reservedIdleGroup === idleBlock) {
+            state.setReservedIdle(undefined, undefined);
+        }
     }
     if (started === false) {
         this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
@@ -139,6 +160,7 @@ Live2DManager.prototype.playIdleMotion = async function(groupName, index) {
     if (!model || typeof model.motion !== 'function' || !motionManager) {
         return false;
     }
+    this._idleLoopRequestGeneration = (this._idleLoopRequestGeneration || 0) + 1;
     return this._startIdleMotion(model, groupName, index);
 };
 
@@ -217,6 +239,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
     this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
+    this._idleLoopRequestGeneration = (this._idleLoopRequestGeneration || 0) + 1;
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._clearMotionTimer === 'function') {
@@ -1779,10 +1802,14 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return;
     }
     const expectedModel = this.currentModel;
+    const loopGeneration = (this._idleLoopRequestGeneration || 0) + 1;
+    this._idleLoopRequestGeneration = loopGeneration;
     const isCurrentIdleRequest = () => (
         this.currentModel === expectedModel
         && expectedModel
         && !expectedModel.destroyed
+        && this._idleLoopRequestGeneration === loopGeneration
+        && !this.hasActiveActionMotion(expectedModel)
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
@@ -1829,6 +1856,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         if (!isCurrentIdleRequest()) return false;
         try {
             const started = await this._startIdleMotion(expectedModel, groupName, index);
+            if (!isCurrentIdleRequest()) return false;
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
                 return false;
@@ -1846,6 +1874,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             const definition = definitions[idx];
             const file = definition && (definition.File || definition.file);
             if (await startTrackedMotion(groupName, idx, file)) return true;
+            if (!isCurrentIdleRequest()) return false;
         }
         return false;
     };
@@ -1857,6 +1886,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             if (filter && !filter(motion)) continue;
             const file = getMotionFile(motion);
             if (await startTrackedMotion(groupName, idx, file)) return true;
+            if (!isCurrentIdleRequest()) return false;
         }
         return false;
     };
@@ -1873,6 +1903,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
                 const motionFile = getMotionFile(motion);
                 return motionFile && idleAnimations.includes(motionFile.split('/').pop());
             });
+            if (!isCurrentIdleRequest()) return;
             if (startedUserIdle) {
                 return;
             }
@@ -1891,6 +1922,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     if (await startTrackedDefinitionMotion('Idle', definitions.Idle)) {
         return;
     }
+    if (!isCurrentIdleRequest()) return;
 
     const motionGroups = motionManager.motionGroups || motionManager._motionGroups || {};
     if (await startTrackedGroupMotion('Idle', motionGroups.Idle)) {

@@ -89,7 +89,7 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           const action = new context.Live2DManager(); action.currentModel = makeModel(actionMM);
           action._clearMotionTimer = () => actionEvents.push('clear-timer');
           assert.strictEqual(await action.playActionMotion('Tap', 0), true);
-          assert.deepStrictEqual(actionEvents, ['clear-timer', 'stop', 'start:Tap']);
+          assert.deepStrictEqual(actionEvents, ['clear-timer', 'start:Tap']);
 
           const failedMM = makeMotionManager([], () => false);
           const failed = new context.Live2DManager(); failed.currentModel = makeModel(failedMM);
@@ -119,11 +119,45 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           const actionPromise = manager.playActionMotion('Tap', 0);
           resolveIdle();
           assert.strictEqual(await idlePromise, false);
-          assert.strictEqual(deferredMM.state.currentPriority, 0);
+          assert.strictEqual(deferredMM.state.currentPriority, 1);
           assert.strictEqual(deferredMM.state.reservePriority, 2);
           resolveAction();
           assert.strictEqual(await actionPromise, true);
           assert.strictEqual(deferredMM.state.currentPriority, 2);
+
+          let resolveEmptyAction;
+          const emptyMM = makeMotionManager([], () => new Promise((resolve) => { resolveEmptyAction = resolve; }));
+          const empty = new context.Live2DManager(); empty.currentModel = makeModel(emptyMM);
+          const emptyAction = empty.playActionMotion('Tap', 0);
+          assert.notStrictEqual(emptyMM.state.reservedIdleGroup, undefined);
+          resolveEmptyAction(true);
+          assert.strictEqual(await emptyAction, true);
+          assert.strictEqual(emptyMM.state.reservedIdleGroup, undefined);
+
+          const staleStarts = [], staleResolvers = {};
+          const staleMM = makeMotionManager([], (state, group, index) => {
+            const key = `${group}:${index}`;
+            staleStarts.push(key);
+            if (staleStarts.length > 2) return false;
+            return new Promise((resolve) => {
+              staleResolvers[key] = () => {
+                state.setReservedIdle(undefined, undefined);
+                if (state.currentPriority !== 0) return resolve(false);
+                state.setCurrent(group, index, 1); resolve(true);
+              };
+            });
+          });
+          staleMM.definitions = { Idle: [{ File: 'a.motion3.json' }, { File: 'b.motion3.json' }] };
+          const stale = new context.Live2DManager(); stale.currentModel = makeModel(staleMM);
+          stale.isAvatarPerformanceCapabilityLocked = () => false;
+          const staleLoop = stale._playIdleMotion(staleMM);
+          while (staleStarts.length === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+          const staleKey = staleStarts[0];
+          const savedIdle = stale.playIdleMotion('Saved', 0);
+          staleResolvers['Saved:0'](); assert.strictEqual(await savedIdle, true);
+          staleResolvers[staleKey](); await staleLoop;
+          assert.deepStrictEqual(staleStarts, [staleKey, 'Saved:0']);
+          assert.strictEqual(staleMM.state.currentGroup, 'Saved');
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
@@ -150,11 +184,20 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           manager.resetTransientMotionAndExpressionState = async (options) => { manager.resetOptions = options; };
           manager.playExpression = async () => { manager.expressionPlayed = true; return true; };
           manager.playMotion = async () => { manager.motionAttempted = true; return false; };
-          await manager.setEmotion('happy');
+          assert.strictEqual(await manager.setEmotion('happy'), true);
           assert.strictEqual(manager.expressionPlayed && manager.motionAttempted, true);
           assert.strictEqual(manager.resetOptions.preserveMotion, true);
           assert.strictEqual(state.currentPriority, 2);
           assert.strictEqual(manager.persistentApplied, true);
+
+          const clearing = new context.Live2DManager();
+          clearing.currentModel = {
+            internalModel: { coreModel: {}, motionManager: { expressionManager: { stopAllExpressions() {} } } },
+          };
+          clearing._cancelSmoothReset = () => {};
+          clearing._resetParametersToInitialState = () => { throw new Error('must not reset action parameters'); };
+          clearing.applyPersistentExpressionsNative = async () => {};
+          assert.strictEqual(clearing.clearExpression({ preserveMotion: true }), true);
 
           const expressions = new context.Live2DManager(), resolvers = {};
           expressions.currentModel = {
@@ -166,6 +209,7 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           expressions.resolveAssetPath = (file) => file;
           expressions.clearExpression = function() {
             this.clearCount = (this.clearCount || 0) + 1;
+            assert.strictEqual(arguments[0].preserveMotion, true);
             this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
           };
           expressions.applyPersistentExpressionsNative = async () => {};

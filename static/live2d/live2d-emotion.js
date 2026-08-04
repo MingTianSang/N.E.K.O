@@ -169,6 +169,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
 // 清除当前瞬态 expression；常驻 expression 只重放，不参与互斥状态。
 Live2DManager.prototype.clearExpression = function(options = {}) {
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
+    const preserveMotion = options.preserveMotion === true;
     const activeExpressionParamIds = this._activeExpressionParamIds
         && typeof this._activeExpressionParamIds.forEach === 'function'
         ? new Set(Array.from(this._activeExpressionParamIds))
@@ -196,10 +197,11 @@ Live2DManager.prototype.clearExpression = function(options = {}) {
         this._activeExpressionParamIds = null;
         if (activeExpressionParamIds && activeExpressionParamIds.size > 0) {
             const resetCount = this._resetRecordedParameterIds(activeExpressionParamIds, {
-                preserveExpression: false
+                preserveExpression: false,
+                preserveMotion
             });
             console.log(`expression已恢复${resetCount}个受影响参数到用户外观基准`);
-        } else {
+        } else if (!preserveMotion) {
             const resetCount = this._resetParametersToInitialState({ preserveExpression: false });
             console.log(`expression参数列表不可用，已降级恢复${resetCount}个参数到外观基准`);
         }
@@ -256,6 +258,9 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
 
     const coreModel = this.currentModel.internalModel.coreModel;
     const protectedIds = preserveExpression ? this._getActiveExpressionParamIds() : new Set();
+    if (options.preserveMotion && this._activeMotionParamIds instanceof Set) {
+        this._activeMotionParamIds.forEach(id => protectedIds.add(id));
+    }
     const protectedIndexes = new Set();
     if (preserveExpression && protectedIds.size > 0 && typeof coreModel.getParameterIndex === 'function') {
         protectedIds.forEach((id) => {
@@ -514,7 +519,7 @@ Live2DManager.prototype.resetTransientMotionAndExpressionState = async function(
         || (!preserveExpression && options.resetAllParameters !== false);
 
     if (!preserveExpression) {
-        this.clearExpression({ reapplyPersistent: false });
+        this.clearExpression({ reapplyPersistent: false, preserveMotion });
     } else {
         this._cancelSmoothReset();
     }
@@ -906,7 +911,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     }
     if (!choiceFile) return false;
 
-    this.clearExpression({ reapplyPersistent: false });
+    this.clearExpression({ reapplyPersistent: false, preserveMotion: true });
     const generation = this._transientExpressionGeneration;
     const isCurrentExpressionRequest = () => (
         this.currentModel === model
@@ -1566,8 +1571,10 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         }
 
         console.log(`情感 ${emotion} 设置完成`);
+        return true;
     } catch (error) {
         console.error(`设置情感 ${emotion} 失败:`, error);
+        return false;
     } finally {
         if (isCurrentEmotionRequest()) {
             this.isEmotionChanging = false;
