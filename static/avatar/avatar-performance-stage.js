@@ -1689,10 +1689,17 @@
             this.activeFrameTransformContainer = null;
             const manager = this.getManager();
             if (this.sessionHasCapability(session, 'motion') && manager && typeof manager.suspendTemporaryMotions === 'function') {
-                this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
-                try {
-                    manager.suspendTemporaryMotions(this.motionSuspendSource, this.getModel());
-                } catch (_) {}
+                const model = this.getModel();
+                const hasActiveAction = typeof manager.hasActiveActionMotion === 'function'
+                    && manager.hasActiveActionMotion(model);
+                if (!hasActiveAction) {
+                    this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
+                    try {
+                        manager.suspendTemporaryMotions(this.motionSuspendSource, model);
+                    } catch (_) {}
+                } else {
+                    this.motionSuspendSource = '';
+                }
             }
             const hasFrameCapability = this.sessionHasCapability(session, 'frame');
             if (hasFrameCapability && container) {

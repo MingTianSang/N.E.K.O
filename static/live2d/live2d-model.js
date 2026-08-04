@@ -53,14 +53,42 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
         currentPriority === LIVE2D_MOTION_PRIORITY.IDLE
         || hasReservedIdle
     ) {
+        if (typeof this._clearMotionTimer === 'function') {
+            this._clearMotionTimer();
+        }
         motionManager.stopAllMotions();
     }
 
-    const started = await model.motion(
-        groupName,
-        index,
-        LIVE2D_MOTION_PRIORITY.NORMAL
-    );
+    const clearOwnedReservation = () => {
+        const currentState = motionManager.state;
+        if (!currentState || currentState !== state) return;
+        const ownsReservedGroup = currentState.reservedGroup === groupName;
+        const ownsReservedIndex = index == null || currentState.reservedIndex === index;
+        if (!ownsReservedGroup || !ownsReservedIndex) return;
+
+        if (typeof currentState.setReserved === 'function') {
+            currentState.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+        } else {
+            currentState.reservePriority = LIVE2D_MOTION_PRIORITY.NONE;
+            currentState.reservedGroup = undefined;
+            currentState.reservedIndex = undefined;
+        }
+    };
+
+    let started;
+    try {
+        started = await model.motion(
+            groupName,
+            index,
+            LIVE2D_MOTION_PRIORITY.NORMAL
+        );
+    } catch (error) {
+        clearOwnedReservation();
+        throw error;
+    }
+    if (started === false) {
+        clearOwnedReservation();
+    }
     if (this.currentModel !== model || started === false) {
         return false;
     }
@@ -166,9 +194,10 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
-    if (typeof this._nextMotionTimerGeneration === 'function') {
-        this._nextMotionTimerGeneration();
+    if (typeof this._clearMotionTimer === 'function') {
+        this._clearMotionTimer();
     } else {
+        this._simpleMotionActive = false;
         this._motionTimerGeneration = (this._motionTimerGeneration || 0) + 1;
     }
 

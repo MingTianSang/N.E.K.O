@@ -1,4 +1,12 @@
+import json
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_stdin
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +19,41 @@ MODEL_RELOAD_PATH = (
     / "app-interpage"
     / "bootstrap-resources-and-model-reload.js"
 )
+
+
+def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+    return run_node_stdin(
+        node_executable,
+        script,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        timeout=10,
+        check=False,
+    )
+
+
+def _manager_harness(body: str) -> str:
+    return textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const context = {{
+          console: {{ log() {{}}, warn() {{}}, error() {{}} }},
+          window: {{}},
+          Live2DManager: function Live2DManager() {{}},
+          setTimeout, clearTimeout, setInterval, clearInterval,
+        }};
+        context.global = context;
+        context.window.Live2DManager = context.Live2DManager;
+        vm.createContext(context);
+        vm.runInContext(fs.readFileSync({json.dumps(str(LIVE2D_MODEL_PATH))}, 'utf8'), context);
+        {body}
+        """
+    )
 
 
 def test_idle_motion_starts_with_idle_priority():
@@ -47,6 +90,7 @@ def test_main_action_entry_rejects_a_second_action_and_stops_only_idle():
     assert "this._simpleMotionActive === true" in source
     assert "return false" in action_source
     assert "currentPriority === LIVE2D_MOTION_PRIORITY.IDLE" in action_source
+    assert "this._clearMotionTimer()" in action_source
     assert "motionManager.stopAllMotions()" in action_source
     assert "LIVE2D_MOTION_PRIORITY.NORMAL" in action_source
     assert "return started === undefined ? true : started" in action_source
@@ -158,3 +202,101 @@ def test_saved_idle_motion_does_not_use_force_priority():
     assert action_guard_index < stop_idle_index
     assert "LIVE2D_MOTION_PRIORITY.IDLE" in restore_source
     assert "live2dModel.motion(groupName, motionIndex, 3)" not in restore_source
+
+
+def test_failed_action_start_clears_only_its_motion_reservation():
+    script = _manager_harness(
+        """
+        (async () => {
+          const events = [];
+          const state = {
+            currentPriority: 1,
+            reservePriority: 0,
+            reservedGroup: undefined,
+            reservedIndex: undefined,
+            reservedIdleGroup: 'Idle',
+            setReserved(group, index, priority) {
+              this.reservedGroup = group;
+              this.reservedIndex = index;
+              this.reservePriority = priority;
+            },
+          };
+          const motionManager = {
+            state,
+            stopAllMotions() {
+              events.push('stop-idle');
+              state.currentPriority = 0;
+              state.reservedIdleGroup = undefined;
+            },
+          };
+          const manager = new context.Live2DManager();
+          manager._clearMotionTimer = () => { events.push('clear-idle-timer'); };
+          const model = {
+            internalModel: { motionManager },
+            async motion(group, index, priority) {
+              events.push('start-action');
+              state.setReserved(group, index, priority);
+              throw new Error('load failed');
+            },
+          };
+          manager.currentModel = model;
+
+          await assert.rejects(manager.playActionMotion('Tap', 0), /load failed/);
+          assert.deepStrictEqual(events, ['clear-idle-timer', 'stop-idle', 'start-action']);
+          assert.strictEqual(state.reservePriority, 0);
+          assert.strictEqual(state.reservedGroup, undefined);
+          assert.strictEqual(state.reservedIndex, undefined);
+
+          model.motion = async (group, index, priority) => {
+            state.setReserved(group, index, priority);
+            return false;
+          };
+          assert.strictEqual(await manager.playActionMotion('Missing', undefined), false);
+          assert.strictEqual(state.reservePriority, 0);
+          assert.strictEqual(state.reservedGroup, undefined);
+          assert.strictEqual(state.reservedIndex, undefined);
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_model_removal_clears_simple_motion_gate_with_motion_timer():
+    script = _manager_harness(
+        """
+        (async () => {
+          let timerClears = 0;
+          const manager = new context.Live2DManager();
+          manager._simpleMotionActive = true;
+          manager.motionTimer = { type: 'timeout', id: 123 };
+          manager._clearMotionTimer = () => {
+            timerClears += 1;
+            manager._simpleMotionActive = false;
+            manager.motionTimer = null;
+          };
+
+          await manager.removeModel({ skipCloseWindows: true });
+          assert.strictEqual(timerClears, 1);
+          assert.strictEqual(manager._simpleMotionActive, false);
+          assert.strictEqual(manager.motionTimer, null);
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_performance_session_checks_action_gate_before_suspending_motions():
+    source = (
+        PROJECT_ROOT / "static" / "avatar" / "avatar-performance-stage.js"
+    ).read_text(encoding="utf-8")
+    acquire_start = source.index("acquireSession(session) {")
+    acquire_end = source.index("releaseSession(session) {", acquire_start)
+    acquire_source = source[acquire_start:acquire_end]
+
+    action_guard_index = acquire_source.index("manager.hasActiveActionMotion(model)")
+    suspend_index = acquire_source.index("manager.suspendTemporaryMotions(")
+    assert action_guard_index < suspend_index
+    assert "if (!hasActiveAction)" in acquire_source
+    assert "this.motionSuspendSource = '';" in acquire_source
