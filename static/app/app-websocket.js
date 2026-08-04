@@ -38,6 +38,8 @@
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _coreApiCapabilityRefreshPromise = null;
+    let _coreApiCapabilityRequestGeneration = 0;
     let _musicPlayUrlCoordChannel = null;
     let _musicPlayUrlCoordChannelReady = false;
     let _musicPlayUrlClaims = Object.create(null);
@@ -1697,6 +1699,117 @@
     var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
 
     /**
+     * Refresh the current Core's independent-ASR capability from the same
+     * configuration endpoint used by the API settings UI. The capability is
+     * deliberately tri-state: only an explicit false may disable the effective
+     * UI. It never rewrites the user's preference or handshake, and a failed or
+     * legacy response remains unknown.
+     *
+     * Forced refreshes may overlap (for example, a settings window saves while
+     * a popup request is pending), so a generation fence prevents an older
+     * response from overwriting the newer Core selection.
+     */
+    function publishCoreApiCapability(provider, capability) {
+        var previousProvider = S.coreApiProvider || '';
+        var previousCapability = S.coreApiSupportsIndependentAsr;
+        S.coreApiProvider = typeof provider === 'string' ? provider : '';
+        S.coreApiSupportsIndependentAsr =
+            typeof capability === 'boolean' ? capability : null;
+        if (
+            previousProvider !== S.coreApiProvider
+            || previousCapability !== S.coreApiSupportsIndependentAsr
+        ) {
+            try {
+                window.dispatchEvent(new CustomEvent(
+                    'neko:core-api-capability-changed',
+                    {
+                        detail: {
+                            provider: S.coreApiProvider,
+                            supportsIndependentAsr:
+                                S.coreApiSupportsIndependentAsr
+                        }
+                    }
+                ));
+            } catch (_) { /* optional UI notification */ }
+        }
+        return {
+            provider: S.coreApiProvider,
+            supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+        };
+    }
+
+    function refreshCoreApiCapability(options) {
+        options = options || {};
+        if (
+            options.force !== true
+            && typeof S.coreApiSupportsIndependentAsr === 'boolean'
+        ) {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+        if (
+            options.force !== true
+            && _coreApiCapabilityRefreshPromise
+        ) return _coreApiCapabilityRefreshPromise;
+        if (typeof window.fetch !== 'function') {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+
+        var requestGeneration = ++_coreApiCapabilityRequestGeneration;
+        var refreshPromise = window.fetch('/api/config/core_api', {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+        }).then(function (response) {
+            if (!response || response.ok === false) {
+                throw new Error('Core API capability request failed');
+            }
+            return response.json();
+        }).then(function (data) {
+            if (requestGeneration !== _coreApiCapabilityRequestGeneration) {
+                return {
+                    provider: S.coreApiProvider || '',
+                    supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+                };
+            }
+            data = data && typeof data === 'object' ? data : {};
+            if (data.success === false) {
+                throw new Error('Core API capability response was unsuccessful');
+            }
+            return publishCoreApiCapability(
+                typeof data.effectiveCoreApi === 'string'
+                    ? data.effectiveCoreApi
+                    : data.coreApi,
+                data.supportsIndependentAsr
+            );
+        }).catch(function (error) {
+            console.warn('[Core API] Failed to refresh ASR capability:', error);
+            if (requestGeneration === _coreApiCapabilityRequestGeneration) {
+                return publishCoreApiCapability('', null);
+            }
+            return {
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            };
+        }).finally(function () {
+            if (_coreApiCapabilityRefreshPromise === refreshPromise) {
+                _coreApiCapabilityRefreshPromise = null;
+            }
+        });
+        _coreApiCapabilityRefreshPromise = refreshPromise;
+        return refreshPromise;
+    }
+
+    // Prime the capability once for both Web and Electron windows. API Core
+    // changes normally reload these pages; the microphone popup also forces a
+    // refresh so a window that missed that reload cannot keep a stale view.
+    refreshCoreApiCapability();
+
+    /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
      *   - CONNECTING     -> waits via addEventListener('open')
@@ -1833,6 +1946,7 @@
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
+    mod.refreshCoreApiCapability = refreshCoreApiCapability;
 
     // ========================  connectWebSocket  ========================
 
@@ -1862,6 +1976,12 @@
     // test_start_session_handshake_missing_falls_back_to_persisted). If the
     // GET fails permanently the field simply stays omitted and the backend's
     // persisted value keeps governing — the correct fallback.
+    //
+    // Core capability is intentionally NOT folded into this payload. Another
+    // window may switch to a capable Core while this window still has a stale
+    // false capability cache. The handshake always carries the authoritative
+    // user preference; the backend applies the current Core capability as the
+    // final routing guard.
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
@@ -4543,6 +4663,7 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+    window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 

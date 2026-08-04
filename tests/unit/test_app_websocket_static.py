@@ -261,7 +261,7 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     # from the toggle handler so the visible route never lags the user's choice.
     summary_block = capture_source.split(
         "function updateVoiceRecognitionUi() {", 1
-    )[1].split("function positionVoicePanel()", 1)[0]
+    )[1].split("function onVoiceLifecycleChanged()", 1)[0]
     assert "'microphone.independentAsrSummary'" in summary_block
     assert "{ provider: provider }" in summary_block
     assert "'microphone.voiceRecognitionDisabled'" in summary_block
@@ -269,7 +269,7 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
 
     change_handler = capture_source.split(
         "var asrToggle = createVoiceSettingToggle(", 1
-    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    )[1].split("var voicePanelId", 1)[0]
     assert "updateVoiceRecognitionUi();" in change_handler
 
 
@@ -575,6 +575,7 @@ def test_start_session_payload_carries_independent_asr_handshake():
     # other messages pass through untouched.
     assert "typeof data === 'string'" in wrapper
     assert "msg.action === 'start_session'" in wrapper
+    assert "coreApiSupportsIndependentAsr" not in wrapper
 
     # The wrapper is attached at the single socket-creation seam, so every
     # start_session send site (including the ones in app-buttons.js) carries
@@ -582,6 +583,113 @@ def test_start_session_payload_carries_independent_asr_handshake():
     creation_index = websocket_source.index("S.socket = new WebSocket(wsUrl);")
     attach_index = websocket_source.index("attachStartSessionHandshake(S.socket);")
     assert 0 < attach_index - creation_index < 200
+
+
+def test_stale_unsupported_capability_does_not_override_paid_core_preference_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function attachStartSessionHandshake(ws)")
+    end = source.index("function connectWebSocket()", start)
+    attach_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiSupportsIndependentAsr: false,
+          settingsHydrated: true,
+          independentAsrAuthoritative: true,
+          independentAsrEnabled: true,
+          voiceInputResourceOptimizationAuthoritative: false,
+        };
+        """
+        + attach_source
+        + """
+        const frames = [];
+        const ws = { send(data) { frames.push(data); } };
+        attachStartSessionHandshake(ws);
+        ws.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+        const sent = JSON.parse(frames[0]);
+        if (sent.independent_asr_enabled !== true) {
+          throw new Error('stale capability must not replace the authoritative preference');
+        }
+        console.log('ok');
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_core_capability_refresh_failures_fail_open_and_ignore_stale_requests_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function publishCoreApiCapability(provider, capability)")
+    end = source.index("// Prime the capability once", start)
+    refresh_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiProvider: 'free',
+          coreApiSupportsIndependentAsr: false,
+        };
+        let _coreApiCapabilityRefreshPromise = null;
+        let _coreApiCapabilityRequestGeneration = 0;
+        const events = [];
+        class CustomEvent {
+          constructor(type, options) {
+            this.type = type;
+            this.detail = options && options.detail;
+          }
+        }
+        const window = {
+          dispatchEvent(event) { events.push(event); },
+          fetch: null,
+        };
+        """
+        + refresh_source
+        + """
+        function response(data) {
+          return { ok: true, json: async () => data };
+        }
+        function assert(condition, message) {
+          if (!condition) throw new Error(message);
+        }
+        async function main() {
+          window.fetch = async () => response({ success: false, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'success:false must fail open');
+          assert(S.coreApiProvider === '', 'failed response provider must become unknown');
+
+          S.coreApiProvider = 'free';
+          S.coreApiSupportsIndependentAsr = false;
+          window.fetch = async () => response({ success: true, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
+          assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
+
+          let rejectOld;
+          window.fetch = () => new Promise((resolve, reject) => { rejectOld = reject; });
+          const oldRequest = refreshCoreApiCapability({ force: true });
+          window.fetch = async () => response({
+            success: true,
+            coreApi: 'free',
+            effectiveCoreApi: 'qwen',
+            supportsIndependentAsr: true,
+          });
+          await refreshCoreApiCapability({ force: true });
+          rejectOld(new Error('late old request'));
+          await oldRequest;
+          assert(S.coreApiSupportsIndependentAsr === true, 'late failure must not clear newer capability');
+          assert(S.coreApiProvider === 'qwen', 'effective provider must win and survive a late failure');
+          assert(events.length >= 3, 'capability changes should notify the shared UI');
+          console.log('ok');
+        }
+        main().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
 
 
 def test_start_session_payload_carries_resource_optimization_handshake():

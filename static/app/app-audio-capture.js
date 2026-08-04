@@ -2759,6 +2759,7 @@
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
         var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
+        var coreApiCapabilityRefreshedAt = 0;
         if (disposeVoiceRecognitionPopover) {
             var previousDispose = disposeVoiceRecognitionPopover;
             disposeVoiceRecognitionPopover = null;
@@ -2773,6 +2774,16 @@
         if (!isPopupAvailable()) return false;
 
         try {
+            if (typeof window.refreshCoreApiCapability === 'function') {
+                coreApiCapabilityRefreshedAt = Date.now();
+                // Capability is tri-state and null is deliberately fail-open.
+                // Refresh in the background so a slow config endpoint can
+                // never hold the microphone device list hostage; the helper's
+                // change event updates this panel when the response arrives.
+                Promise.resolve(
+                    window.refreshCoreApiCapability({ force: true })
+                ).catch(function () { /* refresh helper owns reporting */ });
+            }
             ensureMicPopupScrollbarStyle();
             micPopup.classList.add('neko-mic-popup-surface');
             micPopup.style.minWidth = '220px';
@@ -3002,46 +3013,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1);
 
-            // ===== 语音识别设置入口 + body portal popover =====
-            var asrContainer = document.createElement('div');
-            asrContainer.tabIndex = 0;
-            asrContainer.setAttribute('role', 'button');
-            Object.assign(asrContainer.style, {
-                padding: '8px 12px',
-                cursor: 'pointer',
-                outline: 'none'
-            });
-
-            var asrRow = document.createElement('div');
-            Object.assign(asrRow.style, {
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: '12px'
-            });
-            var asrCopy = document.createElement('div');
-            Object.assign(asrCopy.style, { minWidth: '0', flex: '1' });
-            var asrLabel = document.createElement('span');
-            asrLabel.textContent = window.t
-                ? window.t('microphone.independentAsr')
-                : '语音识别';
-            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
-            Object.assign(asrLabel.style, {
-                fontSize: '13px',
-                color: 'var(--neko-popup-text)',
-                fontWeight: '600'
-            });
-            var asrSummary = document.createElement('div');
-            Object.assign(asrSummary.style, {
-                fontSize: '11px',
-                color: 'var(--neko-popup-text-sub)',
-                marginTop: '4px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
-            });
-            asrCopy.appendChild(asrLabel);
-            asrCopy.appendChild(asrSummary);
+            // Voice recognition uses the same main-action/subwindow pipeline as
+            // screen sharing and microphone selection. The trigger is assembled
+            // with those actions after the shared helpers are defined below.
+            var asrSummary = null;
 
             function createVoiceSettingToggle(checked, onChange) {
                 var focusStyle = document.getElementById(
@@ -3176,9 +3151,22 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
                 S.voiceSettingsPendingUntilEpoch = targetEpoch;
             }
+
+            function coreApiDisablesIndependentAsr() {
+                return S.coreApiSupportsIndependentAsr === false;
+            }
+
             var asrToggle = createVoiceSettingToggle(
-                S.independentAsrEnabled === true,
+                !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true,
                 function (enabled) {
+                    // The disabled switch is an effective view only. Keep the
+                    // persisted preference untouched so switching back to a
+                    // capable Core restores the user's previous choice.
+                    if (coreApiDisablesIndependentAsr()) {
+                        updateVoiceRecognitionUi();
+                        return;
+                    }
                     var activeRouteSnapshot = S.voiceChatActive === true
                         ? (
                             S.independentAsrActive === true
@@ -3194,21 +3182,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     persistVoiceSettingChange();
                 }
             );
-            asrRow.appendChild(asrCopy);
-            asrRow.appendChild(asrToggle.element);
-            asrContainer.appendChild(asrRow);
-            leftColumn.appendChild(asrContainer);
-
             var voicePanelId = (popupId || 'neko-mic')
                 + '-voice-recognition-settings';
-            asrContainer.setAttribute('aria-controls', voicePanelId);
-            asrContainer.setAttribute('aria-expanded', 'false');
             var voicePanel = null;
-            var voiceBridge = null;
-            var voicePanelOpen = false;
-            var voicePanelPinned = false;
-            var voiceOpenTimer = null;
-            var voiceCloseTimer = null;
             var voicePopupObserver = null;
             var noiseToggle = null;
             var optimizationToggle = null;
@@ -3230,14 +3206,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return known[value.toLowerCase()] || value;
             }
 
-            function clearVoiceTimers() {
-                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
-                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
-                voiceOpenTimer = null;
-                voiceCloseTimer = null;
-            }
-
             function appendVoicePanelSetting(
+                panelBody,
                 labelKey,
                 fallbackLabel,
                 hintKey,
@@ -3280,148 +3250,14 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 block.appendChild(hint);
                 toggle.input.setAttribute('aria-labelledby', label.id);
                 toggle.input.setAttribute('aria-describedby', hint.id);
-                voicePanel.appendChild(block);
+                panelBody.appendChild(block);
                 return hint;
             }
 
-            function createVoicePanel() {
-                if (voicePanel) return voicePanel;
-                voicePanel = document.createElement('div');
-                voicePanel.id = voicePanelId;
-                voicePanel.setAttribute('role', 'dialog');
-                voicePanel.setAttribute(
-                    'aria-label',
-                    window.t
-                        ? window.t('microphone.voiceRecognitionSettings')
-                        : '语音识别设置'
-                );
-                Object.assign(voicePanel.style, {
-                    display: 'none',
-                    position: 'fixed',
-                    zIndex: '2147483000',
-                    width: '280px',
-                    boxSizing: 'border-box',
-                    padding: '14px',
-                    borderRadius: '10px',
-                    color: 'var(--neko-popup-text)',
-                    background: 'var(--neko-popup-bg, rgba(30, 30, 34, 0.98))',
-                    border: '1px solid var(--neko-popup-separator)',
-                    boxShadow: '0 10px 32px rgba(0, 0, 0, 0.28)'
-                });
-                document.body.appendChild(voicePanel);
-
-                var voicePanelTitle = document.createElement('div');
-                voicePanelTitle.textContent = window.t
-                    ? window.t('microphone.voiceRecognitionSettings')
-                    : '语音识别设置';
-                voicePanelTitle.setAttribute(
-                    'data-i18n',
-                    'microphone.voiceRecognitionSettings'
-                );
-                Object.assign(voicePanelTitle.style, {
-                    fontSize: '14px',
-                    fontWeight: '650',
-                    marginBottom: '14px'
-                });
-                voicePanel.appendChild(voicePanelTitle);
-
-                noiseToggle = createVoiceSettingToggle(
-                    S.noiseReductionEnabled === true,
-                    function (enabled) {
-                        S.noiseReductionEnabled = enabled;
-                        saveNoiseReductionSetting();
-                    }
-                );
-                appendVoicePanelSetting(
-                    'microphone.noiseReduction',
-                    '降噪',
-                    'microphone.noiseReductionHint',
-                    '让输入语音更加清晰',
-                    noiseToggle
-                );
-
-                optimizationToggle = createVoiceSettingToggle(
-                    S.voiceInputResourceOptimizationEnabled !== false,
-                    function (enabled) {
-                        S.voiceInputResourceOptimizationEnabled = enabled;
-                        markVoiceSettingsPending();
-                        updateVoiceRecognitionUi();
-                        persistVoiceSettingChange();
-                    }
-                );
-                optimizationHint = appendVoicePanelSetting(
-                    'microphone.voiceResourceOptimization',
-                    '智能资源优化',
-                    'microphone.voiceResourceOptimizationHintOn',
-                    '空闲时减少连接和音频上传',
-                    optimizationToggle
-                );
-
-                voiceStatus = document.createElement('div');
-                Object.assign(voiceStatus.style, {
-                    borderTop: '1px solid var(--neko-popup-separator)',
-                    paddingTop: '11px',
-                    fontSize: '11px',
-                    lineHeight: '1.45',
-                    color: 'var(--neko-popup-text-sub)'
-                });
-                voicePanel.appendChild(voiceStatus);
-
-                voiceBridge = document.createElement('div');
-                Object.assign(voiceBridge.style, {
-                    display: 'none',
-                    position: 'fixed',
-                    zIndex: '2147482999'
-                });
-                document.body.appendChild(voiceBridge);
-
-                voicePanel.addEventListener('mouseenter', clearVoiceTimers);
-                voicePanel.addEventListener('mouseleave', scheduleVoiceClose);
-                voicePanel.addEventListener('focusin', clearVoiceTimers);
-                voicePanel.addEventListener('focusout', scheduleVoiceClose);
-                voiceBridge.addEventListener('mouseenter', clearVoiceTimers);
-                voiceBridge.addEventListener('mouseleave', scheduleVoiceClose);
-
-                document.addEventListener('pointerdown', onVoiceDocumentPointerDown, true);
-                document.addEventListener(
-                    'keydown',
-                    onVoiceDocumentKeyDown,
-                    true
-                );
-                window.addEventListener('resize', positionVoicePanel);
-                window.addEventListener('scroll', positionVoicePanel, true);
-                window.addEventListener(
-                    'voice-input-lifecycle-changed',
-                    onVoiceLifecycleChanged
-                );
-                window.addEventListener(
-                    'neko:voice-session-started',
-                    onVoiceSessionStarted
-                );
-                window.addEventListener(
-                    'neko:voice-settings-pending-changed',
-                    onVoiceSettingsPendingChanged
-                );
-                voicePopupObserver = new MutationObserver(function () {
-                    if (!isPopupAvailable()) destroyVoicePanel();
-                });
-                var popupAncestor = micPopup.parentNode;
-                while (popupAncestor) {
-                    voicePopupObserver.observe(popupAncestor, {
-                        childList: true
-                    });
-                    popupAncestor = popupAncestor.parentNode;
-                }
-                voicePopupObserver.observe(micPopup, {
-                    attributes: true,
-                    attributeFilter: ['style', 'class']
-                });
-                updateVoiceRecognitionUi();
-                return voicePanel;
-            }
-
             function updateVoiceRecognitionUi() {
-                var enabled = S.independentAsrEnabled === true;
+                var capabilityUnavailable = coreApiDisablesIndependentAsr();
+                var enabled = !capabilityUnavailable
+                    && S.independentAsrEnabled === true;
                 if (
                     S.voiceSettingsPendingUntilEpoch !== null
                     && (Number(S.voiceSessionStartEpoch) || 0)
@@ -3430,36 +3266,53 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     S.voiceSettingsPendingUntilEpoch = null;
                     S.pendingVoiceRouteIndependentAsr = null;
                 }
-                var summaryUsesIndependentAsr =
-                    S.voiceSettingsPendingUntilEpoch !== null
-                    && S.pendingVoiceRouteIndependentAsr !== null
-                        ? S.pendingVoiceRouteIndependentAsr
-                        : enabled;
+                var summaryUsesIndependentAsr = capabilityUnavailable
+                    ? false
+                    : (
+                        S.voiceSettingsPendingUntilEpoch !== null
+                        && S.pendingVoiceRouteIndependentAsr !== null
+                            ? S.pendingVoiceRouteIndependentAsr
+                            : enabled
+                    );
                 var provider = providerDisplayName(S.independentAsrProvider);
                 var blocked = S.voiceInputLifecycleState === 'blocked';
                 asrToggle.setChecked(enabled);
-                asrSummary.textContent = summaryUsesIndependentAsr
-                    ? (
-                        window.t
-                            ? window.t(
-                                provider
-                                    ? 'microphone.independentAsrSummary'
-                                    : 'microphone.independentAsrSummaryGeneric',
-                                { provider: provider }
-                            )
-                            : ('独立 ASR' + (provider ? ' · ' + provider : ''))
-                    )
-                    : (
-                        window.t
-                            ? window.t('microphone.voiceRecognitionDisabled')
-                            : '当前使用 Omni 原生语音识别'
-                    );
-                if (!voicePanel) return;
+                asrToggle.setDisabled(capabilityUnavailable);
+                if (asrSummary) {
+                    asrSummary.textContent = summaryUsesIndependentAsr
+                        ? (
+                            window.t
+                                ? window.t(
+                                    provider
+                                        ? 'microphone.independentAsrSummary'
+                                        : 'microphone.independentAsrSummaryGeneric',
+                                    { provider: provider }
+                                )
+                                : ('独立 ASR' + (provider ? ' · ' + provider : ''))
+                        )
+                        : (
+                            window.t
+                                ? window.t('microphone.voiceRecognitionDisabled')
+                                : '当前使用 Omni 原生语音识别'
+                        );
+                }
+                if (
+                    !voicePanel
+                    || !voicePanel.isConnected
+                    || !noiseToggle
+                    || !optimizationToggle
+                    || !optimizationHint
+                    || !voiceStatus
+                ) return;
                 // RNNoise is local PCM preprocessing shared by both the
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
-                if (S.voiceSettingsPendingUntilEpoch !== null) {
+                if (capabilityUnavailable) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionNativeCoreHint')
+                        : '当前核心使用免费API；独立 ASR 相关开关不适用';
+                } else if (S.voiceSettingsPendingUntilEpoch !== null) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
@@ -3480,190 +3333,28 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
                 }
-                var optimizationEnabled =
-                    S.voiceInputResourceOptimizationEnabled !== false;
+                var optimizationEnabled = !capabilityUnavailable
+                    && S.voiceInputResourceOptimizationEnabled !== false;
                 optimizationToggle.setChecked(optimizationEnabled);
                 optimizationHint.textContent = window.t
                     ? window.t(
-                        optimizationEnabled
-                            ? 'microphone.voiceResourceOptimizationHintOn'
-                            : 'microphone.voiceResourceOptimizationHintOff'
+                        capabilityUnavailable
+                            ? 'microphone.voiceRecognitionNativeCoreHint'
+                            : (
+                                optimizationEnabled
+                                    ? 'microphone.voiceResourceOptimizationHintOn'
+                                    : 'microphone.voiceResourceOptimizationHintOff'
+                            )
                     )
                     : (
-                        optimizationEnabled
-                            ? '空闲时减少连接和音频上传'
-                            : '持续保持语音识别，可能增加网络和资源占用'
+                        capabilityUnavailable
+                            ? '当前核心使用免费API；独立 ASR 相关开关不适用'
+                            : (
+                                optimizationEnabled
+                                    ? '空闲时减少连接和音频上传'
+                                    : '持续保持语音识别，可能增加网络和资源占用'
+                            )
                     );
-            }
-
-            function positionVoicePanel() {
-                if (!voicePanelOpen || !voicePanel || !asrContainer.isConnected) {
-                    return;
-                }
-                var rect = asrContainer.getBoundingClientRect();
-                var gap = 10;
-                var viewportWidth =
-                    window.innerWidth || document.documentElement.clientWidth;
-                var viewportHeight =
-                    window.innerHeight || document.documentElement.clientHeight;
-                var panelRect = voicePanel.getBoundingClientRect();
-                var panelWidth = panelRect.width || 280;
-                var panelHeight = panelRect.height || 240;
-                var placeRight =
-                    rect.right + gap + panelWidth <= viewportWidth - 12;
-                var placeLeft = rect.left - gap - panelWidth >= 12;
-                var placeBelow =
-                    rect.bottom + gap + panelHeight <= viewportHeight - 12;
-                var left;
-                var top;
-                var bridgeLeft;
-                var bridgeTop;
-                var bridgeWidth;
-                var bridgeHeight;
-                if (placeRight || placeLeft) {
-                    left = placeRight
-                        ? rect.right + gap
-                        : rect.left - panelWidth - gap;
-                    top = Math.max(
-                        12,
-                        Math.min(rect.top, viewportHeight - panelHeight - 12)
-                    );
-                    bridgeLeft = placeRight ? rect.right : left + panelWidth;
-                    bridgeTop = Math.min(rect.top, top);
-                    bridgeWidth = gap;
-                    bridgeHeight =
-                        Math.max(rect.bottom, top + panelHeight) - bridgeTop;
-                } else {
-                    left = Math.max(
-                        12,
-                        Math.min(rect.left, viewportWidth - panelWidth - 12)
-                    );
-                    top = placeBelow
-                        ? rect.bottom + gap
-                        : rect.top - panelHeight - gap;
-                    top = Math.max(
-                        12,
-                        Math.min(top, viewportHeight - panelHeight - 12)
-                    );
-                    bridgeLeft = Math.min(rect.left, left);
-                    bridgeTop = placeBelow ? rect.bottom : top + panelHeight;
-                    bridgeWidth =
-                        Math.max(rect.right, left + panelWidth) - bridgeLeft;
-                    bridgeHeight = gap;
-                }
-                voicePanel.style.left = Math.round(left) + 'px';
-                voicePanel.style.top = Math.round(top) + 'px';
-                voiceBridge.style.display = 'block';
-                voiceBridge.style.left = Math.round(bridgeLeft) + 'px';
-                voiceBridge.style.top = Math.round(bridgeTop) + 'px';
-                voiceBridge.style.width = Math.round(bridgeWidth) + 'px';
-                voiceBridge.style.height = Math.round(bridgeHeight) + 'px';
-            }
-
-            function openVoicePanel(pinned) {
-                clearVoiceTimers();
-                createVoicePanel();
-                if (pinned === true) voicePanelPinned = true;
-                voicePanelOpen = true;
-                voicePanel.style.display = 'block';
-                asrContainer.setAttribute('aria-expanded', 'true');
-                updateVoiceRecognitionUi();
-                positionVoicePanel();
-            }
-
-            function closeVoicePanel(force) {
-                if (voicePanelPinned && force !== true) return;
-                clearVoiceTimers();
-                voicePanelPinned = false;
-                voicePanelOpen = false;
-                if (voicePanel) voicePanel.style.display = 'none';
-                if (voiceBridge) voiceBridge.style.display = 'none';
-                asrContainer.setAttribute('aria-expanded', 'false');
-            }
-
-            function destroyVoicePanel() {
-                clearVoiceTimers();
-                closeVoicePanel(true);
-                if (voicePopupObserver) {
-                    voicePopupObserver.disconnect();
-                    voicePopupObserver = null;
-                }
-                document.removeEventListener('pointerdown', onVoiceDocumentPointerDown, true);
-                document.removeEventListener(
-                    'keydown',
-                    onVoiceDocumentKeyDown,
-                    true
-                );
-                window.removeEventListener('resize', positionVoicePanel);
-                window.removeEventListener('scroll', positionVoicePanel, true);
-                window.removeEventListener(
-                    'voice-input-lifecycle-changed',
-                    onVoiceLifecycleChanged
-                );
-                window.removeEventListener(
-                    'neko:voice-session-started',
-                    onVoiceSessionStarted
-                );
-                window.removeEventListener(
-                    'neko:voice-settings-pending-changed',
-                    onVoiceSettingsPendingChanged
-                );
-                if (voicePanel) voicePanel.remove();
-                if (voiceBridge) voiceBridge.remove();
-                voicePanel = null;
-                voiceBridge = null;
-                noiseToggle = null;
-                optimizationToggle = null;
-                optimizationHint = null;
-                voiceStatus = null;
-                if (disposeVoiceRecognitionPopover === destroyVoicePanel) {
-                    disposeVoiceRecognitionPopover = null;
-                }
-            }
-
-            function scheduleVoiceOpen() {
-                if (voicePanelOpen) return;
-                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
-                voiceOpenTimer = setTimeout(function () {
-                    openVoicePanel(false);
-                }, 150);
-            }
-
-            function scheduleVoiceClose() {
-                if (voicePanelPinned) return;
-                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
-                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
-                voiceCloseTimer = setTimeout(function () {
-                    closeVoicePanel(false);
-                }, 300);
-            }
-
-            function togglePinnedVoicePanel(focusPanel) {
-                if (voicePanelOpen && voicePanelPinned) closeVoicePanel(true);
-                else {
-                    openVoicePanel(true);
-                    if (focusPanel === true && voicePanel) {
-                        var firstControl = voicePanel.querySelector(
-                            'input:not([disabled])'
-                        );
-                        if (firstControl) firstControl.focus();
-                    }
-                }
-            }
-
-            function onVoiceDocumentPointerDown(event) {
-                if (!voicePanelOpen || !voicePanel) return;
-                if (
-                    !asrContainer.contains(event.target)
-                    && !voicePanel.contains(event.target)
-                ) closeVoicePanel(true);
-            }
-
-            function onVoiceDocumentKeyDown(event) {
-                if (event.key === 'Escape' && voicePanelOpen) {
-                    closeVoicePanel(true);
-                    asrContainer.focus();
-                }
             }
 
             function onVoiceLifecycleChanged() {
@@ -3685,29 +3376,84 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 updateVoiceRecognitionUi();
             }
 
-            asrContainer.addEventListener('mouseenter', scheduleVoiceOpen);
-            asrContainer.addEventListener('mouseleave', scheduleVoiceClose);
-            asrContainer.addEventListener('focusin', function () {
-                openVoicePanel(false);
-            });
-            asrContainer.addEventListener('focusout', scheduleVoiceClose);
-            asrContainer.addEventListener('pointerup', function (event) {
-                if (event.button !== undefined && event.button !== 0) return;
-                togglePinnedVoicePanel();
-            });
-            asrContainer.addEventListener('keydown', function (event) {
-                if (event.target !== asrContainer) return;
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    togglePinnedVoicePanel(true);
-                }
-            });
-            disposeVoiceRecognitionPopover = destroyVoicePanel;
-            createVoicePanel();
+            function onCoreApiCapabilityChanged() {
+                updateVoiceRecognitionUi();
+            }
 
-            var sep1b = document.createElement('div');
-            Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
-            leftColumn.appendChild(sep1b);
+            var voiceControlsDisposed = false;
+            var voiceWindowListeners = [];
+
+            function addVoiceWindowListener(type, listener) {
+                voiceWindowListeners.push([type, listener]);
+                window.addEventListener(type, listener);
+            }
+
+            function destroyVoiceRecognitionControls() {
+                if (voiceControlsDisposed) return;
+                voiceControlsDisposed = true;
+                if (voicePopupObserver) {
+                    voicePopupObserver.disconnect();
+                    voicePopupObserver = null;
+                }
+                voiceWindowListeners.forEach(function (entry) {
+                    window.removeEventListener(entry[0], entry[1]);
+                });
+                voiceWindowListeners = [];
+                // Tear down the shared action state as well as its DOM. This
+                // clears an old render's pending hover-collapse timer so it
+                // cannot remove a subwindow created by the next render.
+                if (typeof closeMicSubwindow === 'function') {
+                    closeMicSubwindow();
+                } else if (voicePanel && voicePanel.isConnected) {
+                    voicePanel.remove();
+                }
+                voicePanel = null;
+                noiseToggle = null;
+                optimizationToggle = null;
+                optimizationHint = null;
+                voiceStatus = null;
+                asrSummary = null;
+                if (
+                    disposeVoiceRecognitionPopover
+                    === destroyVoiceRecognitionControls
+                ) {
+                    disposeVoiceRecognitionPopover = null;
+                }
+            }
+
+            disposeVoiceRecognitionPopover = destroyVoiceRecognitionControls;
+            addVoiceWindowListener(
+                'voice-input-lifecycle-changed',
+                onVoiceLifecycleChanged
+            );
+            addVoiceWindowListener(
+                'neko:voice-session-started',
+                onVoiceSessionStarted
+            );
+            addVoiceWindowListener(
+                'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:voice-settings-pending-changed',
+                onVoiceSettingsPendingChanged
+            );
+            voicePopupObserver = new MutationObserver(function () {
+                if (!isPopupAvailable()) destroyVoiceRecognitionControls();
+            });
+            var popupAncestor = micPopup.parentNode;
+            while (popupAncestor) {
+                voicePopupObserver.observe(popupAncestor, {
+                    childList: true
+                });
+                popupAncestor = popupAncestor.parentNode;
+            }
+            voicePopupObserver.observe(micPopup, {
+                attributes: true,
+                attributeFilter: ['style', 'class']
+            });
+            updateVoiceRecognitionUi();
+
 
             // ===== 左栏 2. 麦克风增益 =====
             var gainContainer = document.createElement('div');
@@ -3834,6 +3580,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function closeMicSubwindow() {
                 clearMicActionHoverCollapseTimer();
+                micActionHoverOpenGeneration += 1;
                 activeMicActionKey = null;
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
@@ -4062,9 +3809,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 button.appendChild(textWrap);
                 button.appendChild(arrow);
 
-                function openActionPanel() {
+                function openActionPanel(event) {
                     // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
-                    if (typeof hoverGuard === 'function' && hoverGuard()) {
+                    if (
+                        typeof hoverGuard === 'function'
+                        && hoverGuard(event)
+                    ) {
                         return Promise.resolve(null);
                     }
                     button.style.background = 'var(--neko-popup-hover)';
@@ -4074,8 +3824,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
 
                 // Hover-to-expand like settings side panels.
-                button.addEventListener('mouseenter', function () {
-                    openActionPanel();
+                button.addEventListener('mouseenter', function (event) {
+                    openActionPanel(event);
                 });
                 button.addEventListener('mouseleave', function () {
                     button.style.background = 'transparent';
@@ -4083,7 +3833,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
                 button.addEventListener('click', function (e) {
                     e.stopPropagation();
-                    openActionPanel();
+                    openActionPanel(e);
                 });
                 return button;
             }
@@ -4108,6 +3858,85 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 });
                 return option;
+            }
+
+            function openVoiceRecognitionSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t
+                        ? window.t('microphone.voiceRecognitionSettings')
+                        : '语音识别设置',
+                    null,
+                    '280px'
+                );
+                panel.id = voicePanelId;
+                panel.classList.add('neko-mic-voice-subwindow');
+                voicePanel = panel;
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+
+                noiseToggle = createVoiceSettingToggle(
+                    S.noiseReductionEnabled === true,
+                    function (enabled) {
+                        S.noiseReductionEnabled = enabled;
+                        saveNoiseReductionSetting();
+                    }
+                );
+                appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.noiseReduction',
+                    '降噪',
+                    'microphone.noiseReductionHint',
+                    '让输入语音更加清晰',
+                    noiseToggle
+                );
+
+                optimizationToggle = createVoiceSettingToggle(
+                    S.voiceInputResourceOptimizationEnabled !== false,
+                    function (enabled) {
+                        S.voiceInputResourceOptimizationEnabled = enabled;
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                optimizationHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.voiceResourceOptimization',
+                    '智能资源优化',
+                    'microphone.voiceResourceOptimizationHintOn',
+                    '空闲时减少连接和音频上传',
+                    optimizationToggle
+                );
+
+                voiceStatus = document.createElement('div');
+                voiceStatus.className = 'neko-voice-recognition-status';
+                Object.assign(voiceStatus.style, {
+                    borderTop: '1px solid var(--neko-popup-separator)',
+                    paddingTop: '11px',
+                    fontSize: '11px',
+                    lineHeight: '1.45',
+                    color: 'var(--neko-popup-text-sub)'
+                });
+                panelBody.appendChild(voiceStatus);
+
+                updateVoiceRecognitionUi();
+                if (
+                    typeof window.refreshCoreApiCapability === 'function'
+                    && Date.now() - coreApiCapabilityRefreshedAt >= 1000
+                ) {
+                    var openedPanel = panel;
+                    Promise.resolve(
+                        window.refreshCoreApiCapability({ force: true })
+                    ).then(function () {
+                        coreApiCapabilityRefreshedAt = Date.now();
+                        if (
+                            voicePanel === openedPanel
+                            && openedPanel.isConnected
+                        ) updateVoiceRecognitionUi();
+                    }).catch(function () {
+                        // refreshCoreApiCapability owns failure reporting.
+                    });
+                }
+                return panel;
             }
 
             async function openMicDeviceSubwindow() {
@@ -4190,11 +4019,35 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
 
             var firstContent = leftColumn.firstChild;
+            function isPointerOverActionToggle(toggle, event) {
+                if (!toggle) return false;
+                // Keyboard-generated button clicks use detail=0 and synthetic
+                // coordinates (often 0,0); they must keep the native button's
+                // Enter/Space behavior regardless of the mouse position.
+                if (event && event.type === 'click' && event.detail === 0) {
+                    return false;
+                }
+                if (toggle.matches(':hover')) return true;
+                if (
+                    !event
+                    || event.type !== 'mouseenter'
+                    || typeof document.elementFromPoint !== 'function'
+                    || !Number.isFinite(event.clientX)
+                    || !Number.isFinite(event.clientY)
+                ) return false;
+                var pointerTarget = document.elementFromPoint(
+                    event.clientX,
+                    event.clientY
+                );
+                return !!(pointerTarget && toggle.contains(pointerTarget));
+            }
             // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
             var shareToggleButtonHolder = { current: null };
-            function screenRowHoverGuard() {
-                var toggle = shareToggleButtonHolder.current;
-                return !!(toggle && toggle.matches(':hover'));
+            function screenRowHoverGuard(event) {
+                return isPointerOverActionToggle(
+                    shareToggleButtonHolder.current,
+                    event
+                );
             }
             var screenActionButton = createMainActionButton(
                 null,
@@ -4227,6 +4080,34 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             micActionButton.dataset.nekoMicAction = 'device';
             leftColumn.insertBefore(micActionButton, firstContent);
+
+            var voiceButtonLabel = window.t
+                ? window.t('microphone.independentAsr')
+                : '语音识别';
+            function voiceRowHoverGuard(event) {
+                return isPointerOverActionToggle(
+                    asrToggle.element,
+                    event
+                );
+            }
+            var asrActionButton = createMainActionButton(
+                null,
+                voiceButtonLabel,
+                ' ',
+                'voice-recognition',
+                openVoiceRecognitionSubwindow,
+                voiceRowHoverGuard
+            );
+            asrActionButton.replaceChild(
+                asrToggle.element,
+                asrActionButton.lastChild
+            );
+            asrToggle.input.setAttribute('aria-label', voiceButtonLabel);
+            asrSummary = asrActionButton.querySelector(
+                '.neko-mic-action-sub-label'
+            );
+            leftColumn.insertBefore(asrActionButton, firstContent);
+            updateVoiceRecognitionUi();
 
             // 组装
             micPopup.appendChild(leftColumn);

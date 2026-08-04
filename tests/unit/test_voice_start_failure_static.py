@@ -395,10 +395,13 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     render = source[render_start:render_end]
     screen_row = "leftColumn.insertBefore(screenActionButton, firstContent);"
     mic_row = "leftColumn.insertBefore(micActionButton, firstContent);"
-    assert screen_row in render and mic_row in render
+    voice_row = "leftColumn.insertBefore(asrActionButton, firstContent);"
+    assert screen_row in render and mic_row in render and voice_row in render
     assert render.index(screen_row) < render.index(mic_row)
+    assert render.index(mic_row) < render.index(voice_row)
     assert "createScreenShareToggleButton({ mini: true })" in render
     assert "screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);" in render
+    assert "asrActionButton.replaceChild(" in render
     assert "leftColumn.insertBefore(shareToggleButton, firstContent);" not in render
 
 
@@ -794,6 +797,9 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "screenActionButton.querySelector('.neko-mic-action-text')" in source
     assert "var screenActionButton = createMainActionButton(\n                null," in source
     assert "var micActionButton = createMainActionButton(\n                null," in source
+    assert "asrActionButton = createMainActionButton(\n                null," in source
+    assert "'voice-recognition'" in source
+    assert "openVoiceRecognitionSubwindow" in source
     subwindow = _js_function_block(source, "createMicSubwindow")
     assert "if (iconText) {" in subwindow
     assert "titleWrap.appendChild(icon);" in subwindow
@@ -805,6 +811,12 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
         "window.t ? window.t('buttons.screenShare') : 'Screen Share',\n"
         "                    null,"
     ) in source
+    voice_subwindow = _js_function_block(
+        source, "openVoiceRecognitionSubwindow"
+    )
+    assert "createMicSubwindow(" in voice_subwindow
+    assert "panel._nekoMicSubwindowBody" in voice_subwindow
+    assert "panel.classList.add('neko-mic-voice-subwindow')" in voice_subwindow
 
 
 def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():
