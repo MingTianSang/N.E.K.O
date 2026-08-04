@@ -85,7 +85,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
                      paramId = `param_${i}`;
                      if (_verbose) console.log(`getParameterId不可用，使用索引参数名: ${paramId}`);
                  }
-                
+
                 const currentValue = coreModel.getParameterValueByIndex(i);
                 const paramKey = paramId || `param_${i}`;
                 
@@ -166,8 +166,9 @@ Live2DManager.prototype.recordInitialParameters = function() {
     }
 };
 
-// 清除expression到默认状态（使用保存的初始参数）
-Live2DManager.prototype.clearExpression = function() {
+// 清除当前瞬态 expression；常驻 expression 只重放，不参与互斥状态。
+Live2DManager.prototype.clearExpression = function(options = {}) {
+    this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     const activeExpressionParamIds = this._activeExpressionParamIds
         && typeof this._activeExpressionParamIds.forEach === 'function'
         ? new Set(Array.from(this._activeExpressionParamIds))
@@ -180,7 +181,7 @@ Live2DManager.prototype.clearExpression = function() {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             this._activeExpressionParamIds = null;
             console.warn('无法清除expression：模型未加载');
-            return;
+            return false;
         }
 
         // 尝试使用官方API停止expression（可选，不依赖其结果）
@@ -208,9 +209,12 @@ Live2DManager.prototype.clearExpression = function() {
         this._activeExpressionParamIds = null;
     }
 
-    // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
-    // 注意：这里传入 skipBackup=true，因为我们只是重新应用已有的常驻表情，不需要再次备份
-    this.applyPersistentExpressionsNative(true);
+    if (options.reapplyPersistent !== false) {
+        Promise.resolve(this.applyPersistentExpressionsNative(true)).catch((error) => {
+            console.warn('重新应用常驻表情失败:', error);
+        });
+    }
+    return true;
 };
 
 Live2DManager.prototype._getActiveExpressionParamIds = function() {
@@ -505,51 +509,41 @@ Live2DManager.prototype._resetExplicitMotionParameters = function(options = {}) 
 
 Live2DManager.prototype.resetTransientMotionAndExpressionState = async function(options = {}) {
     const preserveExpression = options.preserveExpression === true;
+    const preserveMotion = options.preserveMotion === true;
     const resetAllParameters = options.resetAllParameters === true
         || (!preserveExpression && options.resetAllParameters !== false);
 
-    this._cancelSmoothReset();
-    this._clearMotionTimer();
-
     if (!preserveExpression) {
-        this._removeManualExpressionOverride();
-        this._activeExpressionParamIds = null;
-        try {
-            const exprMgr = this.currentModel?.internalModel?.motionManager?.expressionManager;
-            if (exprMgr && typeof exprMgr.stopAllExpressions === 'function') {
-                exprMgr.stopAllExpressions();
-            }
-        } catch (e) {
-            console.warn('停止expression失败（忽略）:', e);
-        }
+        this.clearExpression({ reapplyPersistent: false });
+    } else {
+        this._cancelSmoothReset();
     }
+
+    let resetCount = 0;
+    let explicitResetCount = 0;
+    if (!preserveMotion) {
+        this._clearMotionTimer();
+        try {
+            const motionManager = this.currentModel?.internalModel?.motionManager;
+            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+                motionManager.stopAllMotions();
+            }
+        } catch (motionError) {
+            console.warn('停止motion失败:', motionError);
+        }
+        resetCount = this._resetActiveMotionParameters({ preserveExpression });
+        explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression });
+        if (resetAllParameters) {
+            resetCount = this._resetParametersToInitialState({ preserveExpression });
+        }
+        this._clearActiveMotionParamIds();
+    }
+    console.log(`已重置${resetCount}个参数，显式重置${explicitResetCount}个motion参数，preserveExpression=${preserveExpression}, preserveMotion=${preserveMotion}, resetAllParameters=${resetAllParameters}`);
 
     try {
-        const motionManager = this.currentModel?.internalModel?.motionManager;
-        if (motionManager && typeof motionManager.stopAllMotions === 'function') {
-            motionManager.stopAllMotions();
-        }
-    } catch (motionError) {
-        console.warn('停止motion失败:', motionError);
-    }
-
-    const activeMotionResetCount = this._resetActiveMotionParameters({ preserveExpression });
-    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression });
-    let resetCount = activeMotionResetCount;
-
-    if (resetAllParameters) {
-        resetCount = this._resetParametersToInitialState({ preserveExpression });
-    }
-
-    this._clearActiveMotionParamIds();
-    console.log(`已重置${resetCount}个参数，显式重置${explicitResetCount}个motion参数，preserveExpression=${preserveExpression}, resetAllParameters=${resetAllParameters}`);
-
-    if (preserveExpression) {
-        try {
-            await this.applyPersistentExpressionsNative(true);
-        } catch (e) {
-            console.warn('重新应用常驻表情失败:', e);
-        }
+        await this.applyPersistentExpressionsNative(true);
+    } catch (e) {
+        console.warn('重新应用常驻表情失败:', e);
     }
 
     return resetCount;
@@ -865,9 +859,10 @@ Live2DManager.prototype._removeManualExpressionOverride = function() {
     this._manualExpressionParams = null;
 };
 
-// 播放表情（优先使用 EmotionMapping.expressions）
+// 瞬态表情后触发者替换前一个；常驻表情不占这个槽。
 Live2DManager.prototype.playExpression = async function(emotion, specifiedExpressionFile = null) {
-    if (!this.currentModel) {
+    const model = this.currentModel;
+    if (!model) {
         console.warn('无法播放表情：模型未加载');
         return false;
     }
@@ -910,6 +905,14 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         choiceFile = this.getRandomElement(expressionFiles);
     }
     if (!choiceFile) return false;
+
+    this.clearExpression({ reapplyPersistent: false });
+    const generation = this._transientExpressionGeneration;
+    const isCurrentExpressionRequest = () => (
+        this.currentModel === model
+        && this._transientExpressionGeneration === generation
+    );
+    if (!isCurrentExpressionRequest()) return false;
     this.expressionApplied = false;
 
     // 将 basename（如 expression7.exp3.json）归一化回 FileReferences 中的真实路径（如 expressions/expression7.exp3.json）
@@ -965,6 +968,8 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             }
         }
 
+        if (!isCurrentExpressionRequest()) return false;
+
         if (!expressionData || !loadedExpressionFile) {
             if (typeof this.markExpressionFileMissing === 'function') {
                 for (const file of candidateFiles) this.markExpressionFileMissing(file);
@@ -996,10 +1001,10 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                     console.warn(`表情名疑似文件路径，跳过原生API避免404: ${expressionName}`);
                     throw new Error('Expression name appears to be a file path');
                 }
-                
                 console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${loadedExpressionFile})`);
-                
-                const expression = await this.currentModel.expression(expressionName);
+
+                const expression = await model.expression(expressionName);
+                if (!isCurrentExpressionRequest()) return false;
                 if (expression) {
                     console.log(`成功使用原生API播放expression: ${expressionName}`);
                     try {
@@ -1017,6 +1022,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         }
         
         // 方法2: 回退到手动参数设置（使用每帧应用 + 淡入效果，避免参数被 loadParameters 覆盖）
+        if (!isCurrentExpressionRequest()) return false;
         console.log('使用手动参数设置播放expression（带淡入过渡）');
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
@@ -1032,7 +1038,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     // 重放常驻表情，确保不被覆盖
     // skipBackup=true 因为只是重新应用，不需要再次备份
     try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
-    return this.expressionApplied === true;
+    return isCurrentExpressionRequest() && this.expressionApplied === true;
 };
 
 // 播放动作
@@ -1264,13 +1270,6 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                     } else {
                         console.warn('motion播放失败，返回值无效');
                     }
-                    if (
-                        typeof this.hasActiveActionMotion === 'function'
-                        && this.hasActiveActionMotion(this.currentModel)
-                    ) {
-                        console.log(`[Live2D] 动作闸门已被占用，跳过简单动作回退: ${emotion}`);
-                        return false;
-                    }
                 } catch (error) {
                     console.warn('模型motion方法失败:', error);
                 }
@@ -1427,11 +1426,6 @@ Live2DManager.prototype.clearEmotionEffects = function() {
 
 // 设置情感并播放对应的表情和动作
 Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
-    // 防止快速连续点击
-    if (this.isEmotionChanging) {
-        console.log('情感切换中，忽略新的情感请求');
-        return false;
-    }
     if (
         this._avatarPerformanceBypassLocks !== true
         && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
@@ -1442,13 +1436,13 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     ) {
         return false;
     }
-    if (
-        typeof this.hasActiveActionMotion === 'function'
-        && this.hasActiveActionMotion(this.currentModel)
-    ) {
-        console.log(`[Live2D] 已有动作正在播放，忽略情感切换: ${emotion}`);
-        return false;
-    }
+
+    const requestGeneration = (this._emotionRequestGeneration || 0) + 1;
+    this._emotionRequestGeneration = requestGeneration;
+    const isCurrentEmotionRequest = () => (
+        this._emotionRequestGeneration === requestGeneration
+    );
+    this.isEmotionChanging = true;
     
     // 清除点击效果的 ID，这样点击效果的恢复定时器会检测到并跳过恢复
     // 避免点击效果的恢复覆盖正常的情感表达
@@ -1484,20 +1478,26 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     const isIdleEmotion = typeof emotion === 'string' && emotion.toLowerCase() === 'idle';
     const willApplyNewExpression = !!targetExpressionFile;
     const shouldPreserveExistingExpression = isIdleEmotion && !willApplyNewExpression;
+    const hasActionMotion = () => (
+        typeof this.hasActiveActionMotion === 'function'
+        && this.hasActiveActionMotion(this.currentModel)
+    );
     
     // 检查是否需要重置：即使情绪和表情都相同，也先清掉上一条 motion 的 transient 残留。
     if (this.currentEmotion === emotion && this.currentExpressionFile === targetExpressionFile) {
-        this.isEmotionChanging = true;
         try {
             await this.resetTransientMotionAndExpressionState({
                 preserveExpression: !!targetExpressionFile || shouldPreserveExistingExpression,
+                preserveMotion: hasActionMotion(),
                 resetAllParameters: !targetExpressionFile && !shouldPreserveExistingExpression
             });
+            if (!isCurrentEmotionRequest()) return false;
 
             // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
             if (Math.random() < 0.5) {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，仅随机播放motion`);
                 await this.playMotion(emotion, options);
+                if (!isCurrentEmotionRequest()) return false;
             } else {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
             }
@@ -1509,9 +1509,11 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         } catch (error) {
             console.error(`设置相同情感 ${emotion} 失败:`, error);
         } finally {
-            this.isEmotionChanging = false;
+            if (isCurrentEmotionRequest()) {
+                this.isEmotionChanging = false;
+            }
         }
-        return;
+        return isCurrentEmotionRequest();
     }
     
     // 相同情绪但不同表情，或者全新情绪，需要重置
@@ -1521,57 +1523,31 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
         console.log(`新情感触发: ${emotion}，当前情感: ${this.currentEmotion}`);
     }
     
-    // 设置标志，防止快速连续点击
-    this.isEmotionChanging = true;
-    
     try {
         console.log(`开始设置新情感: ${emotion}`);
 
-        // setEmotion 切入新情绪时应清理上一套 expression/motion 残留；
-        // 唯一例外是回退到 Idle 且没有新 expression，此时沿用旧语义：
-        // 只清 motion 残留，不把当前情绪表情洗掉。
-        if (!shouldPreserveExistingExpression) {
+        // 表情槽和动作槽独立：动作空闲时沿用原重置流程；动作占用时只替换
+        // 瞬态表情，不能重置或停止该动作。
+        const preserveActiveMotion = hasActionMotion();
+        if (!shouldPreserveExistingExpression && !preserveActiveMotion) {
             await this.smoothResetToInitialState(LIVE2D_EMOTION_SOFT_RESET_MS);
-            if (
-                typeof this.hasActiveActionMotion === 'function'
-                && this.hasActiveActionMotion(this.currentModel)
-            ) {
-                console.log(`[Live2D] 情感切换期间已有动作开始播放，取消情感切换: ${emotion}`);
-                return false;
-            }
+            if (!isCurrentEmotionRequest()) return false;
         }
         await this.resetTransientMotionAndExpressionState({
-            preserveExpression: shouldPreserveExistingExpression,
+            preserveExpression: willApplyNewExpression || shouldPreserveExistingExpression,
+            preserveMotion: preserveActiveMotion || hasActionMotion(),
             resetAllParameters: !shouldPreserveExistingExpression
         });
-        if (
-            typeof this.hasActiveActionMotion === 'function'
-            && this.hasActiveActionMotion(this.currentModel)
-        ) {
-            console.log(`[Live2D] 情感重置期间已有动作开始播放，取消情感切换: ${emotion}`);
-            return false;
-        }
+        if (!isCurrentEmotionRequest()) return false;
 
         this.currentEmotion = emotion;
         this.currentExpressionFile = targetExpressionFile;
         console.log(`情感已更新为: ${emotion}，表情文件: ${targetExpressionFile}`);
 
-        // 暂停idle动画，防止覆盖我们的动作
-        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
-            try {
-                // 尝试停止所有正在播放的动作
-                if (this.currentModel.internalModel.motionManager.stopAllMotions) {
-                    this.currentModel.internalModel.motionManager.stopAllMotions();
-                    console.log('已停止idle动画');
-                }
-            } catch (motionError) {
-                console.warn('停止idle动画失败:', motionError);
-            }
-        }
-
         // 播放表情（使用确定的表情文件以保持一致性）。
         if (willApplyNewExpression) {
             await this.playExpression(emotion, targetExpressionFile);
+            if (!isCurrentEmotionRequest()) return false;
         } else if (shouldPreserveExistingExpression) {
             console.log(`Idle 未配置新表情，保留当前表情`);
         } else {
@@ -1580,6 +1556,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
 
         // 播放动作
         await this.playMotion(emotion, options);
+        if (!isCurrentEmotionRequest()) return false;
 
         // reset/cleanup 后补回常驻表情；没有新 expression 时这一步也不影响当前表情保护。
         try {
@@ -1592,8 +1569,9 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     } catch (error) {
         console.error(`设置情感 ${emotion} 失败:`, error);
     } finally {
-        // 重置标志
-        this.isEmotionChanging = false;
+        if (isCurrentEmotionRequest()) {
+            this.isEmotionChanging = false;
+        }
     }
 };
 

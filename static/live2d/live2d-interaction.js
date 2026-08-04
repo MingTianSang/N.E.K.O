@@ -3282,16 +3282,16 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         console.log('[Interaction] 教程模式 - 随机播放表情（低优先级，将自动恢复）');
         try {
             // 获取表情列表
-            let expressionNames = [];
+            let expressions = [];
             if (this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
-                expressionNames = this.fileReferences.Expressions.map(e => e.Name).filter(Boolean);
+                expressions = this.fileReferences.Expressions.filter(e => e && e.Name && e.File);
             }
 
             // 随机播放表情
-            if (expressionNames.length > 0) {
-                const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
-                console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
-                await this.currentModel.expression(randomExpression);
+            if (expressions.length > 0) {
+                const randomExpression = expressions[Math.floor(Math.random() * expressions.length)];
+                console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression.Name}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
+                await this.playExpression(randomExpression.Name, randomExpression.File);
 
                 const playedMotion = await this.playTutorialMotion();
 

@@ -20,14 +20,79 @@ Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentMod
         return true;
     }
 
-    const motionManager = model?.internalModel?.motionManager;
-    const state = motionManager?.state;
-    if (!motionManager || !state) return false;
+    const state = model?.internalModel?.motionManager?.state;
+    if (!state) return false;
 
     const currentPriority = Number(state.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE);
     const reservePriority = Number(state.reservePriority ?? LIVE2D_MOTION_PRIORITY.NONE);
     return currentPriority > LIVE2D_MOTION_PRIORITY.IDLE
         || reservePriority > LIVE2D_MOTION_PRIORITY.IDLE;
+};
+
+Live2DManager.prototype._clearOwnedMotionReservation = function(motionManager, groupName, index, priority) {
+    const state = motionManager?.state;
+    if (!state) return;
+    const isIdle = priority === LIVE2D_MOTION_PRIORITY.IDLE;
+    if (
+        state[isIdle ? 'reservedIdleGroup' : 'reservedGroup'] !== groupName
+        || (index != null && state[isIdle ? 'reservedIdleIndex' : 'reservedIndex'] !== index)
+    ) return;
+
+    if (isIdle) {
+        state.setReservedIdle(undefined, undefined);
+    } else {
+        state.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+    }
+};
+
+Live2DManager.prototype._stopIdleMotion = function(model) {
+    const motionManager = model?.internalModel?.motionManager;
+    const state = motionManager?.state;
+    if (
+        Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE) !== LIVE2D_MOTION_PRIORITY.IDLE
+        && state?.reservedIdleGroup === undefined
+    ) return;
+    if (typeof this._clearMotionTimer === 'function') this._clearMotionTimer();
+    motionManager.stopAllMotions();
+};
+
+Live2DManager.prototype._startIdleMotion = async function(model, groupName, index) {
+    const motionManager = model?.internalModel?.motionManager;
+    if (model !== this.currentModel || !motionManager) return false;
+
+    const generation = (this._idleMotionRequestGeneration || 0) + 1;
+    this._idleMotionRequestGeneration = generation;
+    if (this.hasActiveActionMotion(model)) return false;
+    this._stopIdleMotion(model);
+
+    let started;
+    try {
+        started = await (index == null
+            ? motionManager.startRandomMotion(groupName, LIVE2D_MOTION_PRIORITY.IDLE)
+            : motionManager.startMotion(groupName, index, LIVE2D_MOTION_PRIORITY.IDLE));
+    } catch (error) {
+        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.IDLE);
+        throw error;
+    }
+    if (started === false) {
+        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.IDLE);
+        return false;
+    }
+    if (
+        this.currentModel !== model
+        || model.destroyed
+        || this._idleMotionRequestGeneration !== generation
+        || this.hasActiveActionMotion(model)
+    ) {
+        // SDK 允许加载中的 Idle 越过 NORMAL 预留。只停掉刚启动的过期
+        // Idle，并保留普通动作的预留。
+        if (Number(motionManager.state.currentPriority) === LIVE2D_MOTION_PRIORITY.IDLE) {
+            motionManager._stopAllMotions();
+            motionManager.state.complete();
+        }
+        return false;
+    }
+    return true;
 };
 
 /**
@@ -46,35 +111,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
         return false;
     }
     this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
-
-    const state = motionManager.state;
-    const currentPriority = Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE);
-    const hasReservedIdle = state?.reservedIdleGroup !== undefined;
-    if (
-        currentPriority === LIVE2D_MOTION_PRIORITY.IDLE
-        || hasReservedIdle
-    ) {
-        if (typeof this._clearMotionTimer === 'function') {
-            this._clearMotionTimer();
-        }
-        motionManager.stopAllMotions();
-    }
-
-    const clearOwnedReservation = () => {
-        const currentState = motionManager.state;
-        if (!currentState || currentState !== state) return;
-        const ownsReservedGroup = currentState.reservedGroup === groupName;
-        const ownsReservedIndex = index == null || currentState.reservedIndex === index;
-        if (!ownsReservedGroup || !ownsReservedIndex) return;
-
-        if (typeof currentState.setReserved === 'function') {
-            currentState.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
-        } else {
-            currentState.reservePriority = LIVE2D_MOTION_PRIORITY.NONE;
-            currentState.reservedGroup = undefined;
-            currentState.reservedIndex = undefined;
-        }
-    };
+    this._stopIdleMotion(model);
 
     let started;
     try {
@@ -84,16 +121,13 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
             LIVE2D_MOTION_PRIORITY.NORMAL
         );
     } catch (error) {
-        clearOwnedReservation();
+        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
         throw error;
     }
     if (started === false) {
-        clearOwnedReservation();
+        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
     }
-    if (this.currentModel !== model || started === false) {
-        return false;
-    }
-    return started === undefined ? true : started;
+    return this.currentModel === model && started !== false;
 };
 
 /**
@@ -105,19 +139,7 @@ Live2DManager.prototype.playIdleMotion = async function(groupName, index) {
     if (!model || typeof model.motion !== 'function' || !motionManager) {
         return false;
     }
-    if (this.hasActiveActionMotion(model)) {
-        return false;
-    }
-
-    const started = await model.motion(
-        groupName,
-        index,
-        LIVE2D_MOTION_PRIORITY.IDLE
-    );
-    if (this.currentModel !== model || started === false) {
-        return false;
-    }
-    return started === undefined ? true : started;
+    return this._startIdleMotion(model, groupName, index);
 };
 
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
@@ -194,6 +216,8 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this.appearanceBaselineParameters = {};
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
+    this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
+    this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._clearMotionTimer === 'function') {
         this._clearMotionTimer();
@@ -1755,19 +1779,13 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return;
     }
     const expectedModel = this.currentModel;
-    const idleMotionRequestGeneration = this._idleMotionRequestGeneration || 0;
     const isCurrentIdleRequest = () => (
         this.currentModel === expectedModel
         && expectedModel
         && !expectedModel.destroyed
-        && (this._idleMotionRequestGeneration || 0) === idleMotionRequestGeneration
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
-    );
-    const canStartIdleMotion = () => (
-        isCurrentIdleRequest()
-        && !this.hasActiveActionMotion(expectedModel)
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -1807,49 +1825,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         }
         this._trackActiveMotionParametersFromFile(file).catch(() => {});
     };
-    const stopStaleIdleMotion = (started) => {
-        const state = motionManager.state;
-        if (
-            started === false
-            || Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE) !== LIVE2D_MOTION_PRIORITY.IDLE
-        ) {
-            return;
-        }
-
-        // IDLE 加载期间若被普通动作接管，SDK 仍可能在加载完成后启动旧 Idle。
-        // 停止该过期 Idle，同时保留正在加载的 NORMAL 动作预留。
-        const reservedGroup = state.reservedGroup;
-        const reservedIndex = state.reservedIndex;
-        const reservePriority = Number(state.reservePriority ?? LIVE2D_MOTION_PRIORITY.NONE);
-        try {
-            motionManager.stopAllMotions();
-        } catch (_) {
-            return;
-        }
-        if (reservePriority > LIVE2D_MOTION_PRIORITY.IDLE && reservedGroup !== undefined) {
-            if (typeof state.setReserved === 'function') {
-                state.setReserved(reservedGroup, reservedIndex, reservePriority);
-            } else {
-                state.reservePriority = reservePriority;
-                state.reservedGroup = reservedGroup;
-                state.reservedIndex = reservedIndex;
-            }
-        }
-    };
     const startTrackedMotion = async (groupName, index, file) => {
-        if (!canStartIdleMotion()) return false;
+        if (!isCurrentIdleRequest()) return false;
         try {
-            // Idle 必须使用 SDK 的 IDLE 优先级。若误用默认 NORMAL，后续普通动作
-            // 会被当成同优先级动作拒绝，只能靠 FORCE 插入，进而造成动作叠播。
-            const started = await motionManager.startMotion(
-                groupName,
-                index,
-                LIVE2D_MOTION_PRIORITY.IDLE
-            );
-            if (!isCurrentIdleRequest()) {
-                stopStaleIdleMotion(started);
-                return false;
-            }
+            const started = await this._startIdleMotion(expectedModel, groupName, index);
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
                 return false;
@@ -1918,16 +1897,9 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return;
     }
 
-    if (!canStartIdleMotion()) return;
+    if (!isCurrentIdleRequest()) return;
     try {
-        const started = await motionManager.startRandomMotion(
-            'Idle',
-            LIVE2D_MOTION_PRIORITY.IDLE
-        );
-        if (!isCurrentIdleRequest()) {
-            stopStaleIdleMotion(started);
-            return;
-        }
+        const started = await this._startIdleMotion(expectedModel, 'Idle');
         if (started === false) {
             this._clearActiveMotionParamIds();
             return;
