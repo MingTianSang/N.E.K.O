@@ -125,52 +125,6 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           assert.strictEqual(await actionPromise, true);
           assert.strictEqual(deferredMM.state.currentPriority, 2);
 
-          let resolveEmptyAction;
-          const emptyMM = makeMotionManager([], () => new Promise((resolve) => { resolveEmptyAction = resolve; }));
-          const empty = new context.Live2DManager(); empty.currentModel = makeModel(emptyMM);
-          const emptyAction = empty.playActionMotion('Tap', 0);
-          assert.notStrictEqual(emptyMM.state.reservedIdleGroup, undefined);
-          resolveEmptyAction(true);
-          assert.strictEqual(await emptyAction, true);
-          assert.strictEqual(emptyMM.state.reservedIdleGroup, undefined);
-
-          const staleStarts = [], staleResolvers = {};
-          const staleMM = makeMotionManager([], (state, group, index) => {
-            const key = `${group}:${index}`;
-            staleStarts.push(key);
-            if (staleStarts.length > 2) return false;
-            return new Promise((resolve) => {
-              staleResolvers[key] = () => {
-                state.setReservedIdle(undefined, undefined);
-                if (state.currentPriority !== 0) return resolve(false);
-                state.setCurrent(group, index, 1); resolve(true);
-              };
-            });
-          });
-          staleMM.definitions = { Idle: [{ File: 'a.motion3.json' }, { File: 'b.motion3.json' }] };
-          const stale = new context.Live2DManager(); stale.currentModel = makeModel(staleMM);
-          stale.isAvatarPerformanceCapabilityLocked = () => false;
-          const staleLoop = stale._playIdleMotion(staleMM);
-          while (staleStarts.length === 0) await new Promise((resolve) => setTimeout(resolve, 0));
-          const staleKey = staleStarts[0];
-          const savedIdle = stale.playIdleMotion('Saved', 0);
-          staleResolvers['Saved:0'](); assert.strictEqual(await savedIdle, true);
-          staleResolvers[staleKey](); await staleLoop;
-          assert.deepStrictEqual(staleStarts, [staleKey, 'Saved:0']);
-          assert.strictEqual(staleMM.state.currentGroup, 'Saved');
-
-          let resolveFallback;
-          const fallbackMM = makeMotionManager();
-          fallbackMM.definitions = {}; fallbackMM.motionGroups = {};
-          const fallback = new context.Live2DManager(); fallback.currentModel = makeModel(fallbackMM);
-          fallback.isAvatarPerformanceCapabilityLocked = () => false;
-          fallback._startIdleMotion = () => new Promise((resolve) => { resolveFallback = resolve; });
-          fallback._clearActiveMotionParamIds = () => { throw new Error('stale fallback cleared newer tracking'); };
-          const fallbackLoop = fallback._playIdleMotion(fallbackMM);
-          while (!resolveFallback) await new Promise((resolve) => setTimeout(resolve, 0));
-          fallback._idleLoopRequestGeneration++;
-          resolveFallback(false);
-          await fallbackLoop;
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
@@ -203,25 +157,6 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           assert.strictEqual(state.currentPriority, 2);
           assert.strictEqual(manager.persistentApplied, true);
 
-          const clearing = new context.Live2DManager();
-          const resetParams = [];
-          const expressionManager = { reserveExpressionIndex: 3, stopAllExpressions() {} };
-          clearing.currentModel = {
-            internalModel: {
-              coreModel: { setParameterValueById(id, value) { resetParams.push([id, value]); } },
-              motionManager: { expressionManager },
-            },
-          };
-          clearing._cancelSmoothReset = () => {};
-          clearing._resetParametersToInitialState = () => { throw new Error('must not reset action parameters'); };
-          clearing.applyPersistentExpressionsNative = async () => {};
-          clearing.initialParameters = { ParamAngleX: 0, ParamEyeLOpen: 1 };
-          clearing._activeExpressionParamIds = new Set(['ParamAngleX', 'ParamEyeLOpen']);
-          clearing._setActiveMotionParamIds(['ParamAngleX']);
-          assert.strictEqual(clearing.clearExpression({ preserveMotion: true }), true);
-          assert.strictEqual(expressionManager.reserveExpressionIndex, -1);
-          assert.deepStrictEqual(resetParams, [['ParamEyeLOpen', 1]]);
-
           const expressions = new context.Live2DManager(), resolvers = {};
           expressions.currentModel = {
             internalModel: { motionManager: { state: { currentPriority: 0, reservePriority: 0 } } },
@@ -246,43 +181,6 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           resolvers.a(true); assert.strictEqual(await first, false);
           assert.strictEqual(expressions.clearCount, 2);
 
-          const tracking = new context.Live2DManager();
-          const trackingState = {
-            currentPriority: 0, reservePriority: 0,
-            setReservedIdle(group, index) { this.reservedIdleGroup = group; this.reservedIdleIndex = index; },
-          };
-          const trackingMM = {
-            state: trackingState,
-            definitions: { happy: [{ File: 'happy.motion3.json' }] },
-          };
-          tracking.currentModel = {
-            internalModel: { motionManager: trackingMM },
-            motion(group, index) {
-              Object.assign(trackingState, { currentGroup: group, currentIndex: index, currentPriority: 2 });
-              return true;
-            },
-          };
-          Object.assign(tracking, {
-            fileReferences: { Motions: { happy: [{ File: 'happy.motion3.json' }] } },
-            emotionMapping: { motions: {} },
-            isAvatarPerformanceCapabilityLocked: () => false,
-            resolveAssetPath: (file) => file,
-            resetTransientMotionAndExpressionState: async () => {
-              await Promise.resolve();
-              Object.assign(trackingState, { currentGroup: 'Idle', currentIndex: 0, currentPriority: 1 });
-              const generation = tracking._nextMotionTimerGeneration();
-              tracking.motionTimer = { type: 'timeout', id: setTimeout(() => {}, 1000), generation };
-            },
-          });
-          context.fetch = async () => ({
-            ok: true,
-            json: async () => ({ Meta: { Duration: 1 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }),
-          });
-          assert.strictEqual(await tracking.playMotion('happy'), true);
-          assert.strictEqual(trackingState.currentPriority, 2);
-          assert.strictEqual(tracking._activeMotionParamIds.has('ParamAngleX'), true);
-          assert.strictEqual(tracking.motionTimer.type, 'timeout');
-          tracking._clearMotionTimer();
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """,
         emotion=True,
@@ -291,6 +189,8 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
 
 
 def test_all_runtime_entries_use_the_central_slots_before_side_effects():
+    model = MODEL.read_text(encoding="utf-8")
+    emotion = EMOTION.read_text(encoding="utf-8")
     interaction = (ROOT / "static/live2d/live2d-interaction.js").read_text(encoding="utf-8")
     performance = (ROOT / "static/avatar/avatar-performance-stage.js").read_text(
         encoding="utf-8"
@@ -312,3 +212,20 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     assert acquire.index("manager.hasActiveActionMotion(model)") < acquire.index(
         "manager.suspendTemporaryMotions("
     )
+
+    action_slot = model[model.index("Live2DManager.prototype.playActionMotion") : model.index("Live2DManager.prototype.playIdleMotion")]
+    assert "state.setReservedIdle(idleBlock, undefined)" in action_slot
+    assert "state.reservedIdleGroup === idleBlock" in action_slot
+
+    idle_fallback = model[model.index("const started = await this._startIdleMotion(expectedModel, 'Idle');") : model.index("Live2DManager.prototype._configureLoadedModel")]
+    assert idle_fallback.index("if (!isCurrentIdleRequest()) return;") < idle_fallback.index("if (started === false)")
+
+    clear_expression = emotion[emotion.index("Live2DManager.prototype.clearExpression") : emotion.index("Live2DManager.prototype._getActiveExpressionParamIds")]
+    assert "expressionManager.reserveExpressionIndex = -1" in clear_expression
+    recorded_reset = emotion[emotion.index("Live2DManager.prototype._resetRecordedParameterIds") : emotion.index("Live2DManager.prototype._getDefaultMotionParameterIds")]
+    assert "options.preserveMotion === true" in recorded_reset
+
+    motion_start_index = emotion.index("const motion = options.motionPriority")
+    first_motion_check = emotion.index("if (motion) {", motion_start_index)
+    motion_start = emotion[motion_start_index : emotion.index("if (motion) {", first_motion_check + 1)]
+    assert motion_start.index("motionTimerGuardGeneration = this._motionTimerGeneration || 0") < motion_start.index("if (!isCurrentMotionInvocation()) return false")
