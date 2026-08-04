@@ -206,7 +206,10 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     action_slot = model[model.index("Live2DManager.prototype.playActionMotion") : model.index("Live2DManager.prototype.playIdleMotion")]
     assert "state.setReservedIdle(idleBlock, undefined)" in action_slot
     assert "state.reservedIdleGroup === idleBlock" in action_slot
-    assert "this._trackActiveMotionParametersFromFile(startedFile)" in action_slot
+    assert "await this._trackActiveMotionParametersFromFile(requestedFile)" in action_slot
+    assert "this._actionMotionRequestPendingModel = model" in action_slot
+    assert "if (this._actionMotionRequestPendingModel === model)" in model
+    assert "await this.setEmotion('Idle', {" in model
     idle_fallback = model[model.index("const started = await this._startIdleMotion(expectedModel, 'Idle');") : model.index("Live2DManager.prototype._configureLoadedModel")]
     assert idle_fallback.index("if (!isCurrentIdleRequest()) return;") < idle_fallback.index("if (started === false)")
 

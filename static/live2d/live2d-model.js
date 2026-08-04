@@ -16,7 +16,10 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
 });
 
 Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
-    if (model === this.currentModel && this._simpleMotionActive === true) {
+    if (
+        model === this.currentModel
+        && (this._simpleMotionActive === true || this._actionMotionRequestPendingModel === model)
+    ) {
         return true;
     }
 
@@ -115,10 +118,20 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, trac
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
         return false;
     }
+    const state = motionManager.state;
+    const definitions = motionManager.definitions || motionManager._definitions || {};
+    const availableIndexes = (definitions[groupName] || [])
+        .map((_, candidateIndex) => candidateIndex)
+        .filter(candidateIndex => motionManager.motionGroups?.[groupName]?.[candidateIndex] !== null
+            && (typeof state.isActive !== 'function' || !state.isActive(groupName, candidateIndex)));
+    const motionIndex = index == null && availableIndexes.length > 0
+        ? availableIndexes[Math.floor(Math.random() * availableIndexes.length)]
+        : index;
+    const requestedMotion = motionIndex == null ? null : definitions[groupName]?.[motionIndex];
+    const requestedFile = requestedMotion && (requestedMotion.File || requestedMotion.file);
+    this._actionMotionRequestPendingModel = model;
     this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
     this._idleLoopRequestGeneration = (this._idleLoopRequestGeneration || 0) + 1;
-
-    const state = motionManager.state;
     if (
         Number(state.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE) === LIVE2D_MOTION_PRIORITY.IDLE
         || state.reservedIdleGroup !== undefined
@@ -132,27 +145,33 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, trac
 
     let started;
     try {
+        if (trackParameters && requestedFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
+            await this._trackActiveMotionParametersFromFile(requestedFile);
+        }
+        if (this.currentModel !== model) return false;
         started = await model.motion(
             groupName,
-            index,
+            motionIndex,
             LIVE2D_MOTION_PRIORITY.NORMAL
         );
     } catch (error) {
-        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+        this._clearOwnedMotionReservation(motionManager, groupName, motionIndex, LIVE2D_MOTION_PRIORITY.NORMAL);
+        if (trackParameters && typeof this._clearActiveMotionParamIds === 'function') {
+            this._clearActiveMotionParamIds();
+        }
         throw error;
     } finally {
+        if (this._actionMotionRequestPendingModel === model) {
+            this._actionMotionRequestPendingModel = null;
+        }
         if (state.reservedIdleGroup === idleBlock) {
             state.setReservedIdle(undefined, undefined);
         }
     }
     if (started === false) {
-        this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
-    } else if (this.currentModel === model && trackParameters) {
-        const definitions = motionManager.definitions || motionManager._definitions || {};
-        const startedMotion = definitions[state.currentGroup || groupName]?.[state.currentIndex ?? index];
-        const startedFile = startedMotion && (startedMotion.File || startedMotion.file);
-        if (startedFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
-            this._trackActiveMotionParametersFromFile(startedFile).catch(() => {});
+        this._clearOwnedMotionReservation(motionManager, groupName, motionIndex, LIVE2D_MOTION_PRIORITY.NORMAL);
+        if (trackParameters && typeof this._clearActiveMotionParamIds === 'function') {
+            this._clearActiveMotionParamIds();
         }
     }
     return this.currentModel === model && started !== false;
@@ -1777,6 +1796,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
     this._idleMotionFinishModel = model;
     this._idleMotionFinishHandler = () => {
+        if (this._actionMotionRequestPendingModel === model) {
+            return;
+        }
         if (this._temporaryMotionSuspendToken) {
             return;
         }
@@ -2387,10 +2409,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!suppressInitialIdle && (hasIdleInEmotionMapping || hasIdleInFileReferences)) {
         try {
             console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
-            this.setEmotion('Idle', {
+            await this.setEmotion('Idle', {
                 motionPriority: LIVE2D_MOTION_PRIORITY.IDLE
-            }).catch(error => {
-                console.warn('[Live2D Model] 播放Idle情绪失败:', error);
             });
         } catch (error) {
             console.warn('[Live2D Model] 播放Idle情绪失败:', error);
