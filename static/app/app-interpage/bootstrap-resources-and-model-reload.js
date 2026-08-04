@@ -1867,10 +1867,27 @@ I.mod = window.appInterpage;
                 }
             }
 
-            // 8. 停止当前动作并播放保存的待机动作
+            // 8. 停止当前动作并以 IDLE 优先级播放保存的待机动作。
+            // IDLE 可以被一个 NORMAL 交互动作接管，同时 NORMAL 动作之间保持互斥；
+            // 这里不能使用 FORCE，否则后续交互只能继续用 FORCE 抢占并产生叠播。
+            if (
+                typeof live2dManager.hasActiveActionMotion === 'function'
+                && live2dManager.hasActiveActionMotion(live2dModel)
+            ) {
+                console.log('[Live2D Main] 当前有其他动作，跳过待机动作恢复');
+                return;
+            }
             motionManager.stopAllMotions();
-            live2dModel.motion(groupName, motionIndex, 3);
-            console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+            const started = await live2dModel.motion(
+                groupName,
+                motionIndex,
+                LIVE2D_MOTION_PRIORITY.IDLE
+            );
+            if (started) {
+                console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+            } else {
+                console.log('[Live2D Main] 当前有其他动作，跳过待机动作恢复');
+            }
 
         } catch (error) {
             console.error('[Live2D Main] 恢复待机动作失败:', error);

@@ -1194,7 +1194,10 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                     // 使用运行时 motion group/index 播放，确保播放文件和追踪清理文件一致。
                     console.log(`尝试使用motion组播放motion: ${runtimeChoice.group}[${runtimeChoice.index}]`);
 
-                    const motion = await this.currentModel.motion(runtimeChoice.group, runtimeChoice.index);
+                    const motion = await this.playActionMotion(
+                        runtimeChoice.group,
+                        runtimeChoice.index
+                    );
                     if (!isCurrentMotionInvocation()) return false;
 
                     if (motion) {

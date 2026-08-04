@@ -1800,6 +1800,9 @@
             if (!manager || !model) {
                 return false;
             }
+            if (typeof manager.hasActiveActionMotion === 'function' && manager.hasActiveActionMotion(model)) {
+                return false;
+            }
             const candidates = this.collectMotionCandidates(motion, options);
             for (let index = 0; index < candidates.length; index += 1) {
                 const candidate = candidates[index];
@@ -1811,7 +1814,7 @@
 
                 if (groupName && explicitIndex !== null && model && typeof model.motion === 'function') {
                     try {
-                        const played = await this.withPerformanceBypass(() => model.motion(groupName, explicitIndex));
+                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex));
                         if (played !== false) {
                             return true;
                         }
@@ -1822,7 +1825,7 @@
                     const runtimeRef = this.findMotionRuntimeReference(groupName, file);
                     if (runtimeRef) {
                         try {
-                            const played = await this.withPerformanceBypass(() => model.motion(runtimeRef.group, runtimeRef.index));
+                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index));
                             if (played !== false) {
                                 return true;
                             }

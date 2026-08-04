@@ -15,6 +15,51 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
     FORCE: 3
 });
 
+Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
+    const motionManager = model?.internalModel?.motionManager;
+    const state = motionManager?.state;
+    if (!motionManager || !state) return false;
+
+    const currentPriority = Number(state.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE);
+    const reservePriority = Number(state.reservePriority ?? LIVE2D_MOTION_PRIORITY.NONE);
+    return currentPriority > LIVE2D_MOTION_PRIORITY.IDLE
+        || reservePriority > LIVE2D_MOTION_PRIORITY.IDLE;
+};
+
+/**
+ * 播放一个主界面动作。普通动作统一使用 NORMAL 优先级；当另一个普通动作
+ * 正在加载或播放时拒绝本次请求。Idle 可以被接管，但会先立即停止，避免
+ * SDK 的淡出阶段把 Idle 与新动作叠在一起。
+ */
+Live2DManager.prototype.playActionMotion = async function(groupName, index) {
+    const model = this.currentModel;
+    const motionManager = model?.internalModel?.motionManager;
+    if (!model || typeof model.motion !== 'function' || !motionManager) {
+        return false;
+    }
+    if (this.hasActiveActionMotion(model)) {
+        console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
+        return false;
+    }
+
+    const state = motionManager.state;
+    const currentPriority = Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE);
+    const hasReservedIdle = state?.reservedIdleGroup !== undefined;
+    if (
+        currentPriority === LIVE2D_MOTION_PRIORITY.IDLE
+        || hasReservedIdle
+    ) {
+        motionManager.stopAllMotions();
+    }
+
+    const started = await model.motion(
+        groupName,
+        index,
+        LIVE2D_MOTION_PRIORITY.NORMAL
+    );
+    return this.currentModel === model && started !== false;
+};
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -1698,7 +1743,13 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     const startTrackedMotion = async (groupName, index, file) => {
         if (!isCurrentIdleRequest()) return false;
         try {
-            const started = await motionManager.startMotion(groupName, index);
+            // Idle 必须使用 SDK 的 IDLE 优先级。若误用默认 NORMAL，后续普通动作
+            // 会被当成同优先级动作拒绝，只能靠 FORCE 插入，进而造成动作叠播。
+            const started = await motionManager.startMotion(
+                groupName,
+                index,
+                LIVE2D_MOTION_PRIORITY.IDLE
+            );
             if (!isCurrentIdleRequest()) return false;
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
@@ -1770,7 +1821,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
 
     if (!isCurrentIdleRequest()) return;
     try {
-        const started = await motionManager.startRandomMotion('Idle');
+        const started = await motionManager.startRandomMotion(
+            'Idle',
+            LIVE2D_MOTION_PRIORITY.IDLE
+        );
         if (!isCurrentIdleRequest()) return;
         if (started === false) {
             this._clearActiveMotionParamIds();

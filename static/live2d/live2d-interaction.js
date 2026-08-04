@@ -2589,7 +2589,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
         // 1. 优先播放低优先级动作
         let motions = null;
-        let motionGroup = emotion; // 用于 this.currentModel.motion(group, index, priority)
+        let motionGroup = emotion; // 传给统一的单动作播放入口
         if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
             motions = this.fileReferences.Motions[emotion];
         } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
@@ -2623,7 +2623,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             // 使用低优先级播放动作
             // pixi-live2d-display 的 motion(group, index, priority) 支持优先级参数
             try {
-                const motion = await this.currentModel.motion(motionGroup, undefined, priority);
+                const motion = await this.playActionMotion(motionGroup, undefined);
                 if (!isCurrentPlayAttempt()) {
                     // 已被新的点击接管：停掉本次刚启动的动作，避免后台占用，并放弃写共享状态
                     if (motion && typeof motion.stop === 'function') {
@@ -3250,11 +3250,9 @@ Live2DManager.prototype.playTutorialMotion = async function() {
     const index = Math.floor(Math.random() * groupList.length);
 
     try {
-        const motion = await this.currentModel.motion(group, index, window.live2dManager.CLICK_MOTION_PRIORITY);
-        // const motion = await this.currentModel.motion(group, index, 2);
+        const motion = await this.playActionMotion(group, index);
         if (motion) {
             console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${window.live2dManager.CLICK_MOTION_PRIORITY}）`);
-            // console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${2}）`);
             return true;
         }
     } catch (error) {
@@ -3884,8 +3882,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                             return false;
                         }
 
-                        motionManager.stopAllMotions();
-                        const result = await live2dModel.motion(groupName, 0, 3);
+                        // 普通交互动作统一使用 NORMAL：SDK 会在已有 NORMAL 动作时
+                        // 拒绝新请求，从而保证同一时间只有一个动作。FORCE 仅供模型
+                        // 管理器的显式预览切换使用，不能用于主界面交互。
+                        const result = await this.playActionMotion(groupName, 0);
 
                         if (result) {
                             triggerLog.motions.push({
@@ -3894,7 +3894,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                                 index: 0,
                                 file: motion.File,
                                 durationMs: AnimHoldingTime,
-                                priority: 3
+                                priority: LIVE2D_MOTION_PRIORITY.NORMAL
                             });
                             console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
                         } else {
