@@ -470,6 +470,7 @@ Live2DManager.prototype.hasActiveMotionPlayback = function() {
 
 Live2DManager.prototype._clearMotionTimer = function() {
     this._nextMotionTimerGeneration();
+    this._simpleMotionActive = false;
     if (!this.motionTimer) return false;
 
     console.log(`清除motion定时器，类型: ${this.motionTimer.type || 'unknown'}`);
@@ -1263,6 +1264,13 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                     } else {
                         console.warn('motion播放失败，返回值无效');
                     }
+                    if (
+                        typeof this.hasActiveActionMotion === 'function'
+                        && this.hasActiveActionMotion(this.currentModel)
+                    ) {
+                        console.log(`[Live2D] 动作闸门已被占用，跳过简单动作回退: ${emotion}`);
+                        return false;
+                    }
                 } catch (error) {
                     console.warn('模型motion方法失败:', error);
                 }
@@ -1293,6 +1301,14 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
 
 // 播放简单动作（回退方案）
 Live2DManager.prototype.playSimpleMotion = function(emotion) {
+    if (
+        typeof this.hasActiveActionMotion === 'function'
+        && this.hasActiveActionMotion(this.currentModel)
+    ) {
+        console.log(`[Live2D] 已有动作正在播放，跳过简单动作: ${emotion}`);
+        return false;
+    }
+
     try {
         const generation = this._nextMotionTimerGeneration();
         const isCurrentMotion = () => this._isCurrentMotionTimerGeneration(generation);
@@ -1303,6 +1319,9 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
             surprised: ['ParamAngleY']
         };
         this._setActiveMotionParamIds(simpleMotionParams[emotion] || ['ParamAngleX', 'ParamAngleY']);
+        if (Object.prototype.hasOwnProperty.call(simpleMotionParams, emotion)) {
+            this._simpleMotionActive = true;
+        }
 
         switch (emotion) {
             case 'happy': {
@@ -1360,8 +1379,11 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 break;
         }
         console.log(`播放简单动作: ${emotion}`);
+        return true;
     } catch (paramError) {
+        this._simpleMotionActive = false;
         console.warn('设置简单动作参数失败:', paramError);
+        return false;
     }
 };
 

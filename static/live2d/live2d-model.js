@@ -16,6 +16,10 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
 });
 
 Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
+    if (model === this.currentModel && this._simpleMotionActive === true) {
+        return true;
+    }
+
     const motionManager = model?.internalModel?.motionManager;
     const state = motionManager?.state;
     if (!motionManager || !state) return false;

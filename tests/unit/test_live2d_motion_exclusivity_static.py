@@ -44,6 +44,7 @@ def test_main_action_entry_rejects_a_second_action_and_stops_only_idle():
     action_source = source[action_start:action_end]
 
     assert "this.hasActiveActionMotion(model)" in action_source
+    assert "this._simpleMotionActive === true" in source
     assert "return false" in action_source
     assert "currentPriority === LIVE2D_MOTION_PRIORITY.IDLE" in action_source
     assert "motionManager.stopAllMotions()" in action_source
@@ -98,6 +99,39 @@ def test_emotion_motion_checks_the_gate_before_resetting_existing_motion():
         "resetTransientMotionAndExpressionState", smooth_reset_index
     )
     assert smooth_reset_index < guard_after_smooth_reset < destructive_reset_index
+
+
+def test_simple_motion_fallback_does_not_overlap_an_action():
+    source = (
+        PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
+    ).read_text(encoding="utf-8")
+    play_motion_start = source.index("Live2DManager.prototype.playMotion")
+    play_motion_end = source.index("// 播放简单动作", play_motion_start)
+    play_motion_source = source[play_motion_start:play_motion_end]
+    motion_result_index = play_motion_source.index("const motion =")
+    late_action_guard_index = play_motion_source.index(
+        "this.hasActiveActionMotion(this.currentModel)", motion_result_index
+    )
+    simple_fallback_index = play_motion_source.index(
+        "this.playSimpleMotion(emotion)", motion_result_index
+    )
+    assert motion_result_index < late_action_guard_index < simple_fallback_index
+
+    simple_start = source.index("Live2DManager.prototype.playSimpleMotion")
+    simple_end = source.index("// 清理当前情感效果", simple_start)
+    simple_source = source[simple_start:simple_end]
+    centralized_guard_index = simple_source.index(
+        "this.hasActiveActionMotion(this.currentModel)"
+    )
+    parameter_write_index = simple_source.index("_setActiveMotionParamIds")
+    assert centralized_guard_index < parameter_write_index
+    assert "this._simpleMotionActive = true" in simple_source
+
+    clear_timer_start = source.index("Live2DManager.prototype._clearMotionTimer")
+    clear_timer_end = source.index(
+        "Live2DManager.prototype._resetExplicitMotionParameters", clear_timer_start
+    )
+    assert "this._simpleMotionActive = false" in source[clear_timer_start:clear_timer_end]
 
 
 def test_startup_idle_emotion_uses_idle_priority():
