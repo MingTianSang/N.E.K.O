@@ -1190,7 +1190,7 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
     const motionParamTrackModel = this.currentModel;
     const motionParamTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     this._motionParameterTrackGeneration = motionParamTrackGeneration;
-    const motionTimerGuardGeneration = this._motionTimerGeneration || 0;
+    let motionTimerGuardGeneration = this._motionTimerGeneration || 0;
     const isCurrentMotionInvocation = () => (
         isCurrentPlayMotionInvocation()
         && this.currentModel === motionParamTrackModel
@@ -1225,6 +1225,11 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
                     const motion = options.motionPriority === LIVE2D_MOTION_PRIORITY.IDLE
                         ? await this.playIdleMotion(runtimeChoice.group, runtimeChoice.index)
                         : await this.playActionMotion(runtimeChoice.group, runtimeChoice.index);
+                    if (motion) {
+                        // Replacing an Idle legitimately clears its timer. Keep guarding later
+                        // async tracking work from newer timers without rejecting this action.
+                        motionTimerGuardGeneration = this._motionTimerGeneration || 0;
+                    }
                     if (!isCurrentMotionInvocation()) return false;
 
                     if (motion) {

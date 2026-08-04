@@ -245,6 +245,44 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           resolvers.b(true); assert.strictEqual(await second, true);
           resolvers.a(true); assert.strictEqual(await first, false);
           assert.strictEqual(expressions.clearCount, 2);
+
+          const tracking = new context.Live2DManager();
+          const trackingState = {
+            currentPriority: 0, reservePriority: 0,
+            setReservedIdle(group, index) { this.reservedIdleGroup = group; this.reservedIdleIndex = index; },
+          };
+          const trackingMM = {
+            state: trackingState,
+            definitions: { happy: [{ File: 'happy.motion3.json' }] },
+          };
+          tracking.currentModel = {
+            internalModel: { motionManager: trackingMM },
+            motion(group, index) {
+              Object.assign(trackingState, { currentGroup: group, currentIndex: index, currentPriority: 2 });
+              return true;
+            },
+          };
+          Object.assign(tracking, {
+            fileReferences: { Motions: { happy: [{ File: 'happy.motion3.json' }] } },
+            emotionMapping: { motions: {} },
+            isAvatarPerformanceCapabilityLocked: () => false,
+            resolveAssetPath: (file) => file,
+            resetTransientMotionAndExpressionState: async () => {
+              await Promise.resolve();
+              Object.assign(trackingState, { currentGroup: 'Idle', currentIndex: 0, currentPriority: 1 });
+              const generation = tracking._nextMotionTimerGeneration();
+              tracking.motionTimer = { type: 'timeout', id: setTimeout(() => {}, 1000), generation };
+            },
+          });
+          context.fetch = async () => ({
+            ok: true,
+            json: async () => ({ Meta: { Duration: 1 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }),
+          });
+          assert.strictEqual(await tracking.playMotion('happy'), true);
+          assert.strictEqual(trackingState.currentPriority, 2);
+          assert.strictEqual(tracking._activeMotionParamIds.has('ParamAngleX'), true);
+          assert.strictEqual(tracking.motionTimer.type, 'timeout');
+          tracking._clearMotionTimer();
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """,
         emotion=True,
