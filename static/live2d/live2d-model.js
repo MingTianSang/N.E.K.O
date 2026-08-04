@@ -105,7 +105,7 @@ Live2DManager.prototype._startIdleMotion = async function(model, groupName, inde
  * 正在加载或播放时拒绝本次请求。Idle 会保留到普通动作加载完成，再由
  * SDK 原子替换，避免加载空窗触发 SDK 自动 Idle。
  */
-Live2DManager.prototype.playActionMotion = async function(groupName, index) {
+Live2DManager.prototype.playActionMotion = async function(groupName, index, trackParameters = true) {
     const model = this.currentModel;
     const motionManager = model?.internalModel?.motionManager;
     if (!model || typeof model.motion !== 'function' || !motionManager) {
@@ -147,6 +147,13 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     }
     if (started === false) {
         this._clearOwnedMotionReservation(motionManager, groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+    } else if (this.currentModel === model && trackParameters) {
+        const definitions = motionManager.definitions || motionManager._definitions || {};
+        const startedMotion = definitions[state.currentGroup || groupName]?.[state.currentIndex ?? index];
+        const startedFile = startedMotion && (startedMotion.File || startedMotion.file);
+        if (startedFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
+            this._trackActiveMotionParametersFromFile(startedFile).catch(() => {});
+        }
     }
     return this.currentModel === model && started !== false;
 };

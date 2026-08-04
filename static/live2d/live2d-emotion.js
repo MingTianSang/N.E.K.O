@@ -1224,7 +1224,7 @@ Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
 
                     const motion = options.motionPriority === LIVE2D_MOTION_PRIORITY.IDLE
                         ? await this.playIdleMotion(runtimeChoice.group, runtimeChoice.index)
-                        : await this.playActionMotion(runtimeChoice.group, runtimeChoice.index);
+                        : await this.playActionMotion(runtimeChoice.group, runtimeChoice.index, false);
                     if (motion) {
                         // Replacing an Idle legitimately clears its timer. Keep guarding later
                         // async tracking work from newer timers without rejecting this action.

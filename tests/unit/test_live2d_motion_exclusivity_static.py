@@ -77,34 +77,29 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
             internalModel: { motionManager: mm },
             motion(group, index, priority) { return mm.startMotion(group, index, priority); },
           });
-
           const busyMM = makeMotionManager();
           busyMM.state.setCurrent('Busy', 0, 2);
           const busy = new context.Live2DManager(); busy.currentModel = makeModel(busyMM);
           assert.strictEqual(await busy.playActionMotion('Next', 0), false);
           assert.strictEqual(busyMM.state.currentGroup, 'Busy');
-
           const actionEvents = [], actionMM = makeMotionManager(actionEvents);
           actionMM.state.setCurrent('Idle', 0, 1);
           const action = new context.Live2DManager(); action.currentModel = makeModel(actionMM);
           action._clearMotionTimer = () => actionEvents.push('clear-timer');
           assert.strictEqual(await action.playActionMotion('Tap', 0), true);
           assert.deepStrictEqual(actionEvents, ['clear-timer', 'start:Tap']);
-
           const failedMM = makeMotionManager([], () => false);
           const failed = new context.Live2DManager(); failed.currentModel = makeModel(failedMM);
           assert.strictEqual(await failed.playActionMotion('Missing', 0), false);
           assert.strictEqual(failedMM.state.reservedGroup, undefined);
           assert.strictEqual(await failed.playIdleMotion('Idle', 0), false);
           assert.strictEqual(failedMM.state.reservedIdleGroup, undefined);
-
           const idleEvents = [], idleMM = makeMotionManager(idleEvents);
           idleMM.state.setCurrent('OldIdle', 0, 1);
           const idle = new context.Live2DManager(); idle.currentModel = makeModel(idleMM);
           idle._clearMotionTimer = () => idleEvents.push('clear-timer');
           assert.strictEqual(await idle.playIdleMotion('SavedIdle', 0), true);
           assert.deepStrictEqual(idleEvents, ['clear-timer', 'stop', 'start:SavedIdle']);
-
           let resolveIdle, resolveAction;
           const deferredMM = makeMotionManager([], (state, group, index, priority) => new Promise((resolve) => {
             const finish = () => {
@@ -124,7 +119,6 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           resolveAction();
           assert.strictEqual(await actionPromise, true);
           assert.strictEqual(deferredMM.state.currentPriority, 2);
-
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
@@ -156,7 +150,6 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           assert.strictEqual(manager.resetOptions.preserveMotion, true);
           assert.strictEqual(state.currentPriority, 2);
           assert.strictEqual(manager.persistentApplied, true);
-
           const expressions = new context.Live2DManager(), resolvers = {};
           expressions.currentModel = {
             internalModel: { motionManager: { state: { currentPriority: 0, reservePriority: 0 } } },
@@ -172,7 +165,6 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           };
           expressions.applyPersistentExpressionsNative = async () => {};
           context.fetch = async () => ({ ok: true, json: async () => ({ Parameters: [] }) });
-
           const first = expressions.playExpression('first', 'a.exp3.json');
           while (!resolvers.a) await new Promise((resolve) => setTimeout(resolve, 0));
           const second = expressions.playExpression('second', 'b.exp3.json');
@@ -180,7 +172,6 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           resolvers.b(true); assert.strictEqual(await second, true);
           resolvers.a(true); assert.strictEqual(await first, false);
           assert.strictEqual(expressions.clearCount, 2);
-
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """,
         emotion=True,
@@ -212,11 +203,10 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     assert acquire.index("manager.hasActiveActionMotion(model)") < acquire.index(
         "manager.suspendTemporaryMotions("
     )
-
     action_slot = model[model.index("Live2DManager.prototype.playActionMotion") : model.index("Live2DManager.prototype.playIdleMotion")]
     assert "state.setReservedIdle(idleBlock, undefined)" in action_slot
     assert "state.reservedIdleGroup === idleBlock" in action_slot
-
+    assert "this._trackActiveMotionParametersFromFile(startedFile)" in action_slot
     idle_fallback = model[model.index("const started = await this._startIdleMotion(expectedModel, 'Idle');") : model.index("Live2DManager.prototype._configureLoadedModel")]
     assert idle_fallback.index("if (!isCurrentIdleRequest()) return;") < idle_fallback.index("if (started === false)")
 
@@ -224,7 +214,7 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     assert "expressionManager.reserveExpressionIndex = -1" in clear_expression
     recorded_reset = emotion[emotion.index("Live2DManager.prototype._resetRecordedParameterIds") : emotion.index("Live2DManager.prototype._getDefaultMotionParameterIds")]
     assert "options.preserveMotion === true" in recorded_reset
-
+    assert "this.clearExpression({ preserveMotion: true })" in interaction
     motion_start_index = emotion.index("const motion = options.motionPriority")
     first_motion_check = emotion.index("if (motion) {", motion_start_index)
     motion_start = emotion[motion_start_index : emotion.index("if (motion) {", first_motion_check + 1)]

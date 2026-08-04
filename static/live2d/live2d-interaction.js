@@ -3971,7 +3971,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                     const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
                     this.expressionTimer = setTimeout(() => {
                         if (typeof this.clearExpression === 'function') {
-                            this.clearExpression();
+                            this.clearExpression({ preserveMotion: true });
                             console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
                             if (typeof this.applyPersistentExpressionsNative === 'function') {
                                 try {
