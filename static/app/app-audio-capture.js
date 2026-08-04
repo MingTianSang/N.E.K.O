@@ -3402,11 +3402,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // Tear down the shared action state as well as its DOM. This
                 // clears an old render's pending hover-collapse timer so it
                 // cannot remove a subwindow created by the next render.
-                if (typeof closeMicSubwindow === 'function') {
-                    closeMicSubwindow();
-                } else if (voicePanel && voicePanel.isConnected) {
-                    voicePanel.remove();
-                }
+                closeMicSubwindow();
                 voicePanel = null;
                 noiseToggle = null;
                 optimizationToggle = null;
@@ -3787,7 +3783,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 Object.assign(labelEl.style, { display: 'block', maxWidth: '100%', fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                 var subEl = document.createElement('span');
                 subEl.className = 'neko-mic-action-sub-label';
-                subEl.textContent = subLabel || '';
+                subEl.textContent = subLabel == null ? '' : String(subLabel);
                 Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                 // Match settings menu chevron (Chat Settings / Animation / Advanced).
                 var arrow = document.createElement('span');
@@ -3799,7 +3795,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     flexShrink: '0'
                 });
                 textWrap.appendChild(labelEl);
-                if (subLabel) textWrap.appendChild(subEl);
+                if (subLabel != null) textWrap.appendChild(subEl);
                 if (iconText) {
                     var icon = document.createElement('span');
                     icon.textContent = iconText;
@@ -3909,6 +3905,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 voiceStatus = document.createElement('div');
                 voiceStatus.className = 'neko-voice-recognition-status';
+                voiceStatus.setAttribute('role', 'status');
+                voiceStatus.setAttribute('aria-live', 'polite');
                 Object.assign(voiceStatus.style, {
                     borderTop: '1px solid var(--neko-popup-separator)',
                     paddingTop: '11px',
@@ -4093,7 +4091,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var asrActionButton = createMainActionButton(
                 null,
                 voiceButtonLabel,
-                ' ',
+                '',
                 'voice-recognition',
                 openVoiceRecognitionSubwindow,
                 voiceRowHoverGuard

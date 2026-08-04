@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,12 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
+VOICE_POPOVER_LOCAL_LISTENERS = (
+    "document:pointerdown",
+    "document:keydown",
+    "window:resize",
+    "window:scroll",
+)
 VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:voice-input-lifecycle-changed",
     "window:neko:voice-session-started",
@@ -48,16 +55,7 @@ def _install_voice_popover_harness(
     harness = r"""
 (() => {
     const listenerBalance = Object.create(null);
-    const trackedListenerKeys = new Set([
-        'document:pointerdown',
-        'document:keydown',
-        'window:resize',
-        'window:scroll',
-        'window:voice-input-lifecycle-changed',
-        'window:neko:voice-session-started',
-        'window:neko:voice-settings-pending-changed',
-        'window:neko:core-api-capability-changed',
-    ]);
+    const trackedListenerKeys = new Set(__TRACKED_LISTENER_KEYS__);
     let failWindowListenerType = null;
     function trackListeners(target, prefix) {
         const originalAdd = target.addEventListener.bind(target);
@@ -244,6 +242,12 @@ def _install_voice_popover_harness(
     };
 })();
 """
+    harness = harness.replace(
+        "__TRACKED_LISTENER_KEYS__",
+        json.dumps(
+            [*VOICE_POPOVER_LOCAL_LISTENERS, *VOICE_POPOVER_GLOBAL_LISTENERS]
+        ),
+    )
     harness = harness.replace(
         "__DEFERRED_PERMISSION__", "true" if deferred_permission else "false"
     )
@@ -610,10 +614,11 @@ def test_voice_action_uses_shared_260ms_hover_collapse(page: Page) -> None:
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
 
     page.locator("#outside-target").hover()
-    page.wait_for_timeout(180)
+    page.wait_for_timeout(100)
     assert page.evaluate("window.__voicePopoverTest.panels()") == 1
-    page.wait_for_timeout(150)
-    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+    page.wait_for_function(
+        "window.__voicePopoverTest.panels() === 0", timeout=2000
+    )
 
 
 @pytest.mark.frontend

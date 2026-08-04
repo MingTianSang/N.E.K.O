@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 
@@ -68,6 +69,8 @@ def test_voice_recognition_reuses_the_shared_mic_action_subwindow() -> None:
     assert "createMicSubwindow(" in voice_panel
     assert "panel._nekoMicSubwindowBody" in voice_panel
     assert "panel.classList.add('neko-mic-voice-subwindow')" in voice_panel
+    assert "voiceStatus.setAttribute('role', 'status')" in voice_panel
+    assert "voiceStatus.setAttribute('aria-live', 'polite')" in voice_panel
     assert "'voice-recognition'" in voice_action
     assert "openVoiceRecognitionSubwindow" in voice_action
     assert "voiceRowHoverGuard" in voice_action
@@ -84,9 +87,12 @@ def test_voice_recognition_reuses_the_shared_mic_action_subwindow() -> None:
     ):
         assert legacy_name not in source
 
-    assert "document.addEventListener('pointerdown'" not in source
-    assert "window.addEventListener('resize', positionVoicePanel)" not in source
-    assert "window.addEventListener('scroll', positionVoicePanel" not in source
+    assert not re.search(
+        r"document\.addEventListener\(\s*['\"]pointerdown['\"]", source
+    )
+    assert not re.search(
+        r"window\.addEventListener\(\s*['\"](?:resize|scroll)['\"]", source
+    )
 
 
 def test_cross_window_voice_settings_publish_a_shared_pending_route_snapshot() -> None:
@@ -162,6 +168,8 @@ def test_native_core_hint_describes_the_free_api_in_all_locales() -> None:
         "zh-CN": "当前核心使用免费API；独立 ASR 相关开关不适用",
         "zh-TW": "目前核心使用免費 API；獨立 ASR 相關開關不適用",
     }
+
+    assert set(expected) == set(LOCALES)
 
     for locale_name, expected_hint in expected.items():
         locale = json.loads(

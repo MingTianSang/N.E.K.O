@@ -678,7 +678,11 @@ def test_core_capability_refresh_failures_fail_open_and_ignore_stale_requests_ha
           await oldRequest;
           assert(S.coreApiSupportsIndependentAsr === true, 'late failure must not clear newer capability');
           assert(S.coreApiProvider === 'qwen', 'effective provider must win and survive a late failure');
-          assert(events.length >= 3, 'capability changes should notify the shared UI');
+          assert(
+            events.length === 3
+              && events.every((event) => event.type === 'neko:core-api-capability-changed'),
+            'capability changes should notify the shared UI exactly once per change'
+          );
           console.log('ok');
         }
         main().catch((error) => {
