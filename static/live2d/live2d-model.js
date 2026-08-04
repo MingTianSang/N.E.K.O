@@ -45,6 +45,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
         return false;
     }
+    this._idleMotionRequestGeneration = (this._idleMotionRequestGeneration || 0) + 1;
 
     const state = motionManager.state;
     const currentPriority = Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE);
@@ -1754,10 +1755,12 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return;
     }
     const expectedModel = this.currentModel;
+    const idleMotionRequestGeneration = this._idleMotionRequestGeneration || 0;
     const isCurrentIdleRequest = () => (
         this.currentModel === expectedModel
         && expectedModel
         && !expectedModel.destroyed
+        && (this._idleMotionRequestGeneration || 0) === idleMotionRequestGeneration
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
@@ -1804,6 +1807,35 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         }
         this._trackActiveMotionParametersFromFile(file).catch(() => {});
     };
+    const stopStaleIdleMotion = (started) => {
+        const state = motionManager.state;
+        if (
+            started === false
+            || Number(state?.currentPriority ?? LIVE2D_MOTION_PRIORITY.NONE) !== LIVE2D_MOTION_PRIORITY.IDLE
+        ) {
+            return;
+        }
+
+        // IDLE 加载期间若被普通动作接管，SDK 仍可能在加载完成后启动旧 Idle。
+        // 停止该过期 Idle，同时保留正在加载的 NORMAL 动作预留。
+        const reservedGroup = state.reservedGroup;
+        const reservedIndex = state.reservedIndex;
+        const reservePriority = Number(state.reservePriority ?? LIVE2D_MOTION_PRIORITY.NONE);
+        try {
+            motionManager.stopAllMotions();
+        } catch (_) {
+            return;
+        }
+        if (reservePriority > LIVE2D_MOTION_PRIORITY.IDLE && reservedGroup !== undefined) {
+            if (typeof state.setReserved === 'function') {
+                state.setReserved(reservedGroup, reservedIndex, reservePriority);
+            } else {
+                state.reservePriority = reservePriority;
+                state.reservedGroup = reservedGroup;
+                state.reservedIndex = reservedIndex;
+            }
+        }
+    };
     const startTrackedMotion = async (groupName, index, file) => {
         if (!canStartIdleMotion()) return false;
         try {
@@ -1814,7 +1846,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
                 index,
                 LIVE2D_MOTION_PRIORITY.IDLE
             );
-            if (!isCurrentIdleRequest()) return false;
+            if (!isCurrentIdleRequest()) {
+                stopStaleIdleMotion(started);
+                return false;
+            }
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
                 return false;
@@ -1889,7 +1924,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             'Idle',
             LIVE2D_MOTION_PRIORITY.IDLE
         );
-        if (!isCurrentIdleRequest()) return;
+        if (!isCurrentIdleRequest()) {
+            stopStaleIdleMotion(started);
+            return;
+        }
         if (started === false) {
             this._clearActiveMotionParamIds();
             return;

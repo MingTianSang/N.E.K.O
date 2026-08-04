@@ -287,6 +287,101 @@ def test_model_removal_clears_simple_motion_gate_with_motion_timer():
     assert result.returncode == 0, result.stderr
 
 
+def test_action_invalidates_an_idle_motion_that_finishes_loading_late():
+    script = _manager_harness(
+        """
+        (async () => {
+          let resolveIdle;
+          let resolveAction;
+          let stopCount = 0;
+          const state = {
+            currentPriority: 0,
+            reservePriority: 0,
+            currentGroup: undefined,
+            currentIndex: undefined,
+            reservedGroup: undefined,
+            reservedIndex: undefined,
+            reservedIdleGroup: 'Idle',
+            reservedIdleIndex: 0,
+            setReserved(group, index, priority) {
+              this.reservedGroup = group;
+              this.reservedIndex = index;
+              this.reservePriority = priority;
+            },
+            setCurrent(group, index, priority) {
+              this.currentGroup = group;
+              this.currentIndex = index;
+              this.currentPriority = priority;
+            },
+          };
+          const motionManager = {
+            state,
+            definitions: { Idle: [{ File: 'idle.motion3.json' }] },
+            motionGroups: {},
+            startMotion() {
+              return new Promise((resolve) => {
+                resolveIdle = () => {
+                  state.reservedIdleGroup = undefined;
+                  state.reservedIdleIndex = undefined;
+                  state.setCurrent('Idle', 0, 1);
+                  resolve(true);
+                };
+              });
+            },
+            startRandomMotion: async () => false,
+            stopAllMotions() {
+              stopCount += 1;
+              state.setCurrent(undefined, undefined, 0);
+              state.setReserved(undefined, undefined, 0);
+              state.reservedIdleGroup = undefined;
+              state.reservedIdleIndex = undefined;
+            },
+          };
+          const manager = new context.Live2DManager();
+          manager.isAvatarPerformanceCapabilityLocked = () => false;
+          manager._clearMotionTimer = () => {};
+          manager._clearActiveMotionParamIds = () => {};
+          manager._trackActiveMotionParametersFromFile = async () => {};
+          const model = {
+            destroyed: false,
+            internalModel: { motionManager },
+            motion(group, index, priority) {
+              state.setReserved(group, index, priority);
+              return new Promise((resolve) => {
+                resolveAction = () => {
+                  state.setReserved(undefined, undefined, 0);
+                  state.setCurrent(group, index, priority);
+                  resolve(true);
+                };
+              });
+            },
+          };
+          manager.currentModel = model;
+
+          const idlePromise = manager._playIdleMotion(motionManager);
+          const actionPromise = manager.playActionMotion('Tap', 0);
+          assert.strictEqual(typeof resolveIdle, 'function');
+          assert.strictEqual(typeof resolveAction, 'function');
+
+          resolveIdle();
+          await idlePromise;
+          assert.strictEqual(stopCount, 2);
+          assert.strictEqual(state.currentPriority, 0);
+          assert.strictEqual(state.reservePriority, 2);
+          assert.strictEqual(state.reservedGroup, 'Tap');
+          assert.strictEqual(state.reservedIndex, 0);
+
+          resolveAction();
+          assert.strictEqual(await actionPromise, true);
+          assert.strictEqual(state.currentPriority, 2);
+          assert.strictEqual(state.currentGroup, 'Tap');
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
 def test_performance_session_checks_action_gate_before_suspending_motions():
     source = (
         PROJECT_ROOT / "static" / "avatar" / "avatar-performance-stage.js"
