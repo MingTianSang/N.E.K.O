@@ -1336,9 +1336,13 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
             angry: ['ParamAngleX'],
             surprised: ['ParamAngleY']
         };
-        this._setActiveMotionParamIds(simpleMotionParams[emotion] || ['ParamAngleX', 'ParamAngleY']);
         if (Object.prototype.hasOwnProperty.call(simpleMotionParams, emotion)) {
+            this._setActiveMotionParamIds(simpleMotionParams[emotion]);
             this._simpleMotionActive = true;
+        } else {
+            // 未配置定时动作时只把角度立即归零，不应继续占有这些参数。
+            this._clearActiveMotionParamIds();
+            this._simpleMotionActive = false;
         }
 
         switch (emotion) {

@@ -179,6 +179,22 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
     assert result.returncode == 0, result.stderr
 
 
+def test_untimed_simple_motion_does_not_leave_stale_parameter_ownership():
+    result = _run_node(
+        """
+        const manager = new context.Live2DManager();
+        manager.currentModel = {
+          internalModel: { coreModel: { setParameterValueById() {} } },
+        };
+        assert.strictEqual(manager.playSimpleMotion('custom'), true);
+        assert.strictEqual(manager._activeMotionParamIds, null);
+        assert.strictEqual(manager._simpleMotionActive, false);
+        """,
+        emotion=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     model = MODEL.read_text(encoding="utf-8")
     emotion = EMOTION.read_text(encoding="utf-8")
