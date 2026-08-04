@@ -47,6 +47,7 @@ def test_main_action_entry_rejects_a_second_action_and_stops_only_idle():
     assert "currentPriority === LIVE2D_MOTION_PRIORITY.IDLE" in action_source
     assert "motionManager.stopAllMotions()" in action_source
     assert "LIVE2D_MOTION_PRIORITY.NORMAL" in action_source
+    assert "return started === undefined ? true : started" in action_source
 
 
 def test_touch_actions_use_normal_priority_without_force_preemption():

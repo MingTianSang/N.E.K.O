@@ -57,7 +57,10 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
         index,
         LIVE2D_MOTION_PRIORITY.NORMAL
     );
-    return this.currentModel === model && started !== false;
+    if (this.currentModel !== model || started === false) {
+        return false;
+    }
+    return started === undefined ? true : started;
 };
 
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
