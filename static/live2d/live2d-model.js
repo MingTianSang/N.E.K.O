@@ -92,9 +92,9 @@ Live2DManager.prototype._startIdleMotion = async function(model, groupName, inde
         const ownsCurrentIdle = Number(state.currentPriority) === LIVE2D_MOTION_PRIORITY.IDLE
             && state.currentGroup === groupName
             && (index == null || state.currentIndex === index);
-        // NORMAL 加载期间保留当前 Idle，由 SDK 在动作真正开始时原子替换；
-        // 其他失效请求只停止自己刚启动的 Idle，不能误停更新的 Idle。
-        if (!actionActive && ownsCurrentIdle) {
+        // 只有待启动的 NORMAL 动作需要保留当前 Idle；简单动作没有 SDK reservation，
+        // 必须停止这条迟到的 Idle，避免二者叠加。
+        if ((!actionActive || this._simpleMotionActive === true) && ownsCurrentIdle) {
             motionManager._stopAllMotions();
             state.complete();
         }
@@ -166,6 +166,9 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, trac
         }
         if (state.reservedIdleGroup === idleBlock) {
             state.setReservedIdle(undefined, undefined);
+        }
+        if (started !== true && this.currentModel === model && motionManager.playing === false) {
+            this.setupIdleMotionLoop(model);
         }
     }
     if (started === false) {

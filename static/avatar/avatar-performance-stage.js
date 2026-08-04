@@ -2144,6 +2144,7 @@
             if (manager && typeof manager.resetTransientMotionAndExpressionState === 'function') {
                 await Promise.resolve(manager.resetTransientMotionAndExpressionState({
                     preserveExpression: false,
+                    preserveMotion: true,
                     resetAllParameters: false
                 })).catch(() => {});
             }

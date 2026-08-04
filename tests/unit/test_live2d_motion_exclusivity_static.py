@@ -203,11 +203,15 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     assert acquire.index("manager.hasActiveActionMotion(model)") < acquire.index(
         "manager.suspendTemporaryMotions("
     )
+    performance_clear = performance[performance.index("async clearExpression() {") : performance.index("hasMotion(group, options)")]
+    assert "preserveMotion: true" in performance_clear
     action_slot = model[model.index("Live2DManager.prototype.playActionMotion") : model.index("Live2DManager.prototype.playIdleMotion")]
     assert "state.setReservedIdle(idleBlock, undefined)" in action_slot
     assert "state.reservedIdleGroup === idleBlock" in action_slot
     assert "await this._trackActiveMotionParametersFromFile(requestedFile)" in action_slot
     assert "this._actionMotionRequestPendingModel = model" in action_slot
+    assert "started !== true && this.currentModel === model && motionManager.playing === false" in action_slot
+    assert "(!actionActive || this._simpleMotionActive === true) && ownsCurrentIdle" in model
     assert "if (this._actionMotionRequestPendingModel === model)" in model
     assert "await this.setEmotion('Idle', {" in model
     idle_fallback = model[model.index("const started = await this._startIdleMotion(expectedModel, 'Idle');") : model.index("Live2DManager.prototype._configureLoadedModel")]
