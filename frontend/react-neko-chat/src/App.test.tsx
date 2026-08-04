@@ -465,7 +465,11 @@ describe('App', () => {
   it('lets the full chat configure the avatar tools shown in its emoji menu', async () => {
     const onAvatarToolStateChange = vi.fn();
     const { container } = render(
-      <App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />,
+      <App
+        chatSurfaceMode="full"
+        assistantName="Neko"
+        onAvatarToolStateChange={onAvatarToolStateChange}
+      />,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -496,6 +500,9 @@ describe('App', () => {
     await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
       active: true,
       toolId: 'rps',
+      roundChoiceResultLabels: expect.objectContaining({
+        avatar_win: 'Neko wins',
+      }),
     })));
   });
 
