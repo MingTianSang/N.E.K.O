@@ -84,10 +84,13 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           assert.strictEqual(busyMM.state.currentGroup, 'Busy');
           const actionEvents = [], actionMM = makeMotionManager(actionEvents);
           actionMM.state.setCurrent('Idle', 0, 1);
+          const cachedAction = { setIsLoop(value) { this.loop = value; }, loop: true };
+          actionMM.motionGroups = { Tap: [cachedAction] };
           const action = new context.Live2DManager(); action.currentModel = makeModel(actionMM);
           action._clearMotionTimer = () => actionEvents.push('clear-timer');
           assert.strictEqual(await action.playActionMotion('Tap', 0), true);
           assert.deepStrictEqual(actionEvents, ['clear-timer', 'start:Tap']);
+          assert.strictEqual(cachedAction.loop, false);
           const failedMM = makeMotionManager([], () => false);
           const failed = new context.Live2DManager(); failed.currentModel = makeModel(failedMM);
           assert.strictEqual(await failed.playActionMotion('Missing', 0), false);
@@ -238,6 +241,12 @@ def test_all_runtime_entries_use_the_central_slots_before_side_effects():
     recorded_reset = emotion[emotion.index("Live2DManager.prototype._resetRecordedParameterIds") : emotion.index("Live2DManager.prototype._getDefaultMotionParameterIds")]
     assert "options.preserveMotion === true" in recorded_reset
     assert "this.clearExpression({ preserveMotion: true })" in interaction
+    tutorial_fallback = interaction[
+        interaction.index("const playedMotion = await this.playTutorialMotion();") : interaction.index(
+            "return false;", interaction.index("const playedMotion = await this.playTutorialMotion();")
+        )
+    ]
+    assert "if (!playedMotion && !this.hasActiveActionMotion(this.currentModel))" in tutorial_fallback
     motion_start_index = emotion.index("const motion = options.motionPriority")
     first_motion_check = emotion.index("if (motion) {", motion_start_index)
     motion_start = emotion[motion_start_index : emotion.index("if (motion) {", first_motion_check + 1)]

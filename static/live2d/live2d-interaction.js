@@ -3295,7 +3295,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
 
                 const playedMotion = await this.playTutorialMotion();
 
-                if (!playedMotion) {
+                if (!playedMotion && !this.hasActiveActionMotion(this.currentModel)) {
                     // 动作不可用时，回退到参数动画模拟效果
                     const model = this.currentModel.internalModel;
                     if (model && model.coreModel) {

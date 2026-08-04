@@ -149,6 +149,14 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, trac
             await this._trackActiveMotionParametersFromFile(requestedFile);
         }
         if (this.currentModel !== model) return false;
+        const actionMotion = motionManager.motionGroups?.[groupName]?.[motionIndex];
+        if (actionMotion) {
+            if (typeof actionMotion.setIsLoop === 'function') {
+                actionMotion.setIsLoop(false);
+            } else if (actionMotion._loop !== undefined) {
+                actionMotion._loop = false;
+            }
+        }
         started = await model.motion(
             groupName,
             motionIndex,
