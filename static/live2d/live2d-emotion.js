@@ -188,7 +188,13 @@ Live2DManager.prototype.clearExpression = function(options = {}) {
         // 尝试使用官方API停止expression（可选，不依赖其结果）
         if (this.currentModel.internalModel.motionManager && this.currentModel.internalModel.motionManager.expressionManager) {
             try {
-                this.currentModel.internalModel.motionManager.expressionManager.stopAllExpressions();
+                const expressionManager = this.currentModel.internalModel.motionManager.expressionManager;
+                // The bundled SDK keeps async expression loads in this public reservation slot.
+                // Cancel it before stopping the current expression so a superseded load cannot apply later.
+                if ('reserveExpressionIndex' in expressionManager) {
+                    expressionManager.reserveExpressionIndex = -1;
+                }
+                expressionManager.stopAllExpressions();
             } catch (e) {
                 console.warn('停止expression失败（忽略）:', e);
             }
@@ -406,6 +412,9 @@ Live2DManager.prototype._resetRecordedParameterIds = function(paramIds, options 
     if (!coreModel || !paramIds || typeof paramIds.forEach !== 'function') return 0;
 
     const protectedIds = preserveExpression ? this._getActiveExpressionParamIds() : new Set();
+    if (options.preserveMotion === true && this._activeMotionParamIds instanceof Set) {
+        this._activeMotionParamIds.forEach(id => protectedIds.add(id));
+    }
     let resetCount = 0;
     const uniqueParamIds = new Set();
 

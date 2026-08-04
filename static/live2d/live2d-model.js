@@ -1932,6 +1932,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     if (!isCurrentIdleRequest()) return;
     try {
         const started = await this._startIdleMotion(expectedModel, 'Idle');
+        if (!isCurrentIdleRequest()) return;
         if (started === false) {
             this._clearActiveMotionParamIds();
             return;
@@ -1941,6 +1942,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         const startedFile = getRegisteredMotionFile(startedGroup, startedIndex);
         trackMotionFile(startedFile);
     } catch (e) {
+        if (!isCurrentIdleRequest()) return;
         this._clearActiveMotionParamIds();
         console.warn('[Live2D] 随机 Idle motion 启动失败:', e);
     }

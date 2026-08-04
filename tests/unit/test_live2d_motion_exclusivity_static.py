@@ -158,6 +158,19 @@ def test_motion_slot_rejects_actions_and_replaces_idle_without_races():
           staleResolvers[staleKey](); await staleLoop;
           assert.deepStrictEqual(staleStarts, [staleKey, 'Saved:0']);
           assert.strictEqual(staleMM.state.currentGroup, 'Saved');
+
+          let resolveFallback;
+          const fallbackMM = makeMotionManager();
+          fallbackMM.definitions = {}; fallbackMM.motionGroups = {};
+          const fallback = new context.Live2DManager(); fallback.currentModel = makeModel(fallbackMM);
+          fallback.isAvatarPerformanceCapabilityLocked = () => false;
+          fallback._startIdleMotion = () => new Promise((resolve) => { resolveFallback = resolve; });
+          fallback._clearActiveMotionParamIds = () => { throw new Error('stale fallback cleared newer tracking'); };
+          const fallbackLoop = fallback._playIdleMotion(fallbackMM);
+          while (!resolveFallback) await new Promise((resolve) => setTimeout(resolve, 0));
+          fallback._idleLoopRequestGeneration++;
+          resolveFallback(false);
+          await fallbackLoop;
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
@@ -191,13 +204,23 @@ def test_expression_slot_replaces_transient_expression_but_preserves_action():
           assert.strictEqual(manager.persistentApplied, true);
 
           const clearing = new context.Live2DManager();
+          const resetParams = [];
+          const expressionManager = { reserveExpressionIndex: 3, stopAllExpressions() {} };
           clearing.currentModel = {
-            internalModel: { coreModel: {}, motionManager: { expressionManager: { stopAllExpressions() {} } } },
+            internalModel: {
+              coreModel: { setParameterValueById(id, value) { resetParams.push([id, value]); } },
+              motionManager: { expressionManager },
+            },
           };
           clearing._cancelSmoothReset = () => {};
           clearing._resetParametersToInitialState = () => { throw new Error('must not reset action parameters'); };
           clearing.applyPersistentExpressionsNative = async () => {};
+          clearing.initialParameters = { ParamAngleX: 0, ParamEyeLOpen: 1 };
+          clearing._activeExpressionParamIds = new Set(['ParamAngleX', 'ParamEyeLOpen']);
+          clearing._setActiveMotionParamIds(['ParamAngleX']);
           assert.strictEqual(clearing.clearExpression({ preserveMotion: true }), true);
+          assert.strictEqual(expressionManager.reserveExpressionIndex, -1);
+          assert.deepStrictEqual(resetParams, [['ParamEyeLOpen', 1]]);
 
           const expressions = new context.Live2DManager(), resolvers = {};
           expressions.currentModel = {
