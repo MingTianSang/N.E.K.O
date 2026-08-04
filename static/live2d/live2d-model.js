@@ -63,6 +63,30 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     return started === undefined ? true : started;
 };
 
+/**
+ * 以 IDLE 优先级播放一个待机动作，不抢占正在加载或播放的普通动作。
+ */
+Live2DManager.prototype.playIdleMotion = async function(groupName, index) {
+    const model = this.currentModel;
+    const motionManager = model?.internalModel?.motionManager;
+    if (!model || typeof model.motion !== 'function' || !motionManager) {
+        return false;
+    }
+    if (this.hasActiveActionMotion(model)) {
+        return false;
+    }
+
+    const started = await model.motion(
+        groupName,
+        index,
+        LIVE2D_MOTION_PRIORITY.IDLE
+    );
+    if (this.currentModel !== model || started === false) {
+        return false;
+    }
+    return started === undefined ? true : started;
+};
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -1705,6 +1729,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
     );
+    const canStartIdleMotion = () => (
+        isCurrentIdleRequest()
+        && !this.hasActiveActionMotion(expectedModel)
+    );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
         for (let i = 0; i < length; i++) indexes.push(i);
@@ -1744,7 +1772,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         this._trackActiveMotionParametersFromFile(file).catch(() => {});
     };
     const startTrackedMotion = async (groupName, index, file) => {
-        if (!isCurrentIdleRequest()) return false;
+        if (!canStartIdleMotion()) return false;
         try {
             // Idle 必须使用 SDK 的 IDLE 优先级。若误用默认 NORMAL，后续普通动作
             // 会被当成同优先级动作拒绝，只能靠 FORCE 插入，进而造成动作叠播。
@@ -1822,7 +1850,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         return;
     }
 
-    if (!isCurrentIdleRequest()) return;
+    if (!canStartIdleMotion()) return;
     try {
         const started = await motionManager.startRandomMotion(
             'Idle',
@@ -2275,7 +2303,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!suppressInitialIdle && (hasIdleInEmotionMapping || hasIdleInFileReferences)) {
         try {
             console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
-            this.setEmotion('Idle').catch(error => {
+            this.setEmotion('Idle', {
+                motionPriority: LIVE2D_MOTION_PRIORITY.IDLE
+            }).catch(error => {
                 console.warn('[Live2D Model] 播放Idle情绪失败:', error);
             });
         } catch (error) {

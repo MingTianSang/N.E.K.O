@@ -15,10 +15,9 @@ MODEL_RELOAD_PATH = (
 
 def test_idle_motion_starts_with_idle_priority():
     source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
+    idle_method_start = source.index("Live2DManager.prototype._playIdleMotion")
     idle_start = source[
-        source.index("const startTrackedMotion = async") : source.index(
-            "// 配置已加载的模型", source.index("const startTrackedMotion = async")
-        )
+        idle_method_start : source.index("// 配置已加载的模型", idle_method_start)
     ]
 
     tracked_idle_call = (
@@ -34,6 +33,8 @@ def test_idle_motion_starts_with_idle_priority():
     )
     assert tracked_idle_call in idle_start
     assert random_idle_call in idle_start
+    assert idle_start.count("canStartIdleMotion()") >= 2
+    assert "!this.hasActiveActionMotion(expectedModel)" in idle_start
 
 
 def test_main_action_entry_rejects_a_second_action_and_stops_only_idle():
@@ -71,6 +72,42 @@ def test_all_main_runtime_motion_entry_points_use_the_single_action_gate():
     assert "await this.playActionMotion(" in emotion_source
     assert interaction_source.count("await this.playActionMotion(") >= 3
     assert performance_source.count("manager.playActionMotion(") >= 2
+
+
+def test_emotion_motion_checks_the_gate_before_resetting_existing_motion():
+    source = (
+        PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
+    ).read_text(encoding="utf-8")
+    play_motion_start = source.index("Live2DManager.prototype.playMotion")
+    play_motion_end = source.index("// 播放简单动作", play_motion_start)
+    play_motion_source = source[play_motion_start:play_motion_end]
+    set_emotion_start = source.index("Live2DManager.prototype.setEmotion")
+    set_emotion_end = source.index("// 同步服务器端的情绪映射", set_emotion_start)
+    set_emotion_source = source[set_emotion_start:set_emotion_end]
+
+    for block in (play_motion_source, set_emotion_source):
+        action_guard_index = block.index("this.hasActiveActionMotion(this.currentModel)")
+        reset_index = block.index("resetTransientMotionAndExpressionState")
+        assert action_guard_index < reset_index
+
+    smooth_reset_index = set_emotion_source.index("smoothResetToInitialState")
+    guard_after_smooth_reset = set_emotion_source.index(
+        "this.hasActiveActionMotion(this.currentModel)", smooth_reset_index
+    )
+    destructive_reset_index = set_emotion_source.index(
+        "resetTransientMotionAndExpressionState", smooth_reset_index
+    )
+    assert smooth_reset_index < guard_after_smooth_reset < destructive_reset_index
+
+
+def test_startup_idle_emotion_uses_idle_priority():
+    source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
+    configure_start = source.index("Live2DManager.prototype._configureLoadedModel")
+    configure_source = source[configure_start:]
+
+    assert "this.setEmotion('Idle', {" in configure_source
+    assert "motionPriority: LIVE2D_MOTION_PRIORITY.IDLE" in configure_source
+    assert "Live2DManager.prototype.playIdleMotion" in source
 
 
 def test_saved_idle_motion_does_not_use_force_priority():

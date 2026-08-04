@@ -1035,7 +1035,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
 };
 
 // 播放动作
-Live2DManager.prototype.playMotion = async function(emotion) {
+Live2DManager.prototype.playMotion = async function(emotion, options = {}) {
     if (!this.currentModel) {
         console.warn('无法播放动作：模型未加载');
         return false;
@@ -1045,6 +1045,13 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         && typeof this.isAvatarPerformanceCapabilityLocked === 'function'
         && this.isAvatarPerformanceCapabilityLocked('motion')
     ) {
+        return false;
+    }
+    if (
+        typeof this.hasActiveActionMotion === 'function'
+        && this.hasActiveActionMotion(this.currentModel)
+    ) {
+        console.log(`[Live2D] 已有动作正在播放，忽略情感动作: ${emotion}`);
         return false;
     }
 
@@ -1194,10 +1201,9 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                     // 使用运行时 motion group/index 播放，确保播放文件和追踪清理文件一致。
                     console.log(`尝试使用motion组播放motion: ${runtimeChoice.group}[${runtimeChoice.index}]`);
 
-                    const motion = await this.playActionMotion(
-                        runtimeChoice.group,
-                        runtimeChoice.index
-                    );
+                    const motion = options.motionPriority === LIVE2D_MOTION_PRIORITY.IDLE
+                        ? await this.playIdleMotion(runtimeChoice.group, runtimeChoice.index)
+                        : await this.playActionMotion(runtimeChoice.group, runtimeChoice.index);
                     if (!isCurrentMotionInvocation()) return false;
 
                     if (motion) {
@@ -1398,7 +1404,7 @@ Live2DManager.prototype.clearEmotionEffects = function() {
 };
 
 // 设置情感并播放对应的表情和动作
-Live2DManager.prototype.setEmotion = async function(emotion) {
+Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     // 防止快速连续点击
     if (this.isEmotionChanging) {
         console.log('情感切换中，忽略新的情感请求');
@@ -1412,6 +1418,13 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
             || this.isAvatarPerformanceCapabilityLocked('motion')
         )
     ) {
+        return false;
+    }
+    if (
+        typeof this.hasActiveActionMotion === 'function'
+        && this.hasActiveActionMotion(this.currentModel)
+    ) {
+        console.log(`[Live2D] 已有动作正在播放，忽略情感切换: ${emotion}`);
         return false;
     }
     
@@ -1462,7 +1475,7 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
             // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制
             if (Math.random() < 0.5) {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，仅随机播放motion`);
-                await this.playMotion(emotion);
+                await this.playMotion(emotion, options);
             } else {
                 console.log(`检测到相同情绪且相同表情: ${emotion} (${targetExpressionFile})，已清理残留，跳过播放`);
             }
@@ -1497,11 +1510,25 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         // 只清 motion 残留，不把当前情绪表情洗掉。
         if (!shouldPreserveExistingExpression) {
             await this.smoothResetToInitialState(LIVE2D_EMOTION_SOFT_RESET_MS);
+            if (
+                typeof this.hasActiveActionMotion === 'function'
+                && this.hasActiveActionMotion(this.currentModel)
+            ) {
+                console.log(`[Live2D] 情感切换期间已有动作开始播放，取消情感切换: ${emotion}`);
+                return false;
+            }
         }
         await this.resetTransientMotionAndExpressionState({
             preserveExpression: shouldPreserveExistingExpression,
             resetAllParameters: !shouldPreserveExistingExpression
         });
+        if (
+            typeof this.hasActiveActionMotion === 'function'
+            && this.hasActiveActionMotion(this.currentModel)
+        ) {
+            console.log(`[Live2D] 情感重置期间已有动作开始播放，取消情感切换: ${emotion}`);
+            return false;
+        }
 
         this.currentEmotion = emotion;
         this.currentExpressionFile = targetExpressionFile;
@@ -1530,7 +1557,7 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         }
 
         // 播放动作
-        await this.playMotion(emotion);
+        await this.playMotion(emotion, options);
 
         // reset/cleanup 后补回常驻表情；没有新 expression 时这一步也不影响当前表情保护。
         try {
