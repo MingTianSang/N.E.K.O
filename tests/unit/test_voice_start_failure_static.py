@@ -389,20 +389,26 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "button.setAttribute('aria-label', accessibleLabel);" in toggle_factory
     assert "button.setAttribute('aria-busy', 'true');" in toggle_factory
 
-    # 合并为一行：迷你胶囊开关嵌在「屏幕共享」设置行右侧（替换 chevron）
+    # 三个入口使用同一个非交互 action-row；行级开关与面板按钮互为兄弟。
     render_start = source.index("window.renderFloatingMicList = async function")
     render_end = source.index("function updateMicListSelection()", render_start)
     render = source[render_start:render_end]
-    screen_row = "leftColumn.insertBefore(screenActionButton, firstContent);"
-    mic_row = "leftColumn.insertBefore(micActionButton, firstContent);"
-    voice_row = "leftColumn.insertBefore(asrActionButton, firstContent);"
+    screen_row = "leftColumn.insertBefore(screenActionRow, firstContent);"
+    mic_row = "leftColumn.insertBefore(micActionRow, firstContent);"
+    voice_row = "leftColumn.insertBefore(asrActionRow, firstContent);"
     assert screen_row in render and mic_row in render and voice_row in render
     assert render.index(screen_row) < render.index(mic_row)
     assert render.index(mic_row) < render.index(voice_row)
     assert "createScreenShareToggleButton({ mini: true })" in render
-    assert "screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);" in render
-    assert "asrActionButton.replaceChild(" in render
+    assert "var screenActionRow = createMainActionRow(" in render
+    assert "var micActionRow = createMainActionRow(" in render
+    assert "var asrActionRow = createMainActionRow(" in render
+    assert "screenActionButton.replaceChild(" not in render
+    assert "asrActionButton.replaceChild(" not in render
     assert "leftColumn.insertBefore(shareToggleButton, firstContent);" not in render
+    assert "document.createElement('button')" in toggle_factory
+    assert "button.type = 'button';" in toggle_factory
+    assert "button.addEventListener('keydown'" not in toggle_factory
 
 
 def test_screen_share_start_is_single_flight_across_ui_entry_points():

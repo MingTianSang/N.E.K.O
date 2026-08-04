@@ -360,11 +360,11 @@
         ensureShareToggleStateObserver();
 
         var mini = !!(options && options.mini);
-        // 用 span + role=button：迷你版会嵌在设置行 <button> 内，原生 button 嵌套是非法 HTML
-        var button = document.createElement('span');
+        // The control is a sibling of the action trigger in the shared row, so
+        // it can use native button semantics without nesting interactive UI.
+        var button = document.createElement('button');
+        button.type = 'button';
         button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
-        button.setAttribute('role', 'button');
-        button.setAttribute('tabindex', '0');
         button.setAttribute('aria-busy', 'false');
         button.dataset.nekoScreenShareAction = 'toggle';
 
@@ -479,12 +479,6 @@
         }
 
         button.addEventListener('click', handleToggleClick);
-        button.addEventListener('keydown', function (event) {
-            if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                handleToggleClick(event);
-            }
-        });
 
         pruneShareToggleButtons();
         shareToggleButtonRegistry.push(button);
@@ -3568,6 +3562,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function isMicActionHoverSurfaceActive() {
+                var hoveredActionRow = leftColumn.querySelector(
+                    '[data-neko-mic-main-action-row]:hover'
+                );
+                if (hoveredActionRow) return true;
                 var hoveredAction = leftColumn.querySelector('[data-neko-mic-main-action]:hover');
                 if (hoveredAction) return true;
                 var panel = getOwnedMicSubwindow();
@@ -3590,8 +3588,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) return;
                     closeMicSubwindow();
-                    leftColumn.querySelectorAll('[data-neko-mic-main-action]').forEach(function (btn) {
-                        btn.style.background = 'transparent';
+                    leftColumn.querySelectorAll(
+                        '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
+                    ).forEach(function (surface) {
+                        surface.style.background = 'transparent';
                     });
                 }, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
@@ -3754,7 +3754,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return panel;
             }
 
-            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, hoverGuard) {
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick) {
                 var button = document.createElement('button');
                 button.type = 'button';
                 button.dataset.nekoMicMainAction = actionKey;
@@ -3805,15 +3805,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 button.appendChild(textWrap);
                 button.appendChild(arrow);
 
+                function actionSurface() {
+                    return button._nekoMicActionRow || button;
+                }
+
                 function openActionPanel(event) {
-                    // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
-                    if (
-                        typeof hoverGuard === 'function'
-                        && hoverGuard(event)
-                    ) {
-                        return Promise.resolve(null);
-                    }
-                    button.style.background = 'var(--neko-popup-hover)';
+                    actionSurface().style.background = 'var(--neko-popup-hover)';
                     return openMicActionPanel(actionKey, onClick).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
@@ -3824,7 +3821,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     openActionPanel(event);
                 });
                 button.addEventListener('mouseleave', function () {
-                    button.style.background = 'transparent';
+                    // Shared rows own the full hover surface, including any
+                    // sibling toggle. Their mouseleave handler closes the panel.
+                    if (button._nekoMicActionRow) return;
+                    actionSurface().style.background = 'transparent';
                     scheduleMicActionHoverCollapse();
                 });
                 button.addEventListener('click', function (e) {
@@ -3832,6 +3832,41 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     openActionPanel(e);
                 });
                 return button;
+            }
+
+            function createMainActionRow(actionButton, trailingControl) {
+                var row = document.createElement('div');
+                row.className = 'neko-mic-main-action-row';
+                row.dataset.nekoMicMainActionRow = actionButton.dataset.nekoMicMainAction;
+                Object.assign(row.style, {
+                    width: '100%',
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    transition: 'background 0.2s ease'
+                });
+                actionButton._nekoMicActionRow = row;
+                actionButton.style.width = '0';
+                actionButton.style.flex = '1 1 0%';
+                row.appendChild(actionButton);
+                if (trailingControl) {
+                    var arrow = actionButton.lastElementChild;
+                    if (arrow) arrow.remove();
+                    trailingControl.style.marginRight = '10px';
+                    row.appendChild(trailingControl);
+                }
+                row.addEventListener('mouseenter', function () {
+                    clearMicActionHoverCollapseTimer();
+                });
+                row.addEventListener('mouseleave', function () {
+                    row.style.background = 'transparent';
+                    scheduleMicActionHoverCollapse();
+                });
+                return row;
             }
 
             function createMicDeviceOption(label, deviceId) {
@@ -4017,50 +4052,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
 
             var firstContent = leftColumn.firstChild;
-            function isPointerOverActionToggle(toggle, event) {
-                if (!toggle) return false;
-                // Keyboard-generated button clicks use detail=0 and synthetic
-                // coordinates (often 0,0); they must keep the native button's
-                // Enter/Space behavior regardless of the mouse position.
-                if (event && event.type === 'click' && event.detail === 0) {
-                    return false;
-                }
-                if (toggle.matches(':hover')) return true;
-                if (
-                    !event
-                    || event.type !== 'mouseenter'
-                    || typeof document.elementFromPoint !== 'function'
-                    || !Number.isFinite(event.clientX)
-                    || !Number.isFinite(event.clientY)
-                ) return false;
-                var pointerTarget = document.elementFromPoint(
-                    event.clientX,
-                    event.clientY
-                );
-                return !!(pointerTarget && toggle.contains(pointerTarget));
-            }
-            // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
-            var shareToggleButtonHolder = { current: null };
-            function screenRowHoverGuard(event) {
-                return isPointerOverActionToggle(
-                    shareToggleButtonHolder.current,
-                    event
-                );
-            }
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
-                openScreenSourceSubwindow,
-                screenRowHoverGuard
+                openScreenSourceSubwindow
             );
-            leftColumn.insertBefore(screenActionButton, firstContent);
-            // 合并为一行：行右侧嵌入迷你胶囊开关（替换原来的 chevron 箭头），
-            // 点击行其余位置仍展开屏幕源选择，点击开关本身开始/停止共享
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
-            shareToggleButtonHolder.current = shareToggleButton;
-            screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
+            var screenActionRow = createMainActionRow(
+                screenActionButton,
+                shareToggleButton
+            );
+            leftColumn.insertBefore(screenActionRow, firstContent);
+            // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
             var screenTextWrap = screenActionButton.querySelector('.neko-mic-action-text');
@@ -4077,34 +4082,28 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 openMicDeviceSubwindow
             );
             micActionButton.dataset.nekoMicAction = 'device';
-            leftColumn.insertBefore(micActionButton, firstContent);
+            var micActionRow = createMainActionRow(micActionButton, null);
+            leftColumn.insertBefore(micActionRow, firstContent);
 
             var voiceButtonLabel = window.t
                 ? window.t('microphone.independentAsr')
                 : '语音识别';
-            function voiceRowHoverGuard(event) {
-                return isPointerOverActionToggle(
-                    asrToggle.element,
-                    event
-                );
-            }
             var asrActionButton = createMainActionButton(
                 null,
                 voiceButtonLabel,
                 '',
                 'voice-recognition',
-                openVoiceRecognitionSubwindow,
-                voiceRowHoverGuard
-            );
-            asrActionButton.replaceChild(
-                asrToggle.element,
-                asrActionButton.lastChild
+                openVoiceRecognitionSubwindow
             );
             asrToggle.input.setAttribute('aria-label', voiceButtonLabel);
             asrSummary = asrActionButton.querySelector(
                 '.neko-mic-action-sub-label'
             );
-            leftColumn.insertBefore(asrActionButton, firstContent);
+            var asrActionRow = createMainActionRow(
+                asrActionButton,
+                asrToggle.element
+            );
+            leftColumn.insertBefore(asrActionRow, firstContent);
             updateVoiceRecognitionUi();
 
             // 组装

@@ -1705,9 +1705,9 @@
      * UI. It never rewrites the user's preference or handshake, and a failed or
      * legacy response remains unknown.
      *
-     * Forced refreshes may overlap (for example, a settings window saves while
-     * a popup request is pending), so a generation fence prevents an older
-     * response from overwriting the newer Core selection.
+     * Concurrent callers in one window share the in-flight refresh. `force`
+     * only bypasses completed cache data; the generation fence remains a
+     * defensive guard around request publication.
      */
     function publishCoreApiCapability(provider, capability) {
         var previousProvider = S.coreApiProvider || '';
@@ -1740,6 +1740,11 @@
 
     function refreshCoreApiCapability(options) {
         options = options || {};
+        // `force` bypasses completed cache data, not a request that is already
+        // in flight. All callers in this window share the same fresh result.
+        if (_coreApiCapabilityRefreshPromise) {
+            return _coreApiCapabilityRefreshPromise;
+        }
         if (
             options.force !== true
             && typeof S.coreApiSupportsIndependentAsr === 'boolean'
@@ -1749,10 +1754,6 @@
                 supportsIndependentAsr: S.coreApiSupportsIndependentAsr
             });
         }
-        if (
-            options.force !== true
-            && _coreApiCapabilityRefreshPromise
-        ) return _coreApiCapabilityRefreshPromise;
         if (typeof window.fetch !== 'function') {
             return Promise.resolve({
                 provider: S.coreApiProvider || '',

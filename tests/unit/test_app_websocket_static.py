@@ -618,7 +618,7 @@ def test_stale_unsupported_capability_does_not_override_paid_core_preference_har
     assert result.stdout.strip() == "ok"
 
 
-def test_core_capability_refresh_failures_fail_open_and_ignore_stale_requests_harness():
+def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harness():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     start = source.index("function publishCoreApiCapability(provider, capability)")
     end = source.index("// Prime the capability once", start)
@@ -664,20 +664,39 @@ def test_core_capability_refresh_failures_fail_open_and_ignore_stale_requests_ha
           assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
           assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
 
-          let rejectOld;
-          window.fetch = () => new Promise((resolve, reject) => { rejectOld = reject; });
-          const oldRequest = refreshCoreApiCapability({ force: true });
-          window.fetch = async () => response({
+          const validCapability = {
             success: true,
             coreApi: 'free',
             effectiveCoreApi: 'qwen',
             supportsIndependentAsr: true,
-          });
-          await refreshCoreApiCapability({ force: true });
-          rejectOld(new Error('late old request'));
-          await oldRequest;
-          assert(S.coreApiSupportsIndependentAsr === true, 'late failure must not clear newer capability');
-          assert(S.coreApiProvider === 'qwen', 'effective provider must win and survive a late failure');
+          };
+          let fetchCalls = 0;
+          let resolveShared;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveShared = resolve; });
+          };
+          const firstRequest = refreshCoreApiCapability({ force: true });
+          const joinedForceRequest = refreshCoreApiCapability({ force: true });
+          const joinedDefaultRequest = refreshCoreApiCapability();
+          assert(firstRequest === joinedForceRequest, 'force callers must share the in-flight request');
+          assert(firstRequest === joinedDefaultRequest, 'all callers must share the in-flight request');
+          assert(fetchCalls === 1, 'coalesced callers must issue one fetch');
+          resolveShared(response(validCapability));
+          await firstRequest;
+          assert(S.coreApiSupportsIndependentAsr === true, 'shared success must publish capability');
+          assert(S.coreApiProvider === 'qwen', 'effective provider must win');
+
+          let resolveNext;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveNext = resolve; });
+          };
+          const nextRequest = refreshCoreApiCapability({ force: true });
+          assert(nextRequest !== firstRequest, 'force must bypass completed cache data');
+          assert(fetchCalls === 2, 'force after settlement must issue a fresh fetch');
+          resolveNext(response(validCapability));
+          await nextRequest;
           assert(
             events.length === 3
               && events.every((event) => event.type === 'neko:core-api-capability-changed'),

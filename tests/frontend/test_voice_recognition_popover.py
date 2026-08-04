@@ -163,9 +163,12 @@ def _install_voice_popover_harness(
     }
     function ensureMicPopupScrollbarStyle() {}
     function attachTransientMicPopupScrollbar() { return () => {}; }
+    window.__screenToggleCalls = 0;
     function createScreenShareToggleButton() {
         const button = document.createElement('button');
         button.type = 'button';
+        button.dataset.nekoScreenShareAction = 'toggle';
+        button.addEventListener('click', () => { window.__screenToggleCalls += 1; });
         return button;
     }
     let deferScreenSources = false;
@@ -231,6 +234,17 @@ def _install_voice_popover_harness(
         ),
         voiceAction: () => document.querySelector(
             '[data-neko-mic-main-action="voice-recognition"]'
+        ),
+        actionRow: (key) => document.querySelector(
+            '[data-neko-mic-main-action-row="' + key + '"]'
+        ),
+        voiceToggle: () => document.querySelector(
+            '[data-neko-mic-main-action-row="voice-recognition"] '
+            + '.neko-voice-setting-toggle-input'
+        ),
+        screenToggle: () => document.querySelector(
+            '[data-neko-mic-main-action-row="screen"] '
+            + '[data-neko-screen-share-action="toggle"]'
         ),
         panel: (key = 'voice-recognition') => document.querySelector(
             '.neko-mic-subwindow[data-neko-mic-action-key="' + key + '"]'
@@ -705,7 +719,7 @@ def test_stale_screen_open_cannot_relabel_a_new_voice_subwindow(
 
 
 @pytest.mark.frontend
-def test_voice_row_asr_toggle_does_not_open_the_subwindow(page: Page) -> None:
+def test_action_row_controls_are_siblings_and_do_not_cross_trigger(page: Page) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(
         """async () => {
@@ -715,9 +729,50 @@ def test_voice_row_asr_toggle_does_not_open_the_subwindow(page: Page) -> None:
         }"""
     )
 
+    structure = page.evaluate(
+        """() => {
+            const test = window.__voicePopoverTest;
+            const voiceAction = test.voiceAction();
+            const voiceToggle = test.voiceToggle();
+            const voiceRow = test.actionRow('voice-recognition');
+            const screenAction = test.action('screen');
+            const screenToggle = test.screenToggle();
+            const screenRow = test.actionRow('screen');
+            return {
+                voiceRowTag: voiceRow?.tagName,
+                voiceSiblings: voiceAction?.parentElement === voiceRow
+                    && voiceToggle?.closest('label')?.parentElement === voiceRow,
+                voiceNested: voiceAction?.contains(voiceToggle),
+                checkboxInsideButton: voiceToggle?.closest('button') !== null,
+                screenToggleTag: screenToggle?.tagName,
+                screenSiblings: screenAction?.parentElement === screenRow
+                    && screenToggle?.parentElement === screenRow,
+                screenNested: screenAction?.contains(screenToggle),
+            };
+        }"""
+    )
+    assert structure == {
+        "voiceRowTag": "DIV",
+        "voiceSiblings": True,
+        "voiceNested": False,
+        "checkboxInsideButton": False,
+        "screenToggleTag": "BUTTON",
+        "screenSiblings": True,
+        "screenNested": False,
+    }
+
+    screen_toggle = page.locator(
+        '[data-neko-mic-main-action-row="screen"] '
+        '[data-neko-screen-share-action="toggle"]'
+    )
+    screen_toggle.focus()
+    page.keyboard.press("Space")
+    assert page.evaluate("window.__screenToggleCalls") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
     asr_input = page.locator(
-        '[data-neko-mic-main-action="voice-recognition"] '
-        'input[type="checkbox"]'
+        '[data-neko-mic-main-action-row="voice-recognition"] '
+        '.neko-voice-setting-toggle-input'
     )
     asr_input.hover()
     page.wait_for_timeout(50)
@@ -733,6 +788,42 @@ def test_voice_row_asr_toggle_does_not_open_the_subwindow(page: Page) -> None:
         })"""
     )
     assert result == {"panels": 0, "preference": False, "saveCalls": 1}
+
+    asr_input.focus()
+    page.keyboard.press("Space")
+    result = page.evaluate(
+        """() => ({
+            panels: window.__voicePopoverTest.panels(),
+            preference: window.__voicePopoverTest.state.independentAsrEnabled,
+            saveCalls: window.__saveCalls,
+        })"""
+    )
+    assert result == {"panels": 0, "preference": True, "saveCalls": 2}
+
+    voice_action = page.locator(
+        '[data-neko-mic-main-action="voice-recognition"]'
+    )
+    voice_action.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    asr_input.hover()
+    page.wait_for_timeout(320)
+    result = page.evaluate(
+        """() => ({
+            panels: window.__voicePopoverTest.panels(),
+            preference: window.__voicePopoverTest.state.independentAsrEnabled,
+            checked: window.__voicePopoverTest.voiceToggle().checked,
+            saveCalls: window.__saveCalls,
+        })"""
+    )
+    assert result == {
+        "panels": 1,
+        "preference": True,
+        "checked": True,
+        "saveCalls": 2,
+    }
+    page.locator("#outside-target").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
 
 
 @pytest.mark.frontend
@@ -753,7 +844,7 @@ def test_core_without_independent_asr_shows_native_effective_view_and_keeps_pref
             await Promise.resolve();
 
             const panel = test.panel();
-            const asrInput = container.querySelector('input[type="checkbox"]');
+            const asrInput = test.voiceToggle();
             const panelInputs = panel.querySelectorAll('input[type="checkbox"]');
             const noiseInput = panelInputs[0];
             const optimizationInput = panelInputs[1];
@@ -875,8 +966,7 @@ def test_voice_settings_pending_clears_only_after_target_session(
             window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
             const afterBlockedSession = firstStatus.textContent;
 
-            const asrInput = window.__voicePopoverTest.voiceAction()
-                .querySelector('input[type="checkbox"]');
+            const asrInput = window.__voicePopoverTest.voiceToggle();
             asrInput.checked = false;
             asrInput.dispatchEvent(new Event('change', { bubbles: true }));
             window.__voicePopoverTest.state.voiceSessionStartEpoch = 13;
@@ -940,7 +1030,7 @@ def test_voice_popover_keeps_active_route_and_keyboard_access(
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
             const container = window.__voicePopoverTest.voiceAction();
-            const asrInput = container.querySelector('input[type="checkbox"]');
+            const asrInput = window.__voicePopoverTest.voiceToggle();
 
             window.__voicePopoverTest.state.voiceChatActive = true;
             window.__voicePopoverTest.state.independentAsrActive = true;

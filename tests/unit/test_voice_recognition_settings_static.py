@@ -73,8 +73,9 @@ def test_voice_recognition_reuses_the_shared_mic_action_subwindow() -> None:
     assert "voiceStatus.setAttribute('aria-live', 'polite')" in voice_panel
     assert "'voice-recognition'" in voice_action
     assert "openVoiceRecognitionSubwindow" in voice_action
-    assert "voiceRowHoverGuard" in voice_action
-    assert "asrActionButton.replaceChild(" in voice_action
+    assert "createMainActionRow(" in source
+    assert "var asrActionRow = createMainActionRow(" in voice_action
+    assert "asrActionButton.replaceChild(" not in voice_action
 
     for legacy_name in (
         "createVoicePanel",
