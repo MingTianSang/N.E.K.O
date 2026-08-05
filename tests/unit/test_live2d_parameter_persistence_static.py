@@ -491,6 +491,7 @@ def test_clear_expression_restores_only_active_ids_to_appearance_baseline():
         manager.initialParameters = { ParamAllColor1: 0, ParamUnrelated: 0 };
         manager.motionBaselineParameters = {};
         manager.appearanceBaselineParameters = { ParamAllColor1: 0.8, ParamUnrelated: 0.4 };
+        manager.persistentExpressionNames = ['resident'];
         manager._activeExpressionParamIds = new Set(['ParamAllColor1']);
         manager._cancelSmoothReset = () => {};
         manager._removeManualExpressionOverride = () => {};
@@ -502,6 +503,58 @@ def test_clear_expression_restores_only_active_ids_to_appearance_baseline():
         assert.strictEqual(values[1], 0.7);
         assert.strictEqual(stopped, 1);
         assert.strictEqual(persistentReplayed, 1);
+        assert.deepStrictEqual(manager.persistentExpressionNames, ['resident']);
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_live2d_action_and_expression_slots_are_exclusive():
+    script = _manager_harness(
+        """
+        (async () => {
+          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {} };
+          let finishAction;
+          const manager = new context.Live2DManager();
+          manager.currentModel = {
+            internalModel: { motionManager: { state, motionGroups: {
+              Tap: [{ setIsLoop(value) { this.loop = value; }, loop: true }],
+            } } },
+            motion(group, index, priority) {
+              manager.lastPriority = priority;
+              return new Promise(resolve => { finishAction = resolve; });
+            },
+          };
+          const first = manager.playActionMotion('Tap', 0);
+          assert.strictEqual(await manager.playActionMotion('Other', 0), false);
+          assert.strictEqual(manager.lastPriority, 2);
+          assert.strictEqual(manager.currentModel.internalModel.motionManager.motionGroups.Tap[0].loop, false);
+          finishAction(true);
+          await first;
+          state.currentPriority = 2;
+          assert.strictEqual(manager.hasActiveActionMotion(), true);
+
+          const expressions = new context.Live2DManager();
+          expressions.currentModel = {};
+          const events = [];
+          let finishExpression;
+          expressions.clearExpression = async () => { events.push('clear'); expressions._activeTransientExpression = false; };
+          expressions._playExpressionNow = async (name) => {
+            events.push(`start:${name}`);
+            expressions._activeTransientExpression = true;
+            if (name === 'first') await new Promise(resolve => { finishExpression = resolve; });
+            return true;
+          };
+          const expressionA = expressions.playExpression('first');
+          while (!finishExpression) await new Promise(resolve => setTimeout(resolve, 0));
+          const expressionB = expressions.playExpression('second');
+          assert.deepStrictEqual(events, ['start:first']);
+          finishExpression();
+          await expressionA;
+          await expressionB;
+          assert.deepStrictEqual(events, ['start:first', 'clear', 'start:second']);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
         """
     )
     result = _run_node_harness(script)

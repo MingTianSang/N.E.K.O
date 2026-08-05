@@ -2512,15 +2512,13 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
 };
 
 /**
- * 播放临时点击效果（低优先级，会自动恢复）
+ * 播放临时点击效果（动作槽空闲时播放，并自动恢复）
  * @param {string} emotion - 情感名称
- * @param {number} priority - 动作优先级 (1=IDLE, 2=NORMAL, 3=FORCE)
  * @param {number} duration - 效果持续时间（毫秒）
  */
-Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
+Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, duration = 3000) {
     const triggerLog = {
         emotion,
-        priority,
         durationMs: duration,
         motionCandidates: 0,
         expressionCandidates: 0,
@@ -2587,9 +2585,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
         triggerLog.expressionCandidates = expressionFiles.length;
 
-        // 1. 优先播放低优先级动作
+        // 1. 动作槽空闲时优先播放动作
         let motions = null;
-        let motionGroup = emotion; // 用于 this.currentModel.motion(group, index, priority)
+        let motionGroup = emotion;
         if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
             motions = this.fileReferences.Motions[emotion];
         } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
@@ -2620,10 +2618,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         triggerLog.motionCandidates = Array.isArray(motions) ? motions.length : 0;
 
         if (motions && motions.length > 0) {
-            // 使用低优先级播放动作
-            // pixi-live2d-display 的 motion(group, index, priority) 支持优先级参数
             try {
-                const motion = await this.currentModel.motion(motionGroup, undefined, priority);
+                const motionIndex = Math.floor(Math.random() * motions.length);
+                const motion = await this.playActionMotion(motionGroup, motionIndex);
                 if (!isCurrentPlayAttempt()) {
                     // 已被新的点击接管：停掉本次刚启动的动作，避免后台占用，并放弃写共享状态
                     if (motion && typeof motion.stop === 'function') {
@@ -2633,20 +2630,20 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                     return false;
                 }
                 if (motion) {
-                    console.log(`[ClickEffect] 播放临时动作: ${motionGroup}（优先级: ${priority}）`);
+                    console.log(`[ClickEffect] 播放临时动作: ${motionGroup}`);
                     this._clickEffectMotion = motion;
                     triggerLog.motions.push({
                         group: motionGroup,
-                        selection: 'random',
-                        priority,
+                        index: motionIndex,
+                        priority: 2,
                         candidateCount: motions.length
                     });
                     didPlayEffect = true;
                 } else {
                     triggerLog.failedMotions.push({
                         group: motionGroup,
-                        selection: 'random',
-                        priority,
+                        index: motionIndex,
+                        priority: 2,
                         reason: 'motion_returned_falsy'
                     });
                 }
@@ -2654,7 +2651,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 triggerLog.failedMotions.push({
                     group: motionGroup,
                     selection: 'random',
-                    priority,
+                    priority: 2,
                     reason: motionError?.message || String(motionError)
                 });
                 console.warn('[ClickEffect] 动作播放失败:', motionError);
@@ -3250,11 +3247,9 @@ Live2DManager.prototype.playTutorialMotion = async function() {
     const index = Math.floor(Math.random() * groupList.length);
 
     try {
-        const motion = await this.currentModel.motion(group, index, window.live2dManager.CLICK_MOTION_PRIORITY);
-        // const motion = await this.currentModel.motion(group, index, 2);
+        const motion = await this.playActionMotion(group, index);
         if (motion) {
-            console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${window.live2dManager.CLICK_MOTION_PRIORITY}）`);
-            // console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${2}）`);
+            console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]`);
             return true;
         }
     } catch (error) {
@@ -3281,65 +3276,25 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
 
     // 教程模式：直接随机播放表情
     if (window.isInTutorial) {
-        console.log('[Interaction] 教程模式 - 随机播放表情（低优先级，将自动恢复）');
+        console.log('[Interaction] 教程模式 - 随机播放表情（将在点击效果结束后恢复）');
         try {
             // 获取表情列表
-            let expressionNames = [];
+            let expressions = [];
             if (this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
-                expressionNames = this.fileReferences.Expressions.map(e => e.Name).filter(Boolean);
+                expressions = this.fileReferences.Expressions.filter(e => e && e.Name && e.File);
             }
 
             // 随机播放表情
-            if (expressionNames.length > 0) {
-                const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
-                console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
-                await this.currentModel.expression(randomExpression);
+            if (expressions.length > 0) {
+                const randomExpression = expressions[Math.floor(Math.random() * expressions.length)];
+                console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression.Name}（将在 ${window.live2dManager.CLICK_EFFECT_DURATION}ms 后恢复）`);
+                await this.playExpression(randomExpression.Name, randomExpression.File);
 
                 const playedMotion = await this.playTutorialMotion();
 
-                if (!playedMotion) {
-                    // 动作不可用时，回退到参数动画模拟效果
-                    const model = this.currentModel.internalModel;
-                    if (model && model.coreModel) {
-                        // 随机晃动头部
-                        const angleXIndex = model.coreModel.getParameterIndex('ParamAngleX');
-                        const angleYIndex = model.coreModel.getParameterIndex('ParamAngleY');
-                        const bodyAngleXIndex = model.coreModel.getParameterIndex('ParamBodyAngleX');
-
-                        const duration = 1000 + Math.random() * 1000; // 1-2秒
-                        const startTime = Date.now();
-
-                        const setParamByIndex = (index, value) => {
-                            if (index < 0) return;
-                            if (typeof model.coreModel.setParameterValueByIndex === 'function') {
-                                model.coreModel.setParameterValueByIndex(index, value);
-                            } else {
-                                model.coreModel.setParameterValueById(index, value);
-                            }
-                        };
-
-                        const animate = () => {
-                            const elapsed = Date.now() - startTime;
-                            const progress = Math.min(elapsed / duration, 1);
-                            const t = progress * Math.PI * 2; // 一个完整周期
-
-                            setParamByIndex(angleXIndex, Math.sin(t) * 15); // -15 到 15 度
-                            setParamByIndex(angleYIndex, Math.cos(t) * 10); // -10 到 10 度
-                            setParamByIndex(bodyAngleXIndex, Math.sin(t * 0.5) * 5); // 更慢的身体晃动
-
-                            if (progress < 1) {
-                                requestAnimationFrame(animate);
-                            } else {
-                                // 动画结束，恢复默认值
-                                setParamByIndex(angleXIndex, 0);
-                                setParamByIndex(angleYIndex, 0);
-                                setParamByIndex(bodyAngleXIndex, 0);
-                            }
-                        };
-
-                        animate();
-                        console.log('[Interaction] 教程模式 - 播放参数动画');
-                    }
+                if (!playedMotion && !this.hasActiveActionMotion(this.currentModel)) {
+                    const fallbackEmotion = this.getRandomElement(['happy', 'sad', 'angry', 'surprised']);
+                    this.playSimpleMotion(fallbackEmotion);
                 }
             }
         } catch (error) {
@@ -3368,8 +3323,8 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         // 触发临时情感效果
         let didPlayEffect = false;
         try {
-            // 播放低优先级的表情和动作
-            didPlayEffect = await this._playTemporaryClickEffect(randomEmotion, 2, window.live2dManager.CLICK_EFFECT_DURATION);
+            // 播放临时表情，并在动作槽空闲时播放动作
+            didPlayEffect = await this._playTemporaryClickEffect(randomEmotion, window.live2dManager.CLICK_EFFECT_DURATION);
         } catch (error) {
             console.warn('[Interaction] 触发情感失败:', error);
         }
@@ -3884,8 +3839,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                             return false;
                         }
 
-                        motionManager.stopAllMotions();
-                        const result = await live2dModel.motion(groupName, 0, 3);
+                        const result = await this.playActionMotion(groupName, 0);
 
                         if (result) {
                             triggerLog.motions.push({
@@ -3894,7 +3848,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                                 index: 0,
                                 file: motion.File,
                                 durationMs: AnimHoldingTime,
-                                priority: 3
+                                priority: 2
                             });
                             console.log(`[TouchSet] ✅ 成功下发播放指令: ${groupName}[0]`);
                         } else {

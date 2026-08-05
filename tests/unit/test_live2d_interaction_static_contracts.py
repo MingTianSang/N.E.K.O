@@ -166,7 +166,7 @@ def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
     motion_branch = click_effect.index("if (motions && motions.length > 0)")
     expression_fallback = click_effect.index("if (!didPlayEffect && expressionFiles.length > 0)")
     assert motion_branch < expression_fallback
-    assert "const motion = await this.currentModel.motion(motionGroup, undefined, priority);" in click_effect
+    assert "const motion = await this.playActionMotion(motionGroup, motionIndex);" in click_effect
     assert "triggerLog.motions.push({" in click_effect
     assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in click_effect
 
