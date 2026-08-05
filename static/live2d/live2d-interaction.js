@@ -2521,7 +2521,7 @@ Live2DManager.prototype._stopClickEffectAction = function(action = this._clickEf
         || action.generation !== this._actionMotionGeneration
         || state?.currentGroup !== action.group
         || state?.currentIndex !== action.index
-        || Number(state.currentPriority || 0) <= 1
+        || Number(state?.currentPriority || 0) <= 1
         || typeof motionManager?.stopAllMotions !== 'function'
     ) {
         return false;
