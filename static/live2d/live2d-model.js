@@ -39,7 +39,23 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     }
 
     const cachedMotion = motionManager.motionGroups?.[groupName]?.[index];
+    let restoreCachedMotionLoop = null;
     if (cachedMotion) {
+        let previousLoop;
+        let hasPreviousLoop = false;
+        if (typeof cachedMotion.isLoop === 'function') {
+            previousLoop = cachedMotion.isLoop();
+            hasPreviousLoop = true;
+        } else if (cachedMotion._loop !== undefined) {
+            previousLoop = cachedMotion._loop;
+            hasPreviousLoop = true;
+        }
+        if (hasPreviousLoop) {
+            restoreCachedMotionLoop = () => {
+                if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(previousLoop);
+                else cachedMotion._loop = previousLoop;
+            };
+        }
         if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(false);
         else if (cachedMotion._loop !== undefined) cachedMotion._loop = false;
     }
@@ -48,8 +64,14 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index) {
     let started;
     try {
         started = await model.motion(groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+        if (started === true) {
+            this._actionMotionGeneration = (this._actionMotionGeneration || 0) + 1;
+        }
         return started;
     } finally {
+        if (started !== true && restoreCachedMotionLoop) {
+            restoreCachedMotionLoop();
+        }
         if (
             started !== true
             && motionManager.state?.reservedGroup === groupName

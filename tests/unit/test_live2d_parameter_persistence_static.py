@@ -519,7 +519,11 @@ def test_live2d_action_and_expression_slots_are_exclusive():
           const manager = new context.Live2DManager();
           manager.currentModel = {
             internalModel: { motionManager: { state, motionGroups: {
-              Tap: [{ setIsLoop(value) { this.loop = value; }, loop: true }],
+              Tap: [{
+                _loop: true,
+                isLoop() { return this._loop; },
+                setIsLoop(value) { this._loop = value; },
+              }],
             } } },
             motion(group, index, priority) {
               manager.lastPriority = priority;
@@ -529,11 +533,31 @@ def test_live2d_action_and_expression_slots_are_exclusive():
           const first = manager.playActionMotion('Tap', 0);
           assert.strictEqual(await manager.playActionMotion('Other', 0), false);
           assert.strictEqual(manager.lastPriority, 2);
-          assert.strictEqual(manager.currentModel.internalModel.motionManager.motionGroups.Tap[0].loop, false);
+          const tapMotion = manager.currentModel.internalModel.motionManager.motionGroups.Tap[0];
+          assert.strictEqual(tapMotion._loop, false);
           finishAction(true);
           await first;
           state.currentPriority = 2;
           assert.strictEqual(manager.hasActiveActionMotion(), true);
+
+          state.currentPriority = 0;
+          state.reservePriority = 0;
+          const reservedCalls = [];
+          state.setReserved = (group, index, priority) => {
+            reservedCalls.push([group, index, priority]);
+            Object.assign(state, { reservedGroup: group, reservedIndex: index, reservePriority: priority });
+          };
+          tapMotion._loop = true;
+          manager.currentModel.motion = async () => {
+            state.setReserved('Tap', 0, 2);
+            return false;
+          };
+          assert.strictEqual(await manager.playActionMotion('Tap', 0), false);
+          assert.strictEqual(tapMotion._loop, true);
+          assert.deepStrictEqual(reservedCalls, [
+            ['Tap', 0, 2],
+            [undefined, undefined, 0],
+          ]);
 
           const expressions = new context.Live2DManager();
           expressions.currentModel = {};
@@ -559,6 +583,21 @@ def test_live2d_action_and_expression_slots_are_exclusive():
     )
     result = _run_node_harness(script)
     assert result.returncode == 0, result.stderr
+
+
+def test_saved_idle_restore_stops_only_an_existing_idle_motion():
+    source = (APP_INTERPAGE_PATH / "bootstrap-resources-and-model-reload.js").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("async function restoreLive2DIdleAnimationOnMainPage")
+    end = source.index("window.restoreLive2DIdleAnimationOnMainPage", start)
+    restore_source = source[start:end]
+
+    action_guard = restore_source.index("hasActiveActionMotion(live2dModel)")
+    idle_guard = restore_source.index("Number(motionState?.currentPriority || 0) === 1")
+    stop_idle = restore_source.index("motionManager.stopAllMotions()", idle_guard)
+    start_saved_idle = restore_source.index("live2dModel.motion(groupName, motionIndex, 1)")
+    assert action_guard < idle_guard < stop_idle < start_saved_idle
 
 
 def test_parameter_save_treats_preferences_as_authoritative_and_sends_one_refresh():

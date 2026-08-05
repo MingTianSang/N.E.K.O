@@ -2454,7 +2454,7 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
             return false;
         }
         this._currentClickEffectId = null;
-        this._clickEffectMotion = null;
+        this._clickEffectAction = null;
         return true;
     };
 
@@ -2462,10 +2462,9 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
         return false;
     }
 
-    if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
-        try { this._clickEffectMotion.stop(); } catch (_) {}
+    if (this._clickEffectAction) {
+        this._stopClickEffectAction(this._clickEffectAction);
     }
-    this._clickEffectMotion = null;
 
     const restoreIdleMotion = async () => {
         if (!restoreIdle || typeof window.restoreLive2DIdleAnimationOnMainPage !== 'function') {
@@ -2502,13 +2501,33 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
 
     try {
         if (typeof this.clearExpression === 'function') {
-            this.clearExpression();
+            await this.clearExpression();
         }
     } catch (e) {
         console.warn('[ClickEffect] 清除表情失败:', e);
     }
     await restoreIdleMotion();
     return finishClickEffectRestore();
+};
+
+Live2DManager.prototype._stopClickEffectAction = function(action = this._clickEffectAction) {
+    if (!action) return false;
+    if (this._clickEffectAction === action) this._clickEffectAction = null;
+
+    const motionManager = action.model?.internalModel?.motionManager;
+    const state = motionManager?.state;
+    if (
+        action.model !== this.currentModel
+        || action.generation !== this._actionMotionGeneration
+        || state?.currentGroup !== action.group
+        || state?.currentIndex !== action.index
+        || Number(state.currentPriority || 0) <= 1
+        || typeof motionManager?.stopAllMotions !== 'function'
+    ) {
+        return false;
+    }
+    motionManager.stopAllMotions();
+    return true;
 };
 
 /**
@@ -2539,7 +2558,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
     const hadClickEffectState = Boolean(
         previousClickEffectId ||
         this._clickEffectRestoreTimer ||
-        this._clickEffectMotion
+        this._clickEffectAction
     );
     this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
     const restoreToken = this._clickEffectRestoreToken;
@@ -2556,11 +2575,6 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
         this._cancelSmoothReset();
     }
     
-    if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
-        try { this._clickEffectMotion.stop(); } catch (e) {}
-    }
-    this._clickEffectMotion = null;
-
     try {
         // 准备表情兜底：动作不可用或播放失败时才播放
         let expressionFiles = [];
@@ -2620,18 +2634,29 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
         if (motions && motions.length > 0) {
             try {
                 const motionIndex = Math.floor(Math.random() * motions.length);
+                const motionModel = this.currentModel;
                 const motion = await this.playActionMotion(motionGroup, motionIndex);
                 if (!isCurrentPlayAttempt()) {
                     // 已被新的点击接管：停掉本次刚启动的动作，避免后台占用，并放弃写共享状态
-                    if (motion && typeof motion.stop === 'function') {
-                        try { motion.stop(); } catch (_) {}
+                    if (motion) {
+                        this._stopClickEffectAction({
+                            model: motionModel,
+                            group: motionGroup,
+                            index: motionIndex,
+                            generation: this._actionMotionGeneration
+                        });
                     }
                     triggerLog.reason = 'superseded_after_motion';
                     return false;
                 }
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${motionGroup}`);
-                    this._clickEffectMotion = motion;
+                    this._clickEffectAction = {
+                        model: motionModel,
+                        group: motionGroup,
+                        index: motionIndex,
+                        generation: this._actionMotionGeneration
+                    };
                     triggerLog.motions.push({
                         group: motionGroup,
                         index: motionIndex,
@@ -3923,15 +3948,12 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
 
                     clearTimeout(this.expressionTimer);
                     const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
-                    this.expressionTimer = setTimeout(() => {
+                    this.expressionTimer = setTimeout(async () => {
                         if (typeof this.clearExpression === 'function') {
-                            this.clearExpression();
-                            console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
-                            if (typeof this.applyPersistentExpressionsNative === 'function') {
-                                try {
-                                    this.applyPersistentExpressionsNative(true);
-                                } catch (_) {}
-                            }
+                            try {
+                                await this.clearExpression();
+                                console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
+                            } catch (_) {}
                         }
                     }, holdingTime);
                 } catch (e) {
