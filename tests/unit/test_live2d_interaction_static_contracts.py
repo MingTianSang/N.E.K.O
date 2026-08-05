@@ -177,8 +177,12 @@ def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
     assert "state?.currentIndex === action.index" in stop_action
     assert "action.generation !== this._actionMotionGeneration" in stop_action
     assert "Number(state?.currentPriority || 0) > 1" in stop_action
-    assert "motionManager.stopAllMotions();" in stop_action
-    assert "this._resetActiveMotionParameters({ preserveExpression: true });" in stop_action
+    assert (
+        "motionManager.stopAllMotions();\n"
+        "        stopped = true;\n"
+        "        if (typeof this._resetActiveMotionParameters === 'function') {\n"
+        "            this._resetActiveMotionParameters({ preserveExpression: true });"
+    ) in stop_action
     assert "triggerLog.motions.push({" in click_effect
     assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in click_effect
 

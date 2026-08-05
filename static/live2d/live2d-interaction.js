@@ -2535,12 +2535,12 @@ Live2DManager.prototype._stopClickEffectAction = function(action = this._clickEf
     ) {
         motionManager.stopAllMotions();
         stopped = true;
-    }
-    if (typeof this._resetActiveMotionParameters === 'function') {
-        this._resetActiveMotionParameters({ preserveExpression: true });
-    }
-    if (typeof this._clearActiveMotionParamIds === 'function') {
-        this._clearActiveMotionParamIds();
+        if (typeof this._resetActiveMotionParameters === 'function') {
+            this._resetActiveMotionParameters({ preserveExpression: true });
+        }
+        if (typeof this._clearActiveMotionParamIds === 'function') {
+            this._clearActiveMotionParamIds();
+        }
     }
     return stopped;
 };
