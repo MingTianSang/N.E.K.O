@@ -2127,13 +2127,16 @@
         }
 
         async clearExpression() {
+            const manager = this.getManager();
+            const shouldClearManagerExpression = manager?._activeTransientExpression === true;
             if (this.expressionParamSnapshot) {
                 this.restoreParams(this.expressionParamSnapshot);
                 this.expressionParamSnapshot = null;
             }
-            const manager = this.getManager();
-            if (manager && typeof manager.clearExpression === 'function') {
+            if (shouldClearManagerExpression && typeof manager.clearExpression === 'function') {
                 await Promise.resolve(manager.clearExpression()).catch(() => {});
+            } else if (manager && typeof manager.applyPersistentExpressionsNative === 'function') {
+                await Promise.resolve(manager.applyPersistentExpressionsNative(true)).catch(() => {});
             }
             return true;
         }

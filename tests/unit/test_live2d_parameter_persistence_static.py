@@ -15,6 +15,7 @@ LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
 LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+AVATAR_PERFORMANCE_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-performance-stage.js"
 MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
 
 
@@ -598,6 +599,17 @@ def test_saved_idle_restore_stops_only_an_existing_idle_motion():
     stop_idle = restore_source.index("motionManager.stopAllMotions()", idle_guard)
     start_saved_idle = restore_source.index("live2dModel.motion(groupName, motionIndex, 1)")
     assert action_guard < idle_guard < stop_idle < start_saved_idle
+
+
+def test_live2d_avatar_performance_inline_expression_cleanup_stays_targeted():
+    source = AVATAR_PERFORMANCE_PATH.read_text(encoding="utf-8")
+    start = source.index("        async clearExpression() {")
+    end = source.index("        hasMotion(group, options) {", start)
+    clear_source = source[start:end]
+
+    assert "manager?._activeTransientExpression === true" in clear_source
+    assert "if (shouldClearManagerExpression" in clear_source
+    assert "manager.applyPersistentExpressionsNative(true)" in clear_source
 
 
 def test_parameter_save_treats_preferences_as_authoritative_and_sends_one_refresh():

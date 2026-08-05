@@ -2512,22 +2512,37 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
 
 Live2DManager.prototype._stopClickEffectAction = function(action = this._clickEffectAction) {
     if (!action) return false;
-    if (this._clickEffectAction === action) this._clickEffectAction = null;
+    if (this._clickEffectAction === action) {
+        this._clickEffectAction = null;
+        if (this._clickEffectActionTimer) {
+            clearTimeout(this._clickEffectActionTimer);
+            this._clickEffectActionTimer = null;
+        }
+    }
 
     const motionManager = action.model?.internalModel?.motionManager;
     const state = motionManager?.state;
-    if (
-        action.model !== this.currentModel
-        || action.generation !== this._actionMotionGeneration
-        || state?.currentGroup !== action.group
-        || state?.currentIndex !== action.index
-        || Number(state?.currentPriority || 0) <= 1
-        || typeof motionManager?.stopAllMotions !== 'function'
-    ) {
+    if (action.model !== this.currentModel || action.generation !== this._actionMotionGeneration) {
         return false;
     }
-    motionManager.stopAllMotions();
-    return true;
+
+    let stopped = false;
+    if (
+        state?.currentGroup === action.group
+        && state?.currentIndex === action.index
+        && Number(state?.currentPriority || 0) > 1
+        && typeof motionManager?.stopAllMotions === 'function'
+    ) {
+        motionManager.stopAllMotions();
+        stopped = true;
+    }
+    if (typeof this._resetActiveMotionParameters === 'function') {
+        this._resetActiveMotionParameters({ preserveExpression: true });
+    }
+    if (typeof this._clearActiveMotionParamIds === 'function') {
+        this._clearActiveMotionParamIds();
+    }
+    return stopped;
 };
 
 /**
@@ -2634,6 +2649,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
         if (motions && motions.length > 0) {
             try {
                 const motionIndex = Math.floor(Math.random() * motions.length);
+                const selectedMotion = motions[motionIndex];
                 const motionModel = this.currentModel;
                 const motion = await this.playActionMotion(motionGroup, motionIndex);
                 if (!isCurrentPlayAttempt()) {
@@ -2651,12 +2667,23 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
                 }
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${motionGroup}`);
-                    this._clickEffectAction = {
+                    const action = {
                         model: motionModel,
                         group: motionGroup,
                         index: motionIndex,
                         generation: this._actionMotionGeneration
                     };
+                    this._clickEffectAction = action;
+                    if (this._clickEffectActionTimer) clearTimeout(this._clickEffectActionTimer);
+                    this._clickEffectActionTimer = setTimeout(() => {
+                        if (this._clickEffectAction === action) this._stopClickEffectAction(action);
+                    }, duration);
+                    const motionFile = typeof selectedMotion === 'string'
+                        ? selectedMotion
+                        : (selectedMotion?.File || selectedMotion?.file);
+                    if (motionFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
+                        this._trackActiveMotionParametersFromFile(motionFile).catch(() => {});
+                    }
                     triggerLog.motions.push({
                         group: motionGroup,
                         index: motionIndex,
@@ -3164,6 +3191,11 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
     }
+    if (this._clickEffectActionTimer) {
+        clearTimeout(this._clickEffectActionTimer);
+        this._clickEffectActionTimer = null;
+    }
+    this._clickEffectAction = null;
     this._currentClickEffectId = null;
 
     // 清理页面卸载监听器（如果存在）
