@@ -25,7 +25,7 @@ from .voice_providers import _config_value_is_enabled
 import re
 import os
 import math
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import (
@@ -131,11 +131,27 @@ def _normalize_live2d_idle_animation(value):
     idle_animation = value.strip()
     if not idle_animation:
         return None, None
-    if '://' in idle_animation or idle_animation.startswith('data:'):
+
+    # Canonicalize URL encoding before validation so encoded separators and
+    # traversal segments cannot bypass the checks. Decode repeatedly to cover
+    # values that would otherwise be decoded by more than one URL layer.
+    try:
+        for _ in range(3):
+            decoded_idle_animation = unquote(idle_animation, errors='strict')
+            if decoded_idle_animation == idle_animation:
+                break
+            idle_animation = decoded_idle_animation
+    except UnicodeDecodeError:
+        return None, 'Live2D待机动作路径包含无效URL编码'
+    if re.search(r'%[0-9A-Fa-f]{2}', idle_animation):
+        return None, 'Live2D待机动作路径包含过多层URL编码'
+
+    idle_animation = idle_animation.replace('\\', '/')
+    if re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', idle_animation):
         return None, 'Live2D待机动作路径不能包含URL方案'
-    if '..' in idle_animation:
+    if any(part == '..' for part in idle_animation.split('/')):
         return None, 'Live2D待机动作路径不能包含路径遍历（..）'
-    if idle_animation.startswith(('/', '\\')) or re.match(r'^[A-Za-z]:', idle_animation):
+    if idle_animation.startswith('/'):
         return None, 'Live2D待机动作路径必须是相对路径，不能是绝对路径'
     if not idle_animation.lower().endswith('.motion3.json'):
         return None, 'Live2D待机动作必须是 .motion3.json 文件'

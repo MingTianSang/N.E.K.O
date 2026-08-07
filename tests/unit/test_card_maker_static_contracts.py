@@ -56,13 +56,23 @@ def test_character_profile_idle_save_does_not_rewrite_cached_model_binding():
     idle_save_start = script.index("// 只保存 Live2D 待机动作")
     idle_save_end = script.index("let selectedAfterSave", idle_save_start)
     idle_save_block = script[idle_save_start:idle_save_end]
-    payload_start = idle_save_block.index("body: JSON.stringify({")
-    payload_end = idle_save_block.index("})", payload_start)
-    payload = idle_save_block[payload_start:payload_end]
+    payload_match = re.search(
+        r"body:\s*JSON\.stringify\(\{(?P<body>.*?)\}\)",
+        idle_save_block,
+        re.DOTALL,
+    )
+    assert payload_match is not None
+    payload_body = payload_match.group("body")
+    payload_fields = re.findall(
+        r"""^\s*(?:['\"]([^'\"]+)['\"]|([A-Za-z_$][\w$]*))\s*:""",
+        payload_body,
+        re.MULTILINE,
+    )
+    fields = [quoted or bare for quoted, bare in payload_fields]
 
-    assert "live2d_idle_animation: idleAnimation" in payload
-    assert "model_type:" not in payload
-    assert "live2d: form._live2dModel" not in payload
+    assert fields == ["live2d_idle_animation"]
+    assert "live2d_idle_animation: idleAnimation" in payload_body
+    assert "..." not in payload_body
 
 
 def test_character_card_manager_parts_load_in_dependency_order():

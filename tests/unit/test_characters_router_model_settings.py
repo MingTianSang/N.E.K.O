@@ -147,6 +147,7 @@ async def _call_update(monkeypatch, payload, characters=None, init_calls=None):
 @pytest.mark.asyncio
 async def test_live2d_idle_only_update_preserves_current_builtin_model_binding(monkeypatch):
     characters = _build_characters_fixture()
+    init_calls = []
     catgirl = characters['猫娘']['测试角色']
     set_reserved(catgirl, 'avatar', 'model_type', 'live2d')
     set_reserved(
@@ -166,6 +167,7 @@ async def test_live2d_idle_only_update_preserves_current_builtin_model_binding(m
             'apply_runtime': False,
         },
         characters=characters,
+        init_calls=init_calls,
     )
 
     assert response.status_code == 200
@@ -180,6 +182,55 @@ async def test_live2d_idle_only_update_preserves_current_builtin_model_binding(m
     assert get_reserved(saved_catgirl, 'avatar', 'asset_source_id') == ''
     assert get_reserved(saved_catgirl, 'avatar', 'live2d', 'idle_animation') == (
         'motions/wait.motion3.json'
+    )
+    assert init_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'idle_animation',
+    [
+        'https:host/motion.motion3.json',
+        'file:motion.motion3.json',
+        'motions/%2e%2e/other.motion3.json',
+        'motions/%252e%252e/other.motion3.json',
+        '..\\other.motion3.json',
+    ],
+)
+async def test_live2d_idle_only_update_rejects_uri_and_encoded_traversal(
+    monkeypatch,
+    idle_animation,
+):
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {'live2d_idle_animation': idle_animation},
+    )
+
+    assert response.status_code == 400
+    assert body['success'] is False
+    assert saved is None
+
+
+@pytest.mark.asyncio
+async def test_live2d_idle_only_update_canonicalizes_safe_url_encoding(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'avatar', 'model_type', 'live2d')
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'live2d_idle_animation': 'motions/wait%20pose.motion3.json',
+            'apply_runtime': False,
+        },
+        characters=characters,
+    )
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    saved_catgirl = saved['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'live2d', 'idle_animation') == (
+        'motions/wait pose.motion3.json'
     )
 
 
