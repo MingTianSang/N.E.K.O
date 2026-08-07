@@ -908,11 +908,11 @@ def test_character_card_manager_localizes_master_profile_builtin_field_labels(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize(
-    "viewport",
+    ("viewport", "expected_width", "expected_height"),
     [
-        {"width": 1440, "height": 900},
-        {"width": 700, "height": 900},
-        {"width": 560, "height": 900},
+        ({"width": 1440, "height": 900}, 920, 720),
+        ({"width": 700, "height": 900}, 652, 720),
+        ({"width": 560, "height": 900}, 540, 880),
     ],
     ids=["desktop-dialog", "single-column-dialog", "mobile-dialog"],
 )
@@ -920,6 +920,8 @@ def test_master_profile_opens_as_stable_dialog_without_reflowing_layout(
     mock_page: Page,
     running_server: str,
     viewport: dict[str, int],
+    expected_width: int,
+    expected_height: int,
 ):
     mock_page.set_viewport_size(viewport)
     _open_character_card_manager(mock_page, running_server)
@@ -1072,10 +1074,6 @@ def test_master_profile_opens_as_stable_dialog_without_reflowing_layout(
 
     assert state["position"] == "fixed"
     assert state["display"] == "flex"
-    expected_width = viewport["width"] - (20 if viewport["width"] <= 620 else 48)
-    expected_width = min(920, expected_width)
-    expected_height = viewport["height"] - (20 if viewport["width"] <= 620 else 80)
-    expected_height = min(720, expected_height) if viewport["width"] > 620 else expected_height
     assert state["contentWidth"] == pytest.approx(expected_width, abs=2)
     assert state["contentHeight"] == pytest.approx(expected_height, abs=2)
     assert state["usesDialogSemantics"] is True
@@ -1105,86 +1103,86 @@ def test_master_profile_dialog_traps_tab_focus_without_interfering_with_common_m
 ):
     _open_character_card_manager(mock_page, running_server)
 
-    state = mock_page.evaluate(
+    initial_state = mock_page.evaluate(
         """
-        async () => {
-            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        () => {
             renderMasterForm({ '档案名': 'Master', '昵称': 'Yuki' });
 
             const trigger = document.getElementById('master-profile-header');
             const content = document.getElementById('master-profile-content');
-            trigger.click();
-            await wait(40);
-
-            const focusableElements = Array.from(content.querySelectorAll([
-                'a[href]',
-                'button:not([disabled])',
-                'input:not([disabled]):not([type="hidden"])',
-                'select:not([disabled])',
-                'textarea:not([disabled])',
-                '[contenteditable="true"]',
-                '[tabindex]:not([tabindex="-1"])'
-            ].join(','))).filter(element => (
-                !element.hidden
-                && element.getAttribute('aria-hidden') !== 'true'
-                && element.getClientRects().length > 0
-            ));
-            const firstFocusable = focusableElements[0];
-            const lastFocusable = focusableElements[focusableElements.length - 1];
-            const initiallyFocused = document.activeElement === firstFocusable;
-
-            lastFocusable.focus();
-            const forwardTab = new KeyboardEvent('keydown', {
-                key: 'Tab', bubbles: true, cancelable: true
-            });
-            lastFocusable.dispatchEvent(forwardTab);
-            const forwardTabWrapped = forwardTab.defaultPrevented
-                && document.activeElement === firstFocusable;
-
-            firstFocusable.focus();
-            const backwardTab = new KeyboardEvent('keydown', {
-                key: 'Tab', shiftKey: true, bubbles: true, cancelable: true
-            });
-            firstFocusable.dispatchEvent(backwardTab);
-            const backwardTabWrapped = backwardTab.defaultPrevented
-                && document.activeElement === lastFocusable;
-
-            const commonOverlay = document.createElement('div');
-            commonOverlay.className = 'modal-overlay';
-            document.body.appendChild(commonOverlay);
             trigger.focus();
-            const nestedModalTab = new KeyboardEvent('keydown', {
-                key: 'Tab', bubbles: true, cancelable: true
-            });
-            trigger.dispatchEvent(nestedModalTab);
-            const commonModalSkipped = !nestedModalTab.defaultPrevented
-                && document.activeElement === trigger;
-            commonOverlay.remove();
-
-            content.querySelector('.master-profile-dialog-close').click();
-            const closedDialogTab = new KeyboardEvent('keydown', {
-                key: 'Tab', bubbles: true, cancelable: true
-            });
-            trigger.dispatchEvent(closedDialogTab);
-
+            trigger.click();
+            window.__masterProfileTestFocusables = () => Array.from(content.querySelectorAll([
+                    'a[href]',
+                    'button:not([disabled])',
+                    'input:not([disabled]):not([type="hidden"])',
+                    'select:not([disabled])',
+                    'textarea:not([disabled])',
+                    '[contenteditable="true"]',
+                    '[tabindex]:not([tabindex="-1"])'
+                ].join(','))).filter(element => (
+                    !element.hidden
+                    && element.getAttribute('aria-hidden') !== 'true'
+                    && element.getClientRects().length > 0
+                ));
             return {
-                initiallyFocused,
-                forwardTabWrapped,
-                backwardTabWrapped,
-                commonModalSkipped,
-                focusTrapRemovedAfterClose: !closedDialogTab.defaultPrevented,
+                contentOpen: content.classList.contains('open'),
+                focusableCount: window.__masterProfileTestFocusables().length,
             };
         }
         """
     )
+    mock_page.wait_for_timeout(40)
 
-    assert state == {
-        "initiallyFocused": True,
-        "forwardTabWrapped": True,
-        "backwardTabWrapped": True,
-        "commonModalSkipped": True,
-        "focusTrapRemovedAfterClose": True,
-    }
+    assert initial_state["contentOpen"] is True
+    assert initial_state["focusableCount"] > 1
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables()[0]"
+    )
+
+    mock_page.evaluate("() => window.__masterProfileTestFocusables().at(-1).focus()")
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables()[0]"
+    )
+
+    mock_page.keyboard.press("Shift+Tab")
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables().at(-1)"
+    )
+
+    mock_page.locator("#master-profile-add-actions .btn.add").click()
+    common_overlay = mock_page.locator(".modal-overlay")
+    common_overlay.wait_for(state="visible")
+    mock_page.wait_for_timeout(120)
+    assert mock_page.evaluate(
+        "() => Boolean(document.activeElement?.closest('.modal-overlay'))"
+    )
+
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        """
+        () => Boolean(document.activeElement?.closest('.modal-overlay'))
+            && !document.activeElement?.closest('#master-profile-content')
+        """
+    )
+
+    common_overlay.locator(".modal-btn-secondary").click()
+    common_overlay.wait_for(state="detached")
+    mock_page.locator(".master-profile-dialog-close").click()
+    assert mock_page.evaluate(
+        "() => document.activeElement === document.getElementById('master-profile-header')"
+    )
+
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        """
+        () => document.activeElement !== document.getElementById('master-profile-header')
+            && !document.activeElement?.closest('#master-profile-content')
+        """
+    )
+
+    mock_page.evaluate("() => { delete window.__masterProfileTestFocusables; }")
 
 
 @pytest.mark.frontend

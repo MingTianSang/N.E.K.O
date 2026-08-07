@@ -496,6 +496,7 @@ function toggleMasterSection() {
 
     if (isOpening) {
         content._masterProfilePreviousFocus = document.activeElement;
+        content.removeAttribute('inert');
         content._masterProfileFocusTrap = function (event) {
             if (event.key !== 'Tab' || document.querySelector('.modal-overlay')) return;
 
@@ -560,6 +561,7 @@ function toggleMasterSection() {
         previousFocus.focus({ preventScroll: true });
     }
     content.setAttribute('aria-hidden', 'true');
+    content.setAttribute('inert', '');
     backdrop.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('master-profile-dialog-open');
 
