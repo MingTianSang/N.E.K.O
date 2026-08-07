@@ -99,7 +99,7 @@ def test_settings_menu_icons_are_decorative_for_button_names() -> None:
     assert "menuItem.querySelector('img').alt" not in menu_item
 
 
-def test_voice_identity_header_keeps_controls_readable_and_title_bounded() -> None:
+def test_voice_identity_header_keeps_title_bounded() -> None:
     stylesheet = (ROOT / "static/css/voice_identity.css").read_text(
         encoding="utf-8"
     )
@@ -112,12 +112,6 @@ def test_voice_identity_header_keeps_controls_readable_and_title_bounded() -> No
         r"\.voice-identity-header h2::after\s*\{([^}]*)\}",
         stylesheet,
     )
-    controls = re.search(
-        r"\.voice-identity-page \.voice-identity-header "
-        r"\.neko-window-control-btn\s*\{([^}]*)\}",
-        stylesheet,
-    )
-
     assert title is not None
     assert "min-width: 0" in title.group(1)
     assert "overflow: hidden" in title.group(1)
@@ -125,15 +119,6 @@ def test_voice_identity_header_keeps_controls_readable_and_title_bounded() -> No
     assert title_layers is not None
     assert "overflow: hidden" in title_layers.group(1)
     assert "text-overflow: ellipsis" in title_layers.group(1)
-    assert controls is not None
-    assert "color: #082f45" in controls.group(1)
-    assert _contrast_ratio("#082f45", "#4bd4fd") >= 3
-    assert _contrast_ratio("#082f45", "#17a7ff") >= 3
-    assert (
-        '[data-theme="dark"] .voice-identity-page '
-        ".voice-identity-header .neko-window-control-btn"
-        in stylesheet
-    )
 
 
 def test_voice_identity_template_is_an_accessible_step_wizard() -> None:

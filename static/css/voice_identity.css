@@ -154,14 +154,6 @@ input:focus-visible,
     -webkit-background-clip: text;
 }
 
-.voice-identity-page .voice-identity-header .neko-window-control-btn {
-    color: #082f45;
-}
-
-[data-theme="dark"] .voice-identity-page .voice-identity-header .neko-window-control-btn {
-    color: #fff;
-}
-
 .voice-identity-header .close-page-btn {
     display: flex;
     width: 32px;
