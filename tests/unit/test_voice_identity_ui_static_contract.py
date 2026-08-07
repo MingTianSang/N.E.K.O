@@ -99,6 +99,43 @@ def test_settings_menu_icons_are_decorative_for_button_names() -> None:
     assert "menuItem.querySelector('img').alt" not in menu_item
 
 
+def test_voice_identity_header_keeps_controls_readable_and_title_bounded() -> None:
+    stylesheet = (ROOT / "static/css/voice_identity.css").read_text(
+        encoding="utf-8"
+    )
+
+    title = re.search(
+        r"\.voice-identity-header h2\s*\{([^}]*)\}", stylesheet
+    )
+    title_layers = re.search(
+        r"\.voice-identity-header h2::before,\s*"
+        r"\.voice-identity-header h2::after\s*\{([^}]*)\}",
+        stylesheet,
+    )
+    controls = re.search(
+        r"\.voice-identity-page \.voice-identity-header "
+        r"\.neko-window-control-btn\s*\{([^}]*)\}",
+        stylesheet,
+    )
+
+    assert title is not None
+    assert "min-width: 0" in title.group(1)
+    assert "overflow: hidden" in title.group(1)
+    assert "text-overflow: ellipsis" in title.group(1)
+    assert title_layers is not None
+    assert "overflow: hidden" in title_layers.group(1)
+    assert "text-overflow: ellipsis" in title_layers.group(1)
+    assert controls is not None
+    assert "color: #082f45" in controls.group(1)
+    assert _contrast_ratio("#082f45", "#4bd4fd") >= 3
+    assert _contrast_ratio("#082f45", "#17a7ff") >= 3
+    assert (
+        '[data-theme="dark"] .voice-identity-page '
+        ".voice-identity-header .neko-window-control-btn"
+        in stylesheet
+    )
+
+
 def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     template = (ROOT / "templates/voice_identity.html").read_text(
         encoding="utf-8"
@@ -343,3 +380,4 @@ def test_locale_bootstrap_declares_a_non_empty_locale_cache_key() -> None:
     assert locale_version and locale_version.group(1).strip(), (
         "i18n-i18next.js 必须带一个非空的 LOCALE_VERSION 常量做 locale cache-bust"
     )
+    assert locale_version.group(1) != "2026-08-07-credentials-console-guide"
