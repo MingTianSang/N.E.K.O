@@ -201,10 +201,12 @@ class FakeButton {{
   constructor() {{
     this.classList = new FakeClassList();
     this.disabled = false;
+    this.clickAttemptCount = 0;
     this.clickCount = 0;
     this.onClick = null;
   }}
   click() {{
+    this.clickAttemptCount += 1;
     if (this.disabled) return;
     this.clickCount += 1;
     if (typeof this.onClick === 'function') this.onClick();
@@ -296,6 +298,7 @@ runScenario()
     process.stdout.write(JSON.stringify({{
       result,
       mic: {{
+        clickAttempts: micButton.clickAttemptCount,
         clicks: micButton.clickCount,
         disabled: micButton.disabled,
         classes: micButton.classList.toArray(),
@@ -1038,7 +1041,7 @@ def test_floating_mic_click_during_aborted_cat_return_is_released_immediately():
     await new Promise((resolve) => setTimeout(resolve, 0));
     await window.dispatchNamed('neko:cat-return-abort');
     await abortedTogglePromise;
-    const clicksAfterAbort = micButton.clickCount;
+    const clickAttemptsAfterAbort = micButton.clickAttemptCount;
 
     micButton.disabled = false;
     micButton.onClick = function () {
@@ -1046,13 +1049,72 @@ def test_floating_mic_click_during_aborted_cat_return_is_released_immediately():
       micButton.classList.add('active', 'recording');
     };
     await window.dispatchMicToggle(true);
-    return { clicksAfterAbort };
+    return { clickAttemptsAfterAbort };
         """
     )
 
-    assert result["result"]["clicksAfterAbort"] == 0
+    assert result["result"]["clickAttemptsAfterAbort"] == 0
     assert result["mic"]["clicks"] == 1
     assert result["mic"]["classes"] == ["active", "recording"]
+
+
+def test_pending_voice_start_ignores_inactive_toggle_without_superseding_start():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    micButton.onClick = function () {
+      S.voiceStartPending = true;
+      window.isMicStarting = true;
+      micButton.classList.add('active');
+      setTimeout(() => {
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+        S.isRecording = true;
+        micButton.classList.add('recording');
+      }, 0);
+    };
+    const activeTogglePromise = window.dispatchMicToggle(true);
+    await window.dispatchMicToggle(false);
+    await activeTogglePromise;
+    return {};
+        """
+    )
+
+    assert result["mic"]["clickAttempts"] == 1
+    assert result["mic"]["clicks"] == 1
+    assert result["mic"]["classes"] == ["active", "recording"]
+    assert result["stopCalls"] == []
+
+
+def test_inactive_toggle_waits_for_owned_screen_start_then_stops_it():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    S.isRecording = true;
+    let finishScreenStart;
+    window.startScreenSharing = function () {
+      startScreenCalls.push('start');
+      return new Promise((resolve) => {
+        finishScreenStart = function () {
+          screenButton.classList.add('active');
+          resolve();
+        };
+      });
+    };
+
+    const activeTogglePromise = window.dispatchMicToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const inactiveTogglePromise = window.dispatchMicToggle(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishScreenStart();
+    await Promise.all([activeTogglePromise, inactiveTogglePromise]);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == ["stop"]
+    assert result["screenClasses"] == []
+    assert result["stopCalls"] == ["stop"]
 
 
 def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():

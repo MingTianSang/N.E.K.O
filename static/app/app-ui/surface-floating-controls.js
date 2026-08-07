@@ -33,22 +33,43 @@
         }
 
         let screenSharingStartedByVoice = false;
+        let screenSharingStartPromise = null;
 
         async function startScreenSharingFromVoiceButton() {
             if (isScreenSharingActive()) {
                 return;
             }
+            if (screenSharingStartPromise) {
+                return screenSharingStartPromise;
+            }
             if (typeof window.startScreenSharing !== 'function') {
                 console.error('startScreenSharing function not found');
                 return;
             }
-            await window.startScreenSharing();
-            // startScreenSharing handles user cancellation internally, so a
-            // resolved Promise alone does not prove capture actually started.
-            screenSharingStartedByVoice = isScreenSharingActive();
+            const startPromise = (async () => {
+                await window.startScreenSharing();
+                // startScreenSharing handles user cancellation internally, so a
+                // resolved Promise alone does not prove capture actually started.
+                screenSharingStartedByVoice = isScreenSharingActive();
+            })();
+            screenSharingStartPromise = startPromise;
+            try {
+                await startPromise;
+            } finally {
+                if (screenSharingStartPromise === startPromise) {
+                    screenSharingStartPromise = null;
+                }
+            }
         }
 
         async function stopScreenSharingFromVoiceButton() {
+            if (screenSharingStartPromise) {
+                try {
+                    await screenSharingStartPromise;
+                } catch (_) {
+                    return;
+                }
+            }
             if (!screenSharingStartedByVoice) {
                 return;
             }
@@ -141,9 +162,29 @@
             return active;
         }
 
+        async function startVoiceScreenSharingForToggle(toggleGeneration) {
+            await startScreenSharingFromVoiceButton();
+            const stillWanted = toggleGeneration === floatingMicToggleGeneration
+                && I.S.isRecording
+                && voiceAutoScreenEnabled();
+            if (!stillWanted) {
+                await stopScreenSharingFromVoiceButton();
+            }
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
+            const wantsActive = !!(e.detail && e.detail.active);
+            const voiceStartPending = !!(I.S.voiceStartPending || window.isMicStarting);
+            // All visible avatar mic buttons deliberately keep their active
+            // state while the native voice start is pending. Mirror that rule
+            // for synthetic/Electron toggle events without superseding the
+            // in-flight start that owns the generation.
+            if (voiceStartPending && (!wantsActive || !catReturnInProgress)) {
+                reconcileFloatingMicButtonState();
+                return;
+            }
             const toggleGeneration = ++floatingMicToggleGeneration;
-            if (e.detail.active) {
+            if (wantsActive) {
                 if (catReturnInProgress) {
                     const returnCompleted = await waitForCatReturnComplete(15000);
                     if (toggleGeneration !== floatingMicToggleGeneration) {
@@ -157,11 +198,12 @@
                 if (I.S.isRecording) {
                     // 已在录音：仅按需联动自动共享屏幕
                     if (voiceAutoScreenEnabled()) {
-                        await startScreenSharingFromVoiceButton();
+                        await startVoiceScreenSharingForToggle(toggleGeneration);
                     }
                     return;
                 }
                 if (I.S.voiceStartPending || window.isMicStarting) {
+                    reconcileFloatingMicButtonState();
                     return;
                 }
                 if (!micButton.classList.contains('active')) {
@@ -184,17 +226,24 @@
                 reconcileFloatingMicButtonState();
                 // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
                 if (I.S.isRecording && voiceAutoScreenEnabled()) {
-                    await startScreenSharingFromVoiceButton();
+                    await startVoiceScreenSharingForToggle(toggleGeneration);
                 }
             } else {
                 // 只清理由本次语音流程自动开启的共享；用户之后即使关掉了自动共享
                 // 设置，也仍需释放此前由语音开启的采集。
-                await stopScreenSharingFromVoiceButton();
+                const screenStopPromise = stopScreenSharingFromVoiceButton();
                 if (!I.S.isRecording) {
+                    await screenStopPromise;
                     return;
                 }
-                if (typeof window.stopMicCapture === 'function') {
-                    await window.stopMicCapture();
+                try {
+                    if (typeof window.stopMicCapture === 'function') {
+                        await window.stopMicCapture();
+                    }
+                } finally {
+                    // Do not keep the microphone live while a pending display
+                    // picker resolves; screen cleanup can finish in parallel.
+                    await screenStopPromise;
                 }
             }
         });
