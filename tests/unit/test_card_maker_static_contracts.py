@@ -51,6 +51,20 @@ def read_character_card_manager_source() -> str:
     )
 
 
+def test_character_profile_idle_save_does_not_rewrite_cached_model_binding():
+    script = (CHARACTER_CARD_MANAGER_JS_DIR / "card-form-and-actions.js").read_text(encoding="utf-8")
+    idle_save_start = script.index("// 只保存 Live2D 待机动作")
+    idle_save_end = script.index("let selectedAfterSave", idle_save_start)
+    idle_save_block = script[idle_save_start:idle_save_end]
+    payload_start = idle_save_block.index("body: JSON.stringify({")
+    payload_end = idle_save_block.index("})", payload_start)
+    payload = idle_save_block[payload_start:payload_end]
+
+    assert "live2d_idle_animation: idleAnimation" in payload
+    assert "model_type:" not in payload
+    assert "live2d: form._live2dModel" not in payload
+
+
 def test_character_card_manager_parts_load_in_dependency_order():
     discovered_names = {path.name for path in CHARACTER_CARD_MANAGER_JS_DIR.glob("*.js")}
     assert discovered_names == set(CHARACTER_CARD_MANAGER_PART_NAMES)
