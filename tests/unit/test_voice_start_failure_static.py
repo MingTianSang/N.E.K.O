@@ -1068,9 +1068,20 @@ def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
     failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
     finally_index = handler.index("} finally {", failed_model_return)
     abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
+    complete_index = handler.index(
+        "new CustomEvent('neko:cat-return-complete'",
+        try_index,
+    )
+    published_index = handler.index(
+        "returnTerminalPublished = true;",
+        complete_index,
+    )
+    finally_brace = handler.index("{", finally_index)
+    finally_end = _balanced_js_block_end(handler, finally_brace)
 
     assert commit_index < guard_index < try_index < failed_model_return < finally_index < abort_index
-    assert "returnTerminalPublished = true;" in handler[try_index:finally_index]
+    assert try_index < complete_index < published_index < finally_index
+    assert finally_brace < abort_index <= finally_end
 
 
 def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():
