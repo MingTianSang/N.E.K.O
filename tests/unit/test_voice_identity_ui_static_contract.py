@@ -137,10 +137,19 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
     assert "--voice-muted: #61798a" in stylesheet
     assert _contrast_ratio("#61798a", "#ffffff") >= 4.5
+    switch_block = stylesheet[
+        stylesheet.index("\n.switch {"):
+        stylesheet.index("}", stylesheet.index("\n.switch {"))
+    ]
+    assert "width: 54px" in switch_block
+    assert "height: 30px" in switch_block
+    assert "align-self: center" in switch_block
     switch_track_start = stylesheet.index("\n.switch-track {")
     switch_track_block = stylesheet[
         switch_track_start:stylesheet.index("}", switch_track_start)
     ]
+    assert "position: absolute" in switch_track_block
+    assert "inset: 0" in switch_track_block
     switch_track_color = re.search(
         r"background:\s*(#[0-9a-fA-F]{6})", switch_track_block
     )
