@@ -202,9 +202,12 @@ class FakeButton {{
     this.classList = new FakeClassList();
     this.disabled = false;
     this.clickCount = 0;
+    this.onClick = null;
   }}
   click() {{
+    if (this.disabled) return;
     this.clickCount += 1;
+    if (typeof this.onClick === 'function') this.onClick();
   }}
 }}
 
@@ -241,6 +244,16 @@ global.window = {{
     const handlers = this._listeners.get(type) || [];
     handlers.push(handler);
     this._listeners.set(type, handlers);
+  }},
+  removeEventListener(type, handler) {{
+    const handlers = this._listeners.get(type) || [];
+    this._listeners.set(type, handlers.filter((candidate) => candidate !== handler));
+  }},
+  async dispatchNamed(type, detail = {{}}) {{
+    const handlers = [...(this._listeners.get(type) || [])];
+    for (const handler of handlers) {{
+      await handler({{ type, detail }});
+    }}
   }},
   async dispatchMicToggle(active) {{
     const handlers = this._listeners.get('live2d-mic-toggle') || [];
@@ -989,6 +1002,31 @@ def test_floating_mic_toggle_actual_state_matrix(name, script_body, expected):
     assert result["mic"]["disabled"] is expected["disabled"], name
     assert result["mic"]["classes"] == expected["classes"], name
     assert result["stopCalls"] == expected["stopCalls"], name
+
+
+def test_floating_mic_click_during_cat_return_replays_after_return_completion():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    await window.dispatchNamed('neko:cat-return-commit');
+    micButton.disabled = true;
+    const togglePromise = window.dispatchMicToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const clicksBeforeReturnComplete = micButton.clickCount;
+
+    micButton.disabled = false;
+    micButton.onClick = function () {
+      S.isRecording = true;
+      micButton.classList.add('active', 'recording');
+    };
+    await window.dispatchNamed('neko:cat-return-complete');
+    await togglePromise;
+    return { clicksBeforeReturnComplete };
+        """
+    )
+
+    assert result["result"]["clicksBeforeReturnComplete"] == 0
+    assert result["mic"]["clicks"] == 1
+    assert result["mic"]["classes"] == ["active", "recording"]
 
 
 def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():
