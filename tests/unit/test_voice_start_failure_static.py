@@ -1029,6 +1029,50 @@ def test_floating_mic_click_during_cat_return_replays_after_return_completion():
     assert result["mic"]["classes"] == ["active", "recording"]
 
 
+def test_floating_mic_click_during_aborted_cat_return_is_released_immediately():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    await window.dispatchNamed('neko:cat-return-commit');
+    micButton.disabled = true;
+    const abortedTogglePromise = window.dispatchMicToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await window.dispatchNamed('neko:cat-return-abort');
+    await abortedTogglePromise;
+    const clicksAfterAbort = micButton.clickCount;
+
+    micButton.disabled = false;
+    micButton.onClick = function () {
+      S.isRecording = true;
+      micButton.classList.add('active', 'recording');
+    };
+    await window.dispatchMicToggle(true);
+    return { clicksAfterAbort };
+        """
+    )
+
+    assert result["result"]["clicksAfterAbort"] == 0
+    assert result["mic"]["clicks"] == 1
+    assert result["mic"]["classes"] == ["active", "recording"]
+
+
+def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
+    source = _read(APP_UI_PATH)
+    marker = "const handleReturnClick = async (event) => {"
+    start = source.index(marker)
+    brace = source.index("{", start)
+    handler = source[start : _balanced_js_block_end(source, brace) + 1]
+
+    commit_index = handler.index("new CustomEvent('neko:cat-return-commit'")
+    guard_index = handler.index("let returnTerminalPublished = false;", commit_index)
+    try_index = handler.index("try {", guard_index)
+    failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
+    finally_index = handler.index("} finally {", failed_model_return)
+    abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
+
+    assert commit_index < guard_index < try_index < failed_model_return < finally_index < abort_index
+    assert "returnTerminalPublished = true;" in handler[try_index:finally_index]
+
+
 def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():
     result = _run_floating_mic_toggle_scenario(
         """

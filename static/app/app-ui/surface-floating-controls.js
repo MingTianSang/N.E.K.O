@@ -106,6 +106,9 @@
         window.addEventListener('neko:cat-return-complete', () => {
             catReturnInProgress = false;
         });
+        window.addEventListener('neko:cat-return-abort', () => {
+            catReturnInProgress = false;
+        });
 
         function waitForCatReturnComplete(timeoutMs) {
             if (!catReturnInProgress) {
@@ -119,10 +122,13 @@
                     settled = true;
                     if (timeoutId) clearTimeout(timeoutId);
                     window.removeEventListener('neko:cat-return-complete', handleComplete);
+                    window.removeEventListener('neko:cat-return-abort', handleAbort);
                     resolve(completed);
                 };
                 const handleComplete = () => finish(true);
+                const handleAbort = () => finish(false);
                 window.addEventListener('neko:cat-return-complete', handleComplete);
+                window.addEventListener('neko:cat-return-abort', handleAbort);
                 timeoutId = setTimeout(() => finish(false), timeoutMs);
             });
         }
@@ -1295,6 +1301,8 @@
                     timestamp: Date.now()
                 }
             }));
+            let returnTerminalPublished = false;
+            try {
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -1765,8 +1773,20 @@
                     timestamp: Date.now()
                 }
             }));
+            returnTerminalPublished = true;
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
+            } finally {
+                if (!returnTerminalPublished) {
+                    window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
+                        detail: {
+                            source: event && event.type ? event.type : 'return-click',
+                            reason: 'return-incomplete',
+                            timestamp: Date.now()
+                        }
+                    }));
+                }
+            }
         };
 
         // 统一监听各模型类型的回来事件
