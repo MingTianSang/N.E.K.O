@@ -2829,7 +2829,7 @@ async def test_absent_settings_use_disabled_default_without_failing_closed():
         await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
 
     assert mgr._asr_route_mode == "native"
-    mgr._asr_runtime.start.assert_not_awaited()
+    mgr._asr_runtime.start.assert_not_called()
 
 
 async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
