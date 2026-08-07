@@ -907,6 +907,248 @@ def test_character_card_manager_localizes_master_profile_builtin_field_labels(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    "viewport",
+    [
+        {"width": 1440, "height": 900},
+        {"width": 800, "height": 900},
+    ],
+    ids=["desktop-dialog", "narrow-dialog"],
+)
+def test_master_profile_opens_as_stable_dialog_without_reflowing_layout(
+    mock_page: Page,
+    running_server: str,
+    viewport: dict[str, int],
+):
+    mock_page.set_viewport_size(viewport)
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const master = { '档案名': 'Master Profile' };
+            for (let index = 1; index <= 14; index += 1) {
+                master['需要完整显示的设定名称 ' + index] = '第 ' + index + ' 项完整内容';
+            }
+            renderMasterForm(master);
+
+            const sidebar = document.getElementById('sidebar');
+            const main = document.querySelector('.main-content');
+            const cover = document.querySelector('.character-card-cover-section');
+            const snapshotRect = (element) => {
+                const rect = element.getBoundingClientRect();
+                return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+            };
+            const before = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+
+            const trigger = document.getElementById('master-profile-header');
+            trigger.click();
+            const afterClick = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            await wait(100);
+            const duringAnimation = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            await wait(200);
+
+            const content = document.getElementById('master-profile-content');
+            const backdrop = document.getElementById('master-profile-backdrop');
+            const dialogBody = content.querySelector('.master-profile-dialog-body');
+            const dialogFooter = content.querySelector('.master-profile-dialog-footer');
+            const addButton = dialogFooter.querySelector('.settings-primary-action');
+            const addButtonBeforeScroll = snapshotRect(addButton);
+            const rows = Array.from(content.querySelectorAll('.field-row-wrapper'));
+            const customRows = Array.from(content.querySelectorAll('.field-row-wrapper.custom-row'));
+            const labels = Array.from(content.querySelectorAll('.field-row-wrapper label'));
+            const contentRect = content.getBoundingClientRect();
+            const bodyRect = dialogBody.getBoundingClientRect();
+            const after = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            const rectStable = (first, second) => (
+                Math.abs(first.left - second.left) < 1
+                && Math.abs(first.top - second.top) < 1
+                && Math.abs(first.width - second.width) < 1
+                && Math.abs(first.height - second.height) < 1
+            );
+
+            const hasInternalScroll = dialogBody.scrollHeight > dialogBody.clientHeight + 1;
+            dialogBody.scrollTop = dialogBody.scrollHeight;
+            await wait(0);
+            const lastRowRect = rows.at(-1).getBoundingClientRect();
+            const addButtonAfterScroll = snapshotRect(addButton);
+            const transitionProperties = getComputedStyle(content).transitionProperty
+                .split(',')
+                .map(value => value.trim())
+                .sort();
+
+            const openState = {
+                position: getComputedStyle(content).position,
+                display: getComputedStyle(content).display,
+                contentWidth: contentRect.width,
+                usesDialogSemantics: trigger.getAttribute('aria-haspopup') === 'dialog'
+                    && !trigger.hasAttribute('aria-expanded'),
+                hasNoDecorativeProfileIcon: !trigger.querySelector('svg')
+                    && !content.querySelector('.master-profile-dialog-header svg'),
+                usesSharedSettingsLayout: dialogBody.classList.contains('settings-form-layout')
+                    && dialogBody.classList.contains('panel-tab-settings')
+                    && dialogFooter.classList.contains('settings-form-layout')
+                    && dialogFooter.classList.contains('panel-tab-settings'),
+                addActionAlwaysVisible: dialogFooter.contains(addButton)
+                    && !dialogBody.contains(addButton)
+                    && rectStable(addButtonBeforeScroll, addButtonAfterScroll)
+                    && addButtonAfterScroll.top >= contentRect.top
+                    && addButtonAfterScroll.top + addButtonAfterScroll.height <= contentRect.bottom,
+                usesCharacterSettingRows: customRows.length === 14 && customRows.every(row => {
+                    const textarea = row.querySelector('textarea');
+                    const deleteButton = row.querySelector('.setting-field-delete');
+                    const deleteStyle = deleteButton && getComputedStyle(deleteButton);
+                    const deleteGlyph = deleteButton && getComputedStyle(deleteButton, '::before');
+                    return row.classList.contains('setting-field-row')
+                        && textarea?.dataset.autoResizeAttached === 'true'
+                        && deleteButton?.getAttribute('aria-label')
+                        && Math.abs(Number.parseFloat(deleteStyle.width) - 36) < 1
+                        && deleteGlyph.content !== 'none';
+                }),
+                usesCharacterSettingActions: Boolean(
+                    content.querySelector('.profile-row .rename-action .edit-icon')
+                    && content.querySelector('.settings-toolbar-row .settings-primary-action .add-icon')
+                    && content.querySelector('.settings-action-row .settings-save-action .save-icon')
+                    && content.querySelector('.settings-action-row .settings-cancel-action .cancel-icon')
+                ),
+                backdropVisible: getComputedStyle(backdrop).display === 'block'
+                    && Number.parseFloat(getComputedStyle(backdrop).opacity) > 0.99,
+                dialogInsideViewport: contentRect.left >= 0
+                    && contentRect.top >= 0
+                    && contentRect.right <= window.innerWidth
+                    && contentRect.bottom <= window.innerHeight,
+                sidebarStable: rectStable(before.sidebar, after.sidebar),
+                mainStable: rectStable(before.main, after.main),
+                decorationStable: rectStable(before.cover, after.cover),
+                stableThroughoutAnimation: [afterClick, duringAnimation, after].every(snapshot => (
+                    rectStable(before.sidebar, snapshot.sidebar)
+                    && rectStable(before.main, snapshot.main)
+                    && rectStable(before.cover, snapshot.cover)
+                )),
+                transformOnlyAnimation: transitionProperties.length === 2
+                    && transitionProperties.includes('opacity')
+                    && transitionProperties.includes('transform'),
+                labelsUnclipped: labels.every(label => {
+                    const style = getComputedStyle(label);
+                    return style.whiteSpace === 'normal'
+                        && style.overflow !== 'hidden'
+                        && label.scrollWidth <= label.clientWidth + 1;
+                }),
+                hasInternalScroll,
+                lastRowReachable: lastRowRect.top >= bodyRect.top - 1
+                    && lastRowRect.bottom <= bodyRect.bottom + 1,
+            };
+
+            content.querySelector('.master-profile-dialog-close').click();
+            await wait(340);
+
+            return {
+                ...openState,
+                hiddenAfterClose: getComputedStyle(content).display === 'none',
+                backdropHiddenAfterClose: getComputedStyle(backdrop).display === 'none',
+            };
+        }
+        """
+    )
+
+    assert state["position"] == "fixed"
+    assert state["display"] == "flex"
+    assert state["contentWidth"] >= 700
+    assert state["usesDialogSemantics"] is True
+    assert state["hasNoDecorativeProfileIcon"] is True
+    assert state["usesSharedSettingsLayout"] is True
+    assert state["addActionAlwaysVisible"] is True
+    assert state["usesCharacterSettingRows"] is True
+    assert state["usesCharacterSettingActions"] is True
+    assert state["backdropVisible"] is True
+    assert state["dialogInsideViewport"] is True
+    assert state["sidebarStable"] is True
+    assert state["mainStable"] is True
+    assert state["decorationStable"] is True
+    assert state["stableThroughoutAnimation"] is True
+    assert state["transformOnlyAnimation"] is True
+    assert state["labelsUnclipped"] is True
+    assert state["hasInternalScroll"] is True
+    assert state["lastRowReachable"] is True
+    assert state["hiddenAfterClose"] is True
+    assert state["backdropHiddenAfterClose"] is True
+
+
+@pytest.mark.frontend
+def test_master_add_field_prompt_keeps_fade_out_final_frame_until_removal(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const nativeSetTimeout = originalSetTimeout.bind(window);
+            const wait = (ms) => new Promise(resolve => nativeSetTimeout(resolve, ms));
+
+            renderMasterForm({ '档案名': 'Master' });
+            document.querySelector('#master-profile-add-actions .btn.add').click();
+            const overlay = document.querySelector('.modal-overlay');
+            overlay.querySelector('.modal-input').value = 'Stable Field';
+
+            let delayedRemoval = false;
+            window.setTimeout = (callback, delay, ...args) => {
+                if (!delayedRemoval && delay === 200) {
+                    delayedRemoval = true;
+                    return nativeSetTimeout(callback, 350, ...args);
+                }
+                return nativeSetTimeout(callback, delay, ...args);
+            };
+
+            overlay.querySelector('.modal-btn-primary').click();
+            await wait(230);
+            const opacityAfterFadeOut = getComputedStyle(overlay).opacity;
+            const connectedAfterFadeOut = overlay.isConnected;
+            const closingFillMode = getComputedStyle(overlay).animationFillMode;
+
+            window.setTimeout = originalSetTimeout;
+            await wait(150);
+
+            return {
+                opacityAfterFadeOut,
+                connectedAfterFadeOut,
+                closingFillMode,
+                removedAfterCleanup: !overlay.isConnected,
+                fieldCount: document.querySelectorAll('#master-form textarea[name="Stable Field"]').length,
+            };
+        }
+        """
+    )
+
+    assert state == {
+        "opacityAfterFadeOut": "0",
+        "connectedAfterFadeOut": True,
+        "closingFillMode": "forwards",
+        "removedAfterCleanup": True,
+        "fieldCount": 1,
+    }
+
+
+@pytest.mark.frontend
 def test_character_card_manager_saved_new_field_survives_immediate_reopen_with_stale_reload(
     mock_page: Page,
     running_server: str,
