@@ -166,6 +166,8 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert "width: 54px" in switch_block
     assert "height: 30px" in switch_block
     assert "align-self: center" in switch_block
+    assert "flex: 0 0 auto" in switch_block
+    assert "flex: 0 0 54px" not in switch_block
     switch_track_start = stylesheet.index("\n.switch-track {")
     switch_track_block = stylesheet[
         switch_track_start:stylesheet.index("}", switch_track_start)

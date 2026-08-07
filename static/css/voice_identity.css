@@ -420,7 +420,7 @@ button:disabled {
     width: 54px;
     height: 30px;
     align-self: center;
-    flex: 0 0 54px;
+    flex: 0 0 auto;
     line-height: 0;
 }
 
