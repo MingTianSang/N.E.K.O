@@ -496,6 +496,40 @@ function toggleMasterSection() {
 
     if (isOpening) {
         content._masterProfilePreviousFocus = document.activeElement;
+        content._masterProfileFocusTrap = function (event) {
+            if (event.key !== 'Tab' || document.querySelector('.modal-overlay')) return;
+
+            const focusableElements = Array.from(content.querySelectorAll([
+                'a[href]',
+                'button:not([disabled])',
+                'input:not([disabled]):not([type="hidden"])',
+                'select:not([disabled])',
+                'textarea:not([disabled])',
+                '[contenteditable="true"]',
+                '[tabindex]:not([tabindex="-1"])'
+            ].join(','))).filter(element => (
+                !element.hidden
+                && element.getAttribute('aria-hidden') !== 'true'
+                && element.getClientRects().length > 0
+            ));
+            if (!focusableElements.length) {
+                event.preventDefault();
+                return;
+            }
+
+            const firstFocusable = focusableElements[0];
+            const lastFocusable = focusableElements[focusableElements.length - 1];
+            const activeElement = document.activeElement;
+            const activeElementIsFocusable = focusableElements.includes(activeElement);
+            if (event.shiftKey && (activeElement === firstFocusable || !activeElementIsFocusable)) {
+                event.preventDefault();
+                lastFocusable.focus({ preventScroll: true });
+            } else if (!event.shiftKey && (activeElement === lastFocusable || !activeElementIsFocusable)) {
+                event.preventDefault();
+                firstFocusable.focus({ preventScroll: true });
+            }
+        };
+        document.addEventListener('keydown', content._masterProfileFocusTrap);
         backdrop.style.display = 'block';
         content.style.display = 'flex';
         content.setAttribute('aria-hidden', 'false');
@@ -517,6 +551,10 @@ function toggleMasterSection() {
     backdrop.classList.remove('open');
     content.classList.remove('open');
     header.classList.remove('open');
+    if (content._masterProfileFocusTrap) {
+        document.removeEventListener('keydown', content._masterProfileFocusTrap);
+        content._masterProfileFocusTrap = null;
+    }
     const previousFocus = content._masterProfilePreviousFocus;
     if (previousFocus && typeof previousFocus.focus === 'function') {
         previousFocus.focus({ preventScroll: true });
