@@ -28,12 +28,13 @@ function chatFontPresetBootstrapBlock() {
 function createChatFontPresetContext(storedPreset = null) {
     const attributes = {};
     const listeners = {};
+    const localStorage = {
+        getItem: (key) => key === 'neko.reactChatWindow.fontPreset' ? storedPreset : null
+    };
     const context = {
         I: {},
         window: {
-            localStorage: {
-                getItem: (key) => key === 'neko.reactChatWindow.fontPreset' ? storedPreset : null
-            },
+            localStorage,
             addEventListener(type, listener) {
                 listeners[type] = listener;
             }
@@ -47,7 +48,7 @@ function createChatFontPresetContext(storedPreset = null) {
         }
     };
     vm.runInNewContext(chatFontPresetBootstrapBlock(), context);
-    return { attributes, listeners };
+    return { attributes, listeners, localStorage };
 }
 
 function assignmentBlock(name, nextName) {
@@ -164,8 +165,24 @@ test('chat host restores and live-syncs the shared font preset', () => {
     assert.equal(live.attributes['data-neko-chat-font-preset'], 'system');
 
     live.listeners.storage({
+        storageArea: {},
         key: 'neko.reactChatWindow.fontPreset',
         newValue: 'handwritten'
+    });
+    assert.equal(live.attributes['data-neko-chat-font-preset'], 'system');
+
+    live.listeners.storage({
+        storageArea: live.localStorage,
+        key: 'neko.reactChatWindow.fontPreset',
+        newValue: 'handwritten'
+    });
+    assert.equal(live.attributes['data-neko-chat-font-preset'], 'handwritten');
+
+    live.listeners['neko:chat-font-preset-changed']({ detail: { preset: 'system' } });
+    live.listeners.storage({
+        storageArea: live.localStorage,
+        key: null,
+        newValue: null
     });
     assert.equal(live.attributes['data-neko-chat-font-preset'], 'handwritten');
 });

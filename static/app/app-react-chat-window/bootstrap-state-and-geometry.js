@@ -50,7 +50,10 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         I.chatFontPresetSyncInstalled = true;
 
         window.addEventListener('storage', function (event) {
-            if (event.key === CHAT_FONT_PRESET_STORAGE_KEY) {
+            if (
+                event.storageArea === window.localStorage
+                && (event.key === CHAT_FONT_PRESET_STORAGE_KEY || event.key === null)
+            ) {
                 applyChatFontPreset(event.newValue);
             }
         });
