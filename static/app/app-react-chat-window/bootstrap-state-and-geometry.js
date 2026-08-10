@@ -44,8 +44,11 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         return preset;
     }
 
+    I.restoreChatFontPresetPreference = function restoreChatFontPresetPreference() {
+        return applyChatFontPreset(readChatFontPreset());
+    };
+
     function installChatFontPresetSync() {
-        applyChatFontPreset(readChatFontPreset());
         if (I.chatFontPresetSyncInstalled) return;
         I.chatFontPresetSyncInstalled = true;
 
@@ -66,6 +69,8 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         });
     }
 
+    // Install live synchronization immediately, but defer the initial read until
+    // initAfterStorageBarrier() has resolved the active storage namespace.
     installChatFontPresetSync();
     I.GALGAME_HISTORY_LIMIT = 6;
     I.EVENT_PREFIX = 'react-chat-window:';

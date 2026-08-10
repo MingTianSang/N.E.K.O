@@ -48,7 +48,12 @@ function createChatFontPresetContext(storedPreset = null) {
         }
     };
     vm.runInNewContext(chatFontPresetBootstrapBlock(), context);
-    return { attributes, listeners, localStorage };
+    return {
+        attributes,
+        listeners,
+        localStorage,
+        restorePreference: context.I.restoreChatFontPresetPreference
+    };
 }
 
 function assignmentBlock(name, nextName) {
@@ -150,17 +155,26 @@ test('compact chat returns false when its clamped target already matches the cur
     assert.equal(getCompactApplication(), null);
 });
 
-test('chat host applies the handwritten compatibility default before React mounts', () => {
-    const { attributes } = createChatFontPresetContext();
+test('chat host restores the font after the storage barrier and before React mounts', () => {
+    const state = createChatFontPresetContext();
 
-    assert.equal(attributes['data-neko-chat-font-preset'], 'handwritten');
+    assert.equal(state.attributes['data-neko-chat-font-preset'], undefined);
+    assert.match(
+        apiSource,
+        /function init\(\) \{[\s\S]*?I\.restoreChatFontPresetPreference\(\);[\s\S]*?I\.syncChatSurfaceModeUI\(\);/
+    );
+    state.restorePreference();
+
+    assert.equal(state.attributes['data-neko-chat-font-preset'], 'handwritten');
 });
 
 test('chat host restores and live-syncs the shared font preset', () => {
     const restored = createChatFontPresetContext('system');
+    restored.restorePreference();
     assert.equal(restored.attributes['data-neko-chat-font-preset'], 'system');
 
     const live = createChatFontPresetContext();
+    live.restorePreference();
     live.listeners['neko:chat-font-preset-changed']({ detail: { preset: 'system' } });
     assert.equal(live.attributes['data-neko-chat-font-preset'], 'system');
 
