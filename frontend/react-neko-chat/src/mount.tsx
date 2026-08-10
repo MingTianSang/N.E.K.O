@@ -1,10 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App, { type ChatWindowProps } from './App';
+import { installChatFontPresetSync } from './chatFontPreset';
 import { parseChatWindowProps } from './message-schema';
 import './styles.css';
 
 const roots = new WeakMap<HTMLElement, ReactDOM.Root>();
+
+installChatFontPresetSync();
 
 export function mount(container: HTMLElement, props: ChatWindowProps = {}) {
   const normalizedProps = parseChatWindowProps(props);
