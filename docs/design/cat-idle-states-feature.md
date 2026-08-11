@@ -117,7 +117,7 @@ Web 主页面与 NEKO-PC 的 Pet renderer 页面运行同一套页面内 Cat Min
 
 | 阶段 | 累计 idle 时间 |
 |---|---:|
-| 自动 goodbye / `CAT1` | 10 秒（测试值） |
+| 自动 goodbye / `CAT1` | 10 分钟 |
 | `CAT2` | 15 分钟 |
 | `CAT3` | 18 分钟 |
 
