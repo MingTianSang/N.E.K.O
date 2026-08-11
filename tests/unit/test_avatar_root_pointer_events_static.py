@@ -31,6 +31,20 @@ def test_live2d_restore_keeps_root_container_passthrough():
     assert "container.style.removeProperty('pointer-events');" in return_prepare_block
 
 
+def test_live2d_return_keeps_floating_toolbar_drag_passthrough():
+    source = read_js_parts(APP_UI_PATH)
+    show_live2d_block = source[
+        source.index("showLive2d = function showLive2d()"):
+        source.index("mod.showLive2d = showLive2d;")
+    ]
+
+    assert "floatingButtons.style.setProperty('pointer-events', 'auto');" in show_live2d_block
+    assert (
+        "floatingButtons.style.setProperty('pointer-events', 'auto', 'important');"
+        not in show_live2d_block
+    )
+
+
 def test_model_reload_live2d_restore_keeps_root_container_passthrough():
     source = read_js_parts(APP_INTERPAGE_PATH)
     reload_block = source[
