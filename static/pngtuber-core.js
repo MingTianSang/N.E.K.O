@@ -204,6 +204,7 @@
             this._listenersAttached = false;
             this._dragListenersAttached = false;
             this._dragState = null;
+            this._dragSequence = 0;
             this._isDraggingModel = false;
             this.isDragging = false;
             this._saveInFlight = null;
@@ -324,6 +325,7 @@
             window.removeEventListener('pointercancel', this._boundDragEnd);
             this._dragListenersAttached = false;
             this._dragState = null;
+            this._dragSequence += 1;
             this._touchZoomState = null;
             this.setModelDraggingState(false);
         }
@@ -2731,21 +2733,33 @@
             return point;
         }
 
+        isDragCompletionCurrent(state) {
+            return !!state
+                && state.dragSequence === this._dragSequence
+                && this._dragState === null;
+        }
+
         async recordDragHintPointerEdgeApproach(state) {
             const helper = window.NekoAvatarMultiScreenDragHint;
             const start = state?.dragHintStartPointer;
             const pointer = state?.dragHintLastPointer;
             if (!helper || typeof helper.recordPointerEdgeApproach !== 'function'
-                || state?.dragHintApproachShown || !start || !pointer) return false;
-            const shown = await helper.recordPointerEdgeApproach('pngtuber', {
-                startedAt: start.startedAt,
-                startScreenX: start.x,
-                startScreenY: start.y,
-                screenX: pointer.x,
-                screenY: pointer.y
-            });
-            if (shown) state.dragHintApproachShown = true;
-            return shown;
+                || state?.dragHintApproachShown || state?.dragHintApproachPending
+                || !start || !pointer) return false;
+            state.dragHintApproachPending = true;
+            try {
+                const shown = await helper.recordPointerEdgeApproach('pngtuber', {
+                    startedAt: start.startedAt,
+                    startScreenX: start.x,
+                    startScreenY: start.y,
+                    screenX: pointer.x,
+                    screenY: pointer.y
+                });
+                if (shown) state.dragHintApproachShown = true;
+                return shown;
+            } finally {
+                state.dragHintApproachPending = false;
+            }
         }
 
         async recordDragHintPointerEdgeRelease(state) {
@@ -2818,9 +2832,13 @@
             const hasPointer = pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y);
 
             try {
-                const [rawDisplays, rawCurrentDisplay] = await Promise.all([
+                const coordinateSnapshotRequest = typeof bridge.getDesktopCoordinateSnapshot === 'function'
+                    ? Promise.resolve().then(() => bridge.getDesktopCoordinateSnapshot()).catch(() => null)
+                    : Promise.resolve(null);
+                const [rawDisplays, rawCurrentDisplay, coordinateSnapshot] = await Promise.all([
                     bridge.getAllDisplays(),
-                    bridge.getCurrentDisplay()
+                    bridge.getCurrentDisplay(),
+                    coordinateSnapshotRequest
                 ]);
                 const displays = Array.isArray(rawDisplays)
                     ? rawDisplays.map((display) => this.normalizeDisplayBounds(display)).filter(Boolean)
@@ -2830,11 +2848,27 @@
 
                 const windowWidth = Number(window.innerWidth);
                 const windowHeight = Number(window.innerHeight);
-                const modelCenterInsideWindow = Number.isFinite(windowWidth) && Number.isFinite(windowHeight)
-                    && center.x >= 0 && center.x < windowWidth
+                if (!Number.isFinite(windowWidth) || !Number.isFinite(windowHeight)
+                    || windowWidth <= 0 || windowHeight <= 0) return false;
+
+                // screenOrigin matches renderer-local coordinates. It is the actual BrowserWindow
+                // origin normally and the virtual origin when physical crop mode remaps the renderer.
+                const rendererOrigin = coordinateSnapshot?.renderer?.screenOrigin;
+                const actualWindowBounds = coordinateSnapshot?.window?.actualBounds;
+                const rendererOriginX = Number(rendererOrigin?.x);
+                const rendererOriginY = Number(rendererOrigin?.y);
+                const actualWindowX = Number(actualWindowBounds?.x);
+                const actualWindowY = Number(actualWindowBounds?.y);
+                const currentWindowOriginX = Number.isFinite(rendererOriginX)
+                    ? rendererOriginX
+                    : (Number.isFinite(actualWindowX) ? actualWindowX : currentDisplay.x);
+                const currentWindowOriginY = Number.isFinite(rendererOriginY)
+                    ? rendererOriginY
+                    : (Number.isFinite(actualWindowY) ? actualWindowY : currentDisplay.y);
+                const modelCenterInsideWindow = center.x >= 0 && center.x < windowWidth
                     && center.y >= 0 && center.y < windowHeight;
-                const pointerWindowX = hasPointer ? pointer.x - currentDisplay.x : null;
-                const pointerWindowY = hasPointer ? pointer.y - currentDisplay.y : null;
+                const pointerWindowX = hasPointer ? pointer.x - currentWindowOriginX : null;
+                const pointerWindowY = hasPointer ? pointer.y - currentWindowOriginY : null;
                 const pointerOutsideCurrentWindow = hasPointer && !(
                     pointerWindowX >= 0 && pointerWindowX < windowWidth
                     && pointerWindowY >= 0 && pointerWindowY < windowHeight
@@ -2844,8 +2878,8 @@
                     return false;
                 }
 
-                const modelScreenX = currentDisplay.x + center.x;
-                const modelScreenY = currentDisplay.y + center.y;
+                const modelScreenX = currentWindowOriginX + center.x;
+                const modelScreenY = currentWindowOriginY + center.y;
                 const usePointer = hasPointer && pointerOutsideCurrentWindow;
                 const switchScreenX = usePointer ? pointer.x : modelScreenX;
                 const switchScreenY = usePointer ? pointer.y : modelScreenY;
@@ -2856,6 +2890,7 @@
                 if (!targetDisplay) return false;
                 if (currentDisplay.id !== undefined && targetDisplay.id !== undefined
                     && String(currentDisplay.id) === String(targetDisplay.id)) return false;
+                if (!this.isDragCompletionCurrent(state)) return false;
 
                 const result = await bridge.moveWindowToDisplay(switchScreenX, switchScreenY);
                 if (!(result && result.success && !result.sameDisplay)) return false;
@@ -2879,7 +2914,9 @@
 
                 await new Promise((resolve) => requestAnimationFrame(resolve));
                 await new Promise((resolve) => requestAnimationFrame(resolve));
-                this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);
+                if (this.isDragCompletionCurrent(state)) {
+                    this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);
+                }
 
                 const helper = window.NekoAvatarMultiScreenDragHint;
                 if (helper && typeof helper.markDisplaySwitchSuccess === 'function') {
@@ -2900,7 +2937,9 @@
             event.preventDefault();
             event.stopPropagation();
             const placement = this.getActivePlacement();
+            this._dragSequence += 1;
             this._dragState = {
+                dragSequence: this._dragSequence,
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
@@ -2914,7 +2953,8 @@
                 modelCenterPointerOffset: { x: 0, y: 0 },
                 dragHintStartPointer: null,
                 dragHintLastPointer: null,
-                dragHintApproachShown: false
+                dragHintApproachShown: false,
+                dragHintApproachPending: false
             };
             this.rememberDragScreenPoint(this._dragState, event, { start: true });
             this.resetLayeredDragVelocity();
@@ -2974,9 +3014,11 @@
             if (state.moved) {
                 this._suppressNextClick = true;
                 const displaySwitched = await this.checkAndSwitchDisplayAfterDrag(state);
+                if (!this.isDragCompletionCurrent(state)) return;
                 if (!displaySwitched) {
                     await this.recordDragHintPointerEdgeRelease(state);
                 }
+                if (!this.isDragCompletionCurrent(state)) return;
                 await this.saveCurrentConfig();
             }
         }
@@ -3037,6 +3079,7 @@
             event.stopPropagation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
+            this._dragSequence += 1;
             this._dragState = null;
             this._touchZoomState = {
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),

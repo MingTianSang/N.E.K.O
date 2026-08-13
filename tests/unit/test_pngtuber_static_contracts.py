@@ -117,10 +117,73 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "await this.recordDragHintPointerEdgeRelease(state);" in drag_block
     assert "bridge.getAllDisplays()" in drag_block
     assert "bridge.getCurrentDisplay()" in drag_block
+    assert "bridge.getDesktopCoordinateSnapshot()" in drag_block
+    assert "coordinateSnapshot?.renderer?.screenOrigin" in drag_block
+    assert "state?.dragHintApproachPending" in drag_block
+    assert "state.dragHintApproachPending = true;" in drag_block
+    assert "state.dragHintApproachPending = false;" in drag_block
+    assert "this.isDragCompletionCurrent(state)" in drag_block
     assert "bridge.moveWindowToDisplay(switchScreenX, switchScreenY)" in drag_block
     assert "result.windowBounds" in drag_block
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
     assert "helper.markDisplaySwitchSuccess('pngtuber');" in drag_block
+
+
+def test_pngtuber_drag_hint_edge_approach_allows_only_one_in_flight_call():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber drag hint tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+let approachCalls = 0;
+let resolveApproach;
+const window = {{
+  location: {{ pathname: '/' }},
+  lanlan_config: {{ model_type: 'pngtuber' }},
+  NekoAvatarMultiScreenDragHint: {{
+    recordPointerEdgeApproach() {{
+      approachCalls += 1;
+      return new Promise((resolve) => {{ resolveApproach = resolve; }});
+    }},
+  }},
+}};
+const document = {{
+  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  getElementById() {{ return null; }},
+  querySelectorAll() {{ return []; }},
+}};
+const context = {{ console, document, window }};
+vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js' }});
+
+(async () => {{
+  const manager = new window.PNGTuberManager();
+  const state = {{
+    dragHintStartPointer: {{ x: 10, y: 20, startedAt: 1 }},
+    dragHintLastPointer: {{ x: 30, y: 40 }},
+    dragHintApproachShown: false,
+    dragHintApproachPending: false,
+  }};
+  const first = manager.recordDragHintPointerEdgeApproach(state);
+  const second = manager.recordDragHintPointerEdgeApproach(state);
+
+  assert.equal(approachCalls, 1);
+  assert.equal(await second, false);
+  resolveApproach(true);
+  assert.equal(await first, true);
+  assert.equal(state.dragHintApproachPending, false);
+  assert.equal(state.dragHintApproachShown, true);
+  assert.equal(await manager.recordDragHintPointerEdgeApproach(state), false);
+  assert.equal(approachCalls, 1);
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"""
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_pngtuber_drag_switches_to_the_pointer_display_without_losing_the_grab_point():
@@ -151,31 +214,52 @@ const document = {{
 
 const primary = {{ id: 'primary', screenX: 0, screenY: 0, width: 1707, height: 1067 }};
 const secondary = {{ id: 'secondary', screenX: -2560, screenY: 0, width: 2560, height: 1440 }};
+const primaryWindowBounds = {{ x: 1, y: 1, width: 1706, height: 1066 }};
+const secondaryWindowBounds = {{ x: -2559, y: 1, width: 2559, height: 1439 }};
 let currentDisplay = primary;
+let currentWindowBounds = {{ ...primaryWindowBounds }};
 let movedPoint = null;
 let saves = 0;
+let snapshotCalls = 0;
+let deferredFrames = null;
 const markedSwitches = [];
 
-const requestAnimationFrame = (callback) => {{ callback(0); return 1; }};
+const requestAnimationFrame = (callback) => {{
+  if (deferredFrames) {{
+    deferredFrames.push(callback);
+    return deferredFrames.length;
+  }}
+  callback(0);
+  return 1;
+}};
 const window = {{
   location: {{ pathname: '/' }},
-  innerWidth: primary.width,
-  innerHeight: primary.height,
+  innerWidth: primaryWindowBounds.width,
+  innerHeight: primaryWindowBounds.height,
   __LANLAN_IS_ELECTRON_PET__: true,
   lanlan_config: {{ model_type: 'pngtuber' }},
   requestAnimationFrame,
   electronScreen: {{
     async getAllDisplays() {{ return [primary, secondary]; }},
     async getCurrentDisplay() {{ return currentDisplay; }},
+    async getDesktopCoordinateSnapshot() {{
+      snapshotCalls += 1;
+      return {{
+        version: 2,
+        window: {{ actualBounds: {{ ...currentWindowBounds }} }},
+        renderer: {{ screenOrigin: {{ x: currentWindowBounds.x, y: currentWindowBounds.y }} }},
+      }};
+    }},
     async moveWindowToDisplay(x, y) {{
       movedPoint = {{ x, y }};
       currentDisplay = secondary;
-      window.innerWidth = secondary.width;
-      window.innerHeight = secondary.height;
+      currentWindowBounds = {{ ...secondaryWindowBounds }};
+      window.innerWidth = currentWindowBounds.width;
+      window.innerHeight = currentWindowBounds.height;
       return {{
         success: true,
         sameDisplay: false,
-        windowBounds: {{ x: secondary.screenX, y: secondary.screenY, width: secondary.width, height: secondary.height }},
+        windowBounds: {{ ...currentWindowBounds }},
       }};
     }},
   }},
@@ -240,12 +324,12 @@ manager.updateFloatingButtonsPosition = () => {{}};
 manager.updateLockIconPosition = () => {{}};
 manager.saveCurrentConfig = async () => {{ saves += 1; return true; }};
 
-function pointer(type, clientX, clientY, screenX, screenY) {{
+function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   return {{
     type,
     target: image,
     button: 0,
-    pointerId: 7,
+    pointerId,
     clientX,
     clientY,
     screenX,
@@ -256,26 +340,95 @@ function pointer(type, clientX, clientY, screenX, screenY) {{
 }}
 
 (async () => {{
-  manager.startDrag(pointer('pointerdown', 154, 534, 154, 534));
+  manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
   assert.equal(manager._isDraggingModel, true);
   assert.equal(attributes.get('data-dragging'), 'pending');
 
-  manager.moveDrag(pointer('pointermove', -200, 534, -200, 534));
+  manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
   assert.equal(attributes.get('data-dragging'), 'true');
 
-  await manager.endDrag(pointer('pointerup', -200, 534, -200, 534));
+  await manager.endDrag(pointer('pointerup', -201, 534, -200, 535));
 
-  assert.deepEqual(movedPoint, {{ x: -200, y: 534 }});
+  assert.deepEqual(movedPoint, {{ x: -200, y: 535 }});
   assert.equal(currentDisplay.id, 'secondary');
-  assert.equal(manager.getModelCenterInWindow().x, 2359.5);
-  assert.equal(manager.getModelCenterInWindow().y, 533.5);
-  assert.equal(manager.config.offset_x, 1079.5);
+  // -200 - secondary origin(-2559) + grab offset(-1) = 2358.
+  assert.equal(manager.getModelCenterInWindow().x, 2358);
+  // 535 - secondary origin(1) + grab offset(-1) = 533.
+  assert.equal(manager.getModelCenterInWindow().y, 533);
+  // 2358 - secondary window center(2559 / 2) = 1078.5.
+  assert.equal(manager.config.offset_x, 1078.5);
+  // 533 - secondary window center(1439 / 2) = -186.5.
   assert.equal(manager.config.offset_y, -186.5);
   assert.equal(saves, 1);
+  assert.ok(snapshotCalls >= 1);
   assert.deepEqual(markedSwitches, ['pngtuber']);
   assert.equal(manager._isDraggingModel, false);
   assert.equal(attributes.has('data-dragging'), false);
   assert.equal(bodyClasses.has('neko-model-dragging'), false);
+
+  currentDisplay = primary;
+  currentWindowBounds = {{ ...primaryWindowBounds }};
+  window.innerWidth = currentWindowBounds.width;
+  window.innerHeight = currentWindowBounds.height;
+  manager.config.offset_x = -855;
+  manager.config.offset_y = 0;
+  movedPoint = null;
+  manager._dragSequence += 1;
+  const modelOnlyState = {{
+    dragSequence: manager._dragSequence,
+    lastScreenPoint: null,
+    modelCenterPointerOffset: {{ x: 0, y: 0 }},
+  }};
+  assert.equal(await manager.checkAndSwitchDisplayAfterDrag(modelOnlyState), true);
+  // Primary actual origin(1) + local model center(-2) = screen x(-1).
+  assert.deepEqual(movedPoint, {{ x: -1, y: 534 }});
+
+  currentDisplay = primary;
+  currentWindowBounds = {{ ...primaryWindowBounds }};
+  window.innerWidth = Number.NaN;
+  window.innerHeight = currentWindowBounds.height;
+  movedPoint = null;
+  const getModelCenterInWindow = manager.getModelCenterInWindow.bind(manager);
+  manager.getModelCenterInWindow = () => ({{ x: 100, y: 100 }});
+  manager._dragSequence += 1;
+  const invalidWindowState = {{
+    dragSequence: manager._dragSequence,
+    lastScreenPoint: {{ x: -200, y: 100 }},
+    modelCenterPointerOffset: {{ x: 0, y: 0 }},
+  }};
+  assert.equal(await manager.checkAndSwitchDisplayAfterDrag(invalidWindowState), false);
+  assert.equal(movedPoint, null);
+  manager.getModelCenterInWindow = getModelCenterInWindow;
+
+  currentDisplay = primary;
+  currentWindowBounds = {{ ...primaryWindowBounds }};
+  window.innerWidth = currentWindowBounds.width;
+  window.innerHeight = currentWindowBounds.height;
+  manager.config.offset_x = -700;
+  manager.config.offset_y = 0;
+  movedPoint = null;
+  saves = 0;
+  deferredFrames = [];
+  manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
+  manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
+  const staleEnd = manager.endDrag(pointer('pointerup', -201, 534, -200, 535));
+  while (deferredFrames.length === 0) await new Promise(setImmediate);
+
+  manager.startDrag(pointer('pointerdown', 100, 100, -2459, 101, 8));
+  manager.moveDrag(pointer('pointermove', 120, 100, -2439, 101, 8));
+  const activeDragOffsets = {{
+    x: manager.config.offset_x,
+    y: manager.config.offset_y,
+  }};
+  deferredFrames.shift()(0);
+  await new Promise(setImmediate);
+  deferredFrames.shift()(0);
+  await staleEnd;
+
+  assert.equal(manager._dragState.pointerId, 8);
+  assert.equal(manager.config.offset_x, activeDragOffsets.x);
+  assert.equal(manager.config.offset_y, activeDragOffsets.y);
+  assert.equal(saves, 0);
 }})().catch((error) => {{
   console.error(error);
   process.exit(1);
