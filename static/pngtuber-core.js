@@ -204,6 +204,8 @@
             this._listenersAttached = false;
             this._dragListenersAttached = false;
             this._dragState = null;
+            this._isDraggingModel = false;
+            this.isDragging = false;
             this._saveInFlight = null;
             this._lastSavedPositionKey = '';
             this._saveTimer = null;
@@ -323,8 +325,7 @@
             this._dragListenersAttached = false;
             this._dragState = null;
             this._touchZoomState = null;
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
         }
 
         attachSpeechListeners() {
@@ -2671,6 +2672,226 @@
             }
         }
 
+        setModelDraggingState(active, moved = false) {
+            const dragging = !!active;
+            this._isDraggingModel = dragging;
+            this.isDragging = dragging;
+            document.body?.classList.toggle('neko-model-dragging', dragging);
+            if (!this.image) return;
+
+            this.image.dragging = dragging;
+            this.image.isDragging = dragging;
+            this.image._isDraggingModel = dragging;
+            this.image.classList.toggle('is-dragging', dragging);
+            if (dragging) {
+                this.image.setAttribute('data-dragging', moved ? 'true' : 'pending');
+            } else {
+                this.image.removeAttribute('data-dragging');
+            }
+        }
+
+        getModelCenterInWindow() {
+            if (!this.image || typeof this.image.getBoundingClientRect !== 'function') return null;
+            const rect = this.image.getBoundingClientRect();
+            const left = Number(rect?.left);
+            const top = Number(rect?.top);
+            const width = Number(rect?.width);
+            const height = Number(rect?.height);
+            if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return {
+                x: left + width / 2,
+                y: top + height / 2
+            };
+        }
+
+        captureDragScreenPoint(event) {
+            const screenX = Number(event?.screenX);
+            const screenY = Number(event?.screenY);
+            if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+            return { x: screenX, y: screenY };
+        }
+
+        rememberDragScreenPoint(state, event, { start = false } = {}) {
+            if (!state) return null;
+            const point = this.captureDragScreenPoint(event);
+            if (!point) return null;
+            state.lastScreenPoint = point;
+            state.dragHintLastPointer = point;
+            if (!start) return point;
+
+            const center = this.getModelCenterInWindow();
+            const clientX = Number(event?.clientX);
+            const clientY = Number(event?.clientY);
+            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
+                ? { x: center.x - clientX, y: center.y - clientY }
+                : { x: 0, y: 0 };
+            state.dragHintStartPointer = Object.assign({ startedAt: Date.now() }, point);
+            return point;
+        }
+
+        async recordDragHintPointerEdgeApproach(state) {
+            const helper = window.NekoAvatarMultiScreenDragHint;
+            const start = state?.dragHintStartPointer;
+            const pointer = state?.dragHintLastPointer;
+            if (!helper || typeof helper.recordPointerEdgeApproach !== 'function'
+                || state?.dragHintApproachShown || !start || !pointer) return false;
+            const shown = await helper.recordPointerEdgeApproach('pngtuber', {
+                startedAt: start.startedAt,
+                startScreenX: start.x,
+                startScreenY: start.y,
+                screenX: pointer.x,
+                screenY: pointer.y
+            });
+            if (shown) state.dragHintApproachShown = true;
+            return shown;
+        }
+
+        async recordDragHintPointerEdgeRelease(state) {
+            const helper = window.NekoAvatarMultiScreenDragHint;
+            const start = state?.dragHintStartPointer;
+            const pointer = state?.dragHintLastPointer;
+            if (!helper || typeof helper.recordPointerEdgeRelease !== 'function' || !start || !pointer) {
+                return false;
+            }
+            return await helper.recordPointerEdgeRelease('pngtuber', {
+                startedAt: start.startedAt,
+                startScreenX: start.x,
+                startScreenY: start.y,
+                screenX: pointer.x,
+                screenY: pointer.y
+            });
+        }
+
+        normalizeDisplayBounds(display) {
+            if (!display || typeof display !== 'object') return null;
+            const x = Number.isFinite(Number(display.screenX))
+                ? Number(display.screenX)
+                : Number(display.bounds?.x);
+            const y = Number.isFinite(Number(display.screenY))
+                ? Number(display.screenY)
+                : Number(display.bounds?.y);
+            const width = Number.isFinite(Number(display.width))
+                ? Number(display.width)
+                : Number(display.bounds?.width);
+            const height = Number.isFinite(Number(display.height))
+                ? Number(display.height)
+                : Number(display.bounds?.height);
+            if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return { id: display.id, x, y, width, height };
+        }
+
+        moveModelCenterToWindowPoint(targetX, targetY) {
+            const x = Number(targetX);
+            const y = Number(targetY);
+            const center = this.getModelCenterInWindow();
+            if (!center || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+
+            const placement = this.getActivePlacement();
+            this.setActiveOffsets(
+                placement.offsetX + x - center.x,
+                placement.offsetY + y - center.y
+            );
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+            return true;
+        }
+
+        async checkAndSwitchDisplayAfterDrag(state) {
+            const bridge = window.electronScreen;
+            if (isModelManagerPage() || !bridge
+                || typeof bridge.getAllDisplays !== 'function'
+                || typeof bridge.getCurrentDisplay !== 'function'
+                || typeof bridge.moveWindowToDisplay !== 'function') return false;
+
+            const center = this.getModelCenterInWindow();
+            if (!center) return false;
+            const pointer = state?.lastScreenPoint;
+            const hasPointer = pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y);
+
+            try {
+                const [rawDisplays, rawCurrentDisplay] = await Promise.all([
+                    bridge.getAllDisplays(),
+                    bridge.getCurrentDisplay()
+                ]);
+                const displays = Array.isArray(rawDisplays)
+                    ? rawDisplays.map((display) => this.normalizeDisplayBounds(display)).filter(Boolean)
+                    : [];
+                const currentDisplay = this.normalizeDisplayBounds(rawCurrentDisplay);
+                if (displays.length <= 1 || !currentDisplay) return false;
+
+                const windowWidth = Number(window.innerWidth);
+                const windowHeight = Number(window.innerHeight);
+                const modelCenterInsideWindow = Number.isFinite(windowWidth) && Number.isFinite(windowHeight)
+                    && center.x >= 0 && center.x < windowWidth
+                    && center.y >= 0 && center.y < windowHeight;
+                const pointerWindowX = hasPointer ? pointer.x - currentDisplay.x : null;
+                const pointerWindowY = hasPointer ? pointer.y - currentDisplay.y : null;
+                const pointerOutsideCurrentWindow = hasPointer && !(
+                    pointerWindowX >= 0 && pointerWindowX < windowWidth
+                    && pointerWindowY >= 0 && pointerWindowY < windowHeight
+                );
+                if ((!hasPointer && modelCenterInsideWindow)
+                    || (hasPointer && !pointerOutsideCurrentWindow && modelCenterInsideWindow)) {
+                    return false;
+                }
+
+                const modelScreenX = currentDisplay.x + center.x;
+                const modelScreenY = currentDisplay.y + center.y;
+                const usePointer = hasPointer && pointerOutsideCurrentWindow;
+                const switchScreenX = usePointer ? pointer.x : modelScreenX;
+                const switchScreenY = usePointer ? pointer.y : modelScreenY;
+                const targetDisplay = displays.find((display) => (
+                    switchScreenX >= display.x && switchScreenX < display.x + display.width
+                    && switchScreenY >= display.y && switchScreenY < display.y + display.height
+                ));
+                if (!targetDisplay) return false;
+                if (currentDisplay.id !== undefined && targetDisplay.id !== undefined
+                    && String(currentDisplay.id) === String(targetDisplay.id)) return false;
+
+                const result = await bridge.moveWindowToDisplay(switchScreenX, switchScreenY);
+                if (!(result && result.success && !result.sameDisplay)) return false;
+
+                const resultWindowBounds = result.windowBounds && typeof result.windowBounds === 'object'
+                    ? result.windowBounds
+                    : null;
+                const targetOriginX = Number.isFinite(Number(resultWindowBounds?.x))
+                    ? Number(resultWindowBounds.x)
+                    : targetDisplay.x;
+                const targetOriginY = Number.isFinite(Number(resultWindowBounds?.y))
+                    ? Number(resultWindowBounds.y)
+                    : targetDisplay.y;
+                const pointerOffset = state?.modelCenterPointerOffset || { x: 0, y: 0 };
+                const desiredCenterX = usePointer
+                    ? switchScreenX - targetOriginX + (Number(pointerOffset.x) || 0)
+                    : modelScreenX - targetOriginX;
+                const desiredCenterY = usePointer
+                    ? switchScreenY - targetOriginY + (Number(pointerOffset.y) || 0)
+                    : modelScreenY - targetOriginY;
+
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);
+
+                const helper = window.NekoAvatarMultiScreenDragHint;
+                if (helper && typeof helper.markDisplaySwitchSuccess === 'function') {
+                    helper.markDisplaySwitchSuccess('pngtuber');
+                }
+                return true;
+            } catch (error) {
+                console.error('[PNGTuber] Failed to switch display after drag:', error);
+                return false;
+            }
+        }
+
         startDrag(event) {
             if (!canInteractWithAvatar()) return;
             if (this.isLocked) return;
@@ -2688,15 +2909,20 @@
                 lastX: event.clientX,
                 lastY: event.clientY,
                 lastAt: performance.now(),
-                moved: false
+                moved: false,
+                lastScreenPoint: null,
+                modelCenterPointerOffset: { x: 0, y: 0 },
+                dragHintStartPointer: null,
+                dragHintLastPointer: null,
+                dragHintApproachShown: false
             };
+            this.rememberDragScreenPoint(this._dragState, event, { start: true });
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
             if (this.image && typeof this.image.setPointerCapture === 'function') {
                 try { this.image.setPointerCapture(event.pointerId); } catch (_) {}
             }
-            document.body.classList.add('neko-model-dragging');
-            if (this.image) this.image.classList.add('is-dragging');
+            this.setModelDraggingState(true, false);
         }
 
         moveDrag(event) {
@@ -2709,10 +2935,13 @@
             state.lastX = event.clientX;
             state.lastY = event.clientY;
             state.lastAt = now;
+            this.rememberDragScreenPoint(state, event);
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
                 state.moved = true;
+                this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
+            if (state.moved) void this.recordDragHintPointerEdgeApproach(state);
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -2726,6 +2955,7 @@
         async endDrag(event) {
             const state = this._dragState;
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+            this.rememberDragScreenPoint(state, event);
             this._dragState = null;
             // 拖拽释放后的物理回摆窗口保持满帧：Plus 模型物理状态的内部字段
             // （draggerX/Y）不走 remix 形状探测，用时间窗兜底两种物理形态
@@ -2734,8 +2964,7 @@
             if (this.image && typeof this.image.releasePointerCapture === 'function') {
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
             }
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
             this.restoreStateImage();
             this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
@@ -2744,6 +2973,10 @@
             this.updateLockIconPosition();
             if (state.moved) {
                 this._suppressNextClick = true;
+                const displaySwitched = await this.checkAndSwitchDisplayAfterDrag(state);
+                if (!displaySwitched) {
+                    await this.recordDragHintPointerEdgeRelease(state);
+                }
                 await this.saveCurrentConfig();
             }
         }
@@ -2819,8 +3052,7 @@
             };
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
-            document.body.classList.add('neko-model-dragging');
-            if (this.image) this.image.classList.add('is-dragging');
+            this.setModelDraggingState(true, true);
             this.showDragImage();
         }
 
@@ -2849,8 +3081,7 @@
             if (!state) return;
             this._touchZoomState = null;
             this.resetLayeredDragVelocity();
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
             this.restoreStateImage();
             this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
