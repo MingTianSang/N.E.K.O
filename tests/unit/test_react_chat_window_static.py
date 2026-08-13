@@ -1609,6 +1609,24 @@ def test_galgame_history_excludes_tutorial_guide_messages():
     assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
 
 
+def test_galgame_option_template_follows_interface_language():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    language_block = react_host.split("function pickAcceptLanguage()", 1)[1].split(
+        "var GALGAME_FETCH_TIMEOUT_MS",
+        1,
+    )[0]
+    assert "getConversationLanguagePreference" not in language_block
+    assert "window.getCurrentLocale" in language_block
+    assert "window.i18next.language" in language_block
+
+    fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
+        "I.handleGalgameModeToggle",
+        1,
+    )[0]
+    assert "language: pickAcceptLanguage()" in fetch_block
+
+
 def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
