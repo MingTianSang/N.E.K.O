@@ -1637,7 +1637,8 @@ def test_galgame_option_template_follows_interface_language():
     assert "language: pickAcceptLanguage()" in fetch_block
 
     node_path = shutil.which("node")
-    assert node_path, "node is required to verify GalGame language selection"
+    if not node_path:
+        pytest.skip("node is required to verify GalGame language selection")
     script = f"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
