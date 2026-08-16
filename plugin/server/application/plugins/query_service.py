@@ -474,7 +474,7 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
             type(exc).__name__,
             str(exc),
         )
-        return result
+        raise _PluginRegistryUnavailableError from exc
 
     running_plugin_ids = set()
     for plugin_id, host_obj in hosts_snapshot.items():
