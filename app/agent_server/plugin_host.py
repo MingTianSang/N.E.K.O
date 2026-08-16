@@ -249,7 +249,12 @@ async def _stop_embedded_user_plugin_server() -> None:
 async def _ensure_plugin_lifecycle_started(
     should_start: Callable[[], bool] | None = None,
 ) -> bool:
-    """Start the plugin lifecycle (load & run plugins). Returns True on success."""
+    """Start the plugin lifecycle (load and run plugins).
+
+    Returns ``False`` both when startup fails and when ``should_start`` says
+    that the caller no longer owns the current lifecycle generation. Callers
+    must re-check ownership before treating ``False`` as a startup failure.
+    """
     if should_start is not None and not should_start():
         return False
     if _shared.Modules.plugin_lifecycle_started:

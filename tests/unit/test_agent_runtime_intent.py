@@ -781,9 +781,10 @@ class _UserPluginRegistryResponse:
 
 class _UserPluginRegistryClient:
     outcomes: list[object] = []
+    instances = 0
 
     def __init__(self, *args, **kwargs):
-        pass
+        type(self).instances += 1
 
     async def __aenter__(self):
         return self
@@ -811,6 +812,7 @@ async def test_user_plugin_registry_check_does_not_treat_timeouts_as_empty(
         srv.httpx.ReadTimeout("plugin registry busy"),
         srv.httpx.ReadTimeout("plugin registry busy"),
     ]
+    _UserPluginRegistryClient.instances = 0
     monkeypatch.setattr(srv.httpx, "AsyncClient", _UserPluginRegistryClient)
     monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S", 0)
 
@@ -818,6 +820,7 @@ async def test_user_plugin_registry_check_does_not_treat_timeouts_as_empty(
 
     assert result["status"] == "unavailable"
     assert result["empty_responses"] == 1
+    assert _UserPluginRegistryClient.instances == 1
 
 
 @pytest.mark.asyncio
@@ -837,6 +840,28 @@ async def test_user_plugin_registry_check_requires_repeated_valid_empty_response
 
     assert result["status"] == "empty"
     assert result["empty_responses"] == srv._USER_PLUGIN_EMPTY_CONFIRMATIONS
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_registry_check_has_an_overall_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_routes as srv
+
+    never_responds = asyncio.Event()
+
+    class _HangingUserPluginRegistryClient(_UserPluginRegistryClient):
+        async def get(self, url: str):
+            await never_responds.wait()
+
+    monkeypatch.setattr(srv.httpx, "AsyncClient", _HangingUserPluginRegistryClient)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S", 0)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S", 0.01)
+
+    result = await srv._check_user_plugin_registry_readiness()
+
+    assert result["status"] == "unavailable"
+    assert result["last_error"] == "overall timeout (0.01s)"
 
 
 async def _await_new_agent_tasks(srv, before: set[asyncio.Task]) -> None:

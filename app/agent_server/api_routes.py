@@ -535,6 +535,7 @@ async def get_agent_state():
 _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS = 4
 _USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S = 0.75
 _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S = 8.0
+_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S = 12.0
 _USER_PLUGIN_EMPTY_CONFIRMATIONS = 3
 
 
@@ -550,75 +551,89 @@ async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
     """
     empty_responses = 0
     last_error = "no valid response"
+    timeout = httpx.Timeout(
+        _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S,
+        connect=min(2.0, _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S),
+    )
 
-    for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
-        await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)
-        try:
-            timeout = httpx.Timeout(
-                _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S,
-                connect=min(2.0, _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S),
-            )
-            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-                response = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+    try:
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with asyncio.timeout(_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S):
+                for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
+                    await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)
+                    try:
+                        response = await client.get(
+                            f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
+                        )
+                    except Exception as exc:
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d failed: %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
 
-            if response.status_code != 200:
-                last_error = f"HTTP {response.status_code}"
-                logger.warning(
-                    "[Agent] UserPlugin registry check %d/%d returned %s",
-                    attempt + 1,
-                    _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
-                    last_error,
-                )
-                continue
+                    if response.status_code != 200:
+                        last_error = f"HTTP {response.status_code}"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
 
-            try:
-                payload = response.json()
-            except Exception as exc:
-                last_error = f"invalid JSON ({type(exc).__name__})"
-                logger.warning(
-                    "[Agent] UserPlugin registry check %d/%d returned %s",
-                    attempt + 1,
-                    _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
-                    last_error,
-                )
-                continue
+                    try:
+                        payload = response.json()
+                    except Exception as exc:
+                        last_error = f"invalid JSON ({type(exc).__name__})"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
 
-            plugins = payload.get("plugins") if isinstance(payload, dict) else None
-            if not isinstance(plugins, list):
-                last_error = "invalid plugins payload"
-                logger.warning(
-                    "[Agent] UserPlugin registry check %d/%d returned %s",
-                    attempt + 1,
-                    _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
-                    last_error,
-                )
-                continue
+                    plugins = payload.get("plugins") if isinstance(payload, dict) else None
+                    if not isinstance(plugins, list):
+                        last_error = "invalid plugins payload"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
 
-            if plugins:
-                return {
-                    "status": "ready",
-                    "plugin_count": len(plugins),
-                    "empty_responses": empty_responses,
-                    "last_error": "",
-                }
+                    if plugins:
+                        return {
+                            "status": "ready",
+                            "plugin_count": len(plugins),
+                            "empty_responses": empty_responses,
+                            "last_error": "",
+                        }
 
-            empty_responses += 1
-            last_error = "empty plugin list"
-            if empty_responses >= _USER_PLUGIN_EMPTY_CONFIRMATIONS:
-                return {
-                    "status": "empty",
-                    "plugin_count": 0,
-                    "empty_responses": empty_responses,
-                    "last_error": last_error,
-                }
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning(
-                "[Agent] UserPlugin registry check %d/%d failed: %s",
-                attempt + 1,
-                _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
-                last_error,
-            )
+                    empty_responses += 1
+                    last_error = "empty plugin list"
+                    if empty_responses >= _USER_PLUGIN_EMPTY_CONFIRMATIONS:
+                        return {
+                            "status": "empty",
+                            "plugin_count": 0,
+                            "empty_responses": empty_responses,
+                            "last_error": last_error,
+                        }
+    except TimeoutError:
+        last_error = (
+            "overall timeout "
+            f"({_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S:g}s)"
+        )
+        logger.warning("[Agent] UserPlugin registry check reached %s", last_error)
+    except Exception as exc:
+        last_error = f"{type(exc).__name__}: {exc}"
+        logger.warning("[Agent] UserPlugin registry client failed: %s", last_error)
 
     return {
         "status": "unavailable",
@@ -796,10 +811,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         _set_capability("user_plugin", True, "")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning(
-                            "[Agent] UserPlugin registry unavailable after %d checks; "
+                            "[Agent] UserPlugin registry unavailable within %.1fs; "
                             "keeping user_plugin_enabled ON for recovery "
                             "(empty_responses=%d, last_error=%s)",
-                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            _USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S,
                             registry.get("empty_responses", 0),
                             registry.get("last_error", "unknown"),
                         )
