@@ -771,12 +771,32 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
             async def _bg_plugin_enable():
                 _ln = lanlan_name
+
                 def _owns_generation() -> bool:
                     return user_plugin_lifecycle_seq == Modules.user_plugin_lifecycle_seq
 
+                def _may_start_generation() -> bool:
+                    return (
+                        _owns_generation()
+                        and Modules.analyzer_enabled
+                        and Modules.agent_flags.get("user_plugin_enabled", False)
+                    )
+
                 try:
-                    started = await _ensure_plugin_lifecycle_started(should_start=_owns_generation)
+                    if not Modules.analyzer_enabled:
+                        Modules.notification = ""
+                        _set_capability("user_plugin", True, "")
+                        logger.info(
+                            "[Agent] UserPlugin enable deferred until the master switch is ON"
+                        )
+                        return
+
+                    started = await _ensure_plugin_lifecycle_started(
+                        should_start=_may_start_generation
+                    )
                     if not _owns_generation():
+                        return
+                    if not Modules.analyzer_enabled:
                         return
                     if not started:
                         Modules.agent_flags["user_plugin_enabled"] = False
@@ -981,6 +1001,15 @@ async def agent_command(payload: Dict[str, Any]):
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
                 _set_capability("browser_use", False, first_reason)
+            if Modules.agent_flags.get("user_plugin_enabled"):
+                # Master OFF preserves sub-feature intent but stops the plugin
+                # lifecycle. Replaying the existing ON intent schedules a new,
+                # generation-owned startup for the re-enabled master.
+                await set_agent_flags({
+                    "user_plugin_enabled": True,
+                    "lanlan_name": lanlan_name,
+                    "_persist_intent": False,
+                })
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
@@ -1002,7 +1031,9 @@ async def agent_command(payload: Dict[str, Any]):
             _set_capability("user_plugin", True, "")
             _set_capability("openclaw", False, "")
             await admin_control({"action": "end_all"})
-            await _ensure_plugin_lifecycle_stopped()
+            await _ensure_plugin_lifecycle_stopped(
+                should_stop=lambda: not Modules.analyzer_enabled
+            )
         if persist_intent:
             try:
                 from app.agent_runtime_intent import set_intent

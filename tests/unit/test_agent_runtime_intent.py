@@ -641,6 +641,98 @@ async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
 
 
 @pytest.mark.asyncio
+async def test_master_on_restarts_preserved_user_plugin_lifecycle(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    starts: list[bool] = []
+
+    async def _record_start(*, should_start=None):
+        if should_start is not None and not should_start():
+            return False
+        starts.append(True)
+        return True
+
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _record_start)
+    srv.Modules.analyzer_enabled = False
+    srv.Modules.agent_flags["user_plugin_enabled"] = True
+    before = set(srv.Modules._persistent_tasks)
+
+    with patch.object(
+        srv,
+        "_check_agent_api_gate",
+        return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert starts == [True]
+
+
+@pytest.mark.asyncio
+async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    admin_waiting = asyncio.Event()
+    release_admin = asyncio.Event()
+    stops: list[bool] = []
+
+    async def _delayed_admin(*args, **kwargs):
+        admin_waiting.set()
+        await release_admin.wait()
+        return {"success": True}
+
+    async def _conditional_stop(*, should_stop=None):
+        if should_stop is not None and not should_stop():
+            return
+        stops.append(True)
+
+    monkeypatch.setattr(srv, "admin_control", _delayed_admin)
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _conditional_stop)
+    srv.Modules.analyzer_enabled = True
+    srv.Modules.agent_flags["user_plugin_enabled"] = True
+
+    master_off = asyncio.create_task(srv.agent_command({
+        "command": "set_agent_enabled",
+        "enabled": False,
+        "_persist_intent": False,
+    }))
+    await admin_waiting.wait()
+
+    before_enable = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv,
+        "_check_agent_api_gate",
+        return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+    await _await_new_agent_tasks(srv, before_enable)
+
+    release_admin.set()
+    await master_off
+
+    assert srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert stops == []
+
+
+@pytest.mark.asyncio
 async def test_openclaw_availability_ready_emits_after_canceling_pending_probe(
     agent_state_isolation, monkeypatch: pytest.MonkeyPatch
 ):
@@ -887,6 +979,7 @@ async def test_user_plugin_registry_unavailable_keeps_switch_enabled(
         }
 
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _registry_unavailable)
+    srv.Modules.analyzer_enabled = True
     srv.Modules.agent_flags["user_plugin_enabled"] = False
     before = set(srv.Modules._persistent_tasks)
 
@@ -923,6 +1016,7 @@ async def test_user_plugin_confirmed_empty_registry_disables_switch(
 
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _registry_empty)
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _record_stop)
+    srv.Modules.analyzer_enabled = True
     srv.Modules.agent_flags["user_plugin_enabled"] = False
     before = set(srv.Modules._persistent_tasks)
 
@@ -973,6 +1067,7 @@ async def test_stale_user_plugin_empty_result_cannot_disable_newer_enable(
 
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _sequenced_registry_check)
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _record_stop)
+    srv.Modules.analyzer_enabled = True
     srv.Modules.agent_flags["user_plugin_enabled"] = False
 
     before_first = set(srv.Modules._persistent_tasks)
@@ -1044,6 +1139,34 @@ async def test_pending_user_plugin_enable_cannot_restart_after_master_off(
     assert srv.Modules.analyzer_enabled is False
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
     assert lifecycle_started == []
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_enable_is_deferred_while_master_is_off(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    starts: list[bool] = []
+
+    async def _record_start(*args, **kwargs):
+        starts.append(True)
+        return True
+
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _record_start)
+    srv.Modules.analyzer_enabled = False
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+    before = set(srv.Modules._persistent_tasks)
+
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert starts == []
 
 
 # ---------------------------------------------------------------------------
