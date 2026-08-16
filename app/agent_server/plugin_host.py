@@ -257,8 +257,6 @@ async def _ensure_plugin_lifecycle_started(
     """
     if should_start is not None and not should_start():
         return False
-    if _shared.Modules.plugin_lifecycle_started:
-        return True
     if _shared.Modules._plugin_lifecycle_lock is None:
         _shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
     async with _shared.Modules._plugin_lifecycle_lock:
@@ -282,8 +280,6 @@ async def _ensure_plugin_lifecycle_stopped(
 ) -> None:
     """Stop the plugin lifecycle (stop plugin processes, cleanup)."""
     if should_stop is not None and not should_stop():
-        return
-    if not _shared.Modules.plugin_lifecycle_started:
         return
     if _shared.Modules._plugin_lifecycle_lock is None:
         _shared.Modules._plugin_lifecycle_lock = asyncio.Lock()

@@ -1169,6 +1169,100 @@ async def test_user_plugin_enable_is_deferred_while_master_is_off(
     assert starts == []
 
 
+@pytest.mark.asyncio
+async def test_lifecycle_start_waits_for_in_progress_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import plugin_host
+    from plugin.server import lifecycle
+
+    shutdown_entered = asyncio.Event()
+    release_shutdown = asyncio.Event()
+    startup_calls: list[bool] = []
+    backup_started = plugin_host._shared.Modules.plugin_lifecycle_started
+    backup_lock = plugin_host._shared.Modules._plugin_lifecycle_lock
+
+    async def _delayed_shutdown():
+        shutdown_entered.set()
+        await release_shutdown.wait()
+
+    async def _record_startup():
+        startup_calls.append(True)
+
+    monkeypatch.setattr(lifecycle, "shutdown", _delayed_shutdown)
+    monkeypatch.setattr(lifecycle, "startup", _record_startup)
+    plugin_host._shared.Modules.plugin_lifecycle_started = True
+    plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+
+    try:
+        stopping = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_stopped()
+        )
+        await shutdown_entered.wait()
+
+        starting = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_started()
+        )
+        await asyncio.sleep(0)
+        assert startup_calls == []
+
+        release_shutdown.set()
+        await asyncio.gather(stopping, starting)
+
+        assert startup_calls == [True]
+        assert plugin_host._shared.Modules.plugin_lifecycle_started is True
+    finally:
+        plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
+        plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_stop_waits_for_in_progress_startup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import plugin_host
+    from plugin.server import lifecycle
+
+    startup_entered = asyncio.Event()
+    release_startup = asyncio.Event()
+    shutdown_calls: list[bool] = []
+    backup_started = plugin_host._shared.Modules.plugin_lifecycle_started
+    backup_lock = plugin_host._shared.Modules._plugin_lifecycle_lock
+
+    async def _delayed_startup():
+        startup_entered.set()
+        await release_startup.wait()
+
+    async def _record_shutdown():
+        shutdown_calls.append(True)
+
+    monkeypatch.setattr(lifecycle, "startup", _delayed_startup)
+    monkeypatch.setattr(lifecycle, "shutdown", _record_shutdown)
+    plugin_host._shared.Modules.plugin_lifecycle_started = False
+    plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+
+    try:
+        starting = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_started()
+        )
+        await startup_entered.wait()
+
+        stopping = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_stopped()
+        )
+        await asyncio.sleep(0)
+        assert shutdown_calls == []
+
+        release_startup.set()
+        await asyncio.gather(starting, stopping)
+
+        assert shutdown_calls == [True]
+        assert plugin_host._shared.Modules.plugin_lifecycle_started is False
+    finally:
+        plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
+        plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
+
+
 # ---------------------------------------------------------------------------
 # 4. Intent writes on explicit toggles
 # ---------------------------------------------------------------------------
