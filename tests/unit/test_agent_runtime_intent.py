@@ -1193,6 +1193,8 @@ async def test_lifecycle_start_waits_for_in_progress_shutdown(
     monkeypatch.setattr(lifecycle, "startup", _record_startup)
     plugin_host._shared.Modules.plugin_lifecycle_started = True
     plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+    stopping: asyncio.Task | None = None
+    starting: asyncio.Task | None = None
 
     try:
         stopping = asyncio.create_task(
@@ -1212,6 +1214,13 @@ async def test_lifecycle_start_waits_for_in_progress_shutdown(
         assert startup_calls == [True]
         assert plugin_host._shared.Modules.plugin_lifecycle_started is True
     finally:
+        release_shutdown.set()
+        pending = [
+            task for task in (stopping, starting)
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
         plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
 
@@ -1240,6 +1249,8 @@ async def test_lifecycle_stop_waits_for_in_progress_startup(
     monkeypatch.setattr(lifecycle, "shutdown", _record_shutdown)
     plugin_host._shared.Modules.plugin_lifecycle_started = False
     plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+    starting: asyncio.Task | None = None
+    stopping: asyncio.Task | None = None
 
     try:
         starting = asyncio.create_task(
@@ -1259,6 +1270,13 @@ async def test_lifecycle_stop_waits_for_in_progress_startup(
         assert shutdown_calls == [True]
         assert plugin_host._shared.Modules.plugin_lifecycle_started is False
     finally:
+        release_startup.set()
+        pending = [
+            task for task in (starting, stopping)
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
         plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
 
