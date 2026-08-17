@@ -57,6 +57,17 @@ class _FakeConfig:
         )
 
 
+class _FakeModelConfig:
+    def get_model_api_config(self, feature: str) -> dict[str, Any]:
+        assert feature in {"summary", "correction"}
+        return {
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "test-key",
+            "provider_type": None,
+        }
+
+
 @pytest.fixture(autouse=True)
 def _patch_cloudsave(monkeypatch):
     monkeypatch.setattr(
@@ -112,6 +123,27 @@ def test_compress_history_returns_none_when_summary_llm_keeps_failing(tmp_path):
 
     assert result is None
     assert fake_llm.calls == 3
+
+
+def test_deepseek_thinking_is_disabled_only_for_memory_compression(monkeypatch):
+    calls = []
+    sentinel = object()
+
+    def _fake_create_chat_llm(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr("memory.recent.create_chat_llm", _fake_create_chat_llm)
+    mgr = object.__new__(CompressedRecentHistoryManager)
+    mgr._config_manager = _FakeModelConfig()
+
+    assert mgr._get_llm() is sentinel
+    assert mgr._get_review_llm() is sentinel
+
+    assert calls[0][1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0][1]["timeout"] == 30
+    assert calls[1][1]["extra_body"] is None
+    assert calls[1][1]["timeout"] == 110
 
 
 def test_update_history_preserves_existing_memo_when_compression_fails(tmp_path):

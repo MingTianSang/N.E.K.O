@@ -604,14 +604,20 @@ class CompressedRecentHistoryManager:
         upstream's 30s timeout.
         max_retries=0 disables the OpenAI SDK's default 2 automatic retries,
         avoiding a 3× blow-up stacked on the business-level retry.
+        Memory compression is non-judgmental summarization, so provider-specific
+        thinking is disabled here; review keeps its separate native-thinking path.
         """
         api_config = self._config_manager.get_model_api_config('summary')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+        from config.providers import get_memory_compression_extra_body
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
             timeout=30, max_retries=0,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length summary/JSON isn't truncated
+            extra_body=get_memory_compression_extra_body(
+                api_config['model'], api_config['base_url'],
+            ),
             provider_type=api_config.get('provider_type'),
         )
 

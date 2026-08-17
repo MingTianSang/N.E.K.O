@@ -547,6 +547,26 @@ def test_focus_extra_body_provider_dialects():
     assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
 
 
+def test_memory_compression_uses_official_deepseek_thinking_dialect():
+    from config.providers import get_memory_compression_extra_body
+
+    expected = {"thinking": {"type": "disabled"}}
+    assert get_memory_compression_extra_body(
+        "deepseek-v4-flash", "https://api.deepseek.com/v1",
+    ) == expected
+    assert get_memory_compression_extra_body(
+        "deepseek-v4-pro", "https://api.deepseek.com",
+    ) == expected
+    # 同名模型挂在非官方兼容网关时不能擅自发送 DeepSeek 官方方言。
+    assert get_memory_compression_extra_body(
+        "deepseek-v4-pro", "https://example.com/v1",
+    ) == {}
+    # SiliconFlow 保持现有 enable_thinking 方言，不被官方接口特例覆盖。
+    assert get_memory_compression_extra_body(
+        "deepseek-ai/DeepSeek-V4-Flash", "https://api.siliconflow.cn/v1",
+    ) == {"enable_thinking": False}
+
+
 async def test_focus_override_threads_through_visible_stream():
     """The override returned above must reach ``llm.astream`` unchanged through
     the real production path (``_astream_visible_with_tools`` → tool-leak filter
