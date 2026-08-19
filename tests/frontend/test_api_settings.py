@@ -117,6 +117,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
                 borderWidth: style.borderTopWidth,
                 borderRadius: style.borderTopLeftRadius,
                 marginTop: style.marginTop,
+                overflow: style.overflow,
             };
         }
     """)
@@ -125,6 +126,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "borderWidth": "3px",
         "borderRadius": "24px",
         "marginTop": "8px",
+        "overflow": "visible",
     }
 
 

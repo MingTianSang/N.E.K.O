@@ -2009,12 +2009,15 @@ def test_onboarding_persona_grid_is_two_columns_on_desktop_and_one_on_mobile(moc
         """
         () => {
             const shell = document.querySelector('.character-personality-shell');
+            const body = document.querySelector('.character-personality-body');
             const actions = document.querySelector('.character-personality-actions');
             return {
                 actionsBottom: actions.getBoundingClientRect().bottom,
                 viewportHeight: window.innerHeight,
                 shellClientHeight: shell.clientHeight,
                 shellScrollHeight: shell.scrollHeight,
+                shellOverflow: getComputedStyle(shell).overflow,
+                bodyOverflowY: getComputedStyle(body).overflowY,
             };
         }
         """
@@ -2022,6 +2025,8 @@ def test_onboarding_persona_grid_is_two_columns_on_desktop_and_one_on_mobile(moc
     layout_tolerance_px = 4
     assert desktop_fit["actionsBottom"] <= desktop_fit["viewportHeight"] + layout_tolerance_px
     assert desktop_fit["shellScrollHeight"] <= desktop_fit["shellClientHeight"] + layout_tolerance_px
+    assert desktop_fit["shellOverflow"] == "hidden"
+    assert desktop_fit["bodyOverflowY"] == "auto"
 
     mock_page.set_viewport_size({"width": 820, "height": 900})
     tablet_columns = mock_page.locator(".character-personality-grid").evaluate(
