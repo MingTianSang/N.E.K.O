@@ -131,7 +131,8 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
     }
 
     mock_page.wait_for_selector(
-        "#conversationModelProvider option",
+        "#conversationModelProvider-menu "
+        ".api-provider-dropdown-option[data-value='qwen']",
         state="attached",
         timeout=10000,
     )
@@ -155,13 +156,16 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
             const contentRect = content.getBoundingClientRect();
             const menuRect = menu.getBoundingClientRect();
             const probeX = menuRect.left + (menuRect.width / 2);
-            const probeY = Math.min(menuRect.bottom - 2, contentRect.bottom + 4);
-            const hit = document.elementFromPoint(probeX, probeY);
+            const exposedHeight = menuRect.bottom - contentRect.bottom;
+            const probeY = contentRect.bottom + (Math.min(4, exposedHeight) / 2);
+            const hit = exposedHeight > 0
+                ? document.elementFromPoint(probeX, probeY)
+                : null;
 
             return {
                 contentBottom: contentRect.bottom,
                 menuBottom: menuRect.bottom,
-                menuExtendsPastContent: menuRect.bottom > contentRect.bottom,
+                menuExtendsPastContent: exposedHeight > 0,
                 exposedMenuPointIsVisible: !!(hit && menu.contains(hit)),
             };
         }
