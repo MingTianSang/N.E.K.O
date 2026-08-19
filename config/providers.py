@@ -28,7 +28,6 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
 
 
 # ────────────────────────────────────────────────────────────────
@@ -58,12 +57,6 @@ EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING = {"reasoning_effort": "low"}
 
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
-
-# DeepSeek V4 官方 OpenAI-compatible 接口使用 thinking.type 方言，且默认开启
-# thinking。不要复用 EXTRA_BODY_CLAUDE：两者当前 wire shape 虽相同，但属于不同
-# provider 契约，后续任一方调整时必须能独立演进。
-EXTRA_BODY_DEEPSEEK = {"thinking": {"type": "disabled"}}
-EXTRA_BODY_DEEPSEEK_THINKING = {"thinking": {"type": "enabled"}}
 
 # Anthropic 原生 claude（经 OpenAI-compat 透传 thinking）跟 GLM/Kimi/Doubao 的
 # thinking.type 方言不一样：Opus 4.7+ 已移除 {type:enabled,budget_tokens}，发它直接
@@ -143,6 +136,12 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
+    # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
+    # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
+    # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
+    # 不会被这两行波及。
+    "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
+    "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
@@ -195,30 +194,6 @@ def get_agent_extra_body(model: str) -> dict | None:
     return get_extra_body(model)
 
 
-_DEEPSEEK_V4_MODELS = frozenset({"deepseek-v4-flash", "deepseek-v4-pro"})
-
-
-def get_memory_compression_extra_body(
-    model: str,
-    base_url: str | None,
-) -> dict | None:
-    """Return provider parameters for the non-thinking memory-compression path.
-
-    DeepSeek V4 defaults to thinking mode.  Its official endpoint uses
-    ``thinking.type`` rather than the ``enable_thinking`` dialect used by
-    SiliconFlow, so model-only lookup cannot safely select the right wire
-    shape.  Keep this override scoped to memory compression: recent-history
-    review deliberately uses the model's native/default thinking behavior.
-    """
-    try:
-        hostname = (urlparse(base_url).hostname or "").lower() if base_url else ""
-    except ValueError:
-        hostname = ""
-    if hostname == "api.deepseek.com" and model in _DEEPSEEK_V4_MODELS:
-        return copy.deepcopy(EXTRA_BODY_DEEPSEEK)
-    return get_extra_body(model)
-
-
 # 凝神（thinking-on）时把各 provider 的「关思考」extra_body 翻成「开思考」形式。
 # 键 = 「关」常量的 id，值 = 对应「开」常量；按各家 API 语义一一对偶，不机械翻 bool。
 # 未收录的「关」常量（如 MiniMax 的 reasoning_split）表示「凝神保持原值不翻」；非
@@ -229,7 +204,6 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI_NATIVE): EXTRA_BODY_OPENAI_NATIVE_THINKING,
     id(EXTRA_BODY_OPENAI_NATIVE_MINIMAL): EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING,
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
-    id(EXTRA_BODY_DEEPSEEK): EXTRA_BODY_DEEPSEEK_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,

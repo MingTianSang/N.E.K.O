@@ -547,24 +547,26 @@ def test_focus_extra_body_provider_dialects():
     assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
 
 
-def test_memory_compression_uses_official_deepseek_thinking_dialect():
-    from config.providers import get_memory_compression_extra_body
+def test_official_deepseek_v4_registers_the_thinking_type_dialect():
+    """Official DeepSeek V4 defaults to thinking-on, so it belongs in the map.
 
-    expected = {"thinking": {"type": "disabled"}}
-    assert get_memory_compression_extra_body(
-        "deepseek-v4-flash", "https://api.deepseek.com/v1",
-    ) == expected
-    assert get_memory_compression_extra_body(
-        "deepseek-v4-pro", "https://api.deepseek.com",
-    ) == expected
-    # 同名模型挂在非官方兼容网关时不能擅自发送 DeepSeek 官方方言。
-    assert get_memory_compression_extra_body(
-        "deepseek-v4-pro", "https://example.com/v1",
-    ) == {}
-    # SiliconFlow 保持现有 enable_thinking 方言，不被官方接口特例覆盖。
-    assert get_memory_compression_extra_body(
-        "deepseek-ai/DeepSeek-V4-Flash", "https://api.siliconflow.cn/v1",
-    ) == {"enable_thinking": False}
+    Asserting the VALUE alone would not be enough: swapping in a fresh constant
+    with identical contents (a separate ``EXTRA_BODY_DEEPSEEK``) keeps the value
+    assertions green, yet ``_THINKING_ENABLE_FORM`` pairs by ``id()`` — a new
+    identity silently drops the focus dual. So pin the constant identity too.
+    """
+    from config.providers import (
+        EXTRA_BODY_CLAUDE, MODELS_EXTRA_BODY_MAP, focus_extra_body, get_extra_body,
+    )
+
+    for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+        assert MODELS_EXTRA_BODY_MAP[model] is EXTRA_BODY_CLAUDE
+        assert get_extra_body(model) == {"thinking": {"type": "disabled"}}
+        # 凝神对偶由派生表自动获得，不需要单独登记。
+        assert focus_extra_body(model) == {"thinking": {"type": "enabled"}}
+
+    # 转售同款的网关是另外的键名，各走各的方言，不被官方那两行波及。
+    assert get_extra_body("deepseek-ai/DeepSeek-V4-Flash") == {"enable_thinking": False}
 
 
 async def test_focus_override_threads_through_visible_stream():
