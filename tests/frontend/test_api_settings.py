@@ -106,7 +106,15 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "headerWidth": styles["headerWidth"],
     }
 
-    mock_page.evaluate("toggleModelConfig('conversation')")
+    transition_overflow = mock_page.evaluate("""
+        () => {
+            toggleModelConfig('conversation');
+            return getComputedStyle(
+                document.getElementById('conversation-model-content')
+            ).overflow;
+        }
+    """)
+    assert transition_overflow == "hidden"
     mock_page.wait_for_timeout(350)
 
     expanded_styles = mock_page.evaluate("""
@@ -127,7 +135,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "borderWidth": "3px",
         "borderRadius": "24px",
         "marginTop": "8px",
-        "overflow": "visible",
+        "overflow": "hidden",
     }
 
     mock_page.wait_for_selector(
@@ -155,24 +163,37 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
             const menu = document.getElementById('conversationModelProvider-menu');
             const contentRect = content.getBoundingClientRect();
             const menuRect = menu.getBoundingClientRect();
-            const probeX = menuRect.left + (menuRect.width / 2);
+            const probeXs = [
+                menuRect.left + (menuRect.width / 2),
+                menuRect.right - 4,
+            ];
             const exposedHeight = menuRect.bottom - contentRect.bottom;
             const probeY = contentRect.bottom + (Math.min(4, exposedHeight) / 2);
-            const hit = exposedHeight > 0
-                ? document.elementFromPoint(probeX, probeY)
-                : null;
+            const hits = exposedHeight > 0
+                ? probeXs.map((probeX) => document.elementFromPoint(probeX, probeY))
+                : [];
 
             return {
                 contentBottom: contentRect.bottom,
                 menuBottom: menuRect.bottom,
+                contentOverflow: getComputedStyle(content).overflow,
                 menuExtendsPastContent: exposedHeight > 0,
-                exposedMenuPointIsVisible: !!(hit && menu.contains(hit)),
+                exposedMenuCenterIsVisible: !!(hits[0] && menu.contains(hits[0])),
+                exposedMenuRightEdgeIsVisible: !!(hits[1] && menu.contains(hits[1])),
             };
         }
     """)
 
+    assert dropdown_geometry["contentOverflow"] == "visible"
     assert dropdown_geometry["menuExtendsPastContent"] is True
-    assert dropdown_geometry["exposedMenuPointIsVisible"] is True
+    assert dropdown_geometry["exposedMenuCenterIsVisible"] is True
+    assert dropdown_geometry["exposedMenuRightEdgeIsVisible"] is True
+
+    provider_trigger.click()
+    expect(provider_menu).to_be_hidden()
+    expect(mock_page.locator("#conversation-model-content")).to_have_css(
+        "overflow", "hidden"
+    )
 
 
 @pytest.mark.frontend
