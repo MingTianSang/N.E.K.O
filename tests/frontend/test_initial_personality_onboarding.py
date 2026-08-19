@@ -2028,6 +2028,50 @@ def test_onboarding_persona_grid_is_two_columns_on_desktop_and_one_on_mobile(moc
     assert desktop_fit["shellOverflow"] == "hidden"
     assert desktop_fit["bodyOverflowY"] == "auto"
 
+    def assert_scroll_stays_inside_shell() -> None:
+        scroll_metrics = mock_page.evaluate(
+            """
+            () => {
+                const shell = document.querySelector('.character-personality-shell');
+                const body = document.querySelector('.character-personality-body');
+                const shellRect = shell.getBoundingClientRect();
+                const bodyRect = body.getBoundingClientRect();
+                body.scrollTop = body.scrollHeight;
+
+                return {
+                    viewportHeight: window.innerHeight,
+                    shellTop: shellRect.top,
+                    shellBottom: shellRect.bottom,
+                    bodyTop: bodyRect.top,
+                    bodyBottom: bodyRect.bottom,
+                    shellClientHeight: shell.clientHeight,
+                    shellScrollHeight: shell.scrollHeight,
+                    bodyClientHeight: body.clientHeight,
+                    bodyScrollHeight: body.scrollHeight,
+                    bodyScrollTop: body.scrollTop,
+                };
+            }
+            """
+        )
+        assert scroll_metrics["bodyScrollHeight"] > scroll_metrics["bodyClientHeight"]
+        assert scroll_metrics["bodyScrollTop"] > 0
+        assert scroll_metrics["shellScrollHeight"] <= (
+            scroll_metrics["shellClientHeight"] + layout_tolerance_px
+        )
+        assert scroll_metrics["shellTop"] >= -layout_tolerance_px
+        assert scroll_metrics["shellBottom"] <= (
+            scroll_metrics["viewportHeight"] + layout_tolerance_px
+        )
+        assert scroll_metrics["bodyTop"] >= (
+            scroll_metrics["shellTop"] - layout_tolerance_px
+        )
+        assert scroll_metrics["bodyBottom"] <= (
+            scroll_metrics["shellBottom"] + layout_tolerance_px
+        )
+
+    mock_page.set_viewport_size({"width": 1280, "height": 520})
+    assert_scroll_stays_inside_shell()
+
     mock_page.set_viewport_size({"width": 820, "height": 900})
     tablet_columns = mock_page.locator(".character-personality-grid").evaluate(
         "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
@@ -2039,6 +2083,7 @@ def test_onboarding_persona_grid_is_two_columns_on_desktop_and_one_on_mobile(moc
         "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
     )
     assert mobile_columns == 1
+    assert_scroll_stays_inside_shell()
 
 
 @pytest.mark.frontend
