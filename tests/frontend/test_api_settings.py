@@ -71,6 +71,7 @@ def test_api_key_settings(mock_page: Page, running_server: str):
 @pytest.mark.frontend
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
     """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1200})
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
 
@@ -128,6 +129,46 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "marginTop": "8px",
         "overflow": "visible",
     }
+
+    mock_page.wait_for_selector(
+        "#conversationModelProvider option",
+        state="attached",
+        timeout=10000,
+    )
+    mock_page.evaluate("""
+        () => {
+            document.getElementById('custom-api-options').style.display = 'block';
+            document.getElementById('custom-api-container').style.display = 'grid';
+            document.getElementById('conversation-model-content')
+                .closest('.model-config-container').style.display = 'block';
+        }
+    """)
+    provider_trigger = mock_page.locator("#conversationModelProvider-dropdown-trigger")
+    provider_menu = mock_page.locator("#conversationModelProvider-menu")
+    provider_trigger.click()
+    expect(provider_menu).to_be_visible()
+
+    dropdown_geometry = mock_page.evaluate("""
+        () => {
+            const content = document.getElementById('conversation-model-content');
+            const menu = document.getElementById('conversationModelProvider-menu');
+            const contentRect = content.getBoundingClientRect();
+            const menuRect = menu.getBoundingClientRect();
+            const probeX = menuRect.left + (menuRect.width / 2);
+            const probeY = Math.min(menuRect.bottom - 2, contentRect.bottom + 4);
+            const hit = document.elementFromPoint(probeX, probeY);
+
+            return {
+                contentBottom: contentRect.bottom,
+                menuBottom: menuRect.bottom,
+                menuExtendsPastContent: menuRect.bottom > contentRect.bottom,
+                exposedMenuPointIsVisible: !!(hit && menu.contains(hit)),
+            };
+        }
+    """)
+
+    assert dropdown_geometry["menuExtendsPastContent"] is True
+    assert dropdown_geometry["exposedMenuPointIsVisible"] is True
 
 
 @pytest.mark.frontend
