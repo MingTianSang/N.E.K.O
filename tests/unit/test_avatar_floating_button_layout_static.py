@@ -192,11 +192,17 @@ for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {{
     throw new Error(prefix + ' overlay controls were not repaired');
   }}
 }}
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {{
+  const controls = window.__appUiParts.ensureActiveModelOverlayControls(prefix);
+  if (!controls.floatingButtons || !controls.lockIcon) {{
+    throw new Error(prefix + ' repaired overlay controls were not retained');
+  }}
+}}
 if (calls.live2dToolbar !== 0 || calls.pngToolbar !== 0) {{
   throw new Error('an intact toolbar should not be rebuilt');
 }}
 if (calls.live2dLock !== 1 || calls.vrm !== 1 || calls.mmd !== 1 || calls.pngLock !== 1) {{
-  throw new Error('missing lock icons were not rebuilt exactly once: ' + JSON.stringify(calls));
+  throw new Error('repeated checks must not accumulate overlay rebuilds: ' + JSON.stringify(calls));
 }}
 """
     result = _run_node_harness(script)
