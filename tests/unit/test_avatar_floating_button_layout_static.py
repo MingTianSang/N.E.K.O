@@ -129,6 +129,65 @@ def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
     assert "bottom: clampedTop + actualLockIconSize" in lock_icon_block
 
 
+def test_live2d_lock_icon_repair_detaches_an_orphaned_ticker():
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(LIVE2D_UI_BUTTONS_PATH))}, 'utf8');
+const start = source.indexOf('Live2DManager.prototype.setupHTMLLockIcon = function(model) {{');
+const end = source.indexOf('Live2DManager.prototype.setupFloatingButtons = function(model) {{', start);
+const setupSource = source.slice(start, end);
+const elements = new Map();
+const makeElement = (tagName) => ({{
+  tagName,
+  dataset: {{}},
+  style: {{}},
+  appendChild() {{}},
+  addEventListener() {{}},
+  remove() {{ if (this.id) elements.delete(this.id); }},
+}});
+const canvas = makeElement('canvas');
+const document = {{
+  body: {{ appendChild(element) {{ elements.set(element.id, element); }} }},
+  createElement: makeElement,
+  getElementById(id) {{
+    if (id === 'live2d-canvas') return canvas;
+    if (id === 'chat-container') return {{}};
+    return elements.get(id) || null;
+  }},
+  querySelectorAll() {{ return []; }},
+}};
+const removed = [];
+const added = [];
+const oldTicker = () => {{}};
+function Live2DManager() {{}}
+const window = {{ isViewerMode: false }};
+vm.runInNewContext(setupSource, {{ Live2DManager, document, window, console, Date, Object }});
+
+const manager = new Live2DManager();
+manager.isLocked = false;
+manager._lockIconTicker = oldTicker;
+manager.pixi_app = {{ ticker: {{
+  remove(ticker) {{ removed.push(ticker); }},
+  add(ticker) {{ added.push(ticker); }},
+}} }};
+manager.setLocked = () => {{}};
+manager.setupHTMLLockIcon({{ parent: true }});
+
+if (removed.length !== 1 || removed[0] !== oldTicker) {{
+  throw new Error('the orphaned Live2D lock ticker was not removed');
+}}
+if (added.length !== 1 || manager._lockIconTicker !== added[0] || added[0] === oldTicker) {{
+  throw new Error('the replacement Live2D lock ticker was not installed exactly once');
+}}
+if (!document.getElementById('live2d-lock-icon')) {{
+  throw new Error('the Live2D lock icon was not rebuilt');
+}}
+"""
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_model_display_rebuilds_a_missing_lock_icon_when_the_toolbar_survives():
     source = MODEL_DISPLAY_PATH.read_text(encoding="utf-8")
     for prefix in ("live2d", "vrm", "mmd", "pngtuber"):
