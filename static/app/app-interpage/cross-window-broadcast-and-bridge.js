@@ -524,6 +524,12 @@
         }
     }
 
+    function handleIcebreakerElectronBridgeEvent(event) {
+        var message = event && event.detail;
+        if (!message || typeof message !== 'object') return;
+        I.handleIcebreakerBridgeData(message);
+    }
+
     I.postIcebreakerBridgeEvent = function postIcebreakerBridgeEvent(action, payload) {
         var message = Object.assign({
             action: action,
@@ -546,6 +552,14 @@
             }, 0);
         } catch (error) {
             console.warn('[NewUserIcebreaker] storage bridge post failed:', action, error);
+        }
+        try {
+            var electronBridge = window.nekoElectronIcebreakerBridge;
+            if (electronBridge && typeof electronBridge.send === 'function') {
+                electronBridge.send(message);
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Electron bridge post failed:', action, error);
         }
     }
 
@@ -962,6 +976,19 @@
         }
         handleYuiGuideRelayedMessage(message);
     };
+
+    I.yuiGuideInterpageResources.addEventListener(
+        window,
+        'neko:electron-icebreaker-bridge',
+        handleIcebreakerElectronBridgeEvent
+    );
+    window.__nekoIcebreakerBridgeReady = true;
+    var pendingIcebreakerBridgeMessages = Array.isArray(window.__nekoPendingIcebreakerBridgeMessages)
+        ? window.__nekoPendingIcebreakerBridgeMessages.splice(0)
+        : [];
+    pendingIcebreakerBridgeMessages.forEach(function (message) {
+        I.handleIcebreakerBridgeData(message);
+    });
 
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleIcebreakerStorageBridgeEvent);
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleYuiGuideChatBridgeStorageEvent);

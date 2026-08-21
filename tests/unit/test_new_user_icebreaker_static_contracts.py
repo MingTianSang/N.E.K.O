@@ -1513,3 +1513,16 @@ def test_react_chat_assets_use_react_chat_cache_version():
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
     assert pages_router.count('_PROJECT_ROOT.glob("static/app/app-interpage/*.js")') == 1
+
+
+def test_icebreaker_uses_electron_bridge_for_isolated_full_chat_partition():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
+
+    assert "window.nekoElectronIcebreakerBridge" in runtime
+    assert "electronBridge.send(message)" in runtime
+    assert "window.nekoElectronIcebreakerBridge" in interpage
+    assert "'neko:electron-icebreaker-bridge'" in interpage
+    assert "handleIcebreakerBridgeData(message)" in interpage
+    assert "window.__nekoPendingIcebreakerBridgeMessages" in interpage
+    assert "window.__nekoIcebreakerBridgeReady = true" in interpage
