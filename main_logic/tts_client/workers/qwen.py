@@ -40,23 +40,79 @@ logger = get_module_logger(__name__, "Main")
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime-2025-11-27"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+_DASHSCOPE_INTL_REALTIME_WS_URL = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime"
 
-def _resolve_qwen_realtime_tts_url() -> str:
-    """Pick the realtime TTS WebSocket URL based on the current Qwen/Qwen Intl core config."""
-    try:
-        core_config = get_config_manager().get_core_config() or {}
-    except Exception:
-        core_config = {}
-    base_ws_url = dashscope_ws_url_from_base(
-        core_config.get("CORE_URL", ""),
-        "realtime",
-        _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
+
+def qwen_tts_model_family(model: str | None) -> str | None:
+    """Return the transport family owned by a Qwen TTS model id.
+
+    Qwen's provider profile exposes two unrelated speech protocols: Qwen3
+    realtime and CosyVoice preset synthesis.  A provider name alone therefore
+    cannot select a worker safely; the model family is part of the dispatch
+    contract.  Unknown ids intentionally return ``None`` instead of being
+    coerced to the realtime default.
+    """
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("cosyvoice-"):
+        return "cosyvoice"
+    if normalized.startswith("qwen3-tts") and "realtime" in normalized:
+        return "realtime"
+    return None
+
+def _resolve_qwen_realtime_tts_url(
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_key: str | None = None,
+) -> str:
+    """Pick the realtime TTS URL from the selected TTS provider's own route.
+
+    With no overrides this keeps the legacy realtime-core behavior.  Explicit
+    and follow-assist dispatch bind their provider URL/model so Qwen TTS no
+    longer inherits an unrelated realtime core region.
+    """
+    core_config = {}
+    if base_url is None or model is None:
+        try:
+            core_config = get_config_manager().get_core_config() or {}
+        except Exception:
+            core_config = {}
+    selected_provider = str(provider_key or "").strip().lower()
+    fallback_ws_url = (
+        _DASHSCOPE_INTL_REALTIME_WS_URL
+        if selected_provider == "qwen_intl"
+        else _DASHSCOPE_DEFAULT_REALTIME_WS_URL
     )
-    configured_model = str(core_config.get("TTS_MODEL") or "").strip()
-    model = configured_model if configured_model.startswith("qwen3-tts") else _QWEN_REALTIME_TTS_MODEL
-    return f"{base_ws_url}?model={quote(model, safe='')}"
+    base_ws_url = dashscope_ws_url_from_base(
+        core_config.get("CORE_URL", "") if base_url is None else base_url,
+        "realtime",
+        fallback_ws_url,
+    )
+    configured_value = core_config.get("TTS_MODEL") if model is None else model
+    configured_model = str(configured_value or "").strip()
+    if model is not None:
+        if qwen_tts_model_family(configured_model) != "realtime":
+            raise ValueError("Qwen realtime TTS requires a qwen3-tts realtime model")
+        effective_model = configured_model
+    else:
+        # Empty/legacy configs retain the historical realtime default.  Named
+        # provider dispatch always supplies ``model`` and is strict above.
+        effective_model = (
+            configured_model
+            if qwen_tts_model_family(configured_model) == "realtime"
+            else _QWEN_REALTIME_TTS_MODEL
+        )
+    return f"{base_ws_url}?model={quote(effective_model, safe='')}"
 
-def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+def qwen_realtime_tts_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    provider_key: str | None = None,
+):
     """
     Qwen realtime TTS worker (for default voices)
     Uses Aliyun's realtime TTS API (qwen3-tts-flash-2025-09-18)
@@ -74,7 +130,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
     async def async_worker():
         """Async TTS worker main loop"""
-        tts_url = _resolve_qwen_realtime_tts_url()
+        tts_url = _resolve_qwen_realtime_tts_url(base_url, model, provider_key)
         ws = None
         current_speech_id = None
         receive_task = None

@@ -21,7 +21,12 @@ import json
 from functools import partial
 from urllib.parse import urlparse, urlunparse
 
-from .._infra import _resample_audio, _enqueue_error, _run_sentence_tts_worker
+from .._infra import (
+    _resample_audio,
+    _enqueue_error,
+    _run_sentence_tts_worker,
+    invalid_tts_configuration_worker,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -278,6 +283,8 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 # 原 get_tts_worker 克隆块逻辑（含 cosyvoice_intl key 缺失 → dummy 的凭证兜底）。
 
 def _minimax_clone_is_selected(ctx) -> bool:
+    if not ctx.permits_provider('minimax'):
+        return False
     vm = ctx.voice_meta
     return bool(vm and str(vm.get('provider', '')).startswith('minimax'))
 
@@ -286,9 +293,41 @@ def _minimax_clone_resolve(ctx):
     provider = vm.get('provider') or 'minimax'
     logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
                 ctx.voice_id, provider)
-    api_key = ctx.cm.get_tts_api_key(provider)
+    api_key = (ctx.cm.get_tts_api_key(provider) or '').strip()
+    if not api_key or '***' in api_key:
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key=provider,
+                reason='missing_api_key',
+            ),
+            '',
+            'minimax',
+        )
     from utils.tts.providers.minimax import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
     base_url = vm.get('minimax_base_url') or (
         MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
     )
+    try:
+        _get_minimax_tts_http_url(base_url)
+    except Exception:
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key=provider,
+                reason='missing_or_invalid_url',
+            ),
+            '',
+            'minimax',
+        )
+    if not str(ctx.voice_id or '').strip():
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key=provider,
+                reason='missing_voice',
+            ),
+            '',
+            'minimax',
+        )
     return partial(minimax_tts_worker, base_url=base_url), api_key, 'minimax'

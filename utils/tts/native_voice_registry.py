@@ -384,6 +384,32 @@ def _gptsovits_tts_overrides_native_tts_for_ui(
     return bool(tts_config.get('is_custom'))
 
 
+def _requested_native_provider_for_ui(
+    cm: "ConfigManager",
+    core_config: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    """Return (authoritative request present, effective native owner)."""
+    from utils.tts.provider_registry import resolve_tts_provider_request
+
+    realtime_api_type = _read_realtime_api_type(cm)
+    request = resolve_tts_provider_request(core_config, realtime_api_type)
+    if not request.is_authoritative:
+        return False, None
+
+    if request.mode == 'follow_core':
+        base_url = str(core_config.get('CORE_URL') or _read_realtime_base_url(cm))
+    elif request.mode == 'follow_assist':
+        base_url = str(core_config.get('OPENROUTER_URL') or '')
+    else:
+        base_url = str(
+            core_config.get('ttsModelUrl')
+            or core_config.get('TTS_MODEL_URL')
+            or ''
+        )
+    key = _effective_native_provider_key(request.provider_key, base_url)
+    return True, key if key in _PROVIDERS else None
+
+
 def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
     try:
         core_config = cm.get_core_config() or {}
@@ -392,6 +418,13 @@ def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
 
     if _gptsovits_tts_overrides_native_tts_for_ui(cm, core_config):
         return None
+
+    authoritative, requested_provider = _requested_native_provider_for_ui(
+        cm,
+        core_config,
+    )
+    if authoritative:
+        return requested_provider
 
     # MiMo（assistApi=mimo / TTS_PROVIDER=mimo）不再走这里：它是 hosted provider，
     # 预制目录由 tts_provider_registry 的 preset_catalog 提供，/voices 与校验改查
@@ -426,6 +459,20 @@ def is_saveable_native_voice(cm: "ConfigManager", voice_id: str | None) -> bool:
     provider after host remapping (overseas free adds free_intl's full Gemini + yui).
     Hitting either counts as valid.
     """
+    try:
+        core_config = cm.get_core_config() or {}
+    except Exception:
+        core_config = {}
+    authoritative, requested_provider = _requested_native_provider_for_ui(
+        cm,
+        core_config,
+    )
+    if authoritative:
+        return bool(
+            requested_provider
+            and is_native_voice(voice_id, requested_provider)
+        )
+
     api_type = _read_realtime_api_type(cm)
     base_url = _read_realtime_base_url(cm)
     candidates = {
@@ -444,6 +491,17 @@ def get_active_realtime_native_provider_for_ui(cm: "ConfigManager") -> str | Non
     displays 'free' (StepFun native). The UI only exposes the voice catalog actually
     usable on the route.
     """
+    try:
+        core_config = cm.get_core_config() or {}
+    except Exception:
+        core_config = {}
+    authoritative, requested_provider = _requested_native_provider_for_ui(
+        cm,
+        core_config,
+    )
+    if authoritative:
+        return requested_provider
+
     tts_provider = _read_tts_native_provider_for_ui(cm)
     if tts_provider:
         return tts_provider

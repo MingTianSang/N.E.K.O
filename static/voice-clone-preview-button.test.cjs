@@ -168,6 +168,19 @@ test('every voice-list preview button reconnects to an active session', () => {
     });
 });
 
+test('native preset rows hide preview when the backend marks them unavailable', () => {
+    const nativeBlock = source.slice(
+        source.indexOf('// 渲染当前 Realtime Provider 的原生音色'),
+        source.indexOf('// 删除音色'),
+    );
+
+    assert.match(
+        nativeBlock,
+        /if \(!voiceData \|\| voiceData\.previewable !== false\)/,
+    );
+    assert.match(nativeBlock, /voiceActions\.appendChild\(previewBtn\)/);
+});
+
 test('all supported locales define the previewing label', () => {
     const locales = ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es'];
     for (const locale of locales) {

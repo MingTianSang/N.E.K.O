@@ -493,6 +493,168 @@ async def _test_openai_tts_connectivity(
         return {"success": False, "error": str(exc), "error_code": "unknown"}
 
 
+def _tts_configuration_only_result(provider_key: str) -> dict:
+    """A valid static contract is not a successful runtime connectivity test."""
+    return {
+        "success": False,
+        "error": f"{provider_key} 仅完成配置校验；未执行真实语音合成验证",
+        "error_code": "configuration_only",
+        "configuration_valid": True,
+    }
+
+
+async def _test_qwen_realtime_tts_connectivity(
+    url: str,
+    api_key: str,
+    model: str,
+    voice_id: str,
+    provider_key: str = "qwen",
+) -> dict:
+    """Exercise Qwen3 realtime TTS's actual session-update handshake."""
+    import json as _json
+    import websockets
+    from main_logic.tts_client.workers.qwen import (
+        _resolve_qwen_realtime_tts_url,
+        qwen_tts_model_family,
+    )
+
+    if not api_key:
+        return {"success": False, "error": "缺少 API Key", "error_code": "missing_params"}
+    if not url or not voice_id or qwen_tts_model_family(model) != "realtime":
+        return {"success": False, "error": "Qwen realtime TTS 配置不完整", "error_code": "missing_params"}
+    try:
+        ws_url = _resolve_qwen_realtime_tts_url(url, model, provider_key)
+    except Exception:
+        return {"success": False, "error": "不支持的 Qwen TTS 模型或 URL", "error_code": "unsupported"}
+
+    try:
+        async with asyncio.timeout(10):
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"Bearer {api_key}"},
+                open_timeout=10,
+                close_timeout=5,
+            ) as ws:
+                await ws.send(_json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "mode": "server_commit",
+                        "voice": voice_id,
+                        "response_format": "pcm",
+                        "sample_rate": 24000,
+                        "channels": 1,
+                        "bit_depth": 16,
+                    },
+                }))
+                deadline = asyncio.get_running_loop().time() + 5.0
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        return {
+                            "success": False,
+                            "error": "TTS 会话配置未获服务端确认",
+                            "error_code": "verification_incomplete",
+                        }
+                    event = _json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                    event_type = str(event.get("type") or "")
+                    if event_type == "session.updated":
+                        return {"success": True, "verification": "tts_session_handshake"}
+                    if event_type == "error":
+                        raw_error = event.get("error") or {}
+                        message = str(
+                            raw_error.get("message") if isinstance(raw_error, dict) else raw_error
+                        )
+                        lowered = message.lower()
+                        if any(token in lowered for token in ("auth", "api key", "401", "403")):
+                            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+                        return {"success": False, "error": "Qwen TTS 会话配置失败", "error_code": "unknown"}
+    except (TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except OSError as exc:
+        lowered = str(exc).lower()
+        if "getaddrinfo" in lowered or "name or service" in lowered or "nodename" in lowered:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except Exception as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        return {"success": False, "error": "Qwen TTS WebSocket 连接失败", "error_code": "ws_error"}
+
+
+async def _test_named_tts_connectivity(
+    provider_key: str,
+    url: str,
+    api_key: str,
+    model: str,
+    voice_id: str,
+    sub_type: str = "",
+) -> dict:
+    """Probe a named TTS transport without ever borrowing its assist LLM path."""
+    provider = str(provider_key or "").strip().lower()
+    subtype = str(sub_type or "").strip().lower()
+
+    # ``provider_scope='tts'`` is an explicit speech-capability request.  A
+    # followed assist/core provider that only owns an LLM endpoint must fail as
+    # unsupported instead of reaching the generic configuration-only result.
+    # Import the facade lazily so its provider registrations are available
+    # without making connectivity module import pull in every TTS dependency.
+    from utils.tts import provider_registry as tts_provider_registry
+
+    provider_meta = tts_provider_registry.get(provider)
+    if provider_meta is None:
+        import main_logic.tts_client  # noqa: F401  # provider registration side effect
+
+        provider_meta = tts_provider_registry.get(provider)
+    if provider_meta is None or "preset" not in provider_meta.capabilities:
+        return {
+            "success": False,
+            "error": f"供应商 {provider or 'TTS'} 不支持预制音色 TTS",
+            "error_code": "unsupported",
+        }
+
+    if provider in ("qwen", "qwen_intl"):
+        from main_logic.tts_client.workers.qwen import qwen_tts_model_family
+        from utils.dashscope_region import dashscope_ws_url_from_base
+
+        family = qwen_tts_model_family(model)
+        expected_subtype = {
+            "realtime": "qwen_realtime_tts",
+            "cosyvoice": "cosyvoice_tts",
+        }.get(family, "")
+        if not expected_subtype or (subtype and subtype != expected_subtype):
+            return {"success": False, "error": "不支持的 Qwen TTS 模型族", "error_code": "unsupported"}
+        if family == "realtime":
+            return await _test_qwen_realtime_tts_connectivity(
+                url, api_key, model, voice_id, provider,
+            )
+        if not api_key or not model or not voice_id:
+            return {"success": False, "error": "CosyVoice TTS 配置不完整", "error_code": "missing_params"}
+        if not url or not dashscope_ws_url_from_base(url, "inference", ""):
+            return {"success": False, "error": "CosyVoice URL 无效", "error_code": "missing_params"}
+        # The SDK cannot authenticate/validate a preset without synthesizing
+        # billable audio.  Keep the light non-green and state exactly what was
+        # checked rather than reusing an unrelated chat completion endpoint.
+        return _tts_configuration_only_result(provider)
+
+    if provider == "openai":
+        return await _test_openai_tts_connectivity(url, api_key, model, voice_id)
+    if provider == "doubao_tts":
+        return await _test_doubao_tts_connectivity(url, api_key, model, voice_id)
+
+    if (
+        not model
+        or (provider != "free" and not voice_id)
+        or (provider != "free" and not api_key)
+    ):
+        return {"success": False, "error": "TTS 配置不完整", "error_code": "missing_params"}
+    return _tts_configuration_only_result(provider or "TTS")
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -564,7 +726,17 @@ async def _test_connectivity_candidates(
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)
         elif provider_type == "tts":
-            if sub_type == "doubao_tts":
+            if sub_type in ("qwen_realtime_tts", "cosyvoice_tts"):
+                qwen_provider = "qwen_intl" if "dashscope-intl" in candidate_url.lower() else "qwen"
+                result = await _test_named_tts_connectivity(
+                    qwen_provider,
+                    candidate_url,
+                    api_key,
+                    model,
+                    voice_id,
+                    sub_type,
+                )
+            elif sub_type == "doubao_tts":
                 result = await _test_doubao_tts_connectivity(
                     candidate_url,
                     api_key,
@@ -713,6 +885,13 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
             seen = seen or set()
             provider = str(provider or "").strip()
             if not provider or provider == "custom":
+                return
+            if model_type == "tts":
+                # Named/follow TTS has a speech protocol selected by provider +
+                # model family.  The generic save-time target only knows how to
+                # probe LLM/core profiles, so adding it here would green-light a
+                # chat endpoint that the TTS worker never uses.  The dedicated
+                # settings probe sends provider_scope='tts' with model/voice.
                 return
             seen_key = f"{model_type}:{provider}"
             if seen_key in seen:
@@ -884,6 +1063,25 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
+        elif scope == "tts":
+            # Named TTS owns a speech transport selected by provider+model.
+            # Never reuse the provider's assist chat-completions profile here.
+            result = await _test_named_tts_connectivity(
+                provider_key,
+                str(req.url or '').strip(),
+                api_key_stripped,
+                str(req.model or '').strip(),
+                str(req.voice_id or '').strip(),
+                str(req.sub_type or '').strip(),
+            )
+            if result.get("success") and req.url and req.url.strip():
+                result = {**result, "resolved_url": req.url.strip()}
+            logger.info(
+                "[ConnectivityTest] TTS provider=%s result=%s",
+                provider_key,
+                "success" if result.get("success") else result.get("error_code", "unknown"),
+            )
+            return result
         else:
             return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
 

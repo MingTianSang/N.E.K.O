@@ -28,7 +28,12 @@ from utils.tts.providers.mimo import (
     normalize_mimo_tts_voice,
 )
 
-from .._infra import _resample_audio, _enqueue_error, _run_sentence_tts_worker
+from .._infra import (
+    _resample_audio,
+    _enqueue_error,
+    _run_sentence_tts_worker,
+    invalid_tts_configuration_worker,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -233,10 +238,17 @@ def _mimo_has_foreign_custom_voice(ctx) -> bool:
 
 def _mimo_is_selected(ctx) -> bool:
     cc = ctx.core_config
-    tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
-    assist_api_type = str(cc.get('assistApi') or '').strip().lower()
-    if tts_provider == 'mimo' or assist_api_type == 'mimo':
+    request = ctx.provider_request
+    if request.is_authoritative:
+        config_selected = request.provider_key == 'mimo'
+    else:
+        tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
+        assist_api_type = str(cc.get('assistApi') or '').strip().lower()
+        config_selected = tts_provider == 'mimo' or assist_api_type == 'mimo'
+    if config_selected:
         return not _mimo_has_foreign_custom_voice(ctx)
+    if not ctx.permits_provider('mimo'):
+        return False
     # 自定义音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider 时不会触发 voice_meta 加载）。
     return _mimo_voice_meta_is_custom_voice(ctx.voice_meta)
@@ -245,15 +257,29 @@ def _mimo_resolve(ctx):
     cc = ctx.core_config
     mimo_api_key = (ctx.cm.get_tts_api_key('mimo') or '').strip()
     if not mimo_api_key:
-        logger.warning(
-            "MiMo TTS 已选中但 MiMo API Key 缺失，改用 dummy TTS worker 避免复用主 TTS Key")
-        return dummy_tts_worker, None, None
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key='mimo',
+                reason='missing_api_key',
+            ),
+            '',
+            'mimo',
+        )
 
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
     # 配置端点：assistApi=mimo 时（Token Plan 的唯一场景）get_core_config 已把 OPENROUTER_URL
     # 解析成对应端点（普通 / token-plan-*），且 get_tts_api_key('mimo') 返回配套 key——必须用
     # 它，保证 key 与端点同源；否则用默认 xiaomimimo。
-    config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
+    request = ctx.provider_request
+    if request.mode == 'explicit' and request.provider_key == 'mimo':
+        config_base_url = cc.get('TTS_MODEL_URL') or cc.get('ttsModelUrl') or None
+    elif request.mode == 'follow_core' and request.provider_key == 'mimo':
+        config_base_url = cc.get('CORE_URL') or None
+    elif request.mode == 'follow_assist' and request.provider_key == 'mimo':
+        config_base_url = cc.get('OPENROUTER_URL') or None
+    else:
+        config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
 
     # 自定义音色优先：用户挑了具体的 MiMo Clone 或 Design 音色时，即使同时把 MiMo 配成默认
     # TTS 也应尊重这个更具体的选择；Design 走描述驱动模型，Clone 内联参考音频。
@@ -261,9 +287,15 @@ def _mimo_resolve(ctx):
     if vm and vm.get('provider') == 'mimo' and vm.get('source') == 'design':
         design_prompt = str(vm.get('design_prompt') or '').strip()
         if not design_prompt:
-            logger.warning(
-                "MiMo 设计音色 %s 缺少 design_prompt，改用 dummy TTS worker", ctx.voice_id)
-            return dummy_tts_worker, None, None
+            return (
+                partial(
+                    invalid_tts_configuration_worker,
+                    provider_key='mimo',
+                    reason='missing_design_prompt',
+                ),
+                '',
+                'mimo',
+            )
         design_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None
         return (
             partial(mimo_tts_worker, base_url=design_base_url, design_prompt=design_prompt),
@@ -274,9 +306,15 @@ def _mimo_resolve(ctx):
     if _mimo_voice_meta_is_custom_voice(vm):
         clone_voice = _build_mimo_clone_data_uri(vm)
         if not clone_voice:
-            logger.warning(
-                "MiMo 克隆音色 %s 缺少参考音频样本，改用 dummy TTS worker", ctx.voice_id)
-            return dummy_tts_worker, None, None
+            return (
+                partial(
+                    invalid_tts_configuration_worker,
+                    provider_key='mimo',
+                    reason='missing_clone_sample',
+                ),
+                '',
+                'mimo',
+            )
         # base_url：assistApi=mimo 用配置端点（token-plan 同源）；否则用 voice_meta 里存的
         # mimo_base_url（对偶 minimax_base_url），缺省回落默认。
         clone_base_url = config_base_url or (vm or {}).get('mimo_base_url') or None

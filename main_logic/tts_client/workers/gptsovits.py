@@ -418,6 +418,11 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
 def _gptsovits_is_selected(ctx) -> bool:
     core_config, cm = ctx.core_config, ctx.cm
+    request = ctx.provider_request
+    if request.is_authoritative and request.provider_key != 'gptsovits':
+        # follow_core/follow_assist are real provider requests.  A stale legacy
+        # GPTSOVITS_ENABLED flag must not steal their route.
+        return False
     # 选中信号收口到 GPTSOVITS_ENABLED 单一真相：config_manager 的 snapshot 已把
     # ttsModelProvider=='gptsovits' 下拉（与 pre-#1830 存量旧开关）派生进
     # GPTSOVITS_ENABLED，这里不再自己 raw load core_config.json 读 ttsModelProvider。

@@ -395,10 +395,16 @@ async def get_voices():
         tts_provider_registry.preset_catalog_for_ui(winning_provider_key, core_config)
         if winning_provider_key else None
     )
-    active_native_provider = (
-        get_active_realtime_native_provider_for_ui(_config_manager)
-        if winning_provider_key is None else None
-    )
+    if winning_provider_key is None:
+        active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
+    elif get_native_voice_catalog_for_ui(winning_provider_key) is not None:
+        # Named built-in TTS providers live in the unified registry for
+        # dispatch/capabilities, while their actual preset catalog remains in
+        # native_voice_registry.  A Gemini/Step/Grok TTS selection should expose
+        # its own voices, not suppress them merely because the registry won.
+        active_native_provider = winning_provider_key
+    else:
+        active_native_provider = None
     if selected_preset_catalog is not None:
         selected_provider = tts_provider_registry.get(winning_provider_key)
         if selected_provider and selected_provider.configured_preset_voice:

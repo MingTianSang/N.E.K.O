@@ -63,6 +63,122 @@ VoiceSource = Literal["preset", "clone", "design"]
 # registry yet (see module docstring); kept out of the Literal until folded in.
 ProviderKind = Literal["local", "hosted"]
 
+# How ``ttsModelProvider`` chose the runtime owner.  Keeping this distinction is
+# important: ``follow_core`` may reuse the realtime credential, while the TTS
+# registry still owns the provider's speech route. ``follow_assist`` and an
+# explicit provider must never silently fall through to the realtime core merely
+# because their TTS adapter is unavailable.
+TTSProviderSelectionMode = Literal[
+    "legacy",
+    "follow_core",
+    "follow_assist",
+    "explicit",
+]
+
+
+@dataclass(frozen=True)
+class TTSProviderRequest:
+    """Normalized user request derived from ``ttsModelProvider``.
+
+    ``legacy`` means the field is absent/empty and preserves the pre-dropdown
+    dispatch chain.  Every other mode has an authoritative provider owner (or
+    an empty owner when the followed role itself is unconfigured).
+    """
+
+    mode: TTSProviderSelectionMode
+    provider_key: str = ""
+    raw_provider: str = ""
+
+    @property
+    def is_authoritative(self) -> bool:
+        return self.mode != "legacy"
+
+
+_REQUEST_PROVIDER_ALIASES: dict[str, str] = {
+    "cogtts": "glm",
+    "free_intl": "free",
+}
+
+# Built-in workers are bound in ``main_logic.tts_client`` rather than this
+# metadata-only module.  The set is nevertheless declared here so runtime,
+# voice validation, and the picker share the same capability boundary.
+BUILTIN_TTS_PROVIDER_KEYS = frozenset({
+    "qwen",
+    "qwen_intl",
+    "free",
+    "step",
+    "glm",
+    "gemini",
+    "openai",
+    "grok",
+})
+
+
+def resolve_tts_provider_request(
+    core_config: Mapping[str, Any] | None,
+    core_api_type: str | None = None,
+) -> TTSProviderRequest:
+    """Resolve the authoritative TTS owner without importing any worker.
+
+    The persisted dropdown value is the single truth.  Empty legacy configs
+    retain the historical chain; follow sentinels resolve to their actual role
+    provider, and every other non-empty value is an explicit provider request.
+    """
+
+    config = core_config or {}
+    raw_provider = str(config.get("ttsModelProvider") or "").strip().lower()
+    if not raw_provider:
+        return TTSProviderRequest("legacy")
+
+    # The custom-API switch remains the master gate for model-slot provider
+    # fields.  A stale dropdown value must not reactivate named/follow/custom or
+    # vLLM routing after the user turns custom APIs off.  GPT-SoVITS is the
+    # established exception: its dropdown is an independent local capability,
+    # and metadata-owned clone/design/local voices are selected later by their
+    # persisted owner after this function returns legacy.
+    gate_field = (
+        "ENABLE_CUSTOM_API"
+        if "ENABLE_CUSTOM_API" in config
+        else "enableCustomApi" if "enableCustomApi" in config else ""
+    )
+    if gate_field and raw_provider != "gptsovits":
+        gate_value = config.get(gate_field)
+        if isinstance(gate_value, str):
+            custom_api_enabled = gate_value.strip().lower() in {
+                "1", "true", "yes", "on", "enabled",
+            }
+        else:
+            custom_api_enabled = bool(gate_value)
+        if not custom_api_enabled:
+            return TTSProviderRequest("legacy")
+
+    if raw_provider == "follow_core":
+        requested = str(
+            core_api_type
+            or config.get("CORE_API_TYPE")
+            or config.get("coreApi")
+            or ""
+        ).strip().lower()
+        return TTSProviderRequest(
+            "follow_core",
+            _REQUEST_PROVIDER_ALIASES.get(requested, requested),
+            raw_provider,
+        )
+
+    if raw_provider == "follow_assist":
+        requested = str(config.get("assistApi") or "").strip().lower()
+        return TTSProviderRequest(
+            "follow_assist",
+            _REQUEST_PROVIDER_ALIASES.get(requested, requested),
+            raw_provider,
+        )
+
+    return TTSProviderRequest(
+        "explicit",
+        _REQUEST_PROVIDER_ALIASES.get(raw_provider, raw_provider),
+        raw_provider,
+    )
+
 _VOICE_META_UNSET = object()
 
 
@@ -90,6 +206,7 @@ class DispatchContext:
 
     core_config: Mapping[str, Any]
     cm: "ConfigManager"
+    core_api_type: str | None = None
     voice_id: str = ""
     has_custom_voice: bool = False
     # Injected by the caller (get_tts_worker) — typically ``lambda: _get_voice_meta(voice_id)``.
@@ -115,6 +232,29 @@ class DispatchContext:
                     result = None
             self._voice_meta_cache = result
         return self._voice_meta_cache
+
+    @property
+    def provider_request(self) -> TTSProviderRequest:
+        """The normalized dropdown/follow request for this dispatch."""
+        return resolve_tts_provider_request(self.core_config, self.core_api_type)
+
+    def permits_provider(self, provider_key: str | None) -> bool:
+        """Whether ``provider_key`` may claim this dispatch request.
+
+        Legacy sessions preserve the historical priority chain.  Once the TTS
+        dropdown (including a follow sentinel) names an owner, lower-priority
+        clone metadata from another provider must not steal the route.  Aliases
+        compare through the registry so ``minimax_intl``/``cosyvoice_intl`` and
+        ``local`` retain their canonical worker ownership.
+        """
+        request = self.provider_request
+        if not request.is_authoritative:
+            return True
+        requested = get(request.provider_key)
+        candidate = get(provider_key)
+        requested_key = requested.key if requested is not None else request.provider_key
+        candidate_key = candidate.key if candidate is not None else str(provider_key or "")
+        return bool(requested_key and requested_key == candidate_key)
 
 
 SelectPredicate = Callable[["DispatchContext"], bool]
@@ -271,6 +411,11 @@ class TTSProvider:
     # User-configured providers can expose the single value stored in
     # ``voice_field`` as a preset voice without maintaining a static catalog.
     configured_preset_voice: bool = False
+    # Whether preset rows exposed by this provider have a wired preview path.
+    # Frontends use this to hide/disable the preview affordance instead of
+    # presenting a button that deterministically returns HTTP 400.
+    preset_previewable: bool = True
+    preset_preview_unavailable_reason: str = ""
     # User-pointed endpoints may fall back to the unchanged downstream dispatch
     # order after configuration, startup, or synthesis failures.
     # 用户自填端点失败时，仅排除当前 provider，后续仍严格沿用既有调度顺序。
@@ -452,7 +597,20 @@ def preset_catalog_for_ui(
     if provider is None:
         return None
     if provider.preset_catalog is not None:
-        return provider.preset_catalog.catalog_for_ui(provider.key)
+        catalog = provider.preset_catalog.catalog_for_ui(provider.key)
+        if not provider.preset_previewable:
+            catalog = {
+                voice_id: {
+                    **metadata,
+                    "previewable": False,
+                    "preview_unavailable_reason": (
+                        provider.preset_preview_unavailable_reason
+                        or "provider_not_supported"
+                    ),
+                }
+                for voice_id, metadata in catalog.items()
+            }
+        return catalog
     if not provider.configured_preset_voice:
         return None
     config = core_config or {}
@@ -569,6 +727,8 @@ def ui_metadata() -> list[dict[str, Any]]:
             "voice_field": p.voice_field,
             "api_key_field": p.api_key_field,
             "editable_endpoint": p.editable_endpoint,
+            "preset_previewable": p.preset_previewable,
+            "preset_preview_unavailable_reason": p.preset_preview_unavailable_reason,
             "probe_kind": p.probe_kind,
             "probe_sub_type": p.probe_sub_type,
             "probe_ws_path": p.probe_ws_path,

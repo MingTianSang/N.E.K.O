@@ -45,4 +45,4 @@ def test_qwen_intl_default_routes_to_realtime_tts(monkeypatch):
 
     assert worker is tts_client.qwen_realtime_tts_worker
     assert api_key_override is None
-    assert provider_key == 'qwen'
+    assert provider_key == 'qwen_intl'

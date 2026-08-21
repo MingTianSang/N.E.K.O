@@ -34,7 +34,12 @@ from utils.doubao_tts import (
 )
 from utils.logger_config import get_module_logger
 
-from .._infra import _enqueue_error, _resample_audio, _run_sentence_tts_worker
+from .._infra import (
+    _enqueue_error,
+    _resample_audio,
+    _run_sentence_tts_worker,
+    invalid_tts_configuration_worker,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 
@@ -132,15 +137,22 @@ def _doubao_voice_meta_is_clone(vm) -> bool:
 
 def _doubao_is_selected(ctx) -> bool:
     cc = ctx.core_config
-    tts_provider = str(cc.get("TTS_PROVIDER") or cc.get("ttsProvider") or "").strip().lower()
-    if tts_provider == "doubao_tts":
-        return True
-    try:
-        raw = ctx.cm.load_json_config("core_config.json", {})
-    except Exception:
-        raw = {}
-    if str(raw.get("ttsModelProvider") or "").strip().lower() == "doubao_tts":
-        return True
+    request = ctx.provider_request
+    if request.is_authoritative:
+        if request.provider_key == "doubao_tts":
+            return True
+    else:
+        tts_provider = str(cc.get("TTS_PROVIDER") or cc.get("ttsProvider") or "").strip().lower()
+        if tts_provider == "doubao_tts":
+            return True
+        try:
+            raw = ctx.cm.load_json_config("core_config.json", {})
+        except Exception:
+            raw = {}
+        if str(raw.get("ttsModelProvider") or "").strip().lower() == "doubao_tts":
+            return True
+    if not ctx.permits_provider("doubao_tts"):
+        return False
     return _doubao_voice_meta_is_clone(ctx.voice_meta)
 
 
@@ -154,17 +166,50 @@ def _doubao_resolve(ctx):
     if "***" in api_key:
         api_key = ""
     if not api_key:
-        logger.warning("豆包 TTS 已选中但 API Key 缺失，改用 dummy TTS worker")
-        return dummy_tts_worker, None, None
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key="doubao_tts",
+                reason="missing_api_key",
+            ),
+            "",
+            "doubao_tts",
+        )
 
     if _doubao_voice_meta_is_clone(vm):
         base_url = vm.get("doubao_base_url") or DOUBAO_TTS_DEFAULT_BASE_URL
         resource_id = vm.get("doubao_resource_id") or DOUBAO_TTS_DEFAULT_RESOURCE_ID
         configured_voice = ctx.voice_id
     else:
-        base_url = raw.get("ttsModelUrl") or DOUBAO_TTS_DEFAULT_BASE_URL
-        resource_id = raw.get("ttsModelId") or DOUBAO_TTS_DEFAULT_RESOURCE_ID
-        configured_voice = raw.get("ttsVoiceId") or ""
+        base_url = (
+            ctx.core_config.get("ttsModelUrl")
+            or ctx.core_config.get("TTS_MODEL_URL")
+            or raw.get("ttsModelUrl")
+            or DOUBAO_TTS_DEFAULT_BASE_URL
+        )
+        resource_id = (
+            ctx.core_config.get("ttsModelId")
+            or ctx.core_config.get("TTS_MODEL")
+            or raw.get("ttsModelId")
+            or DOUBAO_TTS_DEFAULT_RESOURCE_ID
+        )
+        configured_voice = (
+            ctx.voice_id
+            or ctx.core_config.get("ttsVoiceId")
+            or ctx.core_config.get("TTS_VOICE_ID")
+            or raw.get("ttsVoiceId")
+            or ""
+        )
+    if not str(configured_voice or "").strip():
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key="doubao_tts",
+                reason="missing_voice",
+            ),
+            "",
+            "doubao_tts",
+        )
     worker = partial(
         doubao_tts_worker,
         base_url=base_url,

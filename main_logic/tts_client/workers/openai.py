@@ -26,6 +26,7 @@ from .._infra import (
     _resample_audio,
     _run_sentence_tts_worker,
     configured_tts_unavailable_worker,
+    invalid_tts_configuration_worker,
     log_configured_tts_failure,
 )
 from .._telemetry import _record_tts_telemetry
@@ -253,7 +254,15 @@ def _custom_openai_tts_resolve(ctx):
         # The exception can contain a signed URL, credential, or provider echo.
         # 配置读取/校验异常只记录稳定错误码和阶段，禁止输出原始异常内容。
         log_configured_tts_failure("custom", "configuration")
-        return configured_tts_unavailable_worker, "", "custom"
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key="custom",
+                reason="missing_or_invalid_endpoint_model_voice",
+            ),
+            "",
+            "custom",
+        )
 
     worker = partial(
         openai_tts_worker,

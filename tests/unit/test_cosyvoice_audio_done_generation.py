@@ -122,7 +122,9 @@ def worker(fake_dashscope, monkeypatch):
 
     monkeypatch.setattr(mod, "configure_dashscope_sdk_urls", lambda *a, **k: None)
     monkeypatch.setattr(mod, "get_config_manager", lambda: types.SimpleNamespace(
-        get_model_api_config=lambda _name: {"base_url": ""}
+        get_model_api_config=lambda _name: {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        }
     ))
     import main_logic.tts_client as pkg
     monkeypatch.setattr(pkg, "_get_voice_meta", lambda _vid: {}, raising=False)
@@ -223,7 +225,9 @@ def test_idle_keepalive_finish_does_not_close_the_stream(fake_dashscope, monkeyp
 
     monkeypatch.setattr(mod, "configure_dashscope_sdk_urls", lambda *a, **k: None)
     monkeypatch.setattr(mod, "get_config_manager", lambda: types.SimpleNamespace(
-        get_model_api_config=lambda _name: {"base_url": ""}
+        get_model_api_config=lambda _name: {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        }
     ))
     import main_logic.tts_client as pkg
     monkeypatch.setattr(pkg, "_get_voice_meta", lambda _vid: {}, raising=False)

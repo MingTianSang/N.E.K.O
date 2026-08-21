@@ -76,6 +76,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="input_text_buffer.append 追加文本，commit 触发合成；server_commit 模式",
     ),
+    "qwen_intl": TTSProviderMeta(
+        name="qwen_intl",
+        category="ws_bistream",
+        protocol="WebSocket (wss://dashscope-intl.aliyuncs.com)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="Qwen international realtime TTS; transport is symmetric with qwen",
+    ),
     "grok": TTSProviderMeta(
         name="grok",
         category="ws_bistream",
@@ -97,6 +107,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         notes="streaming_call() 逐片发送；最小 6 字符缓冲 + 日文检测；"
               "首包聚合 1KB + 后续聚合 4KB；空闲 15s 主动 complete",
     ),
+    "cosyvoice_intl": TTSProviderMeta(
+        name="cosyvoice_intl",
+        category="ws_bistream",
+        protocol="dashscope international SDK (WebSocket)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="OGG OPUS 48kHz (direct passthrough)",
+        notes="International CosyVoice clone synthesis with region-owned credentials",
+    ),
     "cogtts": TTSProviderMeta(
         name="cogtts",
         category="http_sentence",
@@ -106,6 +126,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         client_sentence_split=True,
         audio_format="PCM 24kHz → resample 48kHz",
         notes="最大 1024 字符/句；首包水印检测与裁剪",
+    ),
+    "glm": TTSProviderMeta(
+        name="glm",
+        category="http_sentence",
+        protocol="HTTP POST + SSE (CogTTS)",
+        input_streaming=False,
+        output_streaming=True,
+        client_sentence_split=True,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="Named GLM provider uses the CogTTS transport",
     ),
     "gemini": TTSProviderMeta(
         name="gemini",

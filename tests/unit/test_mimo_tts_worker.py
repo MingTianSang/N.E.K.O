@@ -1323,9 +1323,14 @@ def test_get_tts_worker_does_not_fallback_to_core_key_when_mimo_key_missing(monk
         voice_id="",
     )
 
-    assert worker is tts_client.dummy_tts_worker
-    assert api_key is None
-    assert provider_key is None
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.invalid_tts_configuration_worker
+    assert worker.keywords == {
+        "provider_key": "mimo",
+        "reason": "missing_api_key",
+    }
+    assert api_key == ""
+    assert provider_key == "mimo"
 
 
 @pytest.mark.unit

@@ -520,10 +520,12 @@ def test_custom_config_read_failure_stays_owned_until_supervised_fallback(monkey
     # 读取失败不能直接误入 CosyVoice；先保留 custom 身份，再由监管层安全回退。
     assert provider_key == "custom"
     assert api_key == ""
+    error_kind, error_payload = response_queue.get_nowait()
+    assert error_kind == "__error__"
+    assert json.loads(error_payload)["provider"] == "custom"
     assert response_queue.get_nowait() == ("__ready__", False)
-    assert errors == [
-        "code=TTS_CONFIGURED_API_FAILURE provider=custom stage=configuration"
-    ]
+    assert errors[0] == "code=TTS_CONFIGURED_API_FAILURE provider=custom stage=configuration"
+    assert any("TTS_CONFIG_INVALID" in entry for entry in errors[1:])
     assert all(secret not in "\n".join(errors) for secret in secrets)
 
 

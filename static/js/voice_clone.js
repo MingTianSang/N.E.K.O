@@ -2738,20 +2738,27 @@ async function loadVoices() {
                     const voiceActions = document.createElement('div');
                     voiceActions.className = 'voice-actions';
 
-                    const previewBtn = document.createElement('button');
-                    previewBtn.className = 'voice-preview-btn';
-                    const previewText = window.t ? window.t('voice.preview') : '预览';
-                    const previewImg = document.createElement('img');
-                    previewImg.src = '/static/icons/sound.png';
-                    previewImg.alt = '';
-                    previewBtn.appendChild(previewImg);
-                    previewBtn.appendChild(document.createTextNode(previewText));
-                    attachVoicePreviewButton(voiceId, previewBtn);
-                    previewBtn.onclick = (event) => {
-                        event.stopPropagation();
-                        playPreview(voiceId, previewBtn);
-                    };
-                    voiceActions.appendChild(previewBtn);
+                    // Some hosted preset catalogs can synthesize in normal
+                    // sessions but do not expose a safe preview endpoint. The
+                    // backend stamps those rows previewable=false; omit the
+                    // affordance instead of presenting a button that always
+                    // fails after the user clicks it.
+                    if (!voiceData || voiceData.previewable !== false) {
+                        const previewBtn = document.createElement('button');
+                        previewBtn.className = 'voice-preview-btn';
+                        const previewText = window.t ? window.t('voice.preview') : '预览';
+                        const previewImg = document.createElement('img');
+                        previewImg.src = '/static/icons/sound.png';
+                        previewImg.alt = '';
+                        previewBtn.appendChild(previewImg);
+                        previewBtn.appendChild(document.createTextNode(previewText));
+                        attachVoicePreviewButton(voiceId, previewBtn);
+                        previewBtn.onclick = (event) => {
+                            event.stopPropagation();
+                            playPreview(voiceId, previewBtn);
+                        };
+                        voiceActions.appendChild(previewBtn);
+                    }
 
                     item.appendChild(infoDiv);
                     item.appendChild(voiceActions);

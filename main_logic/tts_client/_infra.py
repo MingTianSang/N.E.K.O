@@ -94,6 +94,7 @@ class AudioDoneEmitter:
 # 用户自填端点的异常可能回显密钥、签名 query 或原文；后端日志只记录稳定错误码、
 # provider 和阶段，详细原始异常不得进入 logger。
 CONFIGURED_TTS_FAILURE_CODE = "TTS_CONFIGURED_API_FAILURE"
+TTS_CONFIG_INVALID_CODE = "TTS_CONFIG_INVALID"
 
 
 def configured_tts_unavailable_worker(
@@ -107,6 +108,41 @@ def configured_tts_unavailable_worker(
     # this prevents legacy clone fallthrough from reusing its voice ID or API key.
     # 配置解析失败也要先归属原 provider，再由统一监管层清空音色和凭证后回退。
     _ = request_queue
+    response_queue.put(("__ready__", False))
+
+
+def tts_config_invalid_payload(provider_key: str, reason: str) -> dict:
+    """Build a stable, non-sensitive configuration error for TTS workers."""
+    provider = str(provider_key or "configured")
+    stable_reason = str(reason or "invalid_configuration")
+    return {
+        "code": TTS_CONFIG_INVALID_CODE,
+        "provider": provider,
+        "reason": stable_reason,
+        "data": {
+            "code": TTS_CONFIG_INVALID_CODE,
+            "message": f"Invalid TTS configuration ({provider}: {stable_reason})",
+        },
+    }
+
+
+def enqueue_tts_config_invalid(response_queue, provider_key: str, reason: str) -> None:
+    """Report an invalid provider configuration without logging its raw values."""
+    _enqueue_error(response_queue, tts_config_invalid_payload(provider_key, reason))
+
+
+def invalid_tts_configuration_worker(
+    request_queue,
+    response_queue,
+    _audio_api_key,
+    _voice_id,
+    *,
+    provider_key: str = "configured",
+    reason: str = "invalid_configuration",
+):
+    """Fail fast for an authoritative but unsupported/incomplete TTS route."""
+    _ = request_queue
+    enqueue_tts_config_invalid(response_queue, provider_key, reason)
     response_queue.put(("__ready__", False))
 
 def _parse_env_float(env_name: str, default: float, min_value: float) -> float:

@@ -19,16 +19,48 @@ import soxr
 import json
 import websockets
 import asyncio
+from urllib.parse import urlsplit, urlunsplit
 
 from utils.config_manager import get_config_manager
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import (
+    TTS_SHUTDOWN_SENTINEL,
+    _resample_audio,
+    _enqueue_error,
+    enqueue_tts_config_invalid,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
+def _normalize_local_cosyvoice_ws_endpoint(base_url: str | None) -> str:
+    """Normalize a local CosyVoice base URL to its bistream endpoint."""
+    raw = str(base_url or '').strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme not in ('ws', 'wss') or not parsed.netloc:
+        raise ValueError('local CosyVoice requires a ws/wss URL')
+    path = (parsed.path or '').rstrip('/')
+    endpoint = '/v1/audio/speech/stream'
+    if path.endswith(endpoint):
+        normalized_path = path
+    elif path.endswith('/v1'):
+        normalized_path = f'{path}/audio/speech/stream'
+    elif not path:
+        normalized_path = endpoint
+    else:
+        normalized_path = f'{path}{endpoint}'
+    return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, parsed.query, ''))
+
+
+def local_cosyvoice_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url: str | None = None,
+):
     """
     Local CosyVoice WebSocket worker (OpenAI-compatible bistream version)
     Adapted to the /v1/audio/speech/stream endpoint defined by openai_server.py
@@ -48,28 +80,31 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     """
     _ = audio_api_key  # 本地模式不需要 API Key
 
-    cm = get_config_manager()
-    tts_config = cm.get_model_api_config('tts_custom')
-
-    ws_base = tts_config.get('base_url', '')
-    if (ws_base and not ws_base.startswith('ws://') and not ws_base.startswith('wss://')) or not ws_base:
-        if ws_base:
-            logger.error(f'本地cosyvoice URL协议无效: {ws_base}，需要 ws/wss 协议')
-        else:
-            logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
-        response_queue.put(("__ready__", True))
-        # 模仿 dummy_tts：持续清空队列但不生成音频
-        while True:
-            try:
-                sid, _ = request_queue.get()
-                if sid == TTS_SHUTDOWN_SENTINEL:
-                    break
-            except Exception:
-                break
+    if base_url is None:
+        try:
+            cm = get_config_manager()
+            tts_config = cm.get_model_api_config('tts_custom') or {}
+            ws_base = tts_config.get('base_url', '')
+        except Exception:
+            enqueue_tts_config_invalid(
+                response_queue,
+                'local_cosyvoice',
+                'configuration_unavailable',
+            )
+            response_queue.put(("__ready__", False))
+            return
+    else:
+        ws_base = base_url
+    try:
+        WS_URL = _normalize_local_cosyvoice_ws_endpoint(ws_base)
+    except Exception:
+        enqueue_tts_config_invalid(
+            response_queue,
+            'local_cosyvoice',
+            'missing_or_invalid_url',
+        )
+        response_queue.put(("__ready__", False))
         return
-    
-    # OpenAI 兼容端点
-    WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
     # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
     voice_name = voice_id or "中文女"
@@ -167,8 +202,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             await create_connection()
             response_queue.put(("__ready__", True))
         except Exception as e:
-            logger.error(f"❌ [LocalTTS] 初始连接失败: {e}")
-            logger.error("请确保服务器已运行且端口正确")
+            _enqueue_error(response_queue, {
+                "code": "TTS_CONNECTION_FAILED",
+                "provider": "local_cosyvoice",
+                "message": "Local CosyVoice connection failed",
+            })
             response_queue.put(("__ready__", False))
             return
 

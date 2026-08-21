@@ -38,10 +38,12 @@ from main_logic.tts_client import (
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
+    tts_voice_owner_provider_key,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
+from utils.tts.provider_registry import resolve_tts_provider_request
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
 from queue import Queue
@@ -251,13 +253,16 @@ class TtsRuntimeMixin:
 
     @staticmethod
     def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
-        if provider_key == 'vllm_omni':
-            return api_key_override or ''
-        if provider_key == 'qwen' and api_key_override is not None:
-            # Qwen fallback owns its credential explicitly. An empty override
-            # must stay empty instead of leaking the failed custom provider key.
+        if provider_key == 'vllm_omni' and api_key_override is None:
+            # vLLM-Omni never inherits the generic/custom TTS credential. Its
+            # OpenAI-compatible endpoint is commonly local and keyless.
+            return ''
+        if api_key_override is not None:
+            # A resolver-provided empty string is an intentional credential
+            # boundary.  It must never fall through to tts_custom/default and
+            # leak another provider's key (CosyVoice intl/local/vLLM included).
             return api_key_override
-        return api_key_override or tts_config.get('api_key', '')
+        return tts_config.get('api_key', '')
 
     @staticmethod
     def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
@@ -297,6 +302,10 @@ class TtsRuntimeMixin:
                 'tts_custom' if has_custom else 'tts_default'
             )
             api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
+            provider_request = resolve_tts_provider_request(
+                core_config,
+                self.core_api_type,
+            )
             return (
                 provider_key,
                 self.core_api_type,
@@ -305,6 +314,17 @@ class TtsRuntimeMixin:
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
+                (
+                    provider_request.mode,
+                    provider_request.provider_key,
+                    # Raw slot fields are the authoritative dropdown inputs.
+                    # Upper-case TTS_* values may be fallback-derived from an
+                    # unrelated role and do not necessarily reach the selected
+                    # resolver (notably vLLM-Omni's defaults).
+                    str(core_config.get('ttsModelUrl') or ''),
+                    str(core_config.get('ttsModelId') or ''),
+                    str(core_config.get('ttsVoiceId') or ''),
+                ),
                 self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
@@ -421,6 +441,7 @@ class TtsRuntimeMixin:
     def _has_custom_tts(self) -> bool:
         """Decide whether the current session uses custom TTS (a cloned voice or a custom TTS URL)."""
         core_config = self._config_manager.get_core_config()
+        provider_request = resolve_tts_provider_request(core_config, self.core_api_type)
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,
@@ -433,13 +454,16 @@ class TtsRuntimeMixin:
         gsv_enabled = (
             _as_bool(core_config.get('GPTSOVITS_ENABLED'), False)
             and not is_gsv_disabled_voice_id(gsv_voice_id)
+            and (
+                not provider_request.is_authoritative
+                or provider_request.provider_key == 'gptsovits'
+            )
         )
         if gsv_enabled:
             return True
-        # 克隆音色始终走 custom 路径。
-        if bool(self.voice_id) and not self._is_free_preset_voice:
-            return True
-        return False
+        # A non-native-looking string is not enough to claim CosyVoice.  Clone
+        # and design routes require persisted metadata with a registered owner.
+        return bool(tts_voice_owner_provider_key(self.voice_id))
 
     def _effective_tts_route(self) -> tuple[str, bool]:
         """Return the voice identity and custom flag used for worker dispatch."""
@@ -448,7 +472,18 @@ class TtsRuntimeMixin:
         # 回退只清理替代 worker 的路由上下文，不修改角色卡中保存的音色。
         if getattr(self, "_tts_fallback_uses_default_voice", False):
             return "", False
-        return self.voice_id or "", self._has_custom_tts()
+        core_config = self._config_manager.get_core_config()
+        provider_request = resolve_tts_provider_request(core_config, self.core_api_type)
+        route_voice_id = self.voice_id or ""
+        if not route_voice_id and provider_request.is_authoritative:
+            route_voice_id = str(
+                core_config.get('ttsVoiceId')
+                or ''
+            ).strip()
+        has_custom = self._has_custom_tts()
+        if route_voice_id != (self.voice_id or ''):
+            has_custom = bool(tts_voice_owner_provider_key(route_voice_id)) or has_custom
+        return route_voice_id, has_custom
 
     def _start_tts_thread(self, *, preserve_provider_exclusions: bool = False):
         """Create and start the TTS worker thread.
@@ -780,6 +815,18 @@ class TtsRuntimeMixin:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        provider_request = resolve_tts_provider_request(
+            core_config_snapshot,
+            self.core_api_type,
+        )
+        if provider_request.is_authoritative:
+            logger.info(
+                "%s🔊 语音模式：TTS provider 请求 mode=%s provider=%s，将使用外部 TTS",
+                log_prefix,
+                provider_request.mode,
+                provider_request.provider_key or '(unsupported)',
+            )
+            return True
         # Configured preset ownership must be resolved before core-native voice
         # routing; identical IDs still belong to the explicitly selected TTS API.
         # 配置型音色与核心原生音色同名时，自定义 TTS 的显式归属优先，不能被原生路由抢走。
@@ -858,7 +905,18 @@ class TtsRuntimeMixin:
         self.voice_id = raw_voice_id
         self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
         # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
-        if self._is_free_preset_voice and self.core_api_type != 'free':
+        try:
+            provider_request = resolve_tts_provider_request(
+                self._config_manager.get_core_config(),
+                self.core_api_type,
+            )
+        except Exception:
+            provider_request = resolve_tts_provider_request({}, self.core_api_type)
+        free_tts_owns_voice = (
+            provider_request.is_authoritative
+            and provider_request.provider_key == 'free'
+        )
+        if self._is_free_preset_voice and self.core_api_type != 'free' and not free_tts_owns_voice:
             self.voice_id = ''
             self._is_free_preset_voice = False
 
@@ -884,6 +942,19 @@ class TtsRuntimeMixin:
            step 1 directly.
         """
         base_url = realtime_config.get('base_url', '')
+        if not self._is_livestream_active():
+            try:
+                provider_request = resolve_tts_provider_request(
+                    self._config_manager.get_core_config(),
+                    self.core_api_type,
+                )
+            except Exception:
+                provider_request = resolve_tts_provider_request({}, self.core_api_type)
+            if provider_request.is_authoritative:
+                # The external TTS worker owns this voice.  Passing it into the
+                # realtime session as well would enable a second, provider-native
+                # audio stream or leak a foreign voice id to the core transport.
+                return None
         voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
             self.voice_id,

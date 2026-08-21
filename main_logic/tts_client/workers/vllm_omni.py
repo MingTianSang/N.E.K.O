@@ -671,13 +671,18 @@ def _vllm_omni_is_selected(ctx) -> bool:
                 log_configured_tts_failure("vllm_omni", "selection")
         if configured_provider == 'vllm_omni':
             return True
+    if not ctx.permits_provider('vllm_omni'):
+        return False
     # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider / 本 provider 的 config 分支时不会触发 voice_meta 加载）。
     return _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
 
 def _vllm_omni_clone_is_selected(ctx) -> bool:
     """Clone-only selection predicate (for symmetry with _mimo dispatch / tests)."""
-    return _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+    return bool(
+        ctx.permits_provider('vllm_omni')
+        and _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+    )
 
 def _vllm_omni_clone_resolve(ctx):
     """Resolve a vLLM-Omni *clone* voice to its worker (inline reference audio).

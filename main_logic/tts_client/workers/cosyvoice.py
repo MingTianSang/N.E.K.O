@@ -15,15 +15,22 @@
 """Aliyun CosyVoice (hosted) TTS worker."""
 
 import time
+from functools import partial
 
 from utils.config_manager import get_config_manager
 from utils.dashscope_region import (
     DASHSCOPE_GLOBAL_LOCK,
     configure_dashscope_sdk_urls,
+    dashscope_ws_url_from_base,
     prefer_dashscope_websocket_ipv4,
 )
 
-from .._infra import AudioDoneEmitter, TTS_SHUTDOWN_SENTINEL, _enqueue_error
+from .._infra import (
+    AudioDoneEmitter,
+    TTS_SHUTDOWN_SENTINEL,
+    _enqueue_error,
+    enqueue_tts_config_invalid,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -37,7 +44,17 @@ def _get_enrolled_model(voice_meta):
     return voice_meta.get('design_model') or voice_meta.get('clone_model')
 
 
-def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+def cosyvoice_vc_tts_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url: str | None = None,
+    enrolled_model: str | None = None,
+    provider_key: str | None = None,
+    configured_voice: str | None = None,
+):
     """
     TTS multiprocess worker function for Aliyun CosyVoice TTS
     
@@ -47,18 +64,22 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         audio_api_key: API key
         voice_id: voice ID
     """
-    import dashscope
-    from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
-    from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
     # _get_voice_meta 住在包 __init__（与 get_tts_worker 共享、可被
     # monkeypatch tts_client._get_voice_meta 命中）；这里惰性导入避免 worker 模块
     # 在 __init__ 导入它时形成循环导入。
     from main_logic.tts_client import _get_voice_meta
 
+    # Named preset dispatch may run without a character-card voice.  Its TTS
+    # slot voice is part of the selected provider contract and must become the
+    # actual SDK voice, not merely pass validation in the resolver.
+    voice_id = str(voice_id or configured_voice or '').strip()
+
     # 从 voice 元数据中读取注册时使用的模型和地域 URL，缺失时回退到全局配置
     _voice_meta = _get_voice_meta(voice_id)
-    _enrolled_model = _get_enrolled_model(_voice_meta)
-    _voice_provider = _voice_meta.get('provider') if _voice_meta else None
+    _enrolled_model = str(enrolled_model or _get_enrolled_model(_voice_meta) or '').strip()
+    _voice_provider = str(
+        provider_key or (_voice_meta.get('provider') if _voice_meta else '') or 'cosyvoice'
+    ).strip().lower()
 
     # dashscope.api_key 和 dashscope.base_*_api_url 是模块级全局状态，同一进程内
     # /voice_preview 端点 (characters_router.py) 和声音克隆 (utils/voice_clone.py)
@@ -68,7 +89,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     # _create_synthesizer 重新写一遍 module-global。
     try:
         _tts_api_config = get_config_manager().get_model_api_config('tts_custom')
-        _dashscope_base_url = (_voice_meta or {}).get('dashscope_base_url') or _tts_api_config.get('base_url', '')
+        _dashscope_base_url = (
+            base_url
+            if base_url is not None
+            else ((_voice_meta or {}).get('dashscope_base_url') or _tts_api_config.get('base_url', ''))
+        )
     except Exception as e:
         logger.warning("DashScope TTS 地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
         _dashscope_base_url = ""
@@ -95,8 +120,49 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     # 引入 Codex P1 #3258691457 已经修过的 cross-credential 错路由 race
     # (Codex P1 #3258856950)。
 
-    # CosyVoice 不需要预连接，直接发送就绪信号
-    logger.info("CosyVoice TTS 已就绪，发送就绪信号")
+    # Hosted SDK cannot pre-connect without sending synthesis text, but the
+    # worker must not advertise readiness until its complete static contract is
+    # valid.  Clone/design resolvers bind the exact region URL and key; no
+    # fallback to another provider's credential is allowed here.
+    from utils.api_config_loader import get_cosyvoice_clone_model
+
+    resolved_model = _enrolled_model or str(
+        get_cosyvoice_clone_model(_voice_provider) or ''
+    ).strip()
+    normalized_key = str(audio_api_key or '').strip()
+    normalized_voice = str(voice_id or '').strip()
+    normalized_base_url = str(_dashscope_base_url or '').strip()
+    if not normalized_key or '***' in normalized_key:
+        enqueue_tts_config_invalid(response_queue, _voice_provider, 'missing_api_key')
+        response_queue.put(("__ready__", False))
+        return
+    if not normalized_base_url or not dashscope_ws_url_from_base(
+        normalized_base_url, "inference", ""
+    ):
+        enqueue_tts_config_invalid(response_queue, _voice_provider, 'missing_or_invalid_url')
+        response_queue.put(("__ready__", False))
+        return
+    if not resolved_model:
+        enqueue_tts_config_invalid(response_queue, _voice_provider, 'missing_model')
+        response_queue.put(("__ready__", False))
+        return
+    if not normalized_voice:
+        enqueue_tts_config_invalid(response_queue, _voice_provider, 'missing_voice')
+        response_queue.put(("__ready__", False))
+        return
+
+    audio_api_key = normalized_key
+    voice_id = normalized_voice
+    _dashscope_base_url = normalized_base_url
+    try:
+        import dashscope
+        from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
+        from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
+    except Exception:
+        enqueue_tts_config_invalid(response_queue, _voice_provider, 'runtime_dependency_unavailable')
+        response_queue.put(("__ready__", False))
+        return
+    logger.info("CosyVoice TTS 配置预检通过，发送就绪信号")
     response_queue.put(("__ready__", True))
     
     current_speech_id = None
@@ -266,12 +332,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """Create a new SpeechSynthesizer, with an optional language hint.
         Only establishes the WebSocket connection without sending warmup text — the caller sends real text right after.
         """
-        from utils.api_config_loader import (
-            cosyvoice_model_supports_language_hints,
-            get_cosyvoice_clone_model,
-        )
+        from utils.api_config_loader import cosyvoice_model_supports_language_hints
         nonlocal last_streaming_call_time, synth_generation
-        clone_model = _enrolled_model or get_cosyvoice_clone_model(_voice_provider)
+        clone_model = resolved_model
         synth_generation += 1
         kwargs = dict(
             model=clone_model,
@@ -530,21 +593,33 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
 def _cosyvoice_clone_is_selected(ctx) -> bool:
     vm = ctx.voice_meta
-    return bool(vm and vm.get('provider') in ('cosyvoice', 'cosyvoice_intl'))
+    owner = str((vm or {}).get('provider') or '').strip().lower()
+    return bool(
+        owner in ('cosyvoice', 'cosyvoice_intl')
+        and ctx.permits_provider(owner)
+    )
+
+
+def _cosyvoice_clone_is_selected_for(provider_key: str):
+    def predicate(ctx) -> bool:
+        vm = ctx.voice_meta
+        owner = str((vm or {}).get('provider') or '').strip().lower()
+        return bool(owner == provider_key and ctx.permits_provider(provider_key))
+    return predicate
 
 def _cosyvoice_clone_resolve(ctx):
     vm = ctx.voice_meta or {}
     provider = vm.get('provider') or 'cosyvoice'
     runtime = ctx.cm.get_cosyvoice_clone_runtime(provider)
     runtime_key = (runtime.get('api_key') or '').strip()
-    # provider=='cosyvoice_intl' 必须用 intl key 调 intl 端点。runtime_key 缺失时若只返回
-    # None，core.py 会用 `api_key_override or tts_config['api_key']` 兜底到 tts_custom 槽位的
-    # 国内 key，结果拿国内 key 打 intl 端点，每次 utterance 吃一次 401 — 比 dummy 静音更难查。
-    if provider == 'cosyvoice_intl' and not runtime_key:
-        logger.warning(
-            "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
-            "改用 dummy TTS worker 避免用错凭证打 intl 端点", ctx.voice_id)
-        return dummy_tts_worker, None, None
     logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
                 ctx.voice_id, provider)
-    return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
+    worker = partial(
+        cosyvoice_vc_tts_worker,
+        base_url=str(runtime.get('base_url') or '').strip(),
+        enrolled_model=_get_enrolled_model(vm),
+        provider_key=provider,
+    )
+    # Empty is an intentional override: the worker reports a stable
+    # missing-key error and must never inherit tts_custom's unrelated key.
+    return worker, runtime_key, provider

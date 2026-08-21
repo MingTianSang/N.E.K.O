@@ -31,6 +31,7 @@ from .._infra import (
     _resample_audio,
     make_audio_jitter_buffer,
     _enqueue_error,
+    invalid_tts_configuration_worker,
 )
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -468,6 +469,8 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         response_queue.put(("__ready__", False))
 
 def _elevenlabs_clone_is_selected(ctx) -> bool:
+    if not ctx.permits_provider('elevenlabs'):
+        return False
     vm = ctx.voice_meta
     return bool(vm and vm.get('provider') == 'elevenlabs')
 
@@ -476,4 +479,37 @@ def _elevenlabs_clone_resolve(ctx):
     logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", ctx.voice_id)
     elevenlabs_options = _get_elevenlabs_options()
     base_url = vm.get('elevenlabs_base_url') or elevenlabs_options['base_url']
-    return partial(elevenlabs_tts_worker, base_url=base_url), _resolve_elevenlabs_api_key(ctx.cm), 'elevenlabs'
+    api_key = _resolve_elevenlabs_api_key(ctx.cm)
+    if not api_key or '***' in api_key:
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key='elevenlabs',
+                reason='missing_api_key',
+            ),
+            '',
+            'elevenlabs',
+        )
+    if not str(ctx.voice_id or '').strip():
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key='elevenlabs',
+                reason='missing_voice',
+            ),
+            '',
+            'elevenlabs',
+        )
+    try:
+        _elevenlabs_ws_base_url(base_url)
+    except Exception:
+        return (
+            partial(
+                invalid_tts_configuration_worker,
+                provider_key='elevenlabs',
+                reason='missing_or_invalid_url',
+            ),
+            '',
+            'elevenlabs',
+        )
+    return partial(elevenlabs_tts_worker, base_url=base_url), api_key, 'elevenlabs'

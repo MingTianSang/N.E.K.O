@@ -83,7 +83,9 @@ def test_registry_declares_design_for_cosyvoice():
         "language_hints": ["ch", "en"],
     }
     assert "cosyvoice_intl" not in meta["cosyvoice"]["aliases"]
-    assert reg.get("cosyvoice_intl") is None
+    assert reg.get("cosyvoice_intl") is not None
+    assert meta["cosyvoice_intl"]["capabilities"] == ["clone"]
+    assert meta["cosyvoice_intl"]["voice_design"] is None
 
 
 @pytest.mark.unit

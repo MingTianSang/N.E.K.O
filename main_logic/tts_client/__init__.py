@@ -28,10 +28,16 @@ dispatcher actually resolves.
 """
 import re
 import websockets
+from functools import partial
 
 from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
-from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
+from utils.tts.providers.mimo import (
+    MIMO_PRESET_CATALOG,
+    MIMO_TTS_BASE_URL,
+    MIMO_TTS_DEFAULT_VOICE,
+    MIMO_TTS_MODEL,
+)
 from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
@@ -43,6 +49,8 @@ from ._infra import (
     _resample_audio,
     _parse_env_float,
     _enqueue_error,
+    configured_tts_unavailable_worker,
+    invalid_tts_configuration_worker,
     _ws_is_open,
     log_configured_tts_failure,
     SentenceBuffer,
@@ -70,6 +78,7 @@ from .workers.grok import (
 )
 from .workers.qwen import (
     qwen_realtime_tts_worker,
+    qwen_tts_model_family,
     _resolve_qwen_realtime_tts_url,
     _QWEN_REALTIME_TTS_MODEL,
     _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
@@ -77,6 +86,7 @@ from .workers.qwen import (
 from .workers.cosyvoice import (
     cosyvoice_vc_tts_worker,
     _cosyvoice_clone_is_selected,
+    _cosyvoice_clone_is_selected_for,
     _cosyvoice_clone_resolve,
 )
 from .workers.cogtts import cogtts_tts_worker
@@ -136,7 +146,10 @@ from .workers.elevenlabs import (
     _elevenlabs_clone_is_selected,
     _elevenlabs_clone_resolve,
 )
-from .workers.local_cosyvoice import local_cosyvoice_worker
+from .workers.local_cosyvoice import (
+    local_cosyvoice_worker,
+    _normalize_local_cosyvoice_ws_endpoint,
+)
 from .workers.dummy import dummy_tts_worker
 
 logger = get_module_logger(__name__, "Main")
@@ -153,6 +166,7 @@ __all__ = [
     # shared infrastructure
     "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "AudioDoneEmitter",
     "_resample_audio", "_parse_env_float", "_enqueue_error",
+    "configured_tts_unavailable_worker", "invalid_tts_configuration_worker",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
     "_run_sentence_tts_worker", "_record_tts_telemetry",
     "TTSProviderMeta", "TTS_PROVIDER_REGISTRY",
@@ -173,7 +187,7 @@ __all__ = [
     # step helpers (used by characters_router / language-hint tests)
     "_adjust_free_tts_url", "_get_tts_language_code", "_build_step_tts_create_data",
     # per-provider helpers
-    "_resolve_qwen_realtime_tts_url", "_grok_chunk_text_delta",
+    "_resolve_qwen_realtime_tts_url", "qwen_tts_model_family", "_grok_chunk_text_delta",
     "_get_mimo_chat_completions_url", "_extract_mimo_tts_audio_bytes",
     "_get_minimax_tts_http_url", "_minimax_sse_synthesize",
     "_resolve_elevenlabs_api_key", "_normalize_elevenlabs_voice_id",
@@ -187,6 +201,7 @@ __all__ = [
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
     "selected_configured_tts_preset_provider_key",
+    "tts_voice_owner_provider_key",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -211,6 +226,240 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+_NAMED_TTS_KEY_FIELDS = {
+    'qwen': 'ASSIST_API_KEY_QWEN',
+    'qwen_intl': 'ASSIST_API_KEY_QWEN_INTL',
+    'step': 'ASSIST_API_KEY_STEP',
+    'glm': 'ASSIST_API_KEY_GLM',
+    'gemini': 'ASSIST_API_KEY_GEMINI',
+    'openai': 'ASSIST_API_KEY_OPENAI',
+    'grok': 'ASSIST_API_KEY_GROK',
+}
+
+_NAMED_TTS_DEFAULTS = {
+    'qwen': {
+        'url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        'model': _QWEN_REALTIME_TTS_MODEL,
+        'voice': 'Momo',
+    },
+    'qwen_intl': {
+        'url': 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+        'model': _QWEN_REALTIME_TTS_MODEL,
+        'voice': 'Momo',
+    },
+    'free': {'url': '', 'model': 'free-model', 'voice': ''},
+    'step': {'url': 'https://api.stepfun.com', 'model': 'step-tts-2', 'voice': 'linjiameimei'},
+    'glm': {'url': 'https://open.bigmodel.cn/api/paas/v4', 'model': 'cogtts', 'voice': 'tongtong'},
+    'gemini': {
+        'url': 'https://generativelanguage.googleapis.com/v1beta',
+        'model': 'gemini-2.5-flash-preview-tts',
+        'voice': 'Leda',
+    },
+    'openai': {
+        'url': 'https://api.openai.com/v1',
+        'model': 'gpt-4o-mini-tts',
+        'voice': 'marin',
+    },
+    'grok': {'url': 'https://api.x.ai/v1', 'model': 'grok-tts', 'voice': 'eve'},
+}
+
+
+def _clean_tts_secret(value) -> str:
+    secret = str(value or '').strip()
+    return '' if '***' in secret else secret
+
+
+def _named_tts_config(ctx, provider_key: str) -> tuple[str, str, str, str]:
+    """Resolve a named provider's URL/model/voice/key from its own role.
+
+    Explicit providers consume the TTS slot plus their Key Book entry;
+    follow sentinels consume the followed role's credential, while the
+    provider registry owns its speech endpoint/model.  A chat or realtime URL
+    is only a fallback for providers that do not declare a dedicated TTS URL.
+    """
+    config = ctx.core_config
+    request = ctx.provider_request
+    defaults = _NAMED_TTS_DEFAULTS.get(provider_key, {})
+
+    if request.mode == 'follow_core':
+        base_url = defaults.get('url', '') or config.get('CORE_URL')
+        api_key = config.get('CORE_API_KEY')
+        model = defaults.get('model', '')
+    elif request.mode == 'follow_assist':
+        base_url = defaults.get('url', '') or config.get('OPENROUTER_URL')
+        api_key = config.get('OPENROUTER_API_KEY')
+        model = defaults.get('model', '')
+    else:
+        base_url = (
+            config.get('ttsModelUrl')
+            or config.get('TTS_MODEL_URL')
+            or defaults.get('url', '')
+        )
+        model = (
+            config.get('ttsModelId')
+            or config.get('TTS_MODEL')
+            or defaults.get('model', '')
+        )
+        api_key = config.get('TTS_MODEL_API_KEY')
+        if not _clean_tts_secret(api_key):
+            key_field = _NAMED_TTS_KEY_FIELDS.get(provider_key)
+            api_key = config.get(key_field) if key_field else api_key
+
+    voice = (
+        ctx.voice_id
+        or config.get('ttsVoiceId')
+        or config.get('TTS_VOICE_ID')
+        or defaults.get('voice', '')
+    )
+    if provider_key == 'free' and not _clean_tts_secret(api_key):
+        api_key = 'free-access'
+    return (
+        str(base_url or '').strip(),
+        str(model or '').strip(),
+        str(voice or '').strip(),
+        _clean_tts_secret(api_key),
+    )
+
+
+def _invalid_tts_resolution(provider_key: str, reason: str):
+    return (
+        partial(
+            invalid_tts_configuration_worker,
+            provider_key=provider_key,
+            reason=reason,
+        ),
+        '',
+        provider_key,
+    )
+
+
+def _builtin_tts_is_selected(provider_key: str):
+    def predicate(ctx):
+        request = ctx.provider_request
+        return request.is_authoritative and request.provider_key == provider_key
+    return predicate
+
+
+def _builtin_tts_resolve(provider_key: str):
+    def resolver(ctx):
+        voice_owner = _voice_meta_owner_provider_key(ctx.voice_meta)
+        if voice_owner and not ctx.permits_provider(voice_owner):
+            return _invalid_tts_resolution(provider_key, 'voice_owned_by_other_provider')
+        base_url, model, _configured_voice, api_key = _named_tts_config(ctx, provider_key)
+        if provider_key != 'free' and not api_key:
+            return _invalid_tts_resolution(provider_key, 'missing_api_key')
+
+        if provider_key in ('qwen', 'qwen_intl'):
+            family = qwen_tts_model_family(model)
+            if family == 'cosyvoice':
+                if not base_url:
+                    return _invalid_tts_resolution(provider_key, 'missing_url')
+                if not _configured_voice:
+                    return _invalid_tts_resolution(provider_key, 'missing_voice')
+                return (
+                    partial(
+                        cosyvoice_vc_tts_worker,
+                        base_url=base_url,
+                        enrolled_model=model,
+                        provider_key=provider_key,
+                        configured_voice=_configured_voice,
+                    ),
+                    api_key,
+                    provider_key,
+                )
+            if family != 'realtime':
+                return _invalid_tts_resolution(provider_key, 'unsupported_model_family')
+            return (
+                partial(
+                    qwen_realtime_tts_worker,
+                    base_url=base_url,
+                    model=model,
+                    provider_key=provider_key,
+                ),
+                api_key,
+                provider_key,
+            )
+
+        if provider_key == 'free':
+            return free_realtime_tts_worker, api_key, 'free'
+        if provider_key == 'step':
+            return step_realtime_tts_worker, api_key, 'step'
+        if provider_key == 'glm':
+            return cogtts_tts_worker, api_key, 'glm'
+        if provider_key == 'gemini':
+            return gemini_tts_worker, api_key, 'gemini'
+        if provider_key == 'openai':
+            if not base_url:
+                return _invalid_tts_resolution(provider_key, 'missing_url')
+            if not model:
+                return _invalid_tts_resolution(provider_key, 'missing_model')
+            if not _configured_voice:
+                return _invalid_tts_resolution(provider_key, 'missing_voice')
+            return (
+                partial(
+                    openai_tts_worker,
+                    base_url=base_url,
+                    model=model,
+                    voice=_configured_voice,
+                ),
+                api_key,
+                'openai',
+            )
+        if provider_key == 'grok':
+            return grok_streaming_tts_worker, api_key, 'grok'
+        return _invalid_tts_resolution(provider_key, 'unsupported_provider')
+    return resolver
+
+
+def _voice_meta_owner_provider_key(meta: dict | None) -> str | None:
+    """Return a canonical clone/design owner from explicit metadata."""
+    if not isinstance(meta, dict):
+        return None
+    raw_provider = str(meta.get('provider') or '').strip().lower()
+    if not raw_provider:
+        return None
+    provider = _tts_providers.get(raw_provider)
+    if provider is None or not provider.capabilities.intersection({'clone', 'design'}):
+        return None
+    return provider.key
+
+
+def tts_voice_owner_provider_key(voice_id: str | None) -> str | None:
+    """Return the explicit clone/design owner stamped into voice metadata."""
+    voice = str(voice_id or '').strip()
+    if not voice:
+        return None
+    return _voice_meta_owner_provider_key(_get_voice_meta(voice))
+
+
+def _local_cosyvoice_is_selected(ctx) -> bool:
+    meta = ctx.voice_meta or {}
+    owner = str(meta.get('provider') or '').strip().lower()
+    return bool(
+        ctx.permits_provider('local_cosyvoice')
+        and _tts_providers.get(owner) is _tts_providers.get('local_cosyvoice')
+    )
+
+
+def _local_cosyvoice_resolve(ctx):
+    try:
+        tts_config = ctx.cm.get_model_api_config('tts_custom') or {}
+    except Exception:
+        tts_config = {}
+    base_url = str(tts_config.get('base_url') or '').strip()
+    try:
+        _normalize_local_cosyvoice_ws_endpoint(base_url)
+    except Exception:
+        return _invalid_tts_resolution('local_cosyvoice', 'missing_or_invalid_url')
+    if not str(ctx.voice_id or '').strip():
+        return _invalid_tts_resolution('local_cosyvoice', 'missing_voice')
+    return (
+        partial(local_cosyvoice_worker, base_url=base_url),
+        '',
+        'local_cosyvoice',
+    )
 
 
 _XAI_CUSTOM_VOICE_PATTERN = re.compile(r'^[a-z0-9]{8}$')
@@ -291,10 +540,7 @@ def get_tts_worker(
         - provider_key: name of the provider actually selected (a key of
           TTS_PROVIDER_REGISTRY), for the caller to query provider metadata
           (e.g. category).
-          Special values: 'free' is deliberately absent from the registry
-          (overseas routes to the Gemini backend and needs the normalizer;
-          meta=None → the caller falls through and enables the normalizer);
-          None when native TTS is unsupported
+          None when native TTS is unsupported.
     """
     cm = get_config_manager()
     try:
@@ -305,9 +551,6 @@ def get_tts_worker(
     if core_cfg.get('DISABLE_TTS', False):
         logger.info("TTS disabled; using dummy TTS worker")
         return dummy_tts_worker, None, None
-
-    tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
-    assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
     # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
     # 选择与 worker 解析已收敛到 utils.tts.provider_registry，按 priority 顺序匹配：
@@ -324,6 +567,7 @@ def get_tts_worker(
     _dispatch_ctx = _tts_providers.DispatchContext(
         core_config=core_cfg,
         cm=cm,
+        core_api_type=core_api_type,
         voice_id=voice_id or '',
         has_custom_voice=bool(has_custom_voice),
         voice_meta_loader=lambda: _get_voice_meta(voice_id),
@@ -338,6 +582,20 @@ def get_tts_worker(
     if special is not None:
         logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
         return special
+
+    provider_request = _dispatch_ctx.provider_request
+    requested_provider_failed = bool(
+        provider_request.provider_key
+        and provider_request.provider_key in frozenset(excluded_provider_keys or ())
+    )
+    if provider_request.is_authoritative and not requested_provider_failed:
+        # A follow target that has no TTS capability, an unknown explicit
+        # provider, or a clone-only provider without owned voice metadata must
+        # fail under its requested identity.  Falling through to core here would
+        # synthesize with a different provider/key while the UI still claims the
+        # selected route is active.
+        provider_key = provider_request.provider_key or provider_request.raw_provider or 'configured'
+        return _invalid_tts_resolution(provider_key, 'unsupported_or_unowned_provider')
 
     # 克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）已折入
     # tts_provider_registry（priority 30/40/50，按 voice_meta.provider 选中），
@@ -366,11 +624,10 @@ def get_tts_worker(
     # GPT-SoVITS（is_custom + GPTSOVITS_ENABLED）已由顶部 tts_provider_registry
     # 以相同 gate 优先返回，此处不再重复判定（原 fallthrough 分支已并入注册表）。
 
-    # 如果有自定义克隆音色，使用 CosyVoice（阿里云）
-    # 必须同时有有效的 voice_id 且不是免费预设音色，否则 fallthrough 到默认 TTS
-    # 注：core.py 的 _has_custom_tts 对 core_api_type=='gemini' + Gemini voice 短路返回 False，
-    # 仅当 voice_id 不在用户已克隆音色列表里时才生效；同名克隆 voice (例如自己上传的 Puck)
-    # 仍会保留 has_custom_voice=True 进入此分支。
+    # Metadata-less non-native voice IDs are not evidence of a CosyVoice clone.
+    # The only legacy exception is an xAI custom voice whose id format is owned
+    # by Grok itself.  Every clone/design provider now requires explicit stored
+    # metadata and is selected by the registry above.
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
         if voice_id in set(get_free_voices().values()):
@@ -390,8 +647,6 @@ def get_tts_worker(
             # 回内置 voice，悄悄绕过用户的克隆。
             grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
             return grok_streaming_tts_worker, grok_api_key, 'grok'
-        else:
-            return cosyvoice_vc_tts_worker, None, 'cosyvoice'
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type in ('qwen', 'qwen_intl'):
@@ -405,7 +660,7 @@ def get_tts_worker(
             # A supervised fallback must not inherit the failed configured
             # endpoint's TTS_MODEL_API_KEY through the tts_default slot.
             qwen_api_key_override = str(core_cfg.get(qwen_key_field) or '').strip()
-        return qwen_realtime_tts_worker, qwen_api_key_override, 'qwen'
+        return qwen_realtime_tts_worker, qwen_api_key_override, core_api_type
     if core_api_type == 'free':
         # 免费服务拥有独立 worker；底层仍复用它与 StepFun 当前共有的流式
         # wire transport，但 provider 路由、端点和音色选择不再伪装成 StepFun。
@@ -413,7 +668,7 @@ def get_tts_worker(
     elif core_api_type == 'step':
         return step_realtime_tts_worker, None, 'step'
     elif core_api_type == 'glm':
-        return cogtts_tts_worker, None, 'cogtts'
+        return cogtts_tts_worker, None, 'glm'
     elif core_api_type == 'gemini':
         return gemini_tts_worker, None, 'gemini'
     elif core_api_type == 'openai':
@@ -578,9 +833,33 @@ _tts_providers.register(_tts_providers.TTSProvider(
         prefix_pattern=r'^[A-Za-z0-9]+$',
         language_hints=('ch', 'en'),
     ),
-    is_selected=_cosyvoice_clone_is_selected,
+    is_selected=_cosyvoice_clone_is_selected_for('cosyvoice'),
     resolve=_cosyvoice_clone_resolve,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='cosyvoice_intl',
+    kind='hosted',
+    priority=51,
+    # International DashScope supports enrollment clone but not Voice Design.
+    # Keep it separate from domestic CosyVoice so capability metadata never
+    # advertises the unsupported design endpoint and credentials stay regional.
+    capabilities=frozenset({'clone'}),
+    is_selected=_cosyvoice_clone_is_selected_for('cosyvoice_intl'),
+    resolve=_cosyvoice_clone_resolve,
+    tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='local_cosyvoice',
+    kind='local',
+    priority=55,
+    capabilities=frozenset({'clone'}),
+    aliases=frozenset({'local'}),
+    is_selected=_local_cosyvoice_is_selected,
+    resolve=_local_cosyvoice_resolve,
+    tts_config_visible=False,
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
@@ -607,7 +886,12 @@ _tts_providers.register(_tts_providers.TTSProvider(
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
+    preset_previewable=False,
+    preset_preview_unavailable_reason='mimo_preset_preview_not_implemented',
     tts_dropdown_only=False,
+    default_url=MIMO_TTS_BASE_URL,
+    default_model=MIMO_TTS_MODEL,
+    default_voice=MIMO_TTS_DEFAULT_VOICE,
 ))
 
 _tts_providers.register(_tts_providers.TTSProvider(
@@ -626,3 +910,27 @@ _tts_providers.register(_tts_providers.TTSProvider(
     tts_dropdown_only=True,
     tts_config_visible=False,
 ))
+
+
+# Named built-ins are real TTS providers, not aliases for their assist LLM
+# transports.  Registering them here gives dispatch, /api_providers capability
+# filtering, and settings connectivity one shared provider boundary.
+for _priority, _provider_key in enumerate(
+    ('qwen', 'qwen_intl', 'free', 'step', 'glm', 'gemini', 'openai', 'grok'),
+    start=70,
+):
+    _defaults = _NAMED_TTS_DEFAULTS[_provider_key]
+    _tts_providers.register(_tts_providers.TTSProvider(
+        key=_provider_key,
+        kind='hosted',
+        priority=_priority,
+        capabilities=frozenset({'preset'}),
+        is_selected=_builtin_tts_is_selected(_provider_key),
+        resolve=_builtin_tts_resolve(_provider_key),
+        tts_dropdown_only=False,
+        default_url=_defaults['url'],
+        default_model=_defaults['model'],
+        default_voice=_defaults['voice'],
+        probe_kind='http_tts' if _provider_key == 'openai' else 'none',
+        probe_sub_type='openai_tts' if _provider_key == 'openai' else '',
+    ))

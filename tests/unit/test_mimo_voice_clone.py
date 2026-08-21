@@ -357,8 +357,14 @@ def test_get_tts_worker_mimo_clone_missing_sample_falls_back_to_dummy(monkeypatc
     worker, api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="qwen", has_custom_voice=True, voice_id="mimo-clone-x",
     )
-    assert worker is tts_client.dummy_tts_worker
-    assert provider_key is None
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.invalid_tts_configuration_worker
+    assert worker.keywords == {
+        "provider_key": "mimo",
+        "reason": "missing_clone_sample",
+    }
+    assert api_key == ""
+    assert provider_key == "mimo"
 
 
 # ── config_manager: __MIMO__ bucket merges into the current-API voice list ────

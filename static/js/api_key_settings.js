@@ -1208,13 +1208,30 @@ function isProviderFlagDisabled(value) {
 
 function isTtsProviderVisibleInModelConfig(providerKey, meta = null) {
     const profile = getProviderInfo(providerKey);
+    const resolvedMeta = meta || getTtsProviderMeta(providerKey);
     if (isProviderFlagDisabled(profile.tts_config_visible) || isProviderFlagDisabled(profile.ttsConfigVisible)) {
         return false;
     }
-    if (meta && (isProviderFlagDisabled(meta.tts_config_visible) || isProviderFlagDisabled(meta.ttsConfigVisible))) {
+    if (!resolvedMeta) {
+        // Core providers own built-in TTS workers, but /api_providers currently
+        // returns registry metadata only for hosted/local adapters. Keep those
+        // native Qwen/Gemini/OpenAI/etc. routes while rejecting assist-only
+        // Claude/DeepSeek/etc. profiles that have no TTS implementation.
+        return Boolean(_coreApiProviders[providerKey]);
+    }
+    if (isProviderFlagDisabled(resolvedMeta.tts_config_visible) || isProviderFlagDisabled(resolvedMeta.ttsConfigVisible)) {
         return false;
     }
-    return true;
+    const capabilities = Array.isArray(resolvedMeta.capabilities)
+        ? resolvedMeta.capabilities.map(value => String(value || '').trim().toLowerCase())
+        : [];
+    // Config-selected providers either own a TTS-only configuration surface
+    // (GPT-SoVITS/vLLM-Omni/etc.) or expose selectable preset voices (MiMo).
+    // Clone/design-only providers are selected by saved voice metadata, not by
+    // this model-provider dropdown, so showing them here would be a fake route.
+    return isProviderFlagEnabled(resolvedMeta.tts_dropdown_only)
+        || isProviderFlagEnabled(resolvedMeta.ttsDropdownOnly)
+        || capabilities.includes('preset');
 }
 
 function isFixedModelProvider(providerKey) {
@@ -1299,6 +1316,52 @@ function getResolvedCustomModelId(modelType, providerMode) {
     if (fixedModel) return fixedModel;
     const input = document.getElementById(`${modelType}ModelId`);
     return input ? input.value.trim() : '';
+}
+
+function getNamedTtsProbeSubType(providerKey, modelId, meta = null) {
+    const provider = String(providerKey || '').trim().toLowerCase();
+    const model = String(modelId || '').trim().toLowerCase();
+    if (provider === 'qwen' || provider === 'qwen_intl') {
+        if (model.includes('cosyvoice')) return 'cosyvoice_tts';
+        if (model.includes('qwen3-tts') && model.includes('realtime')) {
+            return 'qwen_realtime_tts';
+        }
+        // Unknown Qwen families remain empty so the backend can reject them as
+        // unsupported after checking provider + model; never silently probe an
+        // unrelated assist/chat protocol.
+        return '';
+    }
+    const resolvedMeta = meta || getTtsProviderMeta(provider);
+    return resolvedMeta ? String(resolvedMeta.probe_sub_type || '').trim() : '';
+}
+
+/**
+ * Convert a followed Core/Assist credential into the TTS transport that the
+ * runtime will actually start.  A followed role contributes only its
+ * provider/credential/endpoint; model and default voice belong to that
+ * provider's TTS registry entry, never to its chat/realtime model profile or
+ * endpoint. Providers without a dedicated TTS URL may still inherit the role
+ * URL as an explicit fallback (for example MiMo Token Plan).
+ */
+function applyFollowedTtsConnectivity(result, followedResult) {
+    const providerKey = String(followedResult?.providerKey || '').trim();
+    const meta = getTtsProviderMeta(providerKey);
+    const configuredVoice = document.getElementById('ttsVoiceId')?.value?.trim() || '';
+
+    result.key = followedResult?.key || '';
+    result.secretMasked = Boolean(followedResult?.secretMasked);
+    const providerTtsUrl = meta ? String(meta.default_url || '').trim() : '';
+    const followedRoleUrl = followedResult?.url || '';
+    const preferMimoTokenPlanUrl = providerKey === 'mimo' && isMimoTokenPlanActive();
+    result.url = (preferMimoTokenPlanUrl ? followedRoleUrl : '')
+        || providerTtsUrl
+        || followedRoleUrl;
+    result.providerType = 'tts';
+    result.providerKey = providerKey;
+    result.providerScope = 'tts';
+    result.model = meta ? String(meta.default_model || '').trim() : '';
+    result.voiceId = configuredVoice || (meta ? String(meta.default_voice || '').trim() : '');
+    result.subType = getNamedTtsProbeSubType(providerKey, result.model, meta);
 }
 
 function populateModelProviderDropdowns() {
@@ -1490,7 +1553,63 @@ function onCustomModelProviderChange(modelType) {
             sourceProviderKey = assistSelect ? assistSelect.value : '';
         }
 
-        if (sourceProviderKey && sourceProviderKey !== 'free') {
+        if (sourceProviderKey && modelType === 'tts') {
+            const ttsMeta = getTtsProviderMeta(sourceProviderKey);
+            const providerTtsUrl = ttsMeta ? String(ttsMeta.default_url || '').trim() : '';
+            const previousResolvedProvider = String(
+                sel.dataset.resolvedTtsProvider || ''
+            ).trim();
+            const resolvedProviderChanged = Boolean(
+                previousResolvedProvider
+                && previousResolvedProvider !== sourceProviderKey
+            );
+            const sourceProfile = getProviderInfo(sourceProviderKey);
+            const followedRoleUrl = provider === 'follow_core'
+                ? getProviderCoreUrl(
+                    sourceProviderKey,
+                    _coreApiProviders[sourceProviderKey] || sourceProfile
+                )
+                : getEffectiveAssistUrl(sourceProviderKey, sourceProfile);
+            if (urlInput) {
+                // A speech slot must never inherit a chat/realtime endpoint
+                // when the provider declares its own TTS transport URL.
+                const preferMimoTokenPlanUrl = sourceProviderKey === 'mimo'
+                    && provider === 'follow_assist'
+                    && isMimoTokenPlanActive();
+                urlInput.value = (preferMimoTokenPlanUrl ? followedRoleUrl : '')
+                    || providerTtsUrl
+                    || followedRoleUrl
+                    || '';
+                urlInput.setAttribute('readonly', 'readonly');
+            }
+            if (modelIdInput) {
+                modelIdInput.value = ttsMeta
+                    ? String(ttsMeta.default_model || '').trim()
+                    : '';
+            }
+            if (voiceInput && resolvedProviderChanged && !_isLoadingSavedConfig) {
+                // ttsVoiceId belongs to the provider that supplied it.  Keeping
+                // Qwen/OpenAI/etc. voices while the followed role switches to a
+                // different provider sends a foreign voice ID to the new TTS
+                // endpoint (for example Cherry -> free -> HTTP 404).  Preserve
+                // the user's voice while the effective provider is unchanged,
+                // but reset it at the provider boundary.
+                voiceInput.value = ttsMeta
+                    ? String(ttsMeta.default_voice || '').trim()
+                    : '';
+            }
+            sel.dataset.resolvedTtsProvider = sourceProviderKey;
+            if (sourceProviderKey === 'free') {
+                setKeyReadonly(keyInput, '');
+            } else {
+                const bookKey = getEffectiveAssistKey(sourceProviderKey);
+                setKeyReadonly(
+                    keyInput,
+                    bookKey,
+                    getEffectiveAssistProviderKey(sourceProviderKey)
+                );
+            }
+        } else if (sourceProviderKey && sourceProviderKey !== 'free') {
             if (modelType === 'omni') {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const coreProviderKey = coreSelect ? coreSelect.value : '';
@@ -1571,16 +1690,41 @@ function onCustomModelProviderChange(modelType) {
                 urlInput.setAttribute('readonly', 'readonly');
             }
         } else {
+            const ttsMeta = modelType === 'tts' ? getTtsProviderMeta(provider) : null;
+            const namedMimoTokenPlanUrl = modelType === 'tts'
+                && provider === 'mimo'
+                && isMimoTokenPlanActive()
+                ? getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: true })
+                : '';
+            const providerTtsUrl = ttsMeta ? String(ttsMeta.default_url || '').trim() : '';
             if (urlInput) {
-                urlInput.value = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
+                urlInput.value = namedMimoTokenPlanUrl
+                    || providerTtsUrl
+                    || getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: modelType === 'tts' })
+                    || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
+            if (modelType === 'tts' && ttsMeta) {
+                if (modelIdInput && (!_isLoadingSavedConfig || !modelIdInput.value.trim())) {
+                    modelIdInput.value = String(ttsMeta.default_model || '').trim();
+                }
+                if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value.trim())) {
+                    voiceInput.value = String(ttsMeta.default_voice || '').trim();
+                }
+            }
         }
-        const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
-        setKeyReadonly(keyInput, bookKey, provider);
+        const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: modelType === 'tts' });
+        setKeyReadonly(
+            keyInput,
+            bookKey,
+            modelType === 'tts' ? getEffectiveAssistProviderKey(provider) : provider
+        );
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
+        if (provider !== 'follow_core' && provider !== 'follow_assist') {
+            sel.dataset.resolvedTtsProvider = provider;
+        }
     }
     sel.dataset.currentProvider = provider;
 }
@@ -2908,12 +3052,28 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         }
 
         if (!providerKey) return '';
+        if (modelType === 'tts') {
+            const ttsMeta = getTtsProviderMeta(providerKey);
+            const providerTtsUrl = ttsMeta ? String(ttsMeta.default_url || '').trim() : '';
+            const preferMimoTokenPlanUrl = providerKey === 'mimo'
+                && isMimoTokenPlanActive()
+                && (providerMode === 'mimo' || providerMode === 'follow_assist');
+            if (providerTtsUrl && !preferMimoTokenPlanUrl) return providerTtsUrl;
+            if (providerMode === 'follow_core') {
+                const coreProfile = _coreApiProviders[providerKey] || getProviderInfo(providerKey);
+                return getProviderCoreUrl(providerKey, coreProfile);
+            }
+        }
         if (scope === 'core') {
             return getProviderCoreUrl(providerKey, _coreApiProviders[providerKey] || {});
         }
 
         const assistProfile = getProviderInfo(providerKey);
-        const useTokenPlan = providerMode === 'follow_assist';
+        // An explicit named MiMo route shares the active Assist Token Plan
+        // credential + regional endpoint pair, just like runtime resolution.
+        // follow_core remains tied to its Core route.
+        const useTokenPlan = providerMode === 'follow_assist'
+            || (modelType === 'tts' && providerMode === 'mimo' && isMimoTokenPlanActive());
         return getEffectiveAssistUrl(providerKey, assistProfile, { useTokenPlan }) || getProviderCoreUrl(providerKey, assistProfile);
     };
 
@@ -3858,8 +4018,12 @@ const ConnectivityManager = {
             } else if (provider === 'follow_core') {
                 // 跟随核心 API
                 const coreResult = this.resolveEffectiveKey({ type: 'core' });
-                // omni 模型使用 core_url (WebSocket)，其他模型使用 openrouter_url
-                if (mt === 'omni') {
+                if (mt === 'tts') {
+                    // TTS follows the selected Core provider's speech worker.
+                    // Keep scope='tts' so connectivity cannot accidentally
+                    // green-light that provider's realtime/chat endpoint.
+                    applyFollowedTtsConnectivity(result, coreResult);
+                } else if (mt === 'omni') {
                     result.key = coreResult.key;
                     result.secretMasked = coreResult.secretMasked;
                     result.url = coreResult.url;
@@ -3880,12 +4044,18 @@ const ConnectivityManager = {
             } else if (provider === 'follow_assist') {
                 // 跟随辅助 API
                 const assistResult = this.resolveEffectiveKey({ type: 'assist' });
-                result.key = assistResult.key;
-                result.secretMasked = assistResult.secretMasked;
-                result.url = assistResult.url;
-                result.providerType = assistResult.providerType;
-                result.providerKey = assistResult.providerKey;
-                result.providerScope = assistResult.providerScope;
+                if (mt === 'tts') {
+                    // Same contract as runtime follow_assist: reuse the role's
+                    // credential/URL, but dispatch and probe its TTS capability.
+                    applyFollowedTtsConnectivity(result, assistResult);
+                } else {
+                    result.key = assistResult.key;
+                    result.secretMasked = assistResult.secretMasked;
+                    result.url = assistResult.url;
+                    result.providerType = assistResult.providerType;
+                    result.providerKey = assistResult.providerKey;
+                    result.providerScope = assistResult.providerScope;
+                }
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
@@ -3968,13 +4138,35 @@ const ConnectivityManager = {
                 }
             } else {
                 // 指定服务商：从 Key Book 读取
-                result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
+                result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: mt === 'tts' });
                 if (mt === 'omni') {
                     const coreProfile = _coreApiProviders[provider] || {};
                     result.url = getProviderCoreUrl(provider, coreProfile);
                     result.providerType = 'websocket';
                     result.providerKey = provider;
                     result.providerScope = 'core';
+                } else if (mt === 'tts') {
+                    // A named TTS selection is neither an assist/chat probe nor
+                    // a generic custom endpoint. Keep its provider identity so
+                    // the backend can choose the real synthesis protocol, and
+                    // forward the model/voice that distinguish protocol families
+                    // (notably Qwen Realtime TTS vs CosyVoice preset TTS).
+                    const ttsMeta = getTtsProviderMeta(provider);
+                    const namedProfile = getProviderInfo(provider);
+                    const namedMimoTokenPlanUrl = provider === 'mimo' && isMimoTokenPlanActive()
+                        ? getEffectiveAssistUrl(provider, namedProfile)
+                        : '';
+                    result.url = namedMimoTokenPlanUrl
+                        || (urlInput ? urlInput.value.trim() : '')
+                        || (ttsMeta ? String(ttsMeta.default_url || '').trim() : '');
+                    result.providerType = 'tts';
+                    result.providerKey = provider;
+                    result.providerScope = 'tts';
+                    result.model = (modelIdInput ? modelIdInput.value.trim() : '')
+                        || (ttsMeta ? String(ttsMeta.default_model || '').trim() : '');
+                    result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim()
+                        || (ttsMeta ? String(ttsMeta.default_voice || '').trim() : '');
+                    result.subType = getNamedTtsProbeSubType(provider, result.model, ttsMeta);
                 } else {
                     const pInfo = getProviderInfo(provider);
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
@@ -3988,6 +4180,13 @@ const ConnectivityManager = {
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    if (result.providerScope === 'tts') {
+                        // Model/voice/subtype materially change a TTS request;
+                        // they must invalidate a previously green named-provider
+                        // probe even though ordinary built-in URL resolution does
+                        // not participate in cache identity.
+                        result.cacheId += `|${result.subType || ''}|${result.model || ''}|${result.voiceId || ''}`;
+                    }
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -4110,6 +4309,12 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_scope === 'tts') {
+                        body.url = url || '';
+                        body.model = model || '';
+                        body.voice_id = voiceId || '';
+                        body.sub_type = subType || '';
+                    }
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -4186,7 +4391,12 @@ const ConnectivityManager = {
 
             const result = await sendRequest(url);
             cleanupRequest();
-            if (result.success && result.resolved_url && provider_key && provider_scope) {
+            if (
+                result.success
+                && result.resolved_url
+                && provider_key
+                && (provider_scope === 'core' || provider_scope === 'assist')
+            ) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
             return result;

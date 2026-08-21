@@ -2154,5 +2154,176 @@ class TestGptsovitsEnabledSaveMigration:
         assert 'dashscope' in realtime_config['base_url']
 
 
+# ---------------------------------------------------------------------------
+# TTS provider routes: explicit providers read credentials from Key Book,
+# while custom/resolver-owned providers retain their dedicated TTS contract.
+# ---------------------------------------------------------------------------
+class TestTtsNamedProviderRuntimeResolution:
+
+    @staticmethod
+    def _named_qwen_payload(*, book_key, slot_key):
+        return {
+            'coreApi': 'step',
+            'coreApiKey': 'sk-core-step',
+            'assistApi': 'step',
+            'assistApiKeyStep': 'sk-assist-step',
+            'assistApiKeyQwen': book_key,
+            'enableCustomApi': True,
+            'ttsModelProvider': 'qwen',
+            'ttsModelUrl': 'https://dashscope.example.test/compatible-mode/v1',
+            'ttsModelId': 'qwen-tts-model',
+            'ttsModelApiKey': slot_key,
+        }
+
+    @pytest.mark.unit
+    def test_explicit_tts_provider_resolves_keybook_key(self, config_manager):
+        _write_core_config(config_manager, self._named_qwen_payload(
+            book_key='sk-qwen-keybook-only',
+            slot_key='',
+        ))
+
+        snapshot = config_manager.get_core_config()
+        result = config_manager.get_model_api_config(
+            'tts_custom',
+            _core_config=snapshot,
+        )
+
+        assert snapshot['TTS_MODEL_API_KEY'] == 'sk-qwen-keybook-only'
+        assert result['api_key'] == 'sk-qwen-keybook-only'
+
+    @pytest.mark.unit
+    def test_explicit_tts_provider_key_rotation_replaces_stale_slot_key(
+        self,
+        config_manager,
+    ):
+        payload = self._named_qwen_payload(
+            book_key='sk-qwen-book-v1',
+            slot_key='sk-stale-slot-key',
+        )
+        _write_core_config(config_manager, payload)
+        first = config_manager.get_model_api_config('tts_custom')
+
+        payload['assistApiKeyQwen'] = 'sk-qwen-book-v2'
+        _write_core_config(config_manager, payload)
+        rotated = config_manager.get_model_api_config('tts_custom')
+
+        assert first['api_key'] == 'sk-qwen-book-v1'
+        assert rotated['api_key'] == 'sk-qwen-book-v2'
+        assert rotated['api_key'] != 'sk-stale-slot-key'
+
+    @pytest.mark.unit
+    def test_explicit_tts_provider_memory_snapshot_ignores_slot_key(
+        self,
+        config_manager,
+    ):
+        snapshot = {
+            'ENABLE_CUSTOM_API': True,
+            'ttsModelProvider': 'qwen',
+            'TTS_MODEL': 'qwen-tts-model',
+            'TTS_MODEL_URL': 'https://dashscope.example.test/compatible-mode/v1',
+            'TTS_MODEL_API_KEY': 'sk-stale-slot-key',
+            'ASSIST_API_KEY_QWEN': 'sk-qwen-book',
+            'assistApi': 'step',
+            'OPENROUTER_API_KEY': 'sk-assist-step',
+            'OPENROUTER_URL': 'https://api.stepfun.com/v1',
+            'PROVIDER_TYPE': 'openai_compatible',
+        }
+
+        result = config_manager.get_model_api_config(
+            'tts_custom',
+            _core_config=snapshot,
+        )
+
+        assert result['api_key'] == 'sk-qwen-book'
+
+    @pytest.mark.unit
+    def test_custom_tts_still_owns_slot_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'step',
+            'coreApiKey': 'sk-core-step',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-keybook',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            'ttsModelUrl': 'https://custom-tts.example.test/v1',
+            'ttsModelId': 'custom-tts-model',
+            'ttsModelApiKey': 'sk-custom-tts-slot',
+        })
+
+        result = config_manager.get_model_api_config('tts_custom')
+
+        assert result['api_key'] == 'sk-custom-tts-slot'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('use_token_plan', 'expected_key', 'expected_url'),
+        (
+            (False, 'sk-regular-mimo', 'https://api.xiaomimimo.com/v1'),
+            (True, 'tp-mimo-token-plan', 'https://token-plan-sgp.xiaomimimo.com/v1'),
+        ),
+    )
+    def test_explicit_mimo_tts_uses_active_regular_or_token_plan_pair(
+        self,
+        config_manager,
+        use_token_plan,
+        expected_key,
+        expected_url,
+    ):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'mimo',
+            'assistApiKeyMimo': 'sk-regular-mimo',
+            'assistApiKeyMimoTokenPlan': 'tp-mimo-token-plan',
+            'useMimoTokenPlan': use_token_plan,
+            'resolvedProviderUrls': {
+                'assist:mimo_token_plan': 'https://token-plan-sgp.xiaomimimo.com/v1',
+            },
+            'enableCustomApi': True,
+            'ttsModelProvider': 'mimo',
+            'ttsModelUrl': 'https://stale-provider.example.test/v1',
+            'ttsModelId': 'mimo-user-selected-model',
+            'ttsModelApiKey': 'sk-stale-slot-key',
+        })
+
+        snapshot = config_manager.get_core_config()
+        result = config_manager.get_model_api_config(
+            'tts_custom',
+            _core_config=snapshot,
+        )
+
+        assert result['model'] == 'mimo-user-selected-model'
+        assert result['api_key'] == expected_key
+        assert result['base_url'] == expected_url
+        assert result['api_key'] != 'sk-stale-slot-key'
+
+    @pytest.mark.unit
+    def test_vllm_omni_generic_snapshot_does_not_expose_resolver_owned_key(
+        self,
+        config_manager,
+    ):
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'vllm_omni',
+            'ttsModelUrl': 'ws://localhost:8091/v1',
+            'ttsModelId': 'Qwen3-TTS',
+            'ttsModelApiKey': 'sk-vllm-resolver-owned',
+        })
+
+        snapshot = config_manager.get_core_config()
+        result = config_manager.get_model_api_config(
+            'tts_custom',
+            _core_config=snapshot,
+        )
+
+        assert snapshot['TTS_MODEL'] == 'Qwen3-TTS'
+        assert snapshot['TTS_MODEL_URL'] == 'ws://localhost:8091/v1'
+        assert snapshot['TTS_MODEL_API_KEY'] == ''
+        assert result['api_key'] == ''
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -1342,6 +1342,7 @@ class CoreConfigMixin:
                 # 读取用户填的 modelId（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 因此这些特殊前缀继续走既有 follow 解析。
                 is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
+                is_mimo_named_tts = prefix == 'tts' and provider == 'mimo'
                 # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
                 # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
                 # 也必须优先保留 GSV URL，否则对话 TTS 会连到辅助 LLM endpoint。
@@ -1355,7 +1356,24 @@ class CoreConfigMixin:
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
                 cfg_url = core_cfg.get(f'{prefix}ModelUrl')
-                if gsv_tts_url_override:
+                if is_mimo_named_tts:
+                    mimo_profile = assist_api_profiles.get('mimo', {})
+                    if use_mimo_token_plan:
+                        config[url_key] = config.get('OPENROUTER_URL', '')
+                    else:
+                        resolved_mimo_url = self._get_saved_provider_url(
+                            core_cfg,
+                            'assist',
+                            'mimo',
+                            mimo_profile,
+                            'OPENROUTER_URL',
+                            'OPENROUTER_URLS',
+                        )
+                        config[url_key] = (
+                            resolved_mimo_url
+                            or mimo_profile.get('OPENROUTER_URL', '')
+                        )
+                elif gsv_tts_url_override:
                     config[url_key] = normalize_gsv_api_url(cfg_url or config.get(url_key))
                 elif not skip_url_for_follow:
                     if is_follow:
@@ -1392,7 +1410,13 @@ class CoreConfigMixin:
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生
                 #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
-                #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #   TTS 具名服务商 → 每次快照都从 Key Book 的对应服务商槽解析
+                #   其他服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #
+                # 不允许显式 TTS provider 读 ttsModelApiKey：前端具名选项的凭证
+                # 唯一来源是 Key Book。否则 Key Book 轮换后运行时仍会携带旧 slot key。
+                # 不在 Key Book 的 vLLM-Omni 等 provider 由 tts_client 专用 resolver
+                # 读取其持久化字段，不把私密值扩散进通用 core_config snapshot。
                 #
                 # GSV 启用 + prefix='tts' + ttsModelProvider 默认 'follow_*' 时跳过派生：
                 # 派生会把 TTS_MODEL_API_KEY 写成 OPENROUTER_API_KEY / CORE_API_KEY（这俩是
@@ -1416,6 +1440,13 @@ class CoreConfigMixin:
                     config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
                 elif provider == 'follow_summary':
                     config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
+                elif prefix == 'tts' and provider not in ('', 'custom'):
+                    key_field = (
+                        'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
+                        if provider == 'mimo' and use_mimo_token_plan
+                        else assist_api_key_fields.get(provider)
+                    )
+                    config[apikey_key] = config.get(key_field, '') if key_field else ''
                 else:
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     if cfg_key is not None:
@@ -1507,7 +1538,11 @@ class CoreConfigMixin:
         # patch("utils.config_manager.<helper>") dotted-path monkeypatches
         # keep intercepting these call sites (incl. the nested provider-type
         # resolvers and the tts_custom Qwen-profile fallback below).
-        from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
+        from utils.config_manager import (
+            get_assist_api_key_fields,
+            get_assist_api_profiles,
+            get_core_api_profiles,
+        )
 
         core_config = self.get_core_config() if _core_config is None else _core_config
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
@@ -1605,11 +1640,62 @@ class CoreConfigMixin:
                 'fallback_type': 'assist',  # 自定义TTS回退到辅助API
             },
         }
-        
+
         if model_type not in model_type_mapping:
             raise ValueError(f"Unknown model_type: {model_type}. Valid types: {list(model_type_mapping.keys())}")
         
         mapping = model_type_mapping[model_type]
+        assist_api_key_fields = get_assist_api_key_fields()
+        tts_provider = str(core_config.get('ttsModelProvider') or '').strip()
+        use_mimo_token_plan_for_tts = (
+            str(core_config.get('assistApi') or '').strip() == 'mimo'
+            and _as_bool(core_config.get('useMimoTokenPlan', False))
+        )
+
+        def _resolved_tts_api_key(slot_api_key: object) -> object:
+            """Resolve explicit TTS credentials from Key Book for any snapshot."""
+            if (
+                model_type not in ('tts_default', 'tts_custom')
+                or not tts_provider
+                or tts_provider == 'custom'
+                or tts_provider.startswith('follow_')
+            ):
+                return slot_api_key
+            key_field = (
+                'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
+                if tts_provider == 'mimo' and use_mimo_token_plan_for_tts
+                else assist_api_key_fields.get(tts_provider)
+            )
+            return core_config.get(key_field, '') if key_field else ''
+
+        def _resolved_tts_model_url(
+            slot_model: object,
+            slot_url: object,
+        ) -> tuple[object, object]:
+            if model_type not in ('tts_default', 'tts_custom') or tts_provider != 'mimo':
+                return slot_model, slot_url
+            if use_mimo_token_plan_for_tts:
+                return slot_model, core_config.get('OPENROUTER_URL', '')
+
+            profile = get_assist_api_profiles().get('mimo', {})
+            resolved_urls = core_config.get('RESOLVED_PROVIDER_URLS')
+            saved_route_config = {
+                'resolvedProviderUrls': (
+                    resolved_urls if isinstance(resolved_urls, dict) else {}
+                ),
+            }
+            resolved_url = self._get_saved_provider_url(
+                saved_route_config,
+                'assist',
+                'mimo',
+                profile,
+                'OPENROUTER_URL',
+                'OPENROUTER_URLS',
+            )
+            return (
+                slot_model,
+                str(resolved_url or profile.get('OPENROUTER_URL') or '').strip(),
+            )
 
         def _normalize_provider_type_value(value: object) -> str:
             provider_type = str(value or 'openai_compatible').strip().lower()
@@ -1690,6 +1776,11 @@ class CoreConfigMixin:
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
+            if treat_as_custom:
+                custom_model, custom_url = _resolved_tts_model_url(
+                    custom_model,
+                    custom_url,
+                )
 
             # GSV 模式下 voice_id 即定位（无 model 概念），URL 即可视为已配置；
             # 不放宽到全部 tts_custom 场景，避免改变 cosyvoice 用户原有的 fallthrough 行为。
@@ -1700,7 +1791,11 @@ class CoreConfigMixin:
 
             # 自定义配置完整时使用自定义配置
             if (custom_model and custom_url) or is_gsv_url:
-                resolved_api_key = custom_key
+                resolved_api_key = (
+                    _resolved_tts_api_key(custom_key)
+                    if treat_as_custom
+                    else custom_key
+                )
                 # 仅勾选 GSV、未填 TTS_MODEL_API_KEY 时，tts_custom slot 仍会被
                 # CosyVoice clone 路径复用 (register_voice → get_tts_api_key('cosyvoice')
                 # → 这里取 api_key)。直接返回空 key 会让 CosyVoice 报

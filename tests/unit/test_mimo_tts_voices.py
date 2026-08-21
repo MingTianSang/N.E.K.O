@@ -100,7 +100,31 @@ def test_mimo_preset_catalog_for_ui_shape_matches_native():
     assert milo["provider"] == "mimo"
     assert milo["provider_label"] == "MiMo"
     assert milo["builtin"] is True
-    assert set(milo) == {"prefix", "provider", "provider_label", "gender", "display_name", "builtin"}
+    assert milo["previewable"] is False
+    assert milo["preview_unavailable_reason"] == "mimo_preset_preview_not_implemented"
+    assert set(milo) == {
+        "prefix",
+        "provider",
+        "provider_label",
+        "gender",
+        "display_name",
+        "builtin",
+        "previewable",
+        "preview_unavailable_reason",
+    }
+
+
+@pytest.mark.unit
+def test_mimo_provider_metadata_disables_preset_preview_affordance():
+    metadata = {
+        item["key"]: item
+        for item in tts_provider_registry.ui_metadata()
+    }
+    assert metadata["mimo"]["preset_previewable"] is False
+    assert (
+        metadata["mimo"]["preset_preview_unavailable_reason"]
+        == "mimo_preset_preview_not_implemented"
+    )
 
 
 def _selected_catalog(core_config, cm):
