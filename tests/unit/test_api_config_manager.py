@@ -63,6 +63,13 @@ class TestKeybookSaveLoad:
     }
 
     @pytest.mark.unit
+    def test_builtin_keybook_mapping_matches_provider_catalog(self):
+        from config import DEFAULT_ASSIST_API_KEY_FIELDS
+        from utils.api_config_loader import get_config
+
+        assert DEFAULT_ASSIST_API_KEY_FIELDS == get_config()['assist_api_key_fields']
+
+    @pytest.mark.unit
     def test_round_trip_all_keys(self, config_manager):
         """Write 12 keybook keys → reload → verify all are correctly read."""
         payload = {
@@ -2152,6 +2159,145 @@ class TestGptsovitsEnabledSaveMigration:
         assert realtime_config['provider_type'] == 'openai_compatible'
         assert realtime_config['api_key'] == 'sk-core-qwen'
         assert 'dashscope' in realtime_config['base_url']
+
+
+# ---------------------------------------------------------------------------
+# Explicit model providers read credentials from Key Book. The settings page
+# does not expose a separate key input for named providers, so every runtime
+# slot must follow the same source used by connectivity checks.
+# ---------------------------------------------------------------------------
+class TestNamedProviderRuntimeKeyResolution:
+
+    MODEL_SLOTS = (
+        ('conversation', 'conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
+        ('summary', 'summary', 'SUMMARY_MODEL', 'SUMMARY_MODEL_URL', 'SUMMARY_MODEL_API_KEY'),
+        ('game_main', 'gameMain', 'GAME_MAIN_MODEL', 'GAME_MAIN_MODEL_URL', 'GAME_MAIN_MODEL_API_KEY'),
+        ('game_summary', 'gameSummary', 'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
+        ('correction', 'correction', 'CORRECTION_MODEL', 'CORRECTION_MODEL_URL', 'CORRECTION_MODEL_API_KEY'),
+        ('emotion', 'emotion', 'EMOTION_MODEL', 'EMOTION_MODEL_URL', 'EMOTION_MODEL_API_KEY'),
+        ('vision', 'vision', 'VISION_MODEL', 'VISION_MODEL_URL', 'VISION_MODEL_API_KEY'),
+        ('agent', 'agent', 'AGENT_MODEL', 'AGENT_MODEL_URL', 'AGENT_MODEL_API_KEY'),
+        ('realtime', 'omni', 'REALTIME_MODEL', 'REALTIME_MODEL_URL', 'REALTIME_MODEL_API_KEY'),
+    )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('model_type', 'prefix', 'model_key', 'url_key', 'api_key_key'),
+        MODEL_SLOTS,
+    )
+    def test_explicit_qwen_provider_uses_keybook_for_every_model_slot(
+        self,
+        config_manager,
+        model_type,
+        prefix,
+        model_key,
+        url_key,
+        api_key_key,
+    ):
+        _write_core_config(config_manager, {
+            'coreApi': 'step',
+            'coreApiKey': 'sk-core-step',
+            'assistApi': 'step',
+            'assistApiKeyStep': 'sk-assist-step',
+            'assistApiKeyQwen': 'sk-qwen-keybook',
+            'enableCustomApi': True,
+            f'{prefix}ModelProvider': 'qwen',
+            f'{prefix}ModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            f'{prefix}ModelId': 'qwen-user-selected-model',
+            f'{prefix}ModelApiKey': 'sk-stale-slot-key',
+        })
+
+        snapshot = config_manager.get_core_config()
+        result = config_manager.get_model_api_config(
+            model_type,
+            _core_config=snapshot,
+        )
+
+        assert snapshot[model_key] == 'qwen-user-selected-model'
+        assert snapshot[url_key] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        assert snapshot[api_key_key] == 'sk-qwen-keybook'
+        assert result['api_key'] == 'sk-qwen-keybook'
+        assert result['api_key'] != 'sk-stale-slot-key'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('provider', 'book_field'),
+        (
+            ('qwen', 'ASSIST_API_KEY_QWEN'),
+            ('gemini', 'ASSIST_API_KEY_GEMINI'),
+            ('claude', 'ASSIST_API_KEY_CLAUDE'),
+            ('deepseek', 'ASSIST_API_KEY_DEEPSEEK'),
+            ('minimax_intl', 'ASSIST_API_KEY_MINIMAX_INTL'),
+        ),
+    )
+    def test_memory_snapshot_resolves_named_provider_keybook_mapping(
+        self,
+        config_manager,
+        provider,
+        book_field,
+    ):
+        snapshot = {
+            'ENABLE_CUSTOM_API': True,
+            'conversationModelProvider': provider,
+            'CONVERSATION_MODEL': 'provider-model',
+            'CONVERSATION_MODEL_URL': 'https://provider.example.test/v1',
+            'CONVERSATION_MODEL_API_KEY': 'sk-stale-slot-key',
+            book_field: f'sk-{provider}-keybook',
+            'assistApi': 'step',
+            'OPENROUTER_API_KEY': 'sk-assist-step',
+            'OPENROUTER_URL': 'https://api.stepfun.com/v1',
+            'PROVIDER_TYPE': 'openai_compatible',
+        }
+
+        result = config_manager.get_model_api_config(
+            'conversation',
+            _core_config=snapshot,
+        )
+
+        assert result['api_key'] == f'sk-{provider}-keybook'
+
+    @pytest.mark.unit
+    def test_named_provider_key_rotation_replaces_stale_slot_key(self, config_manager):
+        payload = {
+            'coreApi': 'step',
+            'coreApiKey': 'sk-core-step',
+            'assistApi': 'step',
+            'assistApiKeyStep': 'sk-assist-step',
+            'assistApiKeyQwen': 'sk-qwen-book-v1',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'qwen',
+            'conversationModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'conversationModelId': 'qwen-model',
+            'conversationModelApiKey': 'sk-stale-slot-key',
+        }
+        _write_core_config(config_manager, payload)
+        first = config_manager.get_model_api_config('conversation')
+
+        payload['assistApiKeyQwen'] = 'sk-qwen-book-v2'
+        _write_core_config(config_manager, payload)
+        rotated = config_manager.get_model_api_config('conversation')
+
+        assert first['api_key'] == 'sk-qwen-book-v1'
+        assert rotated['api_key'] == 'sk-qwen-book-v2'
+        assert rotated['api_key'] != 'sk-stale-slot-key'
+
+    @pytest.mark.unit
+    def test_custom_provider_keeps_independent_slot_key(self, config_manager):
+        _write_core_config(config_manager, {
+            'coreApi': 'step',
+            'coreApiKey': 'sk-core-step',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-keybook',
+            'enableCustomApi': True,
+            'conversationModelProvider': 'custom',
+            'conversationModelUrl': 'https://self-hosted.example.test/v1',
+            'conversationModelId': 'self-hosted-model',
+            'conversationModelApiKey': 'sk-custom-slot',
+        })
+
+        result = config_manager.get_model_api_config('conversation')
+
+        assert result['api_key'] == 'sk-custom-slot'
 
 
 # ---------------------------------------------------------------------------

@@ -1410,11 +1410,12 @@ class CoreConfigMixin:
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生
                 #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
-                #   TTS 具名服务商 → 每次快照都从 Key Book 的对应服务商槽解析
-                #   其他服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #   具名服务商 → 每次快照都从 Key Book 的对应服务商槽解析
+                #   custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
                 #
-                # 不允许显式 TTS provider 读 ttsModelApiKey：前端具名选项的凭证
-                # 唯一来源是 Key Book。否则 Key Book 轮换后运行时仍会携带旧 slot key。
+                # 不允许显式 provider 读各自的 ModelApiKey：前端具名选项的凭证
+                # 唯一来源是 Key Book。否则前端连通性测的是新 Key，运行时却可能
+                # 携带空的或轮换前遗留的 slot key。
                 # 不在 Key Book 的 vLLM-Omni 等 provider 由 tts_client 专用 resolver
                 # 读取其持久化字段，不把私密值扩散进通用 core_config snapshot。
                 #
@@ -1440,10 +1441,10 @@ class CoreConfigMixin:
                     config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
                 elif provider == 'follow_summary':
                     config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
-                elif prefix == 'tts' and provider not in ('', 'custom'):
+                elif provider not in ('', 'custom'):
                     key_field = (
                         'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
-                        if provider == 'mimo' and use_mimo_token_plan
+                        if prefix == 'tts' and provider == 'mimo' and use_mimo_token_plan
                         else assist_api_key_fields.get(provider)
                     )
                     config[apikey_key] = config.get(key_field, '') if key_field else ''
@@ -1646,25 +1647,44 @@ class CoreConfigMixin:
         
         mapping = model_type_mapping[model_type]
         assist_api_key_fields = get_assist_api_key_fields()
+        provider_prefix_by_type = {
+            'conversation': 'conversation',
+            'summary': 'summary',
+            'game_main': 'gameMain',
+            'game_summary': 'gameSummary',
+            'correction': 'correction',
+            'emotion': 'emotion',
+            'vision': 'vision',
+            'agent': 'agent',
+            'realtime': 'omni',
+            'tts_default': 'tts',
+            'tts_custom': 'tts',
+        }
+        configured_provider = str(
+            core_config.get(f'{provider_prefix_by_type[model_type]}ModelProvider') or ''
+        ).strip()
         tts_provider = str(core_config.get('ttsModelProvider') or '').strip()
         use_mimo_token_plan_for_tts = (
             str(core_config.get('assistApi') or '').strip() == 'mimo'
             and _as_bool(core_config.get('useMimoTokenPlan', False))
         )
 
-        def _resolved_tts_api_key(slot_api_key: object) -> object:
-            """Resolve explicit TTS credentials from Key Book for any snapshot."""
+        def _resolved_model_api_key(slot_api_key: object) -> object:
+            """Resolve an explicit named provider credential from Key Book."""
             if (
-                model_type not in ('tts_default', 'tts_custom')
-                or not tts_provider
-                or tts_provider == 'custom'
-                or tts_provider.startswith('follow_')
+                not configured_provider
+                or configured_provider == 'custom'
+                or configured_provider.startswith('follow_')
             ):
                 return slot_api_key
             key_field = (
                 'ASSIST_API_KEY_MIMO_TOKEN_PLAN'
-                if tts_provider == 'mimo' and use_mimo_token_plan_for_tts
-                else assist_api_key_fields.get(tts_provider)
+                if (
+                    model_type in ('tts_default', 'tts_custom')
+                    and configured_provider == 'mimo'
+                    and use_mimo_token_plan_for_tts
+                )
+                else assist_api_key_fields.get(configured_provider)
             )
             return core_config.get(key_field, '') if key_field else ''
 
@@ -1719,20 +1739,7 @@ class CoreConfigMixin:
             if target_model_type in _seen:
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             seen = _seen | frozenset((target_model_type,))
-            prefix_by_type = {
-                'conversation': 'conversation',
-                'summary': 'summary',
-                'game_main': 'gameMain',
-                'game_summary': 'gameSummary',
-                'correction': 'correction',
-                'emotion': 'emotion',
-                'vision': 'vision',
-                'agent': 'agent',
-                'realtime': 'omni',
-                'tts_default': 'tts',
-                'tts_custom': 'tts',
-            }
-            prefix = prefix_by_type.get(target_model_type, target_model_type)
+            prefix = provider_prefix_by_type.get(target_model_type, target_model_type)
             provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
             if provider == 'custom':
                 return 'openai_compatible'
@@ -1792,8 +1799,8 @@ class CoreConfigMixin:
             # 自定义配置完整时使用自定义配置
             if (custom_model and custom_url) or is_gsv_url:
                 resolved_api_key = (
-                    _resolved_tts_api_key(custom_key)
-                    if treat_as_custom
+                    _resolved_model_api_key(custom_key)
+                    if treat_as_custom or model_type == 'agent'
                     else custom_key
                 )
                 # 仅勾选 GSV、未填 TTS_MODEL_API_KEY 时，tts_custom slot 仍会被
