@@ -1526,3 +1526,16 @@ def test_icebreaker_uses_electron_bridge_for_isolated_full_chat_partition():
     assert "handleIcebreakerBridgeData(message)" in interpage
     assert "window.__nekoPendingIcebreakerBridgeMessages" in interpage
     assert "window.__nekoIcebreakerBridgeReady = true" in interpage
+
+
+def test_icebreaker_electron_messages_wait_for_async_chat_identity():
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
+
+    assert "_pendingIcebreakerIdentityMessages" in interpage
+    assert "ICEBREAKER_IDENTITY_QUEUE_MAX = 80" in interpage
+    assert "function queueIcebreakerBridgeMessageUntilIdentity(data)" in interpage
+    assert "flushPendingIcebreakerIdentityMessages" in interpage
+    assert "if (!getCurrentLanlanName())" in interpage
+    assert "queueIcebreakerBridgeMessageUntilIdentity(data);" in interpage
+    assert "'neko:config-injected',\n        schedulePendingIcebreakerIdentityFlush" in interpage
+    assert "window.pageConfigReady.then(schedulePendingIcebreakerIdentityFlush)" in interpage
