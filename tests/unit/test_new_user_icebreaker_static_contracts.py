@@ -1522,10 +1522,19 @@ def test_icebreaker_uses_electron_bridge_for_isolated_full_chat_partition():
     assert "window.nekoElectronIcebreakerBridge" in runtime
     assert "electronBridge.send(message)" in runtime
     assert "window.nekoElectronIcebreakerBridge" in interpage
-    assert "'neko:electron-icebreaker-bridge'" in interpage
-    assert "handleIcebreakerBridgeData(message)" in interpage
     assert "window.__nekoPendingIcebreakerBridgeMessages" in interpage
     assert "window.__nekoIcebreakerBridgeReady = true" in interpage
+    assert re.search(
+        r"yuiGuideInterpageResources\.addEventListener\(\s*window,\s*"
+        r"['\"]neko:electron-icebreaker-bridge['\"]\s*,\s*"
+        r"handleIcebreakerElectronBridgeEvent\s*\)",
+        interpage,
+    )
+    assert re.search(
+        r"pendingIcebreakerBridgeMessages\.forEach\(function \(message\) \{\s*"
+        r"handleIcebreakerBridgeData\(message\)",
+        interpage,
+    )
 
 
 def test_icebreaker_electron_messages_wait_for_async_chat_identity():
