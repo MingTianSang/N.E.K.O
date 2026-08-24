@@ -54,6 +54,13 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
     assert start_once.count("Fallback.restarting") == 2
     assert "if (!windowsGraphicsCapturePrompted)" in start_once
 
+    selected_source_failure = start_once.split(
+        "} catch (captureErr) {", 1
+    )[1].split("} else if (!isNativeFrameProvider(desktopProvider)) {", 1)[0]
+    assert selected_source_failure.index("if (!fallbackSucceeded)") < (
+        selected_source_failure.index("requestWindowsGraphicsCaptureFallback(")
+    )
+
 
 @pytest.mark.unit
 def test_linux_portal_screen_share_does_not_reenumerate_sources_during_fallbacks():

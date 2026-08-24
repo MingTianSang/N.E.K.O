@@ -2006,18 +2006,6 @@
                                 return;
                             }
                             console.warn('[屏幕源] 指定源捕获失败:', captureErr);
-                            var windowsGraphicsCaptureFallback = await requestWindowsGraphicsCaptureFallback(
-                                desktopProvider,
-                                captureErr,
-                                selectedSourceId
-                            );
-                            windowsGraphicsCapturePrompted = !!(
-                                windowsGraphicsCaptureFallback
-                                && windowsGraphicsCaptureFallback.prompted
-                            );
-                            if (windowsGraphicsCaptureFallback && windowsGraphicsCaptureFallback.restarting) {
-                                return;
-                            }
                             var fallbackSucceeded = false;
 
                             // Remember-window is a fail-closed privacy boundary: once
@@ -2087,6 +2075,18 @@
                             }
 
                             if (!fallbackSucceeded) {
+                                var windowsGraphicsCaptureFallback = await requestWindowsGraphicsCaptureFallback(
+                                    desktopProvider,
+                                    captureErr,
+                                    selectedSourceId
+                                );
+                                windowsGraphicsCapturePrompted = !!(
+                                    windowsGraphicsCaptureFallback
+                                    && windowsGraphicsCaptureFallback.prompted
+                                );
+                                if (windowsGraphicsCaptureFallback && windowsGraphicsCaptureFallback.restarting) {
+                                    return;
+                                }
                                 console.warn('[屏幕源] 所有前端持续流方式均失败，停止屏幕分享');
                             }
                         }
