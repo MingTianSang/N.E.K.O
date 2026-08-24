@@ -60,6 +60,12 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
     assert selected_source_failure.index("if (!fallbackSucceeded)") < (
         selected_source_failure.index("requestWindowsGraphicsCaptureFallback(")
     )
+    fallback_picker_failure = selected_source_failure.split(
+        "} catch (fallback2Err) {", 1
+    )[1].split("if (!fallbackSucceeded)", 1)[0]
+    assert "if (fallback2Err.name === 'NotAllowedError') throw fallback2Err;" in (
+        fallback_picker_failure
+    )
 
 
 @pytest.mark.unit

@@ -2069,7 +2069,11 @@
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
+                                    if (discardCancelledScreenSharingStart(attempt)) return;
                                     if (!manualCaptureIdentityIsCurrent()) return;
+                                    // 用户关闭系统选择器时沿用标准路径的取消语义，
+                                    // 不要把此前的指定源失败误报为 WGC 故障。
+                                    if (fallback2Err.name === 'NotAllowedError') throw fallback2Err;
                                     console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
                                 }
                             }
