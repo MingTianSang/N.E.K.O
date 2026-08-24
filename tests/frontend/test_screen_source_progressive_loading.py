@@ -2425,7 +2425,10 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize("capture_path", ["selected-source", "display-picker"])
-@pytest.mark.parametrize("invalidation", ["current", "cancel", "source-change"])
+@pytest.mark.parametrize(
+    "invalidation",
+    ["current", "cancel", "source-change", "confirmation-error"],
+)
 def test_wgc_restart_approval_requires_current_attempt(
     page: Page,
     capture_path: str,
@@ -2453,6 +2456,10 @@ def test_wgc_restart_approval_requires_current_attempt(
             window.appState.audioPlayerContext = { state: 'running' };
             window.__wgcRequests = [];
             window.__wgcRestartCalls = [];
+            window.__statusToasts = [];
+            window.showStatusToast = (message) => {
+                window.__statusToasts.push(String(message));
+            };
             window.__wgcRequestStarted = false;
             window.__desktopProvider.requestWindowsGraphicsCaptureFallback = (payload) => {
                 window.__wgcRequests.push(payload);
@@ -2463,6 +2470,9 @@ def test_wgc_restart_approval_requires_current_attempt(
             };
             window.__desktopProvider.restartWindowsGraphicsCaptureFallback = (token) => {
                 window.__wgcRestartCalls.push(token);
+                if (window.__rejectWgcRestart) {
+                    return Promise.reject(new Error('restart IPC unavailable'));
+                }
                 return Promise.resolve({ restarting: true, reason: 'restarting' });
             };
             Object.defineProperty(navigator, 'mediaDevices', {
@@ -2490,6 +2500,7 @@ def test_wgc_restart_approval_requires_current_attempt(
             } else if (invalidation === 'source-change') {
                 await window.selectScreenSource('window:new', 'Browser', 'Browser');
             }
+            window.__rejectWgcRestart = invalidation === 'confirmation-error';
             window.__resolveWgcRequest({
                 prompted: true,
                 restarting: false,
@@ -2504,6 +2515,9 @@ def test_wgc_restart_approval_requires_current_attempt(
                 requestCount: window.__wgcRequests.length,
                 deferred: window.__wgcRequests[0].deferRestartUntilConfirmed,
                 selectedId: window.appState.selectedScreenSourceId,
+                captureFailureToasts: window.__statusToasts.filter(
+                    (message) => message.startsWith('NotReadableError:')
+                ).length,
             };
         }""",
         invalidation,
@@ -2516,10 +2530,15 @@ def test_wgc_restart_approval_requires_current_attempt(
         expected_selected_id = "window:new"
     assert result == {
         "pending": False,
-        "restartCalls": ["approval-1"] if invalidation == "current" else [],
+        "restartCalls": (
+            ["approval-1"]
+            if invalidation in {"current", "confirmation-error"}
+            else []
+        ),
         "requestCount": 1,
         "deferred": True,
         "selectedId": expected_selected_id,
+        "captureFailureToasts": 1 if invalidation == "confirmation-error" else 0,
     }
 
 

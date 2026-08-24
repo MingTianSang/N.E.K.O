@@ -188,7 +188,7 @@
         } catch (restartError) {
             console.warn('[屏幕源] 确认 Windows Graphics Capture 兼容模式重启失败:', restartError);
             return {
-                prompted: true,
+                prompted: false,
                 restarting: false,
                 reason: 'restart-confirmation-failed'
             };
@@ -2114,6 +2114,10 @@
                                         desktopProvider,
                                         windowsGraphicsCaptureFallback
                                     );
+                                    windowsGraphicsCapturePrompted = !!(
+                                        windowsGraphicsCaptureFallback
+                                        && windowsGraphicsCaptureFallback.prompted
+                                    );
                                 }
                                 if (windowsGraphicsCaptureFallback && windowsGraphicsCaptureFallback.restarting) {
                                     return;
@@ -2155,6 +2159,10 @@
                                 displayWgcFallback = await confirmWindowsGraphicsCaptureFallback(
                                     desktopProvider,
                                     displayWgcFallback
+                                );
+                                windowsGraphicsCapturePrompted = !!(
+                                    displayWgcFallback
+                                    && displayWgcFallback.prompted
                                 );
                             }
                             if (displayWgcFallback && displayWgcFallback.restarting) {

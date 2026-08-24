@@ -51,6 +51,7 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
     assert "deferRestartUntilConfirmed: true" in helper
     assert "sourceType:" in helper
     assert "sourceId:" not in helper
+    assert "prompted: false" in helper
     assert start_once.count("requestWindowsGraphicsCaptureFallback(") == 2
     assert start_once.count("Fallback.restarting") == 2
     assert "if (!windowsGraphicsCapturePrompted)" in start_once
@@ -71,6 +72,8 @@ def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
         "discardCancelledScreenSharingStart(attempt)"
     ) < fallback_picker_failure.index("fallback2Err.name === 'NotAllowedError'")
     assert start_once.count("confirmWindowsGraphicsCaptureFallback(") == 2
+    assert start_once.count("&& windowsGraphicsCaptureFallback.prompted") == 2
+    assert start_once.count("&& displayWgcFallback.prompted") == 2
 
 
 @pytest.mark.unit
