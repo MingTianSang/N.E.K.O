@@ -36,6 +36,26 @@ def test_manual_screen_share_never_polls_the_backend_screenshot_endpoint():
 
 
 @pytest.mark.unit
+def test_windows_wgc_failure_offers_an_explicit_compatibility_restart():
+    source = APP_SCREEN_JS.read_text(encoding="utf-8")
+    helper = source.split(
+        "async function requestWindowsGraphicsCaptureFallback", 1
+    )[1].split("function hasVisibleModelSurface", 1)[0]
+    start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[
+        1
+    ].split("mod.startScreenSharing = startScreenSharing;", 1)[0]
+
+    assert "provider.requestWindowsGraphicsCaptureFallback" in helper
+    assert "name: String(error && error.name || '')" in helper
+    assert "message: String(error && error.message || '')" in helper
+    assert "sourceType:" in helper
+    assert "sourceId:" not in helper
+    assert start_once.count("requestWindowsGraphicsCaptureFallback(") == 2
+    assert start_once.count("Fallback.restarting") == 2
+    assert "if (!windowsGraphicsCapturePrompted)" in start_once
+
+
+@pytest.mark.unit
 def test_linux_portal_screen_share_does_not_reenumerate_sources_during_fallbacks():
     source = APP_SCREEN_JS.read_text(encoding="utf-8")
     start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[1].split(

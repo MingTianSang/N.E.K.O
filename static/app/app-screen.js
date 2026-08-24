@@ -159,6 +159,24 @@
         return !!(provider && provider.sourceEnumerationMayPrompt === true);
     }
 
+    async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
+        if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
+            return null;
+        }
+        try {
+            return await provider.requestWindowsGraphicsCaptureFallback({
+                name: String(error && error.name || ''),
+                message: String(error && error.message || ''),
+                sourceType: typeof sourceId === 'string' && sourceId.startsWith('window:')
+                    ? 'window'
+                    : 'screen'
+            });
+        } catch (fallbackRequestError) {
+            console.warn('[屏幕源] 请求 Windows Graphics Capture 兼容模式失败:', fallbackRequestError);
+            return null;
+        }
+    }
+
     function hasVisibleModelSurface() {
         var modelContainerIds = [
             'live2d-container',
@@ -1701,6 +1719,7 @@
             return;
         }
 
+        var windowsGraphicsCapturePrompted = false;
         try {
             var nativeCapture = null;
             // Capture into a local reference first. A cancelled browser picker may
@@ -1987,6 +2006,18 @@
                                 return;
                             }
                             console.warn('[屏幕源] 指定源捕获失败:', captureErr);
+                            var windowsGraphicsCaptureFallback = await requestWindowsGraphicsCaptureFallback(
+                                desktopProvider,
+                                captureErr,
+                                selectedSourceId
+                            );
+                            windowsGraphicsCapturePrompted = !!(
+                                windowsGraphicsCaptureFallback
+                                && windowsGraphicsCaptureFallback.prompted
+                            );
+                            if (windowsGraphicsCaptureFallback && windowsGraphicsCaptureFallback.restarting) {
+                                return;
+                            }
                             var fallbackSucceeded = false;
 
                             // Remember-window is a fail-closed privacy boundary: once
@@ -2077,6 +2108,18 @@
                             // 用户主动取消则直接抛出，不兜底
                             if (displayErr.name === 'NotAllowedError') throw displayErr;
                             console.warn('[屏幕源] getDisplayMedia 失败，停止屏幕分享:', displayErr);
+                            var displayWgcFallback = await requestWindowsGraphicsCaptureFallback(
+                                desktopProvider,
+                                displayErr,
+                                null
+                            );
+                            windowsGraphicsCapturePrompted = !!(
+                                displayWgcFallback
+                                && displayWgcFallback.prompted
+                            );
+                            if (displayWgcFallback && displayWgcFallback.restarting) {
+                                return;
+                            }
                         }
                     }
                 }
@@ -2211,7 +2254,9 @@
                     '屏幕捕获已停止，请检查系统权限或重新选择来源'
                 );
             }
-            window.showStatusToast(err.name + ': ' + err.message + (hint ? '\n' + hint : ''), 5000);
+            if (!windowsGraphicsCapturePrompted) {
+                window.showStatusToast(err.name + ': ' + err.message + (hint ? '\n' + hint : ''), 5000);
+            }
         }
     }
     mod.startScreenSharing = startScreenSharing;
