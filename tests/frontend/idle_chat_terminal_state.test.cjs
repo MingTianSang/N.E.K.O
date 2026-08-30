@@ -294,6 +294,18 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     parts.postIdleChatCompactSurfaceUnavailable('duplicate-pagehide');
     assert.equal(attempts, 3, 'a delivered terminal may be deduplicated only after the successful retry');
 
+    const relaySource = readFunction(INTERPAGE_LISTENERS_SOURCE, 'relayIdleChatMinimizedState');
+    available = true;
+    failNextPost = true;
+    vm.runInNewContext(
+        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
+        { I: parts }
+    );
+    available = false;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('hidden-after-minimized-reopen'), true,
+        'a minimized-only reopen invalidates terminal dedupe even if its relay fails');
+    assert.equal(attemptedMessages.at(-1).available, false);
+
     available = true;
     assert.equal(parts.postIdleChatCompactSurfaceState({
         screenRect: null,
@@ -305,7 +317,6 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     assert.equal(parts.postIdleChatCompactSurfaceUnavailable('window-hidden-without-heartbeat'), false);
     assert.equal(typeof terminalRetryCallback, 'function', 'failed terminal schedules an independent retry');
     const staleRetryAfterReopen = terminalRetryCallback;
-    const relaySource = readFunction(INTERPAGE_LISTENERS_SOURCE, 'relayIdleChatMinimizedState');
     available = true;
     vm.runInNewContext(
         `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
@@ -327,7 +338,7 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     assert.equal(attemptedMessages.at(-1).timestamp, failedTerminalTimestamp,
         'terminal retry keeps the original lifecycle timestamp');
     parts.postIdleChatCompactSurfaceUnavailable('duplicate-after-independent-retry');
-    assert.equal(attempts, 8, 'successful independent retry enables terminal deduplication');
+    assert.equal(attempts, 10, 'successful independent retry enables terminal deduplication');
 });
 
 test('either unavailable terminal clears minimized and compact targets together', () => {

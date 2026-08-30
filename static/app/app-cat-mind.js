@@ -2726,10 +2726,13 @@
         if (!acceptDesktopChatLifecycleUpdate(detail)) {
             return;
         }
-        // A real compact lifecycle update supersedes the minimized surface
-        // without inventing a chat-expanded observation.
-        retireDesktopChatMinimizedLifecycle();
         var visible = detail.visible !== false;
+        if (visible) {
+            // A visible compact lifecycle supersedes the minimized surface
+            // without inventing a chat-expanded observation. Inactive compact
+            // tracking still advances the watermark but preserves its target.
+            retireDesktopChatMinimizedLifecycle();
+        }
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
             return;
         }

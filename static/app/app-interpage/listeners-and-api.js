@@ -80,8 +80,8 @@
     function relayIdleChatMinimizedState(evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
         if (!detail || detail.via === 'broadcast-channel') return;
-        if (detail.available !== false && typeof I.stopIdleChatCompactSurfaceTerminalRetry === 'function') {
-            I.stopIdleChatCompactSurfaceTerminalRetry();
+        if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
+            I.resumeIdleChatCompactSurfaceLifecycle();
         }
         I.postInterpageMessage(Object.assign({
             action: 'idle_chat_minimized_state',

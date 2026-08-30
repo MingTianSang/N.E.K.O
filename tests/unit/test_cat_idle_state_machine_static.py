@@ -1685,6 +1685,9 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const compactVisible = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
           detail: {{ source: 'chat-window', reason: 'visibility-visible', available: true, visible: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
         }}));
+        const compactInactive = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'compact-tracking-disabled', available: true, visible: false, timestamp }}
+        }}));
 
         // The first desktop state is still meaningful; only its repeats are heartbeats.
         expanded(1050);
@@ -1770,6 +1773,13 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         minimized(7950, 4);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 4);
         minimized(8100, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+
+        // Disabling compact tracking while minimized advances ordering but does
+        // not retire the active minimized dedupe snapshot.
+        compactInactive(8200);
+        minimized(8150, 4);
+        minimized(8300, 4);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
         """
     )

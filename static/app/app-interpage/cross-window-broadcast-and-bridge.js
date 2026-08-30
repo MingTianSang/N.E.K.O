@@ -74,6 +74,13 @@
         idleChatCompactSurfaceTerminalRetryPayload = null;
     }
 
+    I.resumeIdleChatCompactSurfaceLifecycle = function resumeIdleChatCompactSurfaceLifecycle() {
+        I.stopIdleChatCompactSurfaceTerminalRetry();
+        if (idleChatCompactSurfaceLastPayload && idleChatCompactSurfaceLastPayload.available === false) {
+            idleChatCompactSurfaceLastPayload = null;
+        }
+    }
+
     function tryPostIdleChatCompactSurfaceTerminalRetry() {
         var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
         if (!pendingPayload) return true;
@@ -164,7 +171,7 @@
             dragging: !!(detail && detail.dragging),
             timestamp: Date.now()
         };
-        if (payload.available !== false) I.stopIdleChatCompactSurfaceTerminalRetry();
+        if (payload.available !== false) I.resumeIdleChatCompactSurfaceLifecycle();
         var posted = I.postInterpageMessage(payload);
         // Keep the original terminal timestamp and retry independently. A prior
         // positive heartbeat may also retry sooner, but minimized/disabled compact
