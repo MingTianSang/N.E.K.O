@@ -260,12 +260,16 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {",
     )
     assert "sourceUpdatedAt: 0" in state_init_block
+    assert "lifecycleSequence: 0" in state_init_block
+    assert "lifecycleTerminal: false" in state_init_block
     assert "expandedRecent: false" in state_init_block
     assert "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt)" in source
-    assert "function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state)" in source
-    assert "function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state)" in source
-    assert "function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent)" in source
-    assert "function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt)" in source
+    assert "function _getNekoIdleDesktopStateLifecycleSequence(detail)" in source
+    assert "function _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state)" in source
+    assert "function _isNekoIdleDesktopStateStaleAgainst(" in source
+    assert "function _isNekoIdleDesktopStateNewerThan(" in source
+    assert "function _makeNekoIdleDesktopChatMinimizedState(" in source
+    assert "function _makeNekoIdleDesktopCompactSurfaceState(" in source
     assert "if (state.expandedRecent === false) return false;" in source
 
     pair_move_block = _between(
@@ -282,7 +286,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _getNekoIdleChatCompactSurfaceRect() {",
     )
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
-    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+    assert "_isNekoIdleDesktopStateNewerThan(" in desktop_compact_rect
+    assert "_nekoIdleDesktopChatMinimizedState.lifecycleSequence" in desktop_compact_rect
     assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_compact_rect
     assert "const screenLeft = virtualOrigin.x;" in desktop_compact_rect
 
@@ -292,7 +297,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _isNekoIdleDesktopChatExpandedRecent() {",
     )
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
-    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+    assert "_isNekoIdleDesktopStateNewerThan(" in desktop_minimized_rect
+    assert "_nekoIdleDesktopCompactSurfaceState.lifecycleSequence" in desktop_minimized_rect
     assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_minimized_rect
     assert "const screenLeft = virtualOrigin.x;" in desktop_minimized_rect
 
@@ -302,10 +308,12 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
     )
     assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in minimized_listener
-    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;" in minimized_listener
+    assert "const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);" in minimized_listener
+    assert "const lifecycleTerminal = !targetAvailable;" in minimized_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(" in minimized_listener
     assert "const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();" in minimized_listener
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in minimized_listener
-    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState" in minimized_listener
     assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in minimized_listener
     assert "!!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
     assert "const targetAvailable = !(detail && detail.available === false);" in minimized_listener
@@ -317,9 +325,10 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "const currentTier = _readNekoAutoGoodbyeVisualTier();",
     )
     assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in compact_listener
-    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;" in compact_listener
+    assert "const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);" in compact_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
-    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState" in compact_listener
     assert "const heartbeat = !!(detail && detail.heartbeat);" in compact_listener
     assert "if (!heartbeat) {" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener

@@ -263,6 +263,16 @@
         ].join(':');
     }
 
+    function nextIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= Number.MAX_SAFE_INTEGER) {
+            sequence = 0;
+        }
+        sequence += 1;
+        window.__nekoIdleChatLifecycleSequence = sequence;
+        return sequence;
+    }
+
     function dispatchElectronChatIdleTargetUnavailable(reason) {
         if (I.electronChatMinimizedStateSignature === 'unavailable') return;
         var now = Date.now();
@@ -276,7 +286,8 @@
                 available: false,
                 minimized: false,
                 screenRect: null,
-                timestamp: now
+                timestamp: now,
+                lifecycleSequence: nextIdleChatLifecycleSequence()
             }
         }));
     }
@@ -338,7 +349,8 @@
                         available: true,
                         minimized: true,
                         screenRect: directRect,
-                        timestamp: now
+                        timestamp: now,
+                        lifecycleSequence: nextIdleChatLifecycleSequence()
                     }
                 }));
                 return;
@@ -360,7 +372,8 @@
                     available: true,
                     minimized: false,
                     screenRect: null,
-                    timestamp: now
+                    timestamp: now,
+                    lifecycleSequence: nextIdleChatLifecycleSequence()
                 }
             }));
             return;
@@ -404,7 +417,8 @@
                     available: true,
                     minimized: true,
                     screenRect: yarnRect,
-                    timestamp: now
+                    timestamp: now,
+                    lifecycleSequence: nextIdleChatLifecycleSequence()
                 }
             }));
         }).catch(function () {});

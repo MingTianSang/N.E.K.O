@@ -244,6 +244,8 @@
     var debugTimeline = [];
     var debugTimelineSequence = 0;
     var latestDesktopChatMinimizedSourceAt = 0;
+    var latestDesktopChatLifecycleSequence = 0;
+    var latestDesktopChatLifecycleTerminal = false;
 
     var runtimeState = createInitialRuntimeState();
 
@@ -2621,11 +2623,36 @@
         if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0) {
             sourceUpdatedAt = nowMs();
         }
+        var lifecycleSequence = Number(detail.lifecycleSequence);
+        if (!Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) {
+            lifecycleSequence = 0;
+        }
+        var lifecycleTerminal = detail.available === false;
         if (latestDesktopChatMinimizedSourceAt > 0 &&
             sourceUpdatedAt < latestDesktopChatMinimizedSourceAt) {
             return;
         }
-        latestDesktopChatMinimizedSourceAt = Math.max(latestDesktopChatMinimizedSourceAt, sourceUpdatedAt);
+        var sameTimestamp = latestDesktopChatMinimizedSourceAt > 0 &&
+            sourceUpdatedAt === latestDesktopChatMinimizedSourceAt;
+        if (sameTimestamp && lifecycleSequence > 0 && latestDesktopChatLifecycleSequence > 0) {
+            if (lifecycleSequence < latestDesktopChatLifecycleSequence) return;
+            if (lifecycleSequence === latestDesktopChatLifecycleSequence &&
+                latestDesktopChatLifecycleTerminal && !lifecycleTerminal) {
+                return;
+            }
+        } else if (sameTimestamp && latestDesktopChatLifecycleTerminal && !lifecycleTerminal) {
+            // Compatibility with native/older producers that do not yet carry
+            // lifecycleSequence: an equal-time positive cannot overtake a terminal.
+            return;
+        }
+        if (!sameTimestamp) {
+            latestDesktopChatMinimizedSourceAt = sourceUpdatedAt;
+            latestDesktopChatLifecycleSequence = lifecycleSequence;
+        } else if (lifecycleSequence > 0 &&
+            (latestDesktopChatLifecycleSequence <= 0 || lifecycleSequence >= latestDesktopChatLifecycleSequence)) {
+            latestDesktopChatLifecycleSequence = lifecycleSequence;
+        }
+        latestDesktopChatLifecycleTerminal = lifecycleTerminal;
         return true;
     }
 

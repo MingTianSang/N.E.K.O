@@ -50,6 +50,20 @@
 
     I.yuiGuideInterpageResources.addEventListener(window, 'pagehide', cleanupAppInterpageTransientResources);
 
+    function restoreIdleChatCompactSurfaceAfterPageShow(evt) {
+        if (!evt || evt.persisted !== true || !I.isStandaloneChatPage()) return;
+        if (document.hidden || !I.isIdleChatSurfaceAvailable()) return;
+        var chatParts = window.__appReactChatWindowParts;
+        if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
+            chatParts.republishCompactSurfaceLayoutChange('pageshow-persisted');
+        }
+        if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
+            chatParts.scheduleCompactMinimizeBallTracking();
+        }
+    }
+
+    I.yuiGuideInterpageResources.addEventListener(window, 'pageshow', restoreIdleChatCompactSurfaceAfterPageShow);
+
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:yui-guide:handoff-sent', function (evt) {
         if (I._isRelayingYuiGuideHandoffSent) return;
         I.postInterpageMessage({
@@ -83,12 +97,17 @@
         if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
             I.resumeIdleChatCompactSurfaceLifecycle();
         }
-        I.postInterpageMessage(Object.assign({
+        var payload = Object.assign({
             action: 'idle_chat_minimized_state',
             source: 'chat-window',
             lanlan_name: I.getCurrentLanlanName(),
             timestamp: Date.now()
-        }, detail));
+        }, detail);
+        var lifecycleSequence = Number(payload.lifecycleSequence);
+        if (!Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) {
+            payload.lifecycleSequence = I.nextIdleChatLifecycleSequence();
+        }
+        I.postInterpageMessage(payload);
     }
 
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', relayIdleChatMinimizedState);

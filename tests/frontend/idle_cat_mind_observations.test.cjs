@@ -538,3 +538,62 @@ test('positive yarn updates older than the lifecycle terminal stay retired', () 
         yarnSettling: false,
     });
 });
+
+test('compact heartbeat does not advance the native yarn drag watermark', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        heartbeat: true,
+        screenRect: { left: 20, top: 20, width: 300, height: 160 },
+        timestamp: 5000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 2000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('yarn lifecycle sequence orders same-millisecond terminal and reopen updates', () => {
+    const harness = createHarness();
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 6000,
+        lifecycleSequence: 2,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'delayed-poll',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 1,
+    });
+    assert.equal(harness.stableRect(), null);
+
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'reopen-poll',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 3,
+    });
+    assert.deepEqual(harness.stableRect(), FAR_RECT);
+});

@@ -158,7 +158,11 @@ function _getNekoIdleDesktopCompactSurfaceRect() {
     if (!state || !state.visible || !state.screenRect) return null;
     if (_nekoIdleDesktopChatMinimizedState &&
         _nekoIdleDesktopChatMinimizedState.minimized &&
-        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)) {
+        _isNekoIdleDesktopStateNewerThan(
+            _nekoIdleDesktopChatMinimizedState.sourceUpdatedAt,
+            _nekoIdleDesktopChatMinimizedState.lifecycleSequence,
+            state
+        )) {
         return null;
     }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
@@ -191,7 +195,11 @@ function _getNekoIdleDesktopChatMinimizedRect() {
     if (!state || !state.minimized || !state.screenRect) return null;
     if (_nekoIdleDesktopCompactSurfaceState &&
         _nekoIdleDesktopCompactSurfaceState.visible &&
-        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)) {
+        _isNekoIdleDesktopStateNewerThan(
+            _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt,
+            _nekoIdleDesktopCompactSurfaceState.lifecycleSequence,
+            state
+        )) {
         return null;
     }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
@@ -2248,8 +2256,15 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
-        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;
+        const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);
         const targetAvailable = !(detail && detail.available === false);
+        const lifecycleTerminal = !targetAvailable;
+        if (_isNekoIdleDesktopStateStaleAgainst(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            lifecycleTerminal,
+            _nekoIdleDesktopChatMinimizedState
+        )) return;
         const screenRect = targetAvailable && detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
@@ -2261,7 +2276,12 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
         if ((nextMinimized || !targetAvailable) &&
             _nekoIdleDesktopCompactSurfaceState &&
-            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
+            _isNekoIdleDesktopStateStaleAgainst(
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal,
+                _nekoIdleDesktopCompactSurfaceState
+            )) {
             return;
         }
         const previousState = _nekoIdleDesktopChatMinimizedState;
@@ -2276,14 +2296,18 @@ function _ensureNekoIdleReturnPresentationBridge() {
             screenRect,
             receivedAt,
             sourceUpdatedAt,
-            !!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
+            !!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible),
+            lifecycleSequence,
+            lifecycleTerminal
         );
         if (nextMinimized || !targetAvailable) {
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 false,
                 null,
                 receivedAt,
-                sourceUpdatedAt
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
             _nekoIdleCompactSurfaceDragging = false;
         }
@@ -2310,8 +2334,15 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
-        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;
+        const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);
         const targetAvailable = !(detail && detail.available === false);
+        const lifecycleTerminal = !targetAvailable;
+        if (_isNekoIdleDesktopStateStaleAgainst(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            lifecycleTerminal,
+            _nekoIdleDesktopCompactSurfaceState
+        )) return;
         const screenRect = targetAvailable && detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
@@ -2319,7 +2350,12 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const nextVisible = !!(targetAvailable && detail && detail.visible && screenRect);
         if ((nextVisible || !targetAvailable) &&
             _nekoIdleDesktopChatMinimizedState &&
-            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
+            _isNekoIdleDesktopStateStaleAgainst(
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal,
+                _nekoIdleDesktopChatMinimizedState
+            )) {
             return;
         }
         // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态：
@@ -2335,7 +2371,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 nextVisible,
                 screenRect,
                 receivedAt,
-                sourceUpdatedAt
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
             if (nextVisible || !targetAvailable) {
                 _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
@@ -2343,7 +2381,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
                     null,
                     receivedAt,
                     sourceUpdatedAt,
-                    false
+                    false,
+                    lifecycleSequence,
+                    lifecycleTerminal
                 );
             }
         } else if (nextVisible &&
@@ -2356,7 +2396,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 true,
                 screenRect || _nekoIdleDesktopCompactSurfaceState.screenRect,
                 receivedAt,
-                prevCompactSourceUpdatedAt
+                prevCompactSourceUpdatedAt,
+                _nekoIdleDesktopCompactSurfaceState.lifecycleSequence,
+                _nekoIdleDesktopCompactSurfaceState.lifecycleTerminal
             );
         } else if (nextVisible &&
             _nekoIdleDesktopChatMinimizedState &&
@@ -2372,7 +2414,13 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 true,
                 screenRect,
                 receivedAt,
-                prevCompactSourceUpdatedAt
+                prevCompactSourceUpdatedAt,
+                _nekoIdleDesktopCompactSurfaceState
+                    ? _nekoIdleDesktopCompactSurfaceState.lifecycleSequence
+                    : lifecycleSequence,
+                _nekoIdleDesktopCompactSurfaceState
+                    ? _nekoIdleDesktopCompactSurfaceState.lifecycleTerminal
+                    : lifecycleTerminal
             );
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);

@@ -30,6 +30,16 @@
     var idleChatCompactSurfaceTerminalRetryPayload = null;
     var idleChatCompactSurfaceTerminalRetryGeneration = 0;
 
+    I.nextIdleChatLifecycleSequence = function nextIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= Number.MAX_SAFE_INTEGER) {
+            sequence = 0;
+        }
+        sequence += 1;
+        window.__nekoIdleChatLifecycleSequence = sequence;
+        return sequence;
+    };
+
     I.postInterpageMessage = function postInterpageMessage(message, options) {
         if (!message || typeof message !== 'object') {
             return false;
@@ -169,7 +179,8 @@
             screenRect: screenRect,
             resizeActive: !!(detail && detail.resizeActive),
             dragging: !!(detail && detail.dragging),
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            lifecycleSequence: I.nextIdleChatLifecycleSequence()
         };
         if (payload.available !== false) I.resumeIdleChatCompactSurfaceLifecycle();
         var posted = I.postInterpageMessage(payload);

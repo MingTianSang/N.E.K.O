@@ -112,6 +112,8 @@ function createHarness() {
 
     const support = [
         '_getNekoIdleDesktopStateSourceUpdatedAt',
+        '_getNekoIdleDesktopStateLifecycleSequence',
+        '_compareNekoIdleDesktopStateOrder',
         '_isNekoIdleDesktopStateStaleAgainst',
         '_isNekoIdleDesktopStateNewerThan',
         '_makeNekoIdleDesktopChatMinimizedState',
@@ -129,13 +131,17 @@ function createHarness() {
             screenRect: null,
             updatedAt: 0,
             sourceUpdatedAt: 0,
+            lifecycleSequence: 0,
+            lifecycleTerminal: false,
             expandedRecent: false
         };
         let _nekoIdleDesktopCompactSurfaceState = {
             visible: false,
             screenRect: null,
             updatedAt: 0,
-            sourceUpdatedAt: 0
+            sourceUpdatedAt: 0,
+            lifecycleSequence: 0,
+            lifecycleTerminal: false
         };
         let _nekoIdleCompactSurfaceDragging = false;
         function _handleNekoIdleCompactSurfaceMoveState(detail) {
@@ -199,6 +205,34 @@ test('compact lifecycle republish bypasses an unchanged geometry snapshot', () =
         ...COMPACT_RECT,
         reason: 'visibility-visible',
     }]);
+});
+
+test('persisted pageshow republishes and restarts compact target tracking', () => {
+    const calls = [];
+    const I = {
+        isStandaloneChatPage() { return true; },
+        isIdleChatSurfaceAvailable() { return true; },
+    };
+    const window = {
+        __appReactChatWindowParts: {
+            republishCompactSurfaceLayoutChange(reason) { calls.push(['republish', reason]); },
+            scheduleCompactMinimizeBallTracking() { calls.push(['schedule']); },
+        },
+    };
+    const document = { hidden: false };
+    const restoreSource = readFunction(
+        INTERPAGE_LISTENERS_SOURCE,
+        'restoreIdleChatCompactSurfaceAfterPageShow'
+    );
+    const context = { I, window, document };
+
+    vm.runInNewContext(`${restoreSource}\nrestoreIdleChatCompactSurfaceAfterPageShow({ persisted: false });`, context);
+    assert.deepEqual(calls, []);
+    vm.runInNewContext(`${restoreSource}\nrestoreIdleChatCompactSurfaceAfterPageShow({ persisted: true });`, context);
+    assert.deepEqual(calls, [
+        ['republish', 'pageshow-persisted'],
+        ['schedule'],
+    ]);
 });
 
 test('pagehide cleanup keeps a failed compact terminal retryable until delivery succeeds', () => {
@@ -418,6 +452,53 @@ test('delayed unavailable terminals cannot overwrite a reopened target', () => {
         right: COMPACT_RECT.left + COMPACT_RECT.width,
         bottom: COMPACT_RECT.top + COMPACT_RECT.height,
     });
+});
+
+test('lifecycle sequence orders same-millisecond terminal and reopen updates', () => {
+    const harness = createHarness();
+    harness.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: true,
+        screenRect: MINIMIZED_RECT,
+        timestamp: 9_000,
+        lifecycleSequence: 1,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 9_000,
+        lifecycleSequence: 2,
+    });
+    harness.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: true,
+        screenRect: MINIMIZED_RECT,
+        timestamp: 9_000,
+        lifecycleSequence: 1,
+    });
+    let state = harness.snapshot();
+    assert.equal(state.minimized.minimized, false, 'delayed pre-terminal positive stays retired');
+    assert.equal(state.compact.visible, false);
+
+    harness.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: true,
+        screenRect: MINIMIZED_RECT,
+        timestamp: 9_000,
+        lifecycleSequence: 3,
+    });
+    state = harness.snapshot();
+    assert.equal(state.minimized.minimized, true, 'newer same-millisecond sequence can reopen');
+
+    const legacyHarness = createHarness();
+    legacyHarness.emit('neko:idle-chat-minimized-state', { available: false, timestamp: 10_000 });
+    legacyHarness.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: true,
+        screenRect: MINIMIZED_RECT,
+        timestamp: 10_000,
+    });
+    assert.equal(legacyHarness.snapshot().minimized.minimized, false,
+        'equal-time legacy positive cannot overtake a terminal');
 });
 
 test('inactive cross-stream watermarks reject delayed terminals and intermediate positives', () => {

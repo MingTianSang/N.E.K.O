@@ -1781,6 +1781,23 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         minimized(8150, 4);
         minimized(8300, 4);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+
+        // Millisecond timestamps alone cannot order a terminal against a
+        // delayed positive. The producer sequence keeps the old positive
+        // retired while still allowing a real reopen in that same millisecond.
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', available: false, timestamp: 8400, lifecycleSequence: 2 }}
+        }}));
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', minimized: true, timestamp: 8400, lifecycleSequence: 1,
+            screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', minimized: true, timestamp: 8400, lifecycleSequence: 3,
+            screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 6);
         """
     )
 
