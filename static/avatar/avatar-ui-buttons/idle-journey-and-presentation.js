@@ -2285,6 +2285,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 receivedAt,
                 sourceUpdatedAt
             );
+            _nekoIdleCompactSurfaceDragging = false;
         }
         const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {

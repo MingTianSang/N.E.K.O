@@ -112,7 +112,11 @@ function createHarness() {
     function gate() {
         return JSON.parse(JSON.stringify(window.NekoCatMindYarnObservationAdapter.getGateSnapshot()));
     }
-    return { window, emit, emitMinimized, flushOneRaf, observations, runTimers, gate };
+    function stableRect(coordinateSpace = 'screen') {
+        const rect = vm.runInContext(`_nekoCatMindStableYarnRectBySpace[${JSON.stringify(coordinateSpace)}] || null`, context);
+        return rect ? JSON.parse(JSON.stringify(rect)) : null;
+    }
+    return { window, emit, emitMinimized, flushOneRaf, observations, runTimers, gate, stableRect };
 }
 
 const FAR_RECT = { left: 0, top: 120, width: 40, height: 40 };
@@ -492,4 +496,45 @@ test('delayed unavailable terminal cannot erase a newer stable rect before an en
     assert.equal(harness.observations().length, 1);
     assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
     assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('positive yarn updates older than the lifecycle terminal stay retired', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'pagehide',
+        screenRect: null,
+        timestamp: 2000,
+    });
+    assert.equal(harness.stableRect(), null);
+
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'delayed-poll',
+        screenRect: FAR_RECT,
+        timestamp: 1500,
+    });
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'delayed-start',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 1600,
+    });
+
+    assert.equal(harness.stableRect(), null);
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
 });

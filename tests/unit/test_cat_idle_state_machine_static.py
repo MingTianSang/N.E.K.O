@@ -1682,6 +1682,9 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const compactUnavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
           detail: {{ source: 'chat-window', reason: 'pagehide', available: false, timestamp }}
         }}));
+        const compactVisible = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'visibility-visible', available: true, visible: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
+        }}));
 
         // The first desktop state is still meaningful; only its repeats are heartbeats.
         expanded(1050);
@@ -1759,6 +1762,15 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
           detail: {{ source: 'chat-window', reason: 'idle-dock-enter', minimized: true, timestamp: 7300, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 3);
+
+        // A compact reopen retires the minimized lifecycle and advances the
+        // shared watermark, so delayed pre-reopen terminal/positive copies are ignored.
+        compactVisible(8000);
+        unavailable(7900);
+        minimized(7950, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 4);
+        minimized(8100, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
         """
     )
 

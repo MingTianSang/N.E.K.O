@@ -384,8 +384,8 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
     const phase = _getNekoCatMindYarnDragPhase(detail);
     const coordinateSpace = _getNekoCatMindYarnCoordinateSpace(detail, fallbackCoordinateSpace);
     const sourceUpdatedAt = _getNekoCatMindYarnSourceUpdatedAt(detail);
+    if (_nekoCatMindLatestYarnSourceAt > 0 && sourceUpdatedAt < _nekoCatMindLatestYarnSourceAt) return;
     if (detail.available === false) {
-        if (_nekoCatMindLatestYarnSourceAt > 0 && sourceUpdatedAt < _nekoCatMindLatestYarnSourceAt) return;
         _nekoCatMindLatestYarnSourceAt = Math.max(_nekoCatMindLatestYarnSourceAt, sourceUpdatedAt);
         delete _nekoCatMindStableYarnRectBySpace[coordinateSpace];
         // An unavailable surface is a terminal lifecycle fact, not a drag

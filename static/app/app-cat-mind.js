@@ -2616,10 +2616,7 @@
         });
     }
 
-    function observeDesktopChatMinimized(detail) {
-        if (!detail || typeof detail !== 'object') {
-            return;
-        }
+    function acceptDesktopChatLifecycleUpdate(detail) {
         var sourceUpdatedAt = Number(detail.timestamp);
         if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0) {
             sourceUpdatedAt = nowMs();
@@ -2629,11 +2626,25 @@
             return;
         }
         latestDesktopChatMinimizedSourceAt = Math.max(latestDesktopChatMinimizedSourceAt, sourceUpdatedAt);
+        return true;
+    }
+
+    function retireDesktopChatMinimizedLifecycle() {
+        runtimeState.lastChatMinimizedRect = null;
+        runtimeState.lastChatMinimizedState = null;
+        runtimeState.lastChatIdleDocked = false;
+    }
+
+    function observeDesktopChatMinimized(detail) {
+        if (!detail || typeof detail !== 'object') {
+            return;
+        }
+        if (!acceptDesktopChatLifecycleUpdate(detail)) {
+            return;
+        }
         if (detail.available === false) {
             // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
-            runtimeState.lastChatMinimizedRect = null;
-            runtimeState.lastChatMinimizedState = null;
-            runtimeState.lastChatIdleDocked = false;
+            retireDesktopChatMinimizedLifecycle();
             return;
         }
         var rect = normalizeRect(detail.screenRect);
@@ -2712,6 +2723,12 @@
         if (detail.heartbeat) {
             return;
         }
+        if (!acceptDesktopChatLifecycleUpdate(detail)) {
+            return;
+        }
+        // A real compact lifecycle update supersedes the minimized surface
+        // without inventing a chat-expanded observation.
+        retireDesktopChatMinimizedLifecycle();
         var visible = detail.visible !== false;
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
             return;

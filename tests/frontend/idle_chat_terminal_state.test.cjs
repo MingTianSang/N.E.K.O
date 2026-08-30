@@ -102,7 +102,6 @@ function createHarness() {
         _getNekoIdleRectCenterMoveDistance() { return Infinity; },
         _isAnyNekoIdleCat1PlaygroundDropLifecycleActive() { return false; },
         _isNekoIdleCat1PlaygroundPairMoveFeedback() { return false; },
-        _handleNekoIdleCompactSurfaceMoveState() {},
         _readNekoAutoGoodbyeVisualTier() { return 'cat1'; },
         _getNekoGoodbyeIdleAppearance() { return 'cat'; },
         _syncNekoIdleSleepSoundForTier() {},
@@ -138,12 +137,18 @@ function createHarness() {
             updatedAt: 0,
             sourceUpdatedAt: 0
         };
+        let _nekoIdleCompactSurfaceDragging = false;
+        function _handleNekoIdleCompactSurfaceMoveState(detail) {
+            _nekoIdleCompactSurfaceDragging = !!(detail && (detail.dragging || detail.resizeActive));
+        }
         ${support}
         ${journey}
         window.__getIdleChatTargetState = () => ({
             minimized: JSON.parse(JSON.stringify(_nekoIdleDesktopChatMinimizedState)),
-            compact: JSON.parse(JSON.stringify(_nekoIdleDesktopCompactSurfaceState))
+            compact: JSON.parse(JSON.stringify(_nekoIdleDesktopCompactSurfaceState)),
+            compactDragging: _nekoIdleCompactSurfaceDragging
         });
+        window.__setIdleCompactDragging = (active) => { _nekoIdleCompactSurfaceDragging = !!active; };
         _ensureNekoIdleReturnPresentationBridge();
     `, context);
 
@@ -156,6 +161,7 @@ function createHarness() {
     return {
         emit,
         snapshot,
+        setCompactDragging(active) { window.__setIdleCompactDragging(active); },
         setNow(value) { now = value; },
     };
 }
@@ -342,6 +348,7 @@ test('either unavailable terminal clears minimized and compact targets together'
             screenRect: MINIMIZED_RECT,
             timestamp: 2_000,
         });
+        harness.setCompactDragging(true);
         harness.emit(terminalType, {
             available: false,
             minimized: false,
@@ -355,6 +362,7 @@ test('either unavailable terminal clears minimized and compact targets together'
         assert.equal(state.minimized.screenRect, null, terminalType);
         assert.equal(state.compact.visible, false, terminalType);
         assert.equal(state.compact.screenRect, null, terminalType);
+        assert.equal(state.compactDragging, false, terminalType);
     }
 });
 
