@@ -2261,7 +2261,6 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
         if ((nextMinimized || !targetAvailable) &&
             _nekoIdleDesktopCompactSurfaceState &&
-            _nekoIdleDesktopCompactSurfaceState.visible &&
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
             return;
         }
@@ -2319,7 +2318,6 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const nextVisible = !!(targetAvailable && detail && detail.visible && screenRect);
         if ((nextVisible || !targetAvailable) &&
             _nekoIdleDesktopChatMinimizedState &&
-            _nekoIdleDesktopChatMinimizedState.minimized &&
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
             return;
         }

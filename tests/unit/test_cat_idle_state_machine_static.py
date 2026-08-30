@@ -1679,6 +1679,9 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const unavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'window-hidden', available: false, timestamp }}
         }}));
+        const compactUnavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'pagehide', available: false, timestamp }}
+        }}));
 
         // The first desktop state is still meaningful; only its repeats are heartbeats.
         expanded(1050);
@@ -1697,8 +1700,17 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         // A delayed terminal cannot erase a newer minimized snapshot and turn
         // the next unchanged poll into a new observation.
         unavailable(3050);
+        minimized(3125);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+
+        // The compact pagehide terminal shares the minimized lifecycle: stale
+        // copies are ignored, while a current one retires the dedupe snapshot.
+        compactUnavailable(3110);
         minimized(3150);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+        compactUnavailable(3160);
+        minimized(3170);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
 
         // The native bridge and BroadcastChannel can use different reasons
         // for the same rect. Neither a pointer sync nor its forwarded copy is
@@ -1710,16 +1722,16 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
           detail: {{ source: 'chat-window', via: 'broadcast-channel', reason: 'pointer', minimized: true, timestamp: 3250, screenRect: {{ left: 1, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.deepEqual(win.nekoCatMind.getState().fields, afterFirstMinimized);
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
 
         // A changed rect remains a real observation, even when delivered by poll.
         minimized(4100, 4);
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 3);
 
         // A genuinely newer terminal still starts a new lifecycle.
         unavailable(4200);
         minimized(4300, 4);
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 3);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 4);
 
         expanded(5100);
         const afterFirstExpanded = win.nekoCatMind.getState().fields;
@@ -1735,13 +1747,18 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
           detail: {{ source: 'neko-pc', reason: 'idle-dock-enter', minimized: true, timestamp: 7150, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 1);
+        compactUnavailable(7160);
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', reason: 'idle-dock-enter', minimized: true, timestamp: 7170, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 2);
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'neko-pc', reason: 'idle-dock-exit', minimized: true, timestamp: 7200, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'idle-dock-enter', minimized: true, timestamp: 7300, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 2);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 3);
         """
     )
 

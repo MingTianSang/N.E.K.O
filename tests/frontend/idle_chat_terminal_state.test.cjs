@@ -276,7 +276,11 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     assert.equal(typeof terminalRetryCallback, 'function');
     const pagehideTerminalTimestamp = attemptedMessages.at(-1).timestamp;
     const retryHeartbeat = heartbeatCallback;
+    available = true;
     retryHeartbeat();
+    assert.equal(attemptedMessages.at(-1).available, false,
+        'quick reopen cannot let a cached positive heartbeat overtake the pending terminal');
+    assert.notEqual(attemptedMessages.at(-1).heartbeat, true);
     assert.equal(attemptedMessages.at(-1).timestamp, pagehideTerminalTimestamp,
         'positive heartbeat retries the pending terminal without refreshing its timestamp');
     assert.equal(clearIntervalCalls, 1, 'the successful retry retires the heartbeat');
@@ -395,4 +399,46 @@ test('delayed unavailable terminals cannot overwrite a reopened target', () => {
         right: COMPACT_RECT.left + COMPACT_RECT.width,
         bottom: COMPACT_RECT.top + COMPACT_RECT.height,
     });
+});
+
+test('inactive cross-stream watermarks reject delayed terminals and intermediate positives', () => {
+    const minimizedInactive = createHarness();
+    minimizedInactive.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: false,
+        timestamp: 4_000,
+    });
+    minimizedInactive.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 3_000,
+    });
+    minimizedInactive.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: true,
+        screenRect: MINIMIZED_RECT,
+        timestamp: 3_500,
+    });
+    let state = minimizedInactive.snapshot();
+    assert.equal(state.minimized.minimized, false);
+    assert.equal(state.minimized.sourceUpdatedAt, 4_000);
+
+    const compactInactive = createHarness();
+    compactInactive.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: false,
+        timestamp: 8_000,
+    });
+    compactInactive.emit('neko:idle-chat-minimized-state', {
+        available: false,
+        timestamp: 7_000,
+    });
+    compactInactive.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        screenRect: COMPACT_RECT,
+        timestamp: 7_500,
+    });
+    state = compactInactive.snapshot();
+    assert.equal(state.compact.visible, false);
+    assert.equal(state.compact.sourceUpdatedAt, 8_000);
 });

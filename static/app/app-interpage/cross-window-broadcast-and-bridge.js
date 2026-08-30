@@ -113,6 +113,10 @@
     function startIdleChatCompactSurfaceHeartbeat() {
         if (idleChatCompactSurfaceHeartbeatTimer) return;
         idleChatCompactSurfaceHeartbeatTimer = I.yuiGuideInterpageResources.setInterval(function () {
+            if (idleChatCompactSurfaceTerminalRetryPayload) {
+                I.postIdleChatCompactSurfaceUnavailable('heartbeat-pending-terminal');
+                return;
+            }
             if (!I.isIdleChatSurfaceAvailable()) {
                 I.postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden');
                 return;

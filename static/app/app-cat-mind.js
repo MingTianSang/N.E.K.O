@@ -2705,6 +2705,10 @@
         if (!detail || typeof detail !== 'object') {
             return;
         }
+        if (detail.available === false) {
+            observeDesktopChatMinimized(detail);
+            return;
+        }
         if (detail.heartbeat) {
             return;
         }
