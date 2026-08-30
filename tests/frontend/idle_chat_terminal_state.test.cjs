@@ -303,7 +303,13 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
         },
     };
 
-    assert.equal(parts.postIdleChatCompactSurfaceState({ screenRect: COMPACT_RECT }), true);
+    assert.equal(parts.postIdleChatCompactSurfaceState({
+        ...COMPACT_RECT,
+        reason: 'visibility-visible',
+    }), true);
+    assert.deepEqual(attemptedMessages.at(-1).screenRect, COMPACT_RECT,
+        'flat lifecycle geometry is normalized into the published screen rect');
+    assert.equal(attemptedMessages.at(-1).visible, true);
     assert.equal(typeof heartbeatCallback, 'function');
     available = false;
     failNextPost = true;

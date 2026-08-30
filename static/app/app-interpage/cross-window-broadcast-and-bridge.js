@@ -163,12 +163,30 @@
         I.stopIdleChatCompactSurfaceHeartbeat();
     }
 
+    function normalizeIdleChatCompactSurfaceScreenRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var rect = Object.prototype.hasOwnProperty.call(detail, 'screenRect')
+            ? detail.screenRect
+            : detail;
+        if (!rect || typeof rect !== 'object') return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { left: left, top: top, width: width, height: height };
+    }
+
     I.postIdleChatCompactSurfaceState = function postIdleChatCompactSurfaceState(detail) {
         var available = !!(
             (!detail || detail.available !== false)
             && I.isIdleChatSurfaceAvailable()
         );
-        var screenRect = available && detail && detail.screenRect ? detail.screenRect : null;
+        var screenRect = available ? normalizeIdleChatCompactSurfaceScreenRect(detail) : null;
         var payload = {
             action: 'idle_chat_compact_surface_state',
             source: 'chat-window',
