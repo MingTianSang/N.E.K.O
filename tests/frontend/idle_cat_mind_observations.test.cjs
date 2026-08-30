@@ -414,3 +414,82 @@ test('compact surface unavailable terminal immediately releases the yarn gate', 
     harness.runTimers();
     assert.equal(harness.observations().length, 0);
 });
+
+test('delayed unavailable terminal cannot clear a newer active or settling yarn session', () => {
+    const harness = createHarness();
+    const emitPhase = (phase, screenRect, timestamp) => {
+        harness.emit('neko:chat-yarn-user-drag', {
+            available: true,
+            phase,
+            sessionId: 'reopened-yarn',
+            coordinateSpace: 'screen',
+            moved: phase !== 'start',
+            screenRect,
+            timestamp,
+        });
+    };
+    const staleUnavailable = {
+        available: false,
+        visible: false,
+        reason: 'delayed-pagehide',
+        screenRect: null,
+        timestamp: 1000,
+    };
+
+    emitPhase('start', FAR_RECT, 2000);
+    emitPhase('move', NEAR_RECT, 2100);
+    harness.emit('neko:idle-chat-compact-surface-state', staleUnavailable);
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: true,
+        yarnSettling: false,
+        sessionId: 'reopened-yarn',
+    });
+
+    emitPhase('end', NEAR_RECT, 2200);
+    assert.equal(harness.gate().yarnSettling, true);
+    harness.emit('neko:idle-chat-compact-surface-state', staleUnavailable);
+    assert.equal(harness.gate().yarnSettling, true);
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.sessionId, 'reopened-yarn');
+});
+
+test('delayed unavailable terminal cannot erase a newer stable rect before an end-only drag', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'pre-hide-poll',
+        screenRect: FAR_RECT,
+        timestamp: 500,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        reason: 'visibility-visible',
+        screenRect: { left: 200, top: 80, width: 320, height: 64 },
+        timestamp: 2000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'delayed-pagehide',
+        screenRect: null,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 3000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});

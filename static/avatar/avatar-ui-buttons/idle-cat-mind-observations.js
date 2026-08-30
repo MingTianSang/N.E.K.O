@@ -21,6 +21,7 @@ let _nekoCatMindYarnSettleTimer = 0;
 let _nekoCatMindYarnDragActive = false;
 let _nekoCatMindYarnSettling = false;
 let _nekoCatMindYarnSettlingSessionId = '';
+let _nekoCatMindLatestYarnSourceAt = 0;
 let _nekoCatMindStableYarnRectBySpace = Object.create(null);
 let _nekoCatMindLastYarnTerminalSignature = '';
 let _nekoCatMindLastYarnTerminalAt = 0;
@@ -373,11 +374,19 @@ function _settleNekoCatMindYarnDragSession(session, detail, geometry, shouldDisp
     _afterNekoCatMindYarnJourneyFrame(finalize);
 }
 
+function _getNekoCatMindYarnSourceUpdatedAt(detail) {
+    const timestamp = Number(detail && detail.timestamp);
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+}
+
 function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'screen') {
     if (!detail || typeof detail !== 'object') return;
     const phase = _getNekoCatMindYarnDragPhase(detail);
     const coordinateSpace = _getNekoCatMindYarnCoordinateSpace(detail, fallbackCoordinateSpace);
+    const sourceUpdatedAt = _getNekoCatMindYarnSourceUpdatedAt(detail);
     if (detail.available === false) {
+        if (_nekoCatMindLatestYarnSourceAt > 0 && sourceUpdatedAt < _nekoCatMindLatestYarnSourceAt) return;
+        _nekoCatMindLatestYarnSourceAt = Math.max(_nekoCatMindLatestYarnSourceAt, sourceUpdatedAt);
         delete _nekoCatMindStableYarnRectBySpace[coordinateSpace];
         // An unavailable surface is a terminal lifecycle fact, not a drag
         // completion. Invalidate queued RAF settlement as well as the 8s stale
@@ -390,15 +399,17 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
     if (!phase) {
         // Poll/resize/pair-move/dock messages are stable renderer facts only;
         // they never synthesize a user gesture or queue an intent observation.
+        _nekoCatMindLatestYarnSourceAt = Math.max(_nekoCatMindLatestYarnSourceAt, sourceUpdatedAt);
         if (rect) _nekoCatMindStableYarnRectBySpace[coordinateSpace] = rect;
         return;
     }
-    const timestamp = Number(detail.timestamp) || Date.now();
+    const timestamp = sourceUpdatedAt;
     // Explicit ids belong to the embedded Web producer. Once a newer start has
     // replaced the active gesture, delayed phases from the old gesture must not
     // sample or settle the replacement. Desktop/Wayland phases intentionally
     // omit ids and retain their existing end-only compatibility path.
     if (phase !== 'start' && _hasNekoCatMindYarnSessionMismatch(detail)) return;
+    _nekoCatMindLatestYarnSourceAt = Math.max(_nekoCatMindLatestYarnSourceAt, sourceUpdatedAt);
     if (phase === 'end' || phase === 'cancel') {
         const signature = _getNekoCatMindYarnTerminalSignature(phase, detail, rect, coordinateSpace);
         if (_isNekoCatMindDuplicateYarnTerminal(signature, timestamp)) {
@@ -474,8 +485,16 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     });
     window.addEventListener(_NEKO_CAT_MIND_COMPACT_SURFACE_EVENT, (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
-        // 普通 compact surface rect 不是毛线球拖拽样本；这里只消费生命周期终止态。
-        if (!detail || detail.available !== false) return;
+        if (!detail) return;
+        // 普通 compact surface rect 不是毛线球拖拽样本，但它的新时间戳必须参与
+        // lifecycle 排序，防止较旧的 unavailable 随后清掉重开后的 gate/stable rect。
+        if (detail.available !== false) {
+            _nekoCatMindLatestYarnSourceAt = Math.max(
+                _nekoCatMindLatestYarnSourceAt,
+                _getNekoCatMindYarnSourceUpdatedAt(detail)
+            );
+            return;
+        }
         _handleNekoCatMindYarnDragPhase(detail, 'screen');
     });
 }

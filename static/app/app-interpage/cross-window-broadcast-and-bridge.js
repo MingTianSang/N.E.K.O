@@ -124,8 +124,13 @@
             dragging: !!(detail && detail.dragging),
             timestamp: Date.now()
         };
-        I.postInterpageMessage(payload);
+        var posted = I.postInterpageMessage(payload);
+        // Keep the last positive payload and its heartbeat alive when a terminal
+        // broadcast fails. The next heartbeat will retry unavailable instead of
+        // renewing the stale positive target or permanently deduplicating the failure.
+        if (payload.available === false && !posted) return false;
         syncIdleChatCompactSurfaceHeartbeat(payload);
+        return posted;
     };
 
     I.postIdleChatCompactSurfaceUnavailable = function postIdleChatCompactSurfaceUnavailable(reason) {
@@ -134,7 +139,7 @@
             !idleChatCompactSurfaceHeartbeatTimer) {
             return;
         }
-        I.postIdleChatCompactSurfaceState({
+        return I.postIdleChatCompactSurfaceState({
             available: false,
             screenRect: null,
             reason: reason || 'window-hidden'

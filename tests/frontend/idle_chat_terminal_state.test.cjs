@@ -26,6 +26,13 @@ const CHAT_GEOMETRY_SOURCE = path.join(
     'app-react-chat-window',
     'geometry-and-messages.js'
 );
+const INTERPAGE_BROADCAST_SOURCE = path.join(
+    PROJECT_ROOT,
+    'static',
+    'app',
+    'app-interpage',
+    'cross-window-broadcast-and-bridge.js'
+);
 
 function readFunction(sourcePath, name) {
     const source = fs.readFileSync(sourcePath, 'utf8');
@@ -179,6 +186,71 @@ test('compact lifecycle republish bypasses an unchanged geometry snapshot', () =
         ...COMPACT_RECT,
         reason: 'visibility-visible',
     }]);
+});
+
+test('failed compact terminal broadcast remains retryable until delivery succeeds', () => {
+    const source = fs.readFileSync(INTERPAGE_BROADCAST_SOURCE, 'utf8');
+    const lifecycleEnd = source.indexOf('    function scheduleYuiGuideChatMessageFlush');
+    assert.notEqual(lifecycleEnd, -1);
+    const lifecycleSource = `${source.slice(0, lifecycleEnd)}\n})();`;
+    let attempts = 0;
+    let available = true;
+    let failNextPost = false;
+    let heartbeatCallback = null;
+    let clearIntervalCalls = 0;
+    const parts = {
+        yuiGuideInterpageResources: {
+            setInterval(callback) {
+                heartbeatCallback = callback;
+                return 1;
+            },
+            clearInterval() {
+                clearIntervalCalls += 1;
+                heartbeatCallback = null;
+            },
+        },
+        getCurrentLanlanName() { return 'test'; },
+    };
+    const window = {
+        appInterpage: {},
+        __appInterpageParts: parts,
+        nekoChatWindow: { isIdleTargetAvailable() { return available; } },
+        opener: null,
+    };
+    vm.runInNewContext(lifecycleSource, {
+        window,
+        document: { hidden: false },
+        console,
+        Date,
+        Math,
+        Number,
+        Object,
+        Array,
+        String,
+        Boolean,
+        JSON,
+    }, { filename: INTERPAGE_BROADCAST_SOURCE });
+    parts.nekoBroadcastChannel = {
+        postMessage() {
+            attempts += 1;
+            if (failNextPost) {
+                failNextPost = false;
+                throw new Error('transient broadcast failure');
+            }
+        },
+    };
+
+    assert.equal(parts.postIdleChatCompactSurfaceState({ screenRect: COMPACT_RECT }), true);
+    assert.equal(typeof heartbeatCallback, 'function');
+    available = false;
+    failNextPost = true;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('visibility-hidden'), false);
+    assert.equal(clearIntervalCalls, 0, 'a failed terminal must keep the retry heartbeat alive');
+    const retryHeartbeat = heartbeatCallback;
+    retryHeartbeat();
+    assert.equal(clearIntervalCalls, 1, 'the successful retry retires the heartbeat');
+    parts.postIdleChatCompactSurfaceUnavailable('duplicate-pagehide');
+    assert.equal(attempts, 3, 'a delivered terminal may be deduplicated only after the successful retry');
 });
 
 test('either unavailable terminal clears minimized and compact targets together', () => {
