@@ -33,6 +33,13 @@ const INTERPAGE_BROADCAST_SOURCE = path.join(
     'app-interpage',
     'cross-window-broadcast-and-bridge.js'
 );
+const INTERPAGE_LISTENERS_SOURCE = path.join(
+    PROJECT_ROOT,
+    'static',
+    'app',
+    'app-interpage',
+    'listeners-and-api.js'
+);
 
 function readFunction(sourcePath, name) {
     const source = fs.readFileSync(sourcePath, 'utf8');
@@ -188,7 +195,7 @@ test('compact lifecycle republish bypasses an unchanged geometry snapshot', () =
     }]);
 });
 
-test('failed compact terminal broadcast remains retryable until delivery succeeds', () => {
+test('pagehide cleanup keeps a failed compact terminal retryable until delivery succeeds', () => {
     const source = fs.readFileSync(INTERPAGE_BROADCAST_SOURCE, 'utf8');
     const lifecycleEnd = source.indexOf('    function scheduleYuiGuideChatMessageFlush');
     assert.notEqual(lifecycleEnd, -1);
@@ -210,6 +217,10 @@ test('failed compact terminal broadcast remains retryable until delivery succeed
             },
         },
         getCurrentLanlanName() { return 'test'; },
+        isStandaloneChatPage() { return true; },
+        clearYuiGuideChatFlushTimer() {},
+        clearIcebreakerBridgeFlushTimer() {},
+        clearYuiGuideChatSpotlightTracking() {},
     };
     const window = {
         appInterpage: {},
@@ -244,7 +255,11 @@ test('failed compact terminal broadcast remains retryable until delivery succeed
     assert.equal(typeof heartbeatCallback, 'function');
     available = false;
     failNextPost = true;
-    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('visibility-hidden'), false);
+    const cleanupSource = readFunction(
+        INTERPAGE_LISTENERS_SOURCE,
+        'cleanupAppInterpageTransientResources'
+    );
+    vm.runInNewContext(`${cleanupSource}\ncleanupAppInterpageTransientResources();`, { I: parts });
     assert.equal(clearIntervalCalls, 0, 'a failed terminal must keep the retry heartbeat alive');
     const retryHeartbeat = heartbeatCallback;
     retryHeartbeat();

@@ -36,12 +36,15 @@
     );
 
     function cleanupAppInterpageTransientResources() {
+        var compactSurfaceTerminalPosted = true;
         if (typeof I.isStandaloneChatPage === 'function' && I.isStandaloneChatPage()) {
-            I.postIdleChatCompactSurfaceUnavailable('pagehide');
+            compactSurfaceTerminalPosted = I.postIdleChatCompactSurfaceUnavailable('pagehide') !== false;
         }
         I.clearYuiGuideChatFlushTimer();
         I.clearIcebreakerBridgeFlushTimer();
-        I.stopIdleChatCompactSurfaceHeartbeat();
+        // A failed terminal deliberately retains the last positive heartbeat so
+        // its next tick can retry the unavailable state.
+        if (compactSurfaceTerminalPosted) I.stopIdleChatCompactSurfaceHeartbeat();
         I.clearYuiGuideChatSpotlightTracking();
     }
 
