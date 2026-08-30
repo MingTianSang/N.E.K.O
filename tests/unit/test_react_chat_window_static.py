@@ -1940,6 +1940,17 @@ def test_minimized_yarn_drag_reports_forced_release_as_cancel():
     assert "suppressClick: true" in touch_cancel_block
 
 
+def test_react_chat_host_exports_compact_lifecycle_restore_api():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    host_block = script.rsplit("Object.assign(window.reactChatWindowHost", 1)[1].split(
+        "delete window.__appReactChatWindowParts",
+        1,
+    )[0]
+
+    assert "republishCompactSurfaceLayoutChange: republishCompactSurfaceLayoutChange" in host_block
+    assert "scheduleCompactMinimizeBallTracking: scheduleCompactMinimizeBallTracking" in host_block
+
+
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

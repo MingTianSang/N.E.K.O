@@ -228,7 +228,7 @@ test('persisted pageshow republishes and restarts compact target tracking', () =
         isIdleChatSurfaceAvailable() { return true; },
     };
     const window = {
-        __appReactChatWindowParts: {
+        reactChatWindowHost: {
             republishCompactSurfaceLayoutChange(reason) { calls.push(['republish', reason]); },
             scheduleCompactMinimizeBallTracking() { calls.push(['schedule']); },
         },
@@ -310,7 +310,7 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     const window = {
         appInterpage: {},
         __appInterpageParts: parts,
-        __appReactChatWindowParts: {
+        reactChatWindowHost: {
             republishCompactSurfaceLayoutChange(reason) { compactRepublishReasons.push(reason); },
             scheduleCompactMinimizeBallTracking() { compactTrackingSchedules += 1; },
         },

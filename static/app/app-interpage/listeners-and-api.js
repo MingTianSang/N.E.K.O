@@ -53,12 +53,12 @@
     function restoreIdleChatCompactSurfaceAfterPageShow(evt) {
         if (!evt || evt.persisted !== true || !I.isStandaloneChatPage()) return;
         if (document.hidden || !I.isIdleChatSurfaceAvailable()) return;
-        var chatParts = window.__appReactChatWindowParts;
-        if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
-            chatParts.republishCompactSurfaceLayoutChange('pageshow-persisted');
+        var chatHost = window.reactChatWindowHost;
+        if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
+            chatHost.republishCompactSurfaceLayoutChange('pageshow-persisted');
         }
-        if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
-            chatParts.scheduleCompactMinimizeBallTracking();
+        if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+            chatHost.scheduleCompactMinimizeBallTracking();
         }
     }
 
@@ -110,12 +110,12 @@
         }
         I.postInterpageMessage(payload);
         if (compactSurfaceWasUnavailable && detail.minimized !== true) {
-            var chatParts = window.__appReactChatWindowParts;
-            if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
-                chatParts.republishCompactSurfaceLayoutChange('native-availability-restored');
+            var chatHost = window.reactChatWindowHost;
+            if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
+                chatHost.republishCompactSurfaceLayoutChange('native-availability-restored');
             }
-            if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
-                chatParts.scheduleCompactMinimizeBallTracking();
+            if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+                chatHost.scheduleCompactMinimizeBallTracking();
             }
         }
     }
@@ -136,13 +136,13 @@
                 I.postIdleChatCompactSurfaceUnavailable('visibility-hidden');
                 return;
             }
-            var chatParts = window.__appReactChatWindowParts;
-            if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
+            var chatHost = window.reactChatWindowHost;
+            if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
                 // 生命周期恢复不是几何变化；显式重发一次，不能让相同 snapshot 的去重吞掉 available:true。
-                chatParts.republishCompactSurfaceLayoutChange('visibility-visible');
+                chatHost.republishCompactSurfaceLayoutChange('visibility-visible');
             }
-            if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
-                chatParts.scheduleCompactMinimizeBallTracking();
+            if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+                chatHost.scheduleCompactMinimizeBallTracking();
             }
         });
         var GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS = [100, 300, 700, 1500, 3000, 5000];

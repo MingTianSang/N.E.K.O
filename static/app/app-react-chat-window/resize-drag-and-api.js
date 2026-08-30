@@ -959,6 +959,8 @@
         },
         isGalgameModeEnabled: function () { return !!I.state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return I.getCurrentChatSurfaceMode(); },
+        republishCompactSurfaceLayoutChange: I.republishCompactSurfaceLayoutChange,
+        scheduleCompactMinimizeBallTracking: I.scheduleCompactMinimizeBallTracking,
         refreshGalgameOptions: I.fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: I.setMiniGameInvitePrompt,
