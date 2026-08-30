@@ -570,6 +570,71 @@ test('compact heartbeat does not advance the native yarn drag watermark', () => 
     assert.equal(harness.observations()[0].detail.endedNearCat, true);
 });
 
+test('minimized geometry polls do not advance the native yarn drag watermark', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 5000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 2000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('a reopened lifecycle still rejects drag phases older than its last terminal', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 2000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 3000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 1500,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 0);
+    assert.deepEqual(harness.stableRect(), FAR_RECT);
+});
+
 test('yarn lifecycle sequence orders same-millisecond terminal and reopen updates', () => {
     const harness = createHarness();
     harness.emit('neko:idle-chat-compact-surface-state', {

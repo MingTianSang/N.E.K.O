@@ -21,9 +21,13 @@ let _nekoCatMindYarnSettleTimer = 0;
 let _nekoCatMindYarnDragActive = false;
 let _nekoCatMindYarnSettling = false;
 let _nekoCatMindYarnSettlingSessionId = '';
-let _nekoCatMindLatestYarnSourceAt = 0;
+let _nekoCatMindLatestYarnLifecycleSourceAt = 0;
 let _nekoCatMindLatestYarnLifecycleSequence = 0;
 let _nekoCatMindLatestYarnLifecycleTerminal = false;
+let _nekoCatMindLatestYarnTerminalSourceAt = 0;
+let _nekoCatMindLatestYarnTerminalSequence = 0;
+let _nekoCatMindLatestYarnDragSourceAt = 0;
+let _nekoCatMindLatestYarnDragSequence = 0;
 let _nekoCatMindStableYarnRectBySpace = Object.create(null);
 let _nekoCatMindLastYarnTerminalSignature = '';
 let _nekoCatMindLastYarnTerminalAt = 0;
@@ -381,26 +385,53 @@ function _getNekoCatMindYarnSourceUpdatedAt(detail) {
     return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
 }
 
-function _acceptNekoCatMindYarnLifecycleUpdate(detail, sourceUpdatedAt) {
+function _getNekoCatMindYarnLifecycleSequence(detail) {
     const lifecycleSequenceValue = Number(detail && detail.lifecycleSequence);
-    const lifecycleSequence = Number.isSafeInteger(lifecycleSequenceValue) && lifecycleSequenceValue > 0
+    return Number.isSafeInteger(lifecycleSequenceValue) && lifecycleSequenceValue > 0
         ? lifecycleSequenceValue
         : 0;
+}
+
+function _compareNekoCatMindYarnOrder(sourceUpdatedAt, lifecycleSequence, currentSourceAt, currentSequence) {
+    if (!(currentSourceAt > 0)) return 1;
+    if (sourceUpdatedAt !== currentSourceAt) return sourceUpdatedAt < currentSourceAt ? -1 : 1;
+    if (lifecycleSequence > 0 && currentSequence > 0 && lifecycleSequence !== currentSequence) {
+        return lifecycleSequence < currentSequence ? -1 : 1;
+    }
+    return 0;
+}
+
+function _rememberNekoCatMindYarnOrder(sourceUpdatedAt, lifecycleSequence, currentSourceAt, currentSequence) {
+    const order = _compareNekoCatMindYarnOrder(
+        sourceUpdatedAt,
+        lifecycleSequence,
+        currentSourceAt,
+        currentSequence
+    );
+    if (order > 0) {
+        return { sourceUpdatedAt, lifecycleSequence };
+    }
+    if (order === 0 && lifecycleSequence > 0 &&
+        (currentSequence <= 0 || lifecycleSequence >= currentSequence)) {
+        return { sourceUpdatedAt: currentSourceAt, lifecycleSequence };
+    }
+    return { sourceUpdatedAt: currentSourceAt, lifecycleSequence: currentSequence };
+}
+
+function _acceptNekoCatMindYarnLifecycleUpdate(detail, sourceUpdatedAt) {
+    const lifecycleSequence = _getNekoCatMindYarnLifecycleSequence(detail);
     const lifecycleTerminal = !!(detail && detail.available === false);
-    if (_nekoCatMindLatestYarnSourceAt > 0 && sourceUpdatedAt < _nekoCatMindLatestYarnSourceAt) return false;
-    const sameTimestamp = _nekoCatMindLatestYarnSourceAt > 0 &&
-        sourceUpdatedAt === _nekoCatMindLatestYarnSourceAt;
-    if (sameTimestamp && lifecycleSequence > 0 && _nekoCatMindLatestYarnLifecycleSequence > 0) {
-        if (lifecycleSequence < _nekoCatMindLatestYarnLifecycleSequence) return false;
-        if (lifecycleSequence === _nekoCatMindLatestYarnLifecycleSequence &&
-            _nekoCatMindLatestYarnLifecycleTerminal && !lifecycleTerminal) {
-            return false;
-        }
-    } else if (sameTimestamp && _nekoCatMindLatestYarnLifecycleTerminal && !lifecycleTerminal) {
+    const order = _compareNekoCatMindYarnOrder(
+        sourceUpdatedAt,
+        lifecycleSequence,
+        _nekoCatMindLatestYarnLifecycleSourceAt,
+        _nekoCatMindLatestYarnLifecycleSequence
+    );
+    if (order < 0 || (order === 0 && _nekoCatMindLatestYarnLifecycleTerminal && !lifecycleTerminal)) {
         return false;
     }
-    if (!sameTimestamp) {
-        _nekoCatMindLatestYarnSourceAt = sourceUpdatedAt;
+    if (order > 0) {
+        _nekoCatMindLatestYarnLifecycleSourceAt = sourceUpdatedAt;
         _nekoCatMindLatestYarnLifecycleSequence = lifecycleSequence;
     } else if (lifecycleSequence > 0 &&
         (_nekoCatMindLatestYarnLifecycleSequence <= 0 ||
@@ -408,6 +439,58 @@ function _acceptNekoCatMindYarnLifecycleUpdate(detail, sourceUpdatedAt) {
         _nekoCatMindLatestYarnLifecycleSequence = lifecycleSequence;
     }
     _nekoCatMindLatestYarnLifecycleTerminal = lifecycleTerminal;
+    if (lifecycleTerminal) {
+        const terminalOrder = _rememberNekoCatMindYarnOrder(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            _nekoCatMindLatestYarnTerminalSourceAt,
+            _nekoCatMindLatestYarnTerminalSequence
+        );
+        _nekoCatMindLatestYarnTerminalSourceAt = terminalOrder.sourceUpdatedAt;
+        _nekoCatMindLatestYarnTerminalSequence = terminalOrder.lifecycleSequence;
+    }
+    return true;
+}
+
+function _acceptNekoCatMindYarnDragUpdate(detail, sourceUpdatedAt) {
+    const lifecycleSequence = _getNekoCatMindYarnLifecycleSequence(detail);
+    if (_nekoCatMindLatestYarnTerminalSourceAt > 0 &&
+        _compareNekoCatMindYarnOrder(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            _nekoCatMindLatestYarnTerminalSourceAt,
+            _nekoCatMindLatestYarnTerminalSequence
+        ) <= 0) {
+        return false;
+    }
+    if (_compareNekoCatMindYarnOrder(
+        sourceUpdatedAt,
+        lifecycleSequence,
+        _nekoCatMindLatestYarnDragSourceAt,
+        _nekoCatMindLatestYarnDragSequence
+    ) < 0) {
+        return false;
+    }
+    const dragOrder = _rememberNekoCatMindYarnOrder(
+        sourceUpdatedAt,
+        lifecycleSequence,
+        _nekoCatMindLatestYarnDragSourceAt,
+        _nekoCatMindLatestYarnDragSequence
+    );
+    _nekoCatMindLatestYarnDragSourceAt = dragOrder.sourceUpdatedAt;
+    _nekoCatMindLatestYarnDragSequence = dragOrder.lifecycleSequence;
+    // A real drag phase proves availability for stale-terminal rejection, but
+    // a newer geometry poll must not make this older phase itself stale.
+    if (_compareNekoCatMindYarnOrder(
+        sourceUpdatedAt,
+        lifecycleSequence,
+        _nekoCatMindLatestYarnLifecycleSourceAt,
+        _nekoCatMindLatestYarnLifecycleSequence
+    ) > 0) {
+        _nekoCatMindLatestYarnLifecycleSourceAt = sourceUpdatedAt;
+        _nekoCatMindLatestYarnLifecycleSequence = lifecycleSequence;
+        _nekoCatMindLatestYarnLifecycleTerminal = false;
+    }
     return true;
 }
 
@@ -416,7 +499,12 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
     const phase = _getNekoCatMindYarnDragPhase(detail);
     const coordinateSpace = _getNekoCatMindYarnCoordinateSpace(detail, fallbackCoordinateSpace);
     const sourceUpdatedAt = _getNekoCatMindYarnSourceUpdatedAt(detail);
-    if (!_acceptNekoCatMindYarnLifecycleUpdate(detail, sourceUpdatedAt)) return;
+    if (phase !== 'start' && phase && _hasNekoCatMindYarnSessionMismatch(detail)) return;
+    if (detail.available === false || !phase) {
+        if (!_acceptNekoCatMindYarnLifecycleUpdate(detail, sourceUpdatedAt)) return;
+    } else if (!_acceptNekoCatMindYarnDragUpdate(detail, sourceUpdatedAt)) {
+        return;
+    }
     if (detail.available === false) {
         delete _nekoCatMindStableYarnRectBySpace[coordinateSpace];
         // An unavailable surface is a terminal lifecycle fact, not a drag
@@ -438,7 +526,6 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
     // replaced the active gesture, delayed phases from the old gesture must not
     // sample or settle the replacement. Desktop/Wayland phases intentionally
     // omit ids and retain their existing end-only compatibility path.
-    if (phase !== 'start' && _hasNekoCatMindYarnSessionMismatch(detail)) return;
     if (phase === 'end' || phase === 'cancel') {
         const signature = _getNekoCatMindYarnTerminalSignature(phase, detail, rect, coordinateSpace);
         if (_isNekoCatMindDuplicateYarnTerminal(signature, timestamp)) {
