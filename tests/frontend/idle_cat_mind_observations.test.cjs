@@ -384,3 +384,33 @@ test('unavailable terminal immediately releases an active yarn drag without comp
     harness.runTimers();
     assert.equal(harness.observations().length, 0, 'late callbacks must not synthesize completion');
 });
+
+test('compact surface unavailable terminal immediately releases the yarn gate', () => {
+    const harness = createHarness();
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'compact-pagehide',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    assert.equal(harness.gate().yarnDragActive, true);
+
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'pagehide',
+        screenRect: null,
+        timestamp: 1100,
+    });
+
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+    harness.runTimers();
+    assert.equal(harness.observations().length, 0);
+});

@@ -19,6 +19,13 @@ const JOURNEY_SOURCE = path.join(
     'avatar-ui-buttons',
     'idle-journey-and-presentation.js'
 );
+const CHAT_GEOMETRY_SOURCE = path.join(
+    PROJECT_ROOT,
+    'static',
+    'app',
+    'app-react-chat-window',
+    'geometry-and-messages.js'
+);
 
 function readFunction(sourcePath, name) {
     const source = fs.readFileSync(sourcePath, 'utf8');
@@ -141,6 +148,38 @@ function createHarness() {
 
 const MINIMIZED_RECT = { left: 80, top: 120, width: 64, height: 64 };
 const COMPACT_RECT = { left: 240, top: 180, width: 320, height: 180 };
+
+test('compact lifecycle republish bypasses an unchanged geometry snapshot', () => {
+    const published = [];
+    const parts = {
+        compactSurfaceAnchorSnapshot: '240:180:320:180:idle',
+        isCompactHomeMinimizeBallEnabled() { return true; },
+        getCurrentCompactSurfaceRect() { return COMPACT_RECT; },
+        dispatchCompactSurfaceLayoutChange(detail) { published.push(detail); },
+    };
+    vm.runInNewContext(fs.readFileSync(CHAT_GEOMETRY_SOURCE, 'utf8'), {
+        window: {
+            __appReactChatWindowParts: parts,
+            reactChatWindowHost: {},
+        },
+        document: {},
+        console,
+        Date,
+        Math,
+        Number,
+        Object,
+        Array,
+        String,
+        Boolean,
+        JSON,
+    }, { filename: CHAT_GEOMETRY_SOURCE });
+
+    assert.equal(parts.republishCompactSurfaceLayoutChange('visibility-visible'), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(published)), [{
+        ...COMPACT_RECT,
+        reason: 'visibility-visible',
+    }]);
+});
 
 test('either unavailable terminal clears minimized and compact targets together', () => {
     for (const terminalType of [

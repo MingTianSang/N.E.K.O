@@ -100,6 +100,10 @@
                 return;
             }
             var chatParts = window.__appReactChatWindowParts;
+            if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
+                // 生命周期恢复不是几何变化；显式重发一次，不能让相同 snapshot 的去重吞掉 available:true。
+                chatParts.republishCompactSurfaceLayoutChange('visibility-visible');
+            }
             if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
                 chatParts.scheduleCompactMinimizeBallTracking();
             }

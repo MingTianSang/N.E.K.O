@@ -22,6 +22,7 @@ function createDeferred() {
 function createHarness({
   available = true,
   collapsed = true,
+  exposeAvailabilityEpoch = true,
   getBounds = () => Promise.resolve({ x: 100, y: 200, width: 88, height: 88 }),
 } = {}) {
   const emitted = [];
@@ -30,15 +31,18 @@ function createHarness({
   const documentListeners = new Map();
   let boundsCalls = 0;
   let nextTimerId = 1;
+  let availabilityEpoch = 0;
 
   const bridge = {
     isCollapsed: () => collapsed,
     isIdleTargetAvailable: () => available,
+    getIdleTargetAvailabilityEpoch: () => availabilityEpoch,
     getBounds: () => {
       boundsCalls += 1;
       return getBounds();
     },
   };
+  if (!exposeAvailabilityEpoch) delete bridge.getIdleTargetAvailabilityEpoch;
 
   const document = {
     hidden: !available,
@@ -109,7 +113,9 @@ function createHarness({
     emitted,
     get boundsCalls() { return boundsCalls; },
     setAvailable(nextAvailable) {
-      available = nextAvailable === true;
+      const normalized = nextAvailable === true;
+      if (normalized !== available) availabilityEpoch += 1;
+      available = normalized;
       document.hidden = !available;
     },
     setCollapsed(nextCollapsed) {
@@ -183,4 +189,66 @@ test('a bounds reply that arrives after tray close cannot resurrect the yarn tar
     false,
   );
   assert.equal(harness.emitted.length, 1);
+});
+
+test('a bounds reply from before a hide and quick reopen is discarded by availability epoch', async () => {
+  const oldBounds = createDeferred();
+  const currentBounds = createDeferred();
+  let requestCount = 0;
+  const harness = createHarness({
+    getBounds: () => {
+      requestCount += 1;
+      return requestCount === 1 ? oldBounds.promise : currentBounds.promise;
+    },
+  });
+  harness.parts.ensureElectronChatMinimizedStateBridge();
+  harness.flushAnimationFrames();
+  assert.equal(harness.boundsCalls, 1);
+
+  // X11 can keep document visibility unchanged; the preload-owned epoch still records both transitions.
+  harness.setAvailable(false);
+  harness.setAvailable(true);
+
+  oldBounds.resolve({ x: 100, y: 200, width: 88, height: 88 });
+  await flushPromises();
+  assert.equal(
+    harness.emitted.some((event) => event.detail && event.detail.minimized === true),
+    false,
+    'the pre-hide request must not publish after reopen',
+  );
+
+  harness.flushAnimationFrames();
+  assert.equal(harness.boundsCalls, 2);
+  currentBounds.resolve({ x: 400, y: 300, width: 88, height: 88 });
+  await flushPromises();
+
+  const availableEvents = harness.emitted.filter((event) => event.detail && event.detail.available === true);
+  assert.equal(availableEvents.length, 1);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(availableEvents[0].detail.screenRect)),
+    { left: 419, top: 319, width: 51, height: 51, right: 470, bottom: 370 },
+  );
+});
+
+test('visibility transitions invalidate old bounds when the preload epoch API is absent', async () => {
+  const oldBounds = createDeferred();
+  const harness = createHarness({
+    exposeAvailabilityEpoch: false,
+    getBounds: () => oldBounds.promise,
+  });
+  harness.parts.ensureElectronChatMinimizedStateBridge();
+  harness.flushAnimationFrames();
+
+  harness.setAvailable(false);
+  harness.dispatchVisibilityChange();
+  harness.setAvailable(true);
+  harness.dispatchVisibilityChange();
+  oldBounds.resolve({ x: 100, y: 200, width: 88, height: 88 });
+  await flushPromises();
+
+  assert.equal(
+    harness.emitted.some((event) => event.detail && event.detail.minimized === true),
+    false,
+    'renderer visibility epochs must protect compatibility with older preload versions',
+  );
 });

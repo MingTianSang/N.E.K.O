@@ -8,6 +8,7 @@
  */
 
 const _NEKO_CAT_MIND_YARN_DRAG_EVENT = 'neko:chat-yarn-user-drag';
+const _NEKO_CAT_MIND_COMPACT_SURFACE_EVENT = 'neko:idle-chat-compact-surface-state';
 const _NEKO_CAT_MIND_YARN_DRAG_COMPLETED = 'chat_yarn_drag_completed';
 const _NEKO_CAT_MIND_YARN_DRAG_STALE_MS = 8 * 1000;
 const _NEKO_CAT_MIND_YARN_SETTLE_FALLBACK_MS = 250;
@@ -470,5 +471,11 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
             event && event.detail && typeof event.detail === 'object' ? event.detail : null,
             'screen'
         );
+    });
+    window.addEventListener(_NEKO_CAT_MIND_COMPACT_SURFACE_EVENT, (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        // 普通 compact surface rect 不是毛线球拖拽样本；这里只消费生命周期终止态。
+        if (!detail || detail.available !== false) return;
+        _handleNekoCatMindYarnDragPhase(detail, 'screen');
     });
 }

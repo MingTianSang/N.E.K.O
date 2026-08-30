@@ -353,12 +353,15 @@ def test_hidden_electron_chat_retires_minimized_and_compact_follow_targets():
         "function dispatchElectronChatMinimizedState(reason) {",
         "function scheduleElectronChatMinimizedState(reason)",
     )
-    availability_guard = dispatch_block.index("if (!isElectronChatIdleTargetAvailable(bridge))")
+    availability_guard = dispatch_block.index(
+        "if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false))"
+    )
     bounds_request = dispatch_block.index("bridge.getBounds().then(function (bounds)")
     assert availability_guard < bounds_request
     bounds_callback = dispatch_block.split("bridge.getBounds().then(function (bounds)", 1)[1]
-    assert "if (!isElectronChatIdleTargetAvailable(bridge))" in bounds_callback
+    assert "if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false))" in bounds_callback
     assert "if (!isElectronChatWindowCollapsed(bridge))" in bounds_callback
+    assert "requestAvailabilityEpoch !== getElectronChatIdleTargetAvailabilityEpoch(bridge)" in bounds_callback
     assert "available: true" in dispatch_block
     assert "dispatchElectronChatIdleTargetUnavailable" in dispatch_block
 
@@ -373,6 +376,8 @@ def test_hidden_electron_chat_retires_minimized_and_compact_follow_targets():
     assert "isIdleChatSurfaceAvailable = function isIdleChatSurfaceAvailable()" in interpage_source
     assert "postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden')" in interpage_source
     assert "postIdleChatCompactSurfaceUnavailable('visibility-hidden')" in interpage_source
+    assert "republishCompactSurfaceLayoutChange('visibility-visible')" in interpage_source
+    assert "republishCompactSurfaceLayoutChange = function republishCompactSurfaceLayoutChange" in react_source
     assert "available: available" in interpage_source
 
     assert "const targetAvailable = !(detail && detail.available === false);" in avatar_source
