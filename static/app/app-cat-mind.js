@@ -243,6 +243,7 @@
     var actionRequestLeaseGeneration = 0;
     var debugTimeline = [];
     var debugTimelineSequence = 0;
+    var latestDesktopChatMinimizedSourceAt = 0;
 
     var runtimeState = createInitialRuntimeState();
 
@@ -2619,6 +2620,15 @@
         if (!detail || typeof detail !== 'object') {
             return;
         }
+        var sourceUpdatedAt = Number(detail.timestamp);
+        if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0) {
+            sourceUpdatedAt = nowMs();
+        }
+        if (latestDesktopChatMinimizedSourceAt > 0 &&
+            sourceUpdatedAt < latestDesktopChatMinimizedSourceAt) {
+            return;
+        }
+        latestDesktopChatMinimizedSourceAt = Math.max(latestDesktopChatMinimizedSourceAt, sourceUpdatedAt);
         if (detail.available === false) {
             // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
             runtimeState.lastChatMinimizedRect = null;

@@ -1676,6 +1676,9 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const expanded = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'poll', minimized: false, timestamp }}
         }}));
+        const unavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', reason: 'window-hidden', available: false, timestamp }}
+        }}));
 
         // The first desktop state is still meaningful; only its repeats are heartbeats.
         expanded(1050);
@@ -1689,6 +1692,12 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         minimized(2100);
         minimized(3100);
         assert.deepEqual(win.nekoCatMind.getState().fields, afterFirstMinimized);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+
+        // A delayed terminal cannot erase a newer minimized snapshot and turn
+        // the next unchanged poll into a new observation.
+        unavailable(3050);
+        minimized(3150);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
 
         // The native bridge and BroadcastChannel can use different reasons
@@ -1706,6 +1715,11 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         // A changed rect remains a real observation, even when delivered by poll.
         minimized(4100, 4);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
+
+        // A genuinely newer terminal still starts a new lifecycle.
+        unavailable(4200);
+        minimized(4300, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 3);
 
         expanded(5100);
         const afterFirstExpanded = win.nekoCatMind.getState().fields;

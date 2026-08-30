@@ -26,6 +26,9 @@
     var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
     var idleChatCompactSurfaceHeartbeatTimer = 0;
     var idleChatCompactSurfaceLastPayload = null;
+    var idleChatCompactSurfaceTerminalRetryTimer = 0;
+    var idleChatCompactSurfaceTerminalRetryPayload = null;
+    var idleChatCompactSurfaceTerminalRetryGeneration = 0;
 
     I.postInterpageMessage = function postInterpageMessage(message, options) {
         if (!message || typeof message !== 'object') {
@@ -60,6 +63,39 @@
         if (!idleChatCompactSurfaceHeartbeatTimer) return;
         I.yuiGuideInterpageResources.clearInterval(idleChatCompactSurfaceHeartbeatTimer);
         idleChatCompactSurfaceHeartbeatTimer = 0;
+    }
+
+    I.stopIdleChatCompactSurfaceTerminalRetry = function stopIdleChatCompactSurfaceTerminalRetry() {
+        idleChatCompactSurfaceTerminalRetryGeneration += 1;
+        if (idleChatCompactSurfaceTerminalRetryTimer) {
+            I.yuiGuideInterpageResources.clearTimeout(idleChatCompactSurfaceTerminalRetryTimer);
+        }
+        idleChatCompactSurfaceTerminalRetryTimer = 0;
+        idleChatCompactSurfaceTerminalRetryPayload = null;
+    }
+
+    function tryPostIdleChatCompactSurfaceTerminalRetry() {
+        var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
+        if (!pendingPayload) return true;
+        if (!I.postInterpageMessage(pendingPayload)) return false;
+        I.stopIdleChatCompactSurfaceTerminalRetry();
+        syncIdleChatCompactSurfaceHeartbeat(pendingPayload);
+        return true;
+    }
+
+    function scheduleIdleChatCompactSurfaceTerminalRetry(payload) {
+        idleChatCompactSurfaceTerminalRetryPayload = payload || null;
+        if (!idleChatCompactSurfaceTerminalRetryPayload || idleChatCompactSurfaceTerminalRetryTimer) return;
+        var generation = ++idleChatCompactSurfaceTerminalRetryGeneration;
+        idleChatCompactSurfaceTerminalRetryTimer = I.yuiGuideInterpageResources.setTimeout(function () {
+            if (generation !== idleChatCompactSurfaceTerminalRetryGeneration) return;
+            idleChatCompactSurfaceTerminalRetryTimer = 0;
+            var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
+            if (!pendingPayload) return;
+            if (!tryPostIdleChatCompactSurfaceTerminalRetry()) {
+                scheduleIdleChatCompactSurfaceTerminalRetry(pendingPayload);
+            }
+        }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
     }
 
     I.isIdleChatSurfaceAvailable = function isIdleChatSurfaceAvailable() {
@@ -124,19 +160,31 @@
             dragging: !!(detail && detail.dragging),
             timestamp: Date.now()
         };
+        if (payload.available !== false) I.stopIdleChatCompactSurfaceTerminalRetry();
         var posted = I.postInterpageMessage(payload);
-        // Keep the last positive payload and its heartbeat alive when a terminal
-        // broadcast fails. The next heartbeat will retry unavailable instead of
-        // renewing the stale positive target or permanently deduplicating the failure.
-        if (payload.available === false && !posted) return false;
+        // Keep the original terminal timestamp and retry independently. A prior
+        // positive heartbeat may also retry sooner, but minimized/disabled compact
+        // tracking has no such timer.
+        if (payload.available === false && !posted) {
+            scheduleIdleChatCompactSurfaceTerminalRetry(payload);
+            return false;
+        }
+        I.stopIdleChatCompactSurfaceTerminalRetry();
         syncIdleChatCompactSurfaceHeartbeat(payload);
         return posted;
     };
 
     I.postIdleChatCompactSurfaceUnavailable = function postIdleChatCompactSurfaceUnavailable(reason) {
+        if (idleChatCompactSurfaceTerminalRetryPayload) {
+            var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
+            var postedPending = tryPostIdleChatCompactSurfaceTerminalRetry();
+            if (!postedPending) scheduleIdleChatCompactSurfaceTerminalRetry(pendingPayload);
+            return postedPending;
+        }
         if (idleChatCompactSurfaceLastPayload &&
             idleChatCompactSurfaceLastPayload.available === false &&
-            !idleChatCompactSurfaceHeartbeatTimer) {
+            !idleChatCompactSurfaceHeartbeatTimer &&
+            !idleChatCompactSurfaceTerminalRetryTimer) {
             return;
         }
         return I.postIdleChatCompactSurfaceState({

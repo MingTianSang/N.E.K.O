@@ -204,7 +204,10 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     let available = true;
     let failNextPost = false;
     let heartbeatCallback = null;
+    let terminalRetryCallback = null;
     let clearIntervalCalls = 0;
+    let clearTimeoutCalls = 0;
+    const attemptedMessages = [];
     const parts = {
         yuiGuideInterpageResources: {
             setInterval(callback) {
@@ -214,6 +217,14 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
             clearInterval() {
                 clearIntervalCalls += 1;
                 heartbeatCallback = null;
+            },
+            setTimeout(callback) {
+                terminalRetryCallback = callback;
+                return 2;
+            },
+            clearTimeout() {
+                clearTimeoutCalls += 1;
+                terminalRetryCallback = null;
             },
         },
         getCurrentLanlanName() { return 'test'; },
@@ -242,8 +253,9 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
         JSON,
     }, { filename: INTERPAGE_BROADCAST_SOURCE });
     parts.nekoBroadcastChannel = {
-        postMessage() {
+        postMessage(message) {
             attempts += 1;
+            attemptedMessages.push(JSON.parse(JSON.stringify(message)));
             if (failNextPost) {
                 failNextPost = false;
                 throw new Error('transient broadcast failure');
@@ -261,11 +273,51 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     );
     vm.runInNewContext(`${cleanupSource}\ncleanupAppInterpageTransientResources();`, { I: parts });
     assert.equal(clearIntervalCalls, 0, 'a failed terminal must keep the retry heartbeat alive');
+    assert.equal(typeof terminalRetryCallback, 'function');
+    const pagehideTerminalTimestamp = attemptedMessages.at(-1).timestamp;
     const retryHeartbeat = heartbeatCallback;
     retryHeartbeat();
+    assert.equal(attemptedMessages.at(-1).timestamp, pagehideTerminalTimestamp,
+        'positive heartbeat retries the pending terminal without refreshing its timestamp');
     assert.equal(clearIntervalCalls, 1, 'the successful retry retires the heartbeat');
+    assert.equal(clearTimeoutCalls, 1, 'heartbeat delivery also retires the independent retry');
     parts.postIdleChatCompactSurfaceUnavailable('duplicate-pagehide');
     assert.equal(attempts, 3, 'a delivered terminal may be deduplicated only after the successful retry');
+
+    available = true;
+    assert.equal(parts.postIdleChatCompactSurfaceState({
+        screenRect: null,
+        reason: 'compact-tracking-disabled',
+    }), true);
+    assert.equal(heartbeatCallback, null, 'tracking-disabled state has no positive heartbeat');
+    available = false;
+    failNextPost = true;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('window-hidden-without-heartbeat'), false);
+    assert.equal(typeof terminalRetryCallback, 'function', 'failed terminal schedules an independent retry');
+    const staleRetryAfterReopen = terminalRetryCallback;
+    const relaySource = readFunction(INTERPAGE_LISTENERS_SOURCE, 'relayIdleChatMinimizedState');
+    available = true;
+    vm.runInNewContext(
+        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
+        { I: parts }
+    );
+    assert.equal(terminalRetryCallback, null, 'a reopened minimized lifecycle cancels pending terminal retry');
+    available = false;
+    failNextPost = true;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('window-hidden-retry'), false);
+    const retryWithoutHeartbeat = terminalRetryCallback;
+    const attemptsAfterNewTerminal = attempts;
+    staleRetryAfterReopen();
+    assert.equal(attempts, attemptsAfterNewTerminal,
+        'a captured stale retry callback cannot publish or consume a newer retry');
+    assert.equal(terminalRetryCallback, retryWithoutHeartbeat);
+    const failedTerminalTimestamp = attemptedMessages.at(-1).timestamp;
+    terminalRetryCallback = null;
+    retryWithoutHeartbeat();
+    assert.equal(attemptedMessages.at(-1).timestamp, failedTerminalTimestamp,
+        'terminal retry keeps the original lifecycle timestamp');
+    parts.postIdleChatCompactSurfaceUnavailable('duplicate-after-independent-retry');
+    assert.equal(attempts, 8, 'successful independent retry enables terminal deduplication');
 });
 
 test('either unavailable terminal clears minimized and compact targets together', () => {

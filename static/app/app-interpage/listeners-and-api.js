@@ -77,16 +77,21 @@
         });
     });
 
-    I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', function (evt) {
+    function relayIdleChatMinimizedState(evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
         if (!detail || detail.via === 'broadcast-channel') return;
+        if (detail.available !== false && typeof I.stopIdleChatCompactSurfaceTerminalRetry === 'function') {
+            I.stopIdleChatCompactSurfaceTerminalRetry();
+        }
         I.postInterpageMessage(Object.assign({
             action: 'idle_chat_minimized_state',
             source: 'chat-window',
             lanlan_name: I.getCurrentLanlanName(),
             timestamp: Date.now()
         }, detail));
-    });
+    }
+
+    I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', relayIdleChatMinimizedState);
 
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:compact-surface-layout-change', function (evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
