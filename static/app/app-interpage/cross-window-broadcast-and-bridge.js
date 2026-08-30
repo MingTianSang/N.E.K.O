@@ -26,9 +26,10 @@
     var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
     var idleChatCompactSurfaceHeartbeatTimer = 0;
     var idleChatCompactSurfaceLastPayload = null;
-    var idleChatCompactSurfaceTerminalRetryTimer = 0;
-    var idleChatCompactSurfaceTerminalRetryPayload = null;
-    var idleChatCompactSurfaceTerminalRetryGeneration = 0;
+    var idleChatCompactSurfaceStateRetryTimer = 0;
+    var idleChatCompactSurfaceStateRetryPayload = null;
+    var idleChatCompactSurfaceStateRetryGeneration = 0;
+    var idleChatCompactSurfaceTerminalWatermark = null;
 
     I.nextIdleChatLifecycleSequence = function nextIdleChatLifecycleSequence() {
         var sequence = Number(window.__nekoIdleChatLifecycleSequence);
@@ -75,47 +76,80 @@
         idleChatCompactSurfaceHeartbeatTimer = 0;
     }
 
-    I.stopIdleChatCompactSurfaceTerminalRetry = function stopIdleChatCompactSurfaceTerminalRetry() {
-        idleChatCompactSurfaceTerminalRetryGeneration += 1;
-        if (idleChatCompactSurfaceTerminalRetryTimer) {
-            I.yuiGuideInterpageResources.clearTimeout(idleChatCompactSurfaceTerminalRetryTimer);
+    I.stopIdleChatCompactSurfaceStateRetry = function stopIdleChatCompactSurfaceStateRetry() {
+        idleChatCompactSurfaceStateRetryGeneration += 1;
+        if (idleChatCompactSurfaceStateRetryTimer) {
+            I.yuiGuideInterpageResources.clearTimeout(idleChatCompactSurfaceStateRetryTimer);
         }
-        idleChatCompactSurfaceTerminalRetryTimer = 0;
-        idleChatCompactSurfaceTerminalRetryPayload = null;
+        idleChatCompactSurfaceStateRetryTimer = 0;
+        idleChatCompactSurfaceStateRetryPayload = null;
     }
 
-    I.resumeIdleChatCompactSurfaceLifecycle = function resumeIdleChatCompactSurfaceLifecycle() {
-        var wasUnavailable = !!(
-            idleChatCompactSurfaceLastPayload
-            && idleChatCompactSurfaceLastPayload.available === false
-        );
-        I.stopIdleChatCompactSurfaceTerminalRetry();
-        if (wasUnavailable) {
+    function isIdleChatCompactSurfaceLifecycleNewer(candidate, current) {
+        var candidateTimestamp = Number(candidate && candidate.timestamp);
+        var currentTimestamp = Number(current && current.timestamp);
+        if (!Number.isFinite(candidateTimestamp) || candidateTimestamp <= 0 ||
+            !Number.isFinite(currentTimestamp) || currentTimestamp <= 0) {
+            return false;
+        }
+        if (candidateTimestamp !== currentTimestamp) return candidateTimestamp > currentTimestamp;
+        var candidateSequence = Number(candidate && candidate.lifecycleSequence);
+        var currentSequence = Number(current && current.lifecycleSequence);
+        return Number.isSafeInteger(candidateSequence) && candidateSequence > 0 &&
+            Number.isSafeInteger(currentSequence) && currentSequence > 0 &&
+            candidateSequence > currentSequence;
+    }
+
+    I.canResumeIdleChatCompactSurfaceLifecycle = function canResumeIdleChatCompactSurfaceLifecycle(payload) {
+        return !idleChatCompactSurfaceTerminalWatermark ||
+            isIdleChatCompactSurfaceLifecycleNewer(payload, idleChatCompactSurfaceTerminalWatermark);
+    };
+
+    I.resumeIdleChatCompactSurfaceLifecycle = function resumeIdleChatCompactSurfaceLifecycle(payload) {
+        if (!I.canResumeIdleChatCompactSurfaceLifecycle(payload)) return false;
+        var wasUnavailable = !!idleChatCompactSurfaceTerminalWatermark;
+        idleChatCompactSurfaceTerminalWatermark = null;
+        I.stopIdleChatCompactSurfaceStateRetry();
+        if (wasUnavailable && idleChatCompactSurfaceLastPayload &&
+            idleChatCompactSurfaceLastPayload.available === false) {
             idleChatCompactSurfaceLastPayload = null;
         }
         return wasUnavailable;
     }
 
-    function tryPostIdleChatCompactSurfaceTerminalRetry() {
-        var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
+    function tryPostIdleChatCompactSurfaceStateRetry() {
+        var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
         if (!pendingPayload) return true;
+        if (pendingPayload.available !== false &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(pendingPayload)) {
+            I.stopIdleChatCompactSurfaceStateRetry();
+            return true;
+        }
         if (!I.postInterpageMessage(pendingPayload)) return false;
-        I.stopIdleChatCompactSurfaceTerminalRetry();
+        if (pendingPayload.available !== false) {
+            I.resumeIdleChatCompactSurfaceLifecycle(pendingPayload);
+        } else {
+            I.stopIdleChatCompactSurfaceStateRetry();
+        }
         syncIdleChatCompactSurfaceHeartbeat(pendingPayload);
         return true;
     }
 
-    function scheduleIdleChatCompactSurfaceTerminalRetry(payload) {
-        idleChatCompactSurfaceTerminalRetryPayload = payload || null;
-        if (!idleChatCompactSurfaceTerminalRetryPayload || idleChatCompactSurfaceTerminalRetryTimer) return;
-        var generation = ++idleChatCompactSurfaceTerminalRetryGeneration;
-        idleChatCompactSurfaceTerminalRetryTimer = I.yuiGuideInterpageResources.setTimeout(function () {
-            if (generation !== idleChatCompactSurfaceTerminalRetryGeneration) return;
-            idleChatCompactSurfaceTerminalRetryTimer = 0;
-            var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
+    function scheduleIdleChatCompactSurfaceStateRetry(payload) {
+        idleChatCompactSurfaceStateRetryPayload = payload || null;
+        if (!idleChatCompactSurfaceStateRetryPayload || idleChatCompactSurfaceStateRetryTimer) return;
+        var generation = ++idleChatCompactSurfaceStateRetryGeneration;
+        idleChatCompactSurfaceStateRetryTimer = I.yuiGuideInterpageResources.setTimeout(function () {
+            if (generation !== idleChatCompactSurfaceStateRetryGeneration) return;
+            idleChatCompactSurfaceStateRetryTimer = 0;
+            var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
             if (!pendingPayload) return;
-            if (!tryPostIdleChatCompactSurfaceTerminalRetry()) {
-                scheduleIdleChatCompactSurfaceTerminalRetry(pendingPayload);
+            if (pendingPayload.available !== false && !I.isIdleChatSurfaceAvailable()) {
+                I.postIdleChatCompactSurfaceUnavailable('retry-window-hidden');
+                return;
+            }
+            if (!tryPostIdleChatCompactSurfaceStateRetry()) {
+                scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
             }
         }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
     }
@@ -135,8 +169,15 @@
     function startIdleChatCompactSurfaceHeartbeat() {
         if (idleChatCompactSurfaceHeartbeatTimer) return;
         idleChatCompactSurfaceHeartbeatTimer = I.yuiGuideInterpageResources.setInterval(function () {
-            if (idleChatCompactSurfaceTerminalRetryPayload) {
-                I.postIdleChatCompactSurfaceUnavailable('heartbeat-pending-terminal');
+            if (idleChatCompactSurfaceStateRetryPayload) {
+                var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+                if (pendingPayload.available !== false && !I.isIdleChatSurfaceAvailable()) {
+                    I.postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden');
+                    return;
+                }
+                if (!tryPostIdleChatCompactSurfaceStateRetry()) {
+                    scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
+                }
                 return;
             }
             if (!I.isIdleChatSurfaceAvailable()) {
@@ -205,31 +246,46 @@
             timestamp: Date.now(),
             lifecycleSequence: I.nextIdleChatLifecycleSequence()
         };
-        if (payload.available !== false) I.resumeIdleChatCompactSurfaceLifecycle();
-        var posted = I.postInterpageMessage(payload);
-        // Keep the original terminal timestamp and retry independently. A prior
-        // positive heartbeat may also retry sooner, but minimized/disabled compact
-        // tracking has no such timer.
-        if (payload.available === false && !posted) {
-            scheduleIdleChatCompactSurfaceTerminalRetry(payload);
+        if (payload.available === false) {
+            idleChatCompactSurfaceTerminalWatermark = payload;
+        }
+        if (payload.available !== false &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(payload)) {
             return false;
         }
-        I.stopIdleChatCompactSurfaceTerminalRetry();
+        var posted = I.postInterpageMessage(payload);
+        // Keep the original lifecycle timestamp and retry independently. This
+        // also covers available:true states without a positive geometry heartbeat.
+        if (!posted) {
+            scheduleIdleChatCompactSurfaceStateRetry(payload);
+            return false;
+        }
+        if (payload.available !== false) {
+            I.resumeIdleChatCompactSurfaceLifecycle(payload);
+        } else {
+            I.stopIdleChatCompactSurfaceStateRetry();
+        }
         syncIdleChatCompactSurfaceHeartbeat(payload);
         return posted;
     };
 
     I.postIdleChatCompactSurfaceUnavailable = function postIdleChatCompactSurfaceUnavailable(reason) {
-        if (idleChatCompactSurfaceTerminalRetryPayload) {
-            var pendingPayload = idleChatCompactSurfaceTerminalRetryPayload;
-            var postedPending = tryPostIdleChatCompactSurfaceTerminalRetry();
-            if (!postedPending) scheduleIdleChatCompactSurfaceTerminalRetry(pendingPayload);
-            return postedPending;
+        var supersededRecovery = false;
+        if (idleChatCompactSurfaceStateRetryPayload) {
+            if (idleChatCompactSurfaceStateRetryPayload.available === false) {
+                var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+                var postedPending = tryPostIdleChatCompactSurfaceStateRetry();
+                if (!postedPending) scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
+                return postedPending;
+            }
+            // A newer unavailable state supersedes an undelivered recovery.
+            I.stopIdleChatCompactSurfaceStateRetry();
+            supersededRecovery = true;
         }
-        if (idleChatCompactSurfaceLastPayload &&
+        if (!supersededRecovery && idleChatCompactSurfaceLastPayload &&
             idleChatCompactSurfaceLastPayload.available === false &&
             !idleChatCompactSurfaceHeartbeatTimer &&
-            !idleChatCompactSurfaceTerminalRetryTimer) {
+            !idleChatCompactSurfaceStateRetryTimer) {
             return;
         }
         return I.postIdleChatCompactSurfaceState({

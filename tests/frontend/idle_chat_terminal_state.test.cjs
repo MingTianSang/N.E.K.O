@@ -369,21 +369,53 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
         'positive heartbeat retries the pending terminal without refreshing its timestamp');
     assert.equal(clearIntervalCalls, 1, 'the successful retry retires the heartbeat');
     assert.equal(clearTimeoutCalls, 1, 'heartbeat delivery also retires the independent retry');
+    const relaySource = readFunction(INTERPAGE_LISTENERS_SOURCE, 'relayIdleChatMinimizedState');
+    const deliveredTerminal = attemptedMessages.at(-1);
+    const attemptsAfterTerminal = attempts;
+    vm.runInNewContext(`${relaySource}\nrelayIdleChatMinimizedState(event);`, {
+        I: parts,
+        window,
+        event: {
+            detail: {
+                available: true,
+                minimized: false,
+                timestamp: deliveredTerminal.timestamp,
+                lifecycleSequence: deliveredTerminal.lifecycleSequence - 1,
+            },
+        },
+    });
+    assert.equal(attempts, attemptsAfterTerminal,
+        'an older same-millisecond positive cannot resume a delivered terminal');
     parts.postIdleChatCompactSurfaceUnavailable('duplicate-pagehide');
     assert.equal(attempts, 3, 'a delivered terminal may be deduplicated only after the successful retry');
 
-    const relaySource = readFunction(INTERPAGE_LISTENERS_SOURCE, 'relayIdleChatMinimizedState');
     available = true;
+    const reopenDetail = {
+        available: true,
+        minimized: false,
+        timestamp: deliveredTerminal.timestamp,
+        lifecycleSequence: deliveredTerminal.lifecycleSequence + 1,
+    };
+    window.__nekoIdleChatLifecycleSequence = reopenDetail.lifecycleSequence;
     failNextPost = true;
-    vm.runInNewContext(
-        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: false } });`,
-        { I: parts, window }
-    );
+    vm.runInNewContext(`${relaySource}\nrelayIdleChatMinimizedState(event);`, {
+        I: parts,
+        window,
+        event: { detail: reopenDetail },
+    });
+    assert.deepEqual(compactRepublishReasons, [],
+        'a failed recovery relay must preserve the delivered terminal');
+    assert.equal(compactTrackingSchedules, 0);
+    vm.runInNewContext(`${relaySource}\nrelayIdleChatMinimizedState(event);`, {
+        I: parts,
+        window,
+        event: { detail: reopenDetail },
+    });
     assert.deepEqual(compactRepublishReasons, ['native-availability-restored']);
     assert.equal(compactTrackingSchedules, 1);
     available = false;
     assert.equal(parts.postIdleChatCompactSurfaceUnavailable('hidden-after-minimized-reopen'), true,
-        'a minimized-only reopen invalidates terminal dedupe even if its relay fails');
+        'a successfully relayed minimized reopen invalidates terminal dedupe');
     assert.equal(attemptedMessages.at(-1).available, false);
 
     available = true;
@@ -398,10 +430,17 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     assert.equal(typeof terminalRetryCallback, 'function', 'failed terminal schedules an independent retry');
     const staleRetryAfterReopen = terminalRetryCallback;
     available = true;
-    vm.runInNewContext(
-        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
-        { I: parts, window }
-    );
+    const minimizedReopenDetail = {
+        available: true,
+        minimized: true,
+        timestamp: attemptedMessages.at(-1).timestamp + 1,
+        lifecycleSequence: parts.nextIdleChatLifecycleSequence(),
+    };
+    vm.runInNewContext(`${relaySource}\nrelayIdleChatMinimizedState(event);`, {
+        I: parts,
+        window,
+        event: { detail: minimizedReopenDetail },
+    });
     assert.equal(terminalRetryCallback, null, 'a reopened minimized lifecycle cancels pending terminal retry');
     available = false;
     failNextPost = true;
@@ -418,7 +457,42 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     assert.equal(attemptedMessages.at(-1).timestamp, failedTerminalTimestamp,
         'terminal retry keeps the original lifecycle timestamp');
     parts.postIdleChatCompactSurfaceUnavailable('duplicate-after-independent-retry');
-    assert.equal(attempts, 10, 'successful independent retry enables terminal deduplication');
+    assert.equal(attempts, 11, 'successful independent retry enables terminal deduplication');
+
+    available = true;
+    failNextPost = true;
+    assert.equal(parts.postIdleChatCompactSurfaceState({
+        screenRect: null,
+        reason: 'recovery-without-heartbeat',
+    }), false);
+    assert.equal(typeof terminalRetryCallback, 'function',
+        'a failed recovery without geometry also schedules an independent retry');
+    const recoveryRetry = terminalRetryCallback;
+    const failedRecovery = attemptedMessages.at(-1);
+    terminalRetryCallback = null;
+    recoveryRetry();
+    assert.equal(attemptedMessages.at(-1).available, true);
+    assert.equal(attemptedMessages.at(-1).timestamp, failedRecovery.timestamp,
+        'recovery retry keeps the original lifecycle timestamp');
+    assert.equal(heartbeatCallback, null);
+
+    available = false;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('closed-after-recovery'), true);
+    available = true;
+    failNextPost = true;
+    assert.equal(parts.postIdleChatCompactSurfaceState({
+        screenRect: null,
+        reason: 'second-recovery-without-heartbeat',
+    }), false);
+    const supersededRecoveryRetry = terminalRetryCallback;
+    available = false;
+    assert.equal(parts.postIdleChatCompactSurfaceUnavailable('closed-before-recovery-retry'), true);
+    assert.equal(attemptedMessages.at(-1).available, false,
+        'a newer terminal replaces an undelivered recovery');
+    const attemptsAfterSupersededRecovery = attempts;
+    supersededRecoveryRetry();
+    assert.equal(attempts, attemptsAfterSupersededRecovery,
+        'the superseded recovery callback cannot revive the closed surface');
 });
 
 test('either unavailable terminal clears minimized and compact targets together', () => {

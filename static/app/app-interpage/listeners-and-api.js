@@ -94,21 +94,24 @@
     function relayIdleChatMinimizedState(evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
         if (!detail || detail.via === 'broadcast-channel') return;
-        var compactSurfaceWasUnavailable = false;
-        if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
-            compactSurfaceWasUnavailable = I.resumeIdleChatCompactSurfaceLifecycle() === true;
-        }
+        var sourceUpdatedAt = Number(detail.timestamp);
+        var lifecycleSequence = Number(detail.lifecycleSequence);
+        if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0 ||
+            !Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) return;
+        if (detail.available !== false &&
+            typeof I.canResumeIdleChatCompactSurfaceLifecycle === 'function' &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(detail)) return;
         var payload = Object.assign({
             action: 'idle_chat_minimized_state',
             source: 'chat-window',
             lanlan_name: I.getCurrentLanlanName(),
             timestamp: Date.now()
         }, detail);
-        var lifecycleSequence = Number(payload.lifecycleSequence);
-        if (!Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) {
-            payload.lifecycleSequence = I.nextIdleChatLifecycleSequence();
+        if (!I.postInterpageMessage(payload)) return;
+        var compactSurfaceWasUnavailable = false;
+        if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
+            compactSurfaceWasUnavailable = I.resumeIdleChatCompactSurfaceLifecycle(detail) === true;
         }
-        I.postInterpageMessage(payload);
         if (compactSurfaceWasUnavailable && detail.minimized !== true) {
             var chatHost = window.reactChatWindowHost;
             if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
