@@ -2403,24 +2403,16 @@ function _ensureNekoIdleReturnPresentationBridge() {
         } else if (nextVisible &&
             _nekoIdleDesktopChatMinimizedState &&
             !_nekoIdleDesktopChatMinimizedState.minimized) {
-            // 还原后来的心跳 catch-up：Electron setMinimized(false) 早退不发布
-            // compact-surface-state，compact 缓存仍为 minimize 时写下的
-            // visible:false。心跳说 visible + minimized 已 false → 信任心跳
-            // 恢复 compact 可用性，保留原 sourceUpdatedAt 不乱排序。
-            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState
-                ? _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt
-                : sourceUpdatedAt;
+            // 首个 available:true 发布失败时，后续心跳可能是消费端收到的第一条
+            // 恢复事实。仅此 catch-up 分支提升排序水位，避免迟到的恢复前消息
+            // 再次清掉目标；普通可见心跳仍走上面的保序分支。
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 true,
                 screenRect,
                 receivedAt,
-                prevCompactSourceUpdatedAt,
-                _nekoIdleDesktopCompactSurfaceState
-                    ? _nekoIdleDesktopCompactSurfaceState.lifecycleSequence
-                    : lifecycleSequence,
-                _nekoIdleDesktopCompactSurfaceState
-                    ? _nekoIdleDesktopCompactSurfaceState.lifecycleTerminal
-                    : lifecycleTerminal
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);

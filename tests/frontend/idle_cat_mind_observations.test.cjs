@@ -661,4 +661,16 @@ test('yarn lifecycle sequence orders same-millisecond terminal and reopen update
         lifecycleSequence: 3,
     });
     assert.deepEqual(harness.stableRect(), FAR_RECT);
+
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'same-millisecond-reopen',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 3,
+    });
+    assert.equal(harness.gate().yarnDragActive, true,
+        'a drag carrying the accepted reopen sequence supersedes the terminal watermark');
 });

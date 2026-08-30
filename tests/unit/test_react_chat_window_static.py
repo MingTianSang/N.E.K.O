@@ -1916,6 +1916,17 @@ def test_moved_drag_suppresses_trailing_release_click():
 def test_minimized_yarn_drag_reports_forced_release_as_cancel():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
+    dispatch_block = script.split("function dispatchMinimizedYarnDragPhase", 1)[1].split(
+        "function isCompactDragSurfaceTarget",
+        1,
+    )[0]
+    start_block = script.split("function startDrag", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+    assert "lifecycleSequence: dragState.yarnLifecycleSequence" in dispatch_block
+    assert "yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence()" in start_block
+
     stop_block = script.split("function stopDrag(options)", 1)[1].split(
         "function bindDragging()",
         1,

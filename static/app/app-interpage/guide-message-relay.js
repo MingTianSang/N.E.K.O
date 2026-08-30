@@ -41,7 +41,11 @@
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
-                    && I.isDuplicateMessage(message.action, message.timestamp)
+                    && I.isDuplicateMessage(
+                        message.action,
+                        message.timestamp,
+                        message.lifecycleSequence
+                    )
                 ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', message.action);
                     return;

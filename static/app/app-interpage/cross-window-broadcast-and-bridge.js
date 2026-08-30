@@ -85,10 +85,15 @@
     }
 
     I.resumeIdleChatCompactSurfaceLifecycle = function resumeIdleChatCompactSurfaceLifecycle() {
+        var wasUnavailable = !!(
+            idleChatCompactSurfaceLastPayload
+            && idleChatCompactSurfaceLastPayload.available === false
+        );
         I.stopIdleChatCompactSurfaceTerminalRetry();
-        if (idleChatCompactSurfaceLastPayload && idleChatCompactSurfaceLastPayload.available === false) {
+        if (wasUnavailable) {
             idleChatCompactSurfaceLastPayload = null;
         }
+        return wasUnavailable;
     }
 
     function tryPostIdleChatCompactSurfaceTerminalRetry() {

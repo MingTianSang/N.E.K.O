@@ -94,8 +94,9 @@
     function relayIdleChatMinimizedState(evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
         if (!detail || detail.via === 'broadcast-channel') return;
+        var compactSurfaceWasUnavailable = false;
         if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
-            I.resumeIdleChatCompactSurfaceLifecycle();
+            compactSurfaceWasUnavailable = I.resumeIdleChatCompactSurfaceLifecycle() === true;
         }
         var payload = Object.assign({
             action: 'idle_chat_minimized_state',
@@ -108,6 +109,15 @@
             payload.lifecycleSequence = I.nextIdleChatLifecycleSequence();
         }
         I.postInterpageMessage(payload);
+        if (compactSurfaceWasUnavailable && detail.minimized !== true) {
+            var chatParts = window.__appReactChatWindowParts;
+            if (chatParts && typeof chatParts.republishCompactSurfaceLayoutChange === 'function') {
+                chatParts.republishCompactSurfaceLayoutChange('native-availability-restored');
+            }
+            if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
+                chatParts.scheduleCompactMinimizeBallTracking();
+            }
+        }
     }
 
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', relayIdleChatMinimizedState);

@@ -33,6 +33,20 @@ const INTERPAGE_BROADCAST_SOURCE = path.join(
     'app-interpage',
     'cross-window-broadcast-and-bridge.js'
 );
+const INTERPAGE_BOOTSTRAP_SOURCE = path.join(
+    PROJECT_ROOT,
+    'static',
+    'app',
+    'app-interpage',
+    'bootstrap-resources-and-model-reload.js'
+);
+const INTERPAGE_RELAY_SOURCE = path.join(
+    PROJECT_ROOT,
+    'static',
+    'app',
+    'app-interpage',
+    'guide-message-relay.js'
+);
 const INTERPAGE_LISTENERS_SOURCE = path.join(
     PROJECT_ROOT,
     'static',
@@ -235,6 +249,24 @@ test('persisted pageshow republishes and restarts compact target tracking', () =
     ]);
 });
 
+test('message dedup distinguishes same-millisecond lifecycle updates by sequence', () => {
+    const dedupSource = readFunction(INTERPAGE_BOOTSTRAP_SOURCE, 'isDuplicateMessage');
+    const context = vm.createContext({ setTimeout() {} });
+    vm.runInContext(`
+        var _processedMsgKeys = Object.create(null);
+        ${dedupSource}
+        globalThis.isDuplicateMessage = isDuplicateMessage;
+    `, context);
+
+    assert.equal(context.isDuplicateMessage('idle_chat_compact_surface_state', 1000, 1), false);
+    assert.equal(context.isDuplicateMessage('idle_chat_compact_surface_state', 1000, 2), false);
+    assert.equal(context.isDuplicateMessage('idle_chat_compact_surface_state', 1000, 2), true);
+    assert.equal(context.isDuplicateMessage('legacy_action', 1000), false);
+    assert.equal(context.isDuplicateMessage('legacy_action', 1000), true);
+    assert.match(fs.readFileSync(INTERPAGE_RELAY_SOURCE, 'utf8'),
+        /message\.timestamp,\s*message\.lifecycleSequence/);
+});
+
 test('pagehide cleanup keeps a failed compact terminal retryable until delivery succeeds', () => {
     const source = fs.readFileSync(INTERPAGE_BROADCAST_SOURCE, 'utf8');
     const lifecycleEnd = source.indexOf('    function scheduleYuiGuideChatMessageFlush');
@@ -248,6 +280,8 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     let clearIntervalCalls = 0;
     let clearTimeoutCalls = 0;
     const attemptedMessages = [];
+    const compactRepublishReasons = [];
+    let compactTrackingSchedules = 0;
     const parts = {
         yuiGuideInterpageResources: {
             setInterval(callback) {
@@ -276,6 +310,10 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     const window = {
         appInterpage: {},
         __appInterpageParts: parts,
+        __appReactChatWindowParts: {
+            republishCompactSurfaceLayoutChange(reason) { compactRepublishReasons.push(reason); },
+            scheduleCompactMinimizeBallTracking() { compactTrackingSchedules += 1; },
+        },
         nekoChatWindow: { isIdleTargetAvailable() { return available; } },
         opener: null,
     };
@@ -338,9 +376,11 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     available = true;
     failNextPost = true;
     vm.runInNewContext(
-        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
-        { I: parts }
+        `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: false } });`,
+        { I: parts, window }
     );
+    assert.deepEqual(compactRepublishReasons, ['native-availability-restored']);
+    assert.equal(compactTrackingSchedules, 1);
     available = false;
     assert.equal(parts.postIdleChatCompactSurfaceUnavailable('hidden-after-minimized-reopen'), true,
         'a minimized-only reopen invalidates terminal dedupe even if its relay fails');
@@ -360,7 +400,7 @@ test('pagehide cleanup keeps a failed compact terminal retryable until delivery 
     available = true;
     vm.runInNewContext(
         `${relaySource}\nrelayIdleChatMinimizedState({ detail: { available: true, minimized: true } });`,
-        { I: parts }
+        { I: parts, window }
     );
     assert.equal(terminalRetryCallback, null, 'a reopened minimized lifecycle cancels pending terminal retry');
     available = false;
@@ -505,6 +545,43 @@ test('lifecycle sequence orders same-millisecond terminal and reopen updates', (
     });
     assert.equal(legacyHarness.snapshot().minimized.minimized, false,
         'equal-time legacy positive cannot overtake a terminal');
+});
+
+test('a catch-up heartbeat advances recovered compact lifecycle ordering', () => {
+    const harness = createHarness();
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 1000,
+        lifecycleSequence: 1,
+    });
+    harness.emit('neko:idle-chat-minimized-state', {
+        available: true,
+        minimized: false,
+        timestamp: 1100,
+        lifecycleSequence: 2,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        heartbeat: true,
+        screenRect: COMPACT_RECT,
+        timestamp: 3000,
+        lifecycleSequence: 3,
+    });
+
+    let state = harness.snapshot();
+    assert.equal(state.compact.visible, true);
+    assert.equal(state.compact.sourceUpdatedAt, 3000);
+    assert.equal(state.compact.lifecycleSequence, 3);
+    assert.equal(state.compact.lifecycleTerminal, false);
+
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 2000,
+        lifecycleSequence: 2,
+    });
+    state = harness.snapshot();
+    assert.equal(state.compact.visible, true, 'a delayed pre-recovery terminal stays retired');
 });
 
 test('inactive cross-stream watermarks reject delayed terminals and intermediate positives', () => {
