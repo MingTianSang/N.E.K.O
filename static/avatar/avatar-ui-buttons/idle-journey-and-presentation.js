@@ -2249,16 +2249,17 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
         if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;
-        const screenRect = detail && detail.minimized
+        const targetAvailable = !(detail && detail.available === false);
+        const screenRect = targetAvailable && detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
-        const nextMinimized = !!(detail && detail.minimized && screenRect);
+        const nextMinimized = !!(targetAvailable && detail && detail.minimized && screenRect);
         if (_isAnyNekoIdleCat1PlaygroundDropLifecycleActive() &&
             _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)) {
             return;
         }
         const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
-        if (nextMinimized &&
+        if ((nextMinimized || !targetAvailable) &&
             _nekoIdleDesktopCompactSurfaceState &&
             _nekoIdleDesktopCompactSurfaceState.visible &&
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
@@ -2276,9 +2277,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
             screenRect,
             receivedAt,
             sourceUpdatedAt,
-            !!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
+            !!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
         );
-        if (nextMinimized) {
+        if (nextMinimized || !targetAvailable) {
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 false,
                 null,
@@ -2310,12 +2311,13 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
         if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;
-        const screenRect = detail && detail.visible
+        const targetAvailable = !(detail && detail.available === false);
+        const screenRect = targetAvailable && detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
         const heartbeat = !!(detail && detail.heartbeat);
-        const nextVisible = !!(detail && detail.visible && screenRect);
-        if (nextVisible &&
+        const nextVisible = !!(targetAvailable && detail && detail.visible && screenRect);
+        if ((nextVisible || !targetAvailable) &&
             _nekoIdleDesktopChatMinimizedState &&
             _nekoIdleDesktopChatMinimizedState.minimized &&
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
@@ -2336,7 +2338,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 receivedAt,
                 sourceUpdatedAt
             );
-            if (nextVisible) {
+            if (nextVisible || !targetAvailable) {
                 _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
                     false,
                     null,

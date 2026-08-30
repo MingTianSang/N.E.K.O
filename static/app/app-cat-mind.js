@@ -2619,6 +2619,13 @@
         if (!detail || typeof detail !== 'object') {
             return;
         }
+        if (detail.available === false) {
+            // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
+            runtimeState.lastChatMinimizedRect = null;
+            runtimeState.lastChatMinimizedState = null;
+            runtimeState.lastChatIdleDocked = false;
+            return;
+        }
         var rect = normalizeRect(detail.screenRect);
         if (detail.reason === 'idle-dock-enter') {
             if (runtimeState.lastChatIdleDocked &&

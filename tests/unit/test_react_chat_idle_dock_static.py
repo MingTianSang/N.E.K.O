@@ -307,7 +307,9 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in minimized_listener
     assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)" in minimized_listener
     assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in minimized_listener
-    assert "!!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+    assert "!!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+    assert "const targetAvailable = !(detail && detail.available === false);" in minimized_listener
+    assert "if (nextMinimized || !targetAvailable)" in minimized_listener
 
     compact_listener = _between(
         source,
@@ -331,6 +333,50 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
     assert minimized_reassign_line.index("null") < minimized_reassign_line.index("receivedAt")
     assert minimized_reassign_line.index("receivedAt") < minimized_reassign_line.index("sourceUpdatedAt")
+
+
+def test_hidden_electron_chat_retires_minimized_and_compact_follow_targets():
+    react_source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    interpage_source = _read(PROJECT_ROOT / "static" / "app" / "app-interpage")
+    avatar_source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    availability_block = _between(
+        react_source,
+        "function isElectronChatIdleTargetAvailable(bridge) {",
+        "function getElectronChatMinimizedStateSignature",
+    )
+    assert "bridge.isIdleTargetAvailable() === true" in availability_block
+    assert "return !document.hidden;" in availability_block
+
+    dispatch_block = _between(
+        react_source,
+        "function dispatchElectronChatMinimizedState(reason) {",
+        "function scheduleElectronChatMinimizedState(reason)",
+    )
+    availability_guard = dispatch_block.index("if (!isElectronChatIdleTargetAvailable(bridge))")
+    bounds_request = dispatch_block.index("bridge.getBounds().then(function (bounds)")
+    assert availability_guard < bounds_request
+    bounds_callback = dispatch_block.split("bridge.getBounds().then(function (bounds)", 1)[1]
+    assert "if (!isElectronChatIdleTargetAvailable(bridge))" in bounds_callback
+    assert "if (!isElectronChatWindowCollapsed(bridge))" in bounds_callback
+    assert "available: true" in dispatch_block
+    assert "dispatchElectronChatIdleTargetUnavailable" in dispatch_block
+
+    bridge_block = _between(
+        react_source,
+        "ensureElectronChatMinimizedStateBridge = function ensureElectronChatMinimizedStateBridge() {",
+        "function clampElectronDockBounds",
+    )
+    assert "document.addEventListener('visibilitychange'" in bridge_block
+    assert "dispatchElectronChatIdleTargetUnavailable('visibility-hidden')" in bridge_block
+
+    assert "isIdleChatSurfaceAvailable = function isIdleChatSurfaceAvailable()" in interpage_source
+    assert "postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden')" in interpage_source
+    assert "postIdleChatCompactSurfaceUnavailable('visibility-hidden')" in interpage_source
+    assert "available: available" in interpage_source
+
+    assert "const targetAvailable = !(detail && detail.available === false);" in avatar_source
+    assert "if (nextMinimized || !targetAvailable)" in avatar_source
 
 
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():

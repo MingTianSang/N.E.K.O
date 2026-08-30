@@ -215,6 +215,17 @@
         }
     }
 
+    function isElectronChatIdleTargetAvailable(bridge) {
+        if (bridge && typeof bridge.isIdleTargetAvailable === 'function') {
+            try {
+                return bridge.isIdleTargetAvailable() === true;
+            } catch (_) {
+                return false;
+            }
+        }
+        return !document.hidden;
+    }
+
     function getElectronChatMinimizedStateSignature(minimizedState, rect) {
         if (!minimizedState || !rect) return '0';
         return [
@@ -224,6 +235,24 @@
             rect.width,
             rect.height
         ].join(':');
+    }
+
+    function dispatchElectronChatIdleTargetUnavailable(reason) {
+        if (I.electronChatMinimizedStateSignature === 'unavailable') return;
+        var now = Date.now();
+        I.electronChatMinimizedStateSignature = 'unavailable';
+        I.electronChatMinimizedStatePublishedAt = now;
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+            detail: {
+                action: 'idle_chat_minimized_state',
+                source: 'chat-window',
+                reason: reason || 'window-hidden',
+                available: false,
+                minimized: false,
+                screenRect: null,
+                timestamp: now
+            }
+        }));
     }
 
     function getElectronChatMinimizedScreenRect(windowRect) {
@@ -251,6 +280,13 @@
         var bridge = window.nekoChatWindow;
         if (!bridge || typeof bridge.getBounds !== 'function') return;
 
+        // BrowserWindow.hide() 不销毁 renderer，后台 timer 仍会运行。隐藏后的旧
+        // isCollapsed()/getBounds() 只能描述 carrier 的最后位置，不能继续作为追逐目标。
+        if (!isElectronChatIdleTargetAvailable(bridge)) {
+            dispatchElectronChatIdleTargetUnavailable(reason || 'window-hidden');
+            return;
+        }
+
         var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
 
@@ -273,6 +309,7 @@
                         action: 'idle_chat_minimized_state',
                         source: 'chat-window',
                         reason: reason || 'sync',
+                        available: true,
                         minimized: true,
                         screenRect: directRect,
                         timestamp: now
@@ -294,6 +331,7 @@
                     action: 'idle_chat_minimized_state',
                     source: 'chat-window',
                     reason: reason || 'sync',
+                    available: true,
                     minimized: false,
                     screenRect: null,
                     timestamp: now
@@ -303,6 +341,16 @@
         }
 
         bridge.getBounds().then(function (bounds) {
+            // getBounds 是异步 IPC。托盘关闭或展开可能发生在请求与回调之间；
+            // 回调必须复核实时状态，否则这条迟到消息会用更新的 timestamp 复活旧毛线球。
+            if (!isElectronChatIdleTargetAvailable(bridge)) {
+                dispatchElectronChatIdleTargetUnavailable(reason || 'bounds-window-hidden');
+                return;
+            }
+            if (!isElectronChatWindowCollapsed(bridge)) {
+                dispatchElectronChatMinimizedState(reason || 'bounds-state-changed');
+                return;
+            }
             var windowRect = normalizeElectronWindowBoundsRect(bounds);
             if (!windowRect) return;
             var yarnRect = getElectronChatMinimizedScreenRect(windowRect);
@@ -321,6 +369,7 @@
                     action: 'idle_chat_minimized_state',
                     source: 'chat-window',
                     reason: reason || 'sync',
+                    available: true,
                     minimized: true,
                     screenRect: yarnRect,
                     timestamp: now
@@ -369,6 +418,16 @@
         window.addEventListener('mouseup', function () {
             scheduleElectronChatMinimizedState('pointer');
         }, { passive: true });
+        document.addEventListener('visibilitychange', function () {
+            var bridge = window.nekoChatWindow;
+            if (!isElectronChatIdleTargetAvailable(bridge)) {
+                // requestAnimationFrame 在隐藏文档中可能暂停；失效通知必须同步发出。
+                I.electronChatMinimizedStateFullRateUntil = 0;
+                dispatchElectronChatIdleTargetUnavailable('visibility-hidden');
+                return;
+            }
+            scheduleElectronChatMinimizedState('visibility-visible');
+        });
     }
 
     function clampElectronDockBounds(bounds, workArea) {

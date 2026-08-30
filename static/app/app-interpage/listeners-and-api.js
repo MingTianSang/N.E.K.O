@@ -36,6 +36,9 @@
     );
 
     function cleanupAppInterpageTransientResources() {
+        if (typeof I.isStandaloneChatPage === 'function' && I.isStandaloneChatPage()) {
+            I.postIdleChatCompactSurfaceUnavailable('pagehide');
+        }
         I.clearYuiGuideChatFlushTimer();
         I.clearIcebreakerBridgeFlushTimer();
         I.stopIdleChatCompactSurfaceHeartbeat();
@@ -89,6 +92,18 @@
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (I.isStandaloneChatPage()) {
+        I.yuiGuideInterpageResources.addEventListener(document, 'visibilitychange', function () {
+            if (document.hidden || !I.isIdleChatSurfaceAvailable()) {
+                // hidden 页面仍会被 Electron 的 backgroundThrottling:false 定时唤醒；
+                // 先广播终止态，再停掉 compact 顶边坐标心跳。
+                I.postIdleChatCompactSurfaceUnavailable('visibility-hidden');
+                return;
+            }
+            var chatParts = window.__appReactChatWindowParts;
+            if (chatParts && typeof chatParts.scheduleCompactMinimizeBallTracking === 'function') {
+                chatParts.scheduleCompactMinimizeBallTracking();
+            }
+        });
         var GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS = [100, 300, 700, 1500, 3000, 5000];
         var goodbyeComposerRequestRetryIndex = 0;
         var goodbyeComposerRequestTimer = 0;

@@ -376,6 +376,15 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
     if (!detail || typeof detail !== 'object') return;
     const phase = _getNekoCatMindYarnDragPhase(detail);
     const coordinateSpace = _getNekoCatMindYarnCoordinateSpace(detail, fallbackCoordinateSpace);
+    if (detail.available === false) {
+        delete _nekoCatMindStableYarnRectBySpace[coordinateSpace];
+        // An unavailable surface is a terminal lifecycle fact, not a drag
+        // completion. Invalidate queued RAF settlement as well as the 8s stale
+        // fallback so Cat Mind can immediately select another provider.
+        _nekoCatMindYarnSettleSequence += 1;
+        _releaseNekoCatMindYarnGate();
+        return;
+    }
     const rect = _getNekoCatMindYarnRect(detail);
     if (!phase) {
         // Poll/resize/pair-move/dock messages are stable renderer facts only;

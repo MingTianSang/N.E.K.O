@@ -344,3 +344,43 @@ test('stale active drag releases its gate without synthesizing completion', () =
     });
     assert.equal(harness.observations().length, 0);
 });
+
+test('unavailable terminal immediately releases an active yarn drag without completion', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-drag-move',
+        screenRect: NEAR_RECT,
+        timestamp: 1100,
+    });
+    assert.equal(harness.gate().yarnDragActive, true);
+    assert.equal(harness.gate().yarnSettling, false);
+    assert.match(harness.gate().sessionId, /^yarn-drag:/);
+
+    harness.emitMinimized({
+        available: false,
+        minimized: false,
+        reason: 'chat-user-closed',
+        screenRect: null,
+        timestamp: 1200,
+    });
+
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
+    assert.equal(harness.observations().length, 0);
+
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+    harness.runTimers();
+    assert.equal(harness.observations().length, 0, 'late callbacks must not synthesize completion');
+});
