@@ -1685,6 +1685,9 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const compactVisible = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
           detail: {{ source: 'chat-window', reason: 'visibility-visible', available: true, visible: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
         }}));
+        const compactHeartbeat = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', available: true, visible: true, heartbeat: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
+        }}));
         const compactInactive = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
           detail: {{ source: 'chat-window', reason: 'compact-tracking-disabled', available: true, visible: false, timestamp }}
         }}));
@@ -1798,6 +1801,19 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
             screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 6);
+
+        // If the first compact recovery publication is missed, its first visible
+        // heartbeat advances the retired lifecycle without becoming an observation.
+        // Later ordinary heartbeats keep the recovered watermark stable.
+        compactUnavailable(8500);
+        expanded(8600);
+        compactHeartbeat(9000);
+        compactHeartbeat(9100);
+        minimized(8700, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 6);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_compact_surface_visible').length, 1);
+        minimized(9050, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 7);
         """
     )
 

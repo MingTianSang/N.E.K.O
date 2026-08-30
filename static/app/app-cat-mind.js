@@ -2748,6 +2748,14 @@
             return;
         }
         if (detail.heartbeat) {
+            var heartbeatRestoresCompactLifecycle = detail.visible === true &&
+                !!normalizeRect(detail.screenRect) &&
+                (runtimeState.lastChatMinimizedState === false || latestDesktopChatLifecycleTerminal);
+            if (heartbeatRestoresCompactLifecycle && acceptDesktopChatLifecycleUpdate(detail)) {
+                // The first visible heartbeat may be the first delivered recovery.
+                // Advance ordering without creating a repeated window observation.
+                retireDesktopChatMinimizedLifecycle();
+            }
             return;
         }
         if (!acceptDesktopChatLifecycleUpdate(detail)) {
