@@ -169,7 +169,7 @@ assert.equal(runtimeSource.includes('.slice(0, 1000)'), false);
 assert.match(runtimeSource, /fetchWithTimeout\(SEMANTICS_URL/);
 assert.match(runtimeSource, /fetchWithTimeout\('\/api\/characters\/character\/'/);
 assert.match(runtimeSource, /async function requireInitialized\(\)/);
-assert.equal((runtimeSource.match(/await requireInitialized\(\)/g) || []).length, 5);
+assert.equal((runtimeSource.match(/await requireInitialized\(\)/g) || []).length, 7);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
 assert.match(runtimeSource, /played = await player\.playPlan\(plan, context\)/);
@@ -340,6 +340,14 @@ assert.match(runtimeSource, /function stopMaintenanceTimers\(\)/);
 assert.match(runtimeSource, /window\.addEventListener\('pagehide'/);
 assert.match(runtimeSource, /window\.addEventListener\('pageshow'/);
 assert.match(runtimeSource, /bindMotionLifecycleBridge\(\);\s*startMaintenanceTimers\(\)/);
+assert.match(
+    runtimeSource,
+    /holdExternalPlayback:\s*async function[\s\S]*player\.holdExternalPlayback/
+);
+assert.match(
+    runtimeSource,
+    /releaseExternalPlayback:\s*async function[\s\S]*player\.releaseExternalPlayback/
+);
 
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),

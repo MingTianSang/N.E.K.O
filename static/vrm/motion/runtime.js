@@ -1253,6 +1253,15 @@
                 force: true
             }, options || {}));
         },
+        holdExternalPlayback: async function (owner, options) {
+            await requireInitialized();
+            return player.holdExternalPlayback(owner, options || {});
+        },
+        releaseExternalPlayback: async function (owner, options) {
+            await requireInitialized();
+            syncSavedRestAnimations();
+            return player.releaseExternalPlayback(owner, options || {});
+        },
         stats: function () {
             refreshMode();
             return {

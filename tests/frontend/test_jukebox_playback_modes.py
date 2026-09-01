@@ -211,6 +211,109 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_jukebox_vrm_dance_holds_motion_runtime_until_stop_in_web_and_pet(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.__nekoJukeboxToggle = function() {};
+          window.t = (key, fallback) => fallback || key;
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    native_calls = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'vrm' };
+          window.NekoMotion = {
+            holdExternalPlayback: async (owner, options) => {
+              calls.push(`hold:${owner}:${options.token}`);
+              return true;
+            },
+            releaseExternalPlayback: async (owner, options) => {
+              calls.push(`release:${owner}:${options.resume}`);
+              return true;
+            }
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => {
+              calls.push('play:' + url);
+              return true;
+            },
+            stopVRMAAnimation: () => calls.push('stop')
+          };
+
+          await window.Jukebox.playVRMA('/dance.vrma');
+          window.Jukebox.stopVMD(false);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          delete window.NekoMotion;
+          return calls;
+        }
+        """
+    )
+    assert native_calls == [
+        "hold:jukebox:1",
+        "play:/dance.vrma",
+        "stop",
+        "release:jukebox:true",
+    ]
+
+    setup_jukebox_page(mock_page)
+    web_result = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          const J = window.Jukebox;
+          J.getModelType = () => 'vrm';
+          window.NekoMotion = {
+            holdExternalPlayback: async (owner, options) => {
+              calls.push(`hold:${owner}:${options.token}`);
+              return true;
+            },
+            releaseExternalPlayback: async (owner, options) => {
+              calls.push(`release:${owner}:${options.resume}`);
+              return true;
+            }
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => {
+              calls.push('play:' + url);
+              return true;
+            },
+            stopVRMAAnimation: () => calls.push('stop')
+          };
+
+          const started = await J.playVRMA('/dance.vrma', { requestId: J.State.playRequestId });
+          const debtWhileDancing = J.State.idleRestorePending;
+          J.stopVMD(false);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const result = {
+            started,
+            debtWhileDancing,
+            debtAfterStop: J.State.idleRestorePending,
+            calls
+          };
+          delete window.NekoMotion;
+          return result;
+        }
+        """
+    )
+    assert web_result == {
+        "started": True,
+        "debtWhileDancing": True,
+        "debtAfterStop": False,
+        "calls": [
+            "hold:jukebox:0",
+            "play:/dance.vrma",
+            "stop",
+            "release:jukebox:true",
+        ],
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     mock_page.set_content(
         """
@@ -452,7 +555,7 @@ def test_jukebox_loader_fetches_all_parts_sequentially(mock_page: Page):
 
     assert loaded_parts == [part.name for part in JUKEBOX_PARTS]
     assert result == {
-        "keyCount": 203,
+        "keyCount": 205,
         "hasLoadSongs": True,
         "hasManager": True,
         "hasScriptTag": True,

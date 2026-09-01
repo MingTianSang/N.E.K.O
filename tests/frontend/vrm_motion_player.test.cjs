@@ -480,7 +480,44 @@ async function waitForLoadStart(predicate, message) {
         true
     );
     assert.notEqual(scheduledRestPlayer.idleSwitchTimer, null);
-    scheduledRestPlayer._clearIdleSwitch();
+    const generationBeforeExternalPlayback = scheduledRestPlayer.queueGeneration;
+    assert.equal(
+        scheduledRestPlayer.holdExternalPlayback('jukebox', { token: 41 }),
+        true
+    );
+    assert.equal(scheduledRestPlayer.idleSwitchTimer, null);
+    assert.equal(scheduledRestPlayer.state.phase, 'external');
+    assert.equal(scheduledRestPlayer.queueGeneration, generationBeforeExternalPlayback + 1);
+    assert.equal(scheduledRestPlayer.resumeIdleCountdown('while-dancing'), false);
+    assert.equal(await scheduledRestPlayer.enterRest({ force: true }), false);
+    assert.equal(await scheduledRestPlayer.playPlan([{ intent: 'wave' }]), false);
+
+    // A newer song reuses the same owner but replaces its token. The stale
+    // loader must not release the newer dance when it finally settles.
+    scheduledRestPlayer.holdExternalPlayback('jukebox', { token: 42 });
+    assert.equal(
+        await scheduledRestPlayer.releaseExternalPlayback('jukebox', {
+            token: 41,
+            resume: true
+        }),
+        false
+    );
+    let externalResume = null;
+    scheduledRestPlayer._resumeBase = async function (generation, seed, scheduleNext) {
+        externalResume = { generation, seed, scheduleNext };
+        return true;
+    };
+    assert.equal(
+        await scheduledRestPlayer.releaseExternalPlayback('jukebox', {
+            token: 42,
+            resume: true,
+            scheduleNext: true
+        }),
+        true
+    );
+    assert.equal(scheduledRestPlayer.externalPlaybackOwners.size, 0);
+    assert.equal(externalResume.seed, 'external-release:jukebox');
+    assert.equal(externalResume.scheduleNext, true);
 
     savedCatalogPlayer.assets = [{
         id: 'saved-motion-pack',

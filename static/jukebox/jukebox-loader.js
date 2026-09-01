@@ -16,6 +16,42 @@
     return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
   }
 
+  function holdNekoMotionPlayback(token) {
+    var runtime = window.NekoMotion;
+    if (!runtime || typeof runtime.holdExternalPlayback !== 'function') return false;
+    var holdRequest;
+    try {
+      holdRequest = runtime.holdExternalPlayback('jukebox', { token: token });
+    } catch (error) {
+      console.warn('[Jukebox] VRM 动作运行时占用失败，继续使用底层播放器:', error);
+      return false;
+    }
+    return Promise.resolve(holdRequest).then(function(held) {
+      return held === true;
+    }).catch(function(error) {
+      console.warn('[Jukebox] VRM 动作运行时占用失败，继续使用底层播放器:', error);
+      return false;
+    });
+  }
+
+  function releaseNekoMotionPlayback(options) {
+    var runtime = window.NekoMotion;
+    if (!runtime || typeof runtime.releaseExternalPlayback !== 'function') return false;
+    var releaseRequest;
+    try {
+      releaseRequest = runtime.releaseExternalPlayback('jukebox', options || {});
+    } catch (error) {
+      console.warn('[Jukebox] VRM 动作运行时释放失败，回退直接恢复待机:', error);
+      return false;
+    }
+    return Promise.resolve(releaseRequest).then(function(released) {
+      return released === true;
+    }).catch(function(error) {
+      console.warn('[Jukebox] VRM 动作运行时释放失败，回退直接恢复待机:', error);
+      return false;
+    });
+  }
+
   function ensureNativeJukeboxFacade() {
     if (window.Jukebox) return;
 
@@ -95,20 +131,37 @@
         var state = facade.State;
         state.playRequestId += 1;
         var playRequestId = state.playRequestId;
+        var motionRuntimeHeld = false;
 
         try {
           facade.stopVMD(true);
+          var holdResult = holdNekoMotionPlayback(playRequestId);
+          motionRuntimeHeld = holdResult === false ? false : await holdResult;
+          if (playRequestId !== state.playRequestId) {
+            if (motionRuntimeHeld) {
+              await releaseNekoMotionPlayback({ token: playRequestId, resume: true });
+            }
+            return;
+          }
           var played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
             loop: false,
             fadeInDuration: 0.5,
             fadeOutDuration: 0.5
           });
-          if (played !== true || playRequestId !== state.playRequestId) return;
+          if (played !== true || playRequestId !== state.playRequestId) {
+            if (motionRuntimeHeld) {
+              await releaseNekoMotionPlayback({ token: playRequestId, resume: true });
+            }
+            return;
+          }
           state.isVMDPlaying = true;
           state.isPaused = false;
           state.isPlaying = true;
         } catch (error) {
           console.error('[Jukebox] VRMA 播放失败:', error);
+          if (motionRuntimeHeld) {
+            await releaseNekoMotionPlayback({ token: playRequestId, resume: true });
+          }
         }
       },
 
@@ -143,6 +196,13 @@
 
         if (modelType === 'vrm' && window.vrmManager && typeof window.vrmManager.playVRMAAnimation === 'function') {
           try {
+            var releaseResult = releaseNekoMotionPlayback({
+              resume: true,
+              scheduleNext: true
+            });
+            var motionRuntimeRestored = releaseResult === false ? false : await releaseResult;
+            if (restoreRequestId !== state.playRequestId) return;
+            if (motionRuntimeRestored) return;
             var vrmIdleList = window.lanlan_config && window.lanlan_config.vrmIdleAnimations;
             var vrmIdleUrl = Array.isArray(vrmIdleList) && vrmIdleList.length > 0 ? vrmIdleList[0] : null;
             if (!vrmIdleUrl) {
