@@ -314,6 +314,76 @@ def test_jukebox_vrm_dance_holds_motion_runtime_until_stop_in_web_and_pet(mock_p
 
 
 @pytest.mark.frontend
+def test_jukebox_native_stop_cancels_vrma_while_runtime_hold_is_pending(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.__nekoJukeboxToggle = function() {};
+          window.t = (key, fallback) => fallback || key;
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          let resolveHold;
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'vrm' };
+          window.NekoMotion = {
+            holdExternalPlayback: (owner, options) => {
+              calls.push(`hold:${owner}:${options.token}`);
+              return new Promise((resolve) => { resolveHold = resolve; });
+            },
+            releaseExternalPlayback: async (owner, options) => {
+              calls.push(`release:${owner}:${options.token}:${options.resume}`);
+              return true;
+            }
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => {
+              calls.push('play:' + url);
+              return true;
+            },
+            stopVRMAAnimation: () => calls.push('stop')
+          };
+
+          const pendingPlay = window.Jukebox.playVRMA('/late.vrma');
+          const requestDuringHold = window.Jukebox.State.playRequestId;
+          window.Jukebox.stopVMD(false);
+          const requestAfterStop = window.Jukebox.State.playRequestId;
+          resolveHold(true);
+          await pendingPlay;
+
+          const state = window.Jukebox.State;
+          delete window.NekoMotion;
+          return {
+            calls,
+            requestDuringHold,
+            requestAfterStop,
+            pendingRequest: state.pendingAnimationRequestId,
+            isVMDPlaying: state.isVMDPlaying,
+            isPlaying: state.isPlaying
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "calls": [
+            "hold:jukebox:1",
+            "release:jukebox:1:true",
+        ],
+        "requestDuringHold": 1,
+        "requestAfterStop": 2,
+        "pendingRequest": None,
+        "isVMDPlaying": False,
+        "isPlaying": False,
+    }
+
+
+@pytest.mark.frontend
 def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     mock_page.set_content(
         """

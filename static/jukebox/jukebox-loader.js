@@ -52,6 +52,22 @@
     });
   }
 
+  function beginNativeAnimationPlayback(facade) {
+    var state = facade.State;
+    // 先终止上一段动画（也会作废它仍在途的加载），再给新请求取号；否则
+    // stopVMD 推进世代时会把刚创建的这条请求一起误伤。
+    facade.stopVMD(true);
+    state.playRequestId += 1;
+    state.pendingAnimationRequestId = state.playRequestId;
+    return state.playRequestId;
+  }
+
+  function finishNativeAnimationPlayback(state, requestId) {
+    if (state.pendingAnimationRequestId === requestId) {
+      state.pendingAnimationRequestId = null;
+    }
+  }
+
   function ensureNativeJukeboxFacade() {
     if (window.Jukebox) return;
 
@@ -63,7 +79,8 @@
         isVMDPlaying: false,
         isPaused: false,
         savedIdleAnimationUrl: null,
-        playRequestId: 0
+        playRequestId: 0,
+        pendingAnimationRequestId: null
       },
 
       toggle: function() {
@@ -96,14 +113,12 @@
         }
 
         var state = facade.State;
-        state.playRequestId += 1;
-        var playRequestId = state.playRequestId;
+        if (!state.savedIdleAnimationUrl && window.mmdManager.currentAnimationUrl) {
+          state.savedIdleAnimationUrl = window.mmdManager.currentAnimationUrl;
+        }
+        var playRequestId = beginNativeAnimationPlayback(facade);
 
         try {
-          if (!state.savedIdleAnimationUrl && window.mmdManager.currentAnimationUrl) {
-            state.savedIdleAnimationUrl = window.mmdManager.currentAnimationUrl;
-          }
-          facade.stopVMD(true);
           if (typeof window.mmdManager.loadAnimation === 'function') {
             await window.mmdManager.loadAnimation(vmdPath);
           }
@@ -118,6 +133,8 @@
           state.isPlaying = true;
         } catch (error) {
           console.error('[Jukebox]', translate('Jukebox.vmdPlayFailed', 'VMD 播放失败'), error);
+        } finally {
+          finishNativeAnimationPlayback(state, playRequestId);
         }
       },
 
@@ -129,12 +146,10 @@
         }
 
         var state = facade.State;
-        state.playRequestId += 1;
-        var playRequestId = state.playRequestId;
+        var playRequestId = beginNativeAnimationPlayback(facade);
         var motionRuntimeHeld = false;
 
         try {
-          facade.stopVMD(true);
           var holdResult = holdNekoMotionPlayback(playRequestId);
           motionRuntimeHeld = holdResult === false ? false : await holdResult;
           if (playRequestId !== state.playRequestId) {
@@ -162,11 +177,23 @@
           if (motionRuntimeHeld) {
             await releaseNekoMotionPlayback({ token: playRequestId, resume: true });
           }
+        } finally {
+          finishNativeAnimationPlayback(state, playRequestId);
         }
       },
 
       stopVMD: function(skipIdleRestore) {
         var state = facade.State;
+        var pendingRequestId = state.pendingAnimationRequestId;
+        if (pendingRequestId !== null) {
+          // isVMDPlaying 只在真正起播后才会置位；等待 loadAnimation 或
+          // holdExternalPlayback 时也必须能被停止。只有当前世代仍属于这条
+          // 在途请求时才推进，避免旧 finally 误取消后来接手的新请求。
+          if (pendingRequestId === state.playRequestId) {
+            state.playRequestId += 1;
+          }
+          state.pendingAnimationRequestId = null;
+        }
         if (!state.isVMDPlaying) return;
 
         var modelType = facade.getModelType();
