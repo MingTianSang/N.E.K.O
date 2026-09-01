@@ -1764,6 +1764,15 @@ Object.assign(window.Jukebox, {
 
       Jukebox.stopVMD(true); // skipIdleRestore = true
 
+      if (Jukebox.State.vrmMotionRuntimeToken !== null) {
+        const releaseResult = Jukebox.releaseVrmMotionRuntime({
+          resume: false,
+          scheduleNext: false
+        });
+        if (releaseResult !== false) await releaseResult;
+        if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+      }
+
       await window.mmdManager.loadAnimation(vmdPath);
       if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
       window.mmdManager.playAnimation('dance');
@@ -1800,7 +1809,10 @@ Object.assign(window.Jukebox, {
         }
         return false;
       }
-      if (held === true) Jukebox.State.idleRestorePending = true;
+      if (held === true) {
+        Jukebox.State.idleRestorePending = true;
+        Jukebox.State.vrmMotionRuntimeToken = requestId;
+      }
       return held === true;
     }).catch(function(error) {
       console.warn('[Jukebox] VRM 动作运行时占用失败，继续使用底层播放器:', error);
@@ -1811,14 +1823,26 @@ Object.assign(window.Jukebox, {
   releaseVrmMotionRuntime: function(options = {}) {
     const runtime = window.NekoMotion;
     if (!runtime || typeof runtime.releaseExternalPlayback !== 'function') return false;
+    const releaseOptions = { ...options };
+    if (!Object.prototype.hasOwnProperty.call(releaseOptions, 'token') &&
+        Jukebox.State.vrmMotionRuntimeToken !== null) {
+      releaseOptions.token = Jukebox.State.vrmMotionRuntimeToken;
+    }
+    const releaseToken = Object.prototype.hasOwnProperty.call(releaseOptions, 'token')
+      ? releaseOptions.token
+      : null;
     let releaseRequest;
     try {
-      releaseRequest = runtime.releaseExternalPlayback('jukebox', options);
+      releaseRequest = runtime.releaseExternalPlayback('jukebox', releaseOptions);
     } catch (error) {
       console.warn('[Jukebox] VRM 动作运行时释放失败，回退直接恢复待机:', error);
       return false;
     }
     return Promise.resolve(releaseRequest).then(function(released) {
+      if (released === true && releaseToken !== null &&
+          Jukebox.State.vrmMotionRuntimeToken === releaseToken) {
+        Jukebox.State.vrmMotionRuntimeToken = null;
+      }
       return released === true;
     }).catch(function(error) {
       console.warn('[Jukebox] VRM 动作运行时释放失败，回退直接恢复待机:', error);
@@ -1851,6 +1875,14 @@ Object.assign(window.Jukebox, {
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
       const playRequestId = Jukebox.State.playRequestId;
       motionRuntimeToken = playRequestId;
+      if (Jukebox.State.vrmMotionRuntimeToken !== null) {
+        const previousRelease = Jukebox.releaseVrmMotionRuntime({
+          resume: false,
+          scheduleNext: false
+        });
+        if (previousRelease !== false) await previousRelease;
+        if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+      }
       const holdResult = Jukebox.holdVrmMotionRuntime(playRequestId);
       motionRuntimeHeld = holdResult === false ? false : await holdResult;
       if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
@@ -2271,17 +2303,29 @@ Object.assign(window.Jukebox, {
       return;
     }
 
-    // VRM 模式：恢复 VRM 待机动画
     var modelType = Jukebox.getModelType();
-    if (modelType === 'vrm' && window.vrmManager) {
+    var canResumeVrm = modelType === 'vrm' && !!window.vrmManager;
+    var heldRuntimeToken = Jukebox.State.vrmMotionRuntimeToken;
+    const restoreRequestId = (heldRuntimeToken !== null || canResumeVrm)
+      ? ++Jukebox.State.playRequestId
+      : Jukebox.State.playRequestId;
+    var motionRuntimeRestored = false;
+
+    // 模型切换是同页热切换。即使当前已经是 MMD/Live2D，仍需释放先前 VRM
+    // 舞蹈取得的 token；此时只解锁，不唤起旧 VRM 的待机动作。
+    if (heldRuntimeToken !== null) {
+      const releaseResult = Jukebox.releaseVrmMotionRuntime({
+        token: heldRuntimeToken,
+        resume: canResumeVrm,
+        scheduleNext: canResumeVrm
+      });
+      motionRuntimeRestored = releaseResult === false ? false : await releaseResult;
+      if (restoreRequestId !== Jukebox.State.playRequestId) return;
+    }
+
+    // VRM 模式：恢复 VRM 待机动画
+    if (canResumeVrm) {
       try {
-        const restoreRequestId = ++Jukebox.State.playRequestId;
-        const releaseResult = Jukebox.releaseVrmMotionRuntime({
-          resume: true,
-          scheduleNext: true
-        });
-        const motionRuntimeRestored = releaseResult === false ? false : await releaseResult;
-        if (restoreRequestId !== Jukebox.State.playRequestId) return;
         if (motionRuntimeRestored === true) {
           console.log('[Jukebox] VRM 待机动画已由动作运行时恢复');
           return;
@@ -2307,9 +2351,9 @@ Object.assign(window.Jukebox, {
       return;
     }
 
-    if (!window.mmdManager) return;
+    if (modelType === 'vrm') return;
 
-    const restoreRequestId = Jukebox.State.playRequestId;
+    if (!window.mmdManager) return;
 
     let idleUrl = Jukebox.State.savedIdleAnimationUrl;
 
