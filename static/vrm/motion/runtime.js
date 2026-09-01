@@ -53,6 +53,10 @@
     let lastCasualTalkAt = 0;
     let selectedMode = configuredMode();
     let readyPromise = null;
+    let runtimeReady = false;
+    // 外部播放可能在冷启动初始化完成前到达。先同步记账，让调用方无需等待
+    // semantics/persona/idle 加载；player 一创建就补记，并跳过初始化待机。
+    const externalPlaybackOwners = new Map();
     let activeCharacterProfile = null;
     let ownsPlayback = false;
     const emotionState = {
@@ -411,16 +415,20 @@
             });
             core = new window.NekoMotionCore(semantics);
             player = new window.NekoMotionPlayer();
+            externalPlaybackOwners.forEach(function (token, owner) {
+                player.holdExternalPlayback(owner, { token: token });
+            });
             await player.load();
             syncSavedRestAnimations();
             core.registerActionCards(player.assets);
             await resolveCharacterProfile();
             if (refreshMode() !== 'vrm') {
                 releasePlaybackOwnership();
+                runtimeReady = true;
                 return true;
             }
             acquirePlaybackOwnership();
-            if (vrmReady()) {
+            if (vrmReady() && externalPlaybackOwners.size === 0) {
                 await player.enterRest({
                     profile: characterProfile(),
                     seed: 'initialize',
@@ -428,10 +436,12 @@
                     reselect: true
                 });
             }
+            runtimeReady = true;
             console.info('[NekoMotion] runtime ready; one playback owner, no prompt injection and no model call');
             return true;
         })().catch(function (error) {
             console.error('[NekoMotion] initialization failed:', error);
+            runtimeReady = false;
             releasePlaybackOwnership();
             readyPromise = null;
             return false;
@@ -1254,13 +1264,42 @@
             }, options || {}));
         },
         holdExternalPlayback: async function (owner, options) {
-            await requireInitialized();
-            return player.holdExternalPlayback(owner, options || {});
+            const settings = options || {};
+            const ownerKey = String(owner || 'external');
+            const token = Object.prototype.hasOwnProperty.call(settings, 'token')
+                ? settings.token : null;
+            externalPlaybackOwners.set(ownerKey, token);
+            if (player) player.holdExternalPlayback(ownerKey, settings);
+            if (!runtimeReady) void initialize();
+            return true;
         },
         releaseExternalPlayback: async function (owner, options) {
-            await requireInitialized();
-            syncSavedRestAnimations();
-            return player.releaseExternalPlayback(owner, options || {});
+            const settings = options || {};
+            const ownerKey = String(owner || 'external');
+            if (!externalPlaybackOwners.has(ownerKey)) return false;
+            if (Object.prototype.hasOwnProperty.call(settings, 'token')
+                && externalPlaybackOwners.get(ownerKey) !== settings.token) {
+                return false;
+            }
+            externalPlaybackOwners.delete(ownerKey);
+            const pendingInitialization = !runtimeReady ? readyPromise : null;
+            if (player) {
+                syncSavedRestAnimations();
+                const released = await player.releaseExternalPlayback(ownerKey, Object.assign({}, settings, {
+                    // 初始化尚未完成时不从半成品 player 恢复；initialize 会在无 owner 时
+                    // 统一进入待机，避免冷启动 release 和初始化 idle 互相抢占。
+                    resume: runtimeReady ? settings.resume : false
+                }));
+                if (released !== true) return false;
+            } else if (!pendingInitialization) {
+                return false;
+            }
+            if (pendingInitialization) {
+                // hold 是乐观且立即成功的；若后台初始化最终失败，必须把失败传给调用方，
+                // 让点歌台回退到底层 VRM 待机恢复，不能把“已删除 owner”误报成“已恢复”。
+                return await pendingInitialization === true;
+            }
+            return true;
         },
         stats: function () {
             refreshMode();

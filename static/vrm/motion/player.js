@@ -1072,6 +1072,9 @@
             const seed = context && context.seed || Date.now();
             this.sequence += 1;
             const task = async () => {
+                // hold/cancel 会替换 this.queue，但旧 Promise 已排进微任务队列的 task
+                // 仍可能晚到；必须在写 busy 前先验世代，避免把已清零的状态重新置真。
+                if (generation !== this.queueGeneration) return false;
                 this.busy = true;
                 let succeeded = true;
                 for (let index = 0; index < items.length; index += 1) {

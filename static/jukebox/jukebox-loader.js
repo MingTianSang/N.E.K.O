@@ -162,6 +162,9 @@
           state.isPlaying = true;
         } catch (error) {
           console.error('[Jukebox]', translate('Jukebox.vmdPlayFailed', 'VMD 播放失败'), error);
+          if (playRequestId === state.playRequestId) {
+            await facade.restoreIdleAnimation();
+          }
         } finally {
           finishNativeAnimationPlayback(state, playRequestId);
         }
@@ -191,7 +194,8 @@
           motionRuntimeHeld = holdResult === false ? false : await holdResult;
           if (playRequestId !== state.playRequestId) {
             if (motionRuntimeHeld) {
-              await releaseNekoMotionPlayback({ token: playRequestId, resume: true });
+              // stop/new play 已经决定后续姿势；旧请求这里只解锁，不能再抢着恢复。
+              await releaseNekoMotionPlayback({ token: playRequestId, resume: false });
             }
             return;
           }
@@ -199,11 +203,16 @@
           var played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
             loop: false,
             fadeInDuration: 0.5,
-            fadeOutDuration: 0.5
+            fadeOutDuration: 0.5,
+            shouldStart: function() {
+              return playRequestId === state.playRequestId;
+            }
           });
           if (played !== true || playRequestId !== state.playRequestId) {
             if (motionRuntimeHeld) {
               await releaseOwnedNekoMotionPlayback(state, { token: playRequestId, resume: true });
+            } else if (playRequestId === state.playRequestId) {
+              await facade.restoreIdleAnimation();
             }
             return;
           }
@@ -214,6 +223,8 @@
           console.error('[Jukebox] VRMA 播放失败:', error);
           if (motionRuntimeHeld) {
             await releaseOwnedNekoMotionPlayback(state, { token: playRequestId, resume: true });
+          } else if (playRequestId === state.playRequestId) {
+            await facade.restoreIdleAnimation();
           }
         } finally {
           finishNativeAnimationPlayback(state, playRequestId);
@@ -223,16 +234,28 @@
       stopVMD: function(skipIdleRestore) {
         var state = facade.State;
         var pendingRequestId = state.pendingAnimationRequestId;
+        var cancelledPendingRequest = false;
         if (pendingRequestId !== null) {
           // isVMDPlaying 只在真正起播后才会置位；等待 loadAnimation 或
           // holdExternalPlayback 时也必须能被停止。只有当前世代仍属于这条
           // 在途请求时才推进，避免旧 finally 误取消后来接手的新请求。
           if (pendingRequestId === state.playRequestId) {
             state.playRequestId += 1;
+            cancelledPendingRequest = true;
           }
           state.pendingAnimationRequestId = null;
         }
-        if (!state.isVMDPlaying) return;
+        if (!state.isVMDPlaying) {
+          if (cancelledPendingRequest && facade.getModelType() === 'vrm' &&
+              window.vrmManager && typeof window.vrmManager.stopVRMAAnimation === 'function') {
+            // 底层 stop 会推进 VRMA 自己的加载世代，和 shouldStart 组成双重取消闸门。
+            window.vrmManager.stopVRMAAnimation();
+          }
+          if (cancelledPendingRequest && !skipIdleRestore) {
+            facade.restoreIdleAnimation();
+          }
+          return;
+        }
 
         var modelType = facade.getModelType();
         if (modelType === 'vrm') {

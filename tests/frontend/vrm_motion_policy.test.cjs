@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const zlib = require('node:zlib');
 
 const fileRoot = path.resolve(__dirname, '..', '..');
@@ -169,7 +170,7 @@ assert.equal(runtimeSource.includes('.slice(0, 1000)'), false);
 assert.match(runtimeSource, /fetchWithTimeout\(SEMANTICS_URL/);
 assert.match(runtimeSource, /fetchWithTimeout\('\/api\/characters\/character\/'/);
 assert.match(runtimeSource, /async function requireInitialized\(\)/);
-assert.equal((runtimeSource.match(/await requireInitialized\(\)/g) || []).length, 7);
+assert.equal((runtimeSource.match(/await requireInitialized\(\)/g) || []).length, 5);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
 assert.match(runtimeSource, /played = await player\.playPlan\(plan, context\)/);
@@ -348,6 +349,22 @@ assert.match(
     runtimeSource,
     /releaseExternalPlayback:\s*async function[\s\S]*player\.releaseExternalPlayback/
 );
+const externalHoldBlock = sliceBetween(
+    runtimeSource,
+    'holdExternalPlayback: async function',
+    'releaseExternalPlayback: async function',
+    'external hold API'
+);
+assert.ok(
+    externalHoldBlock.indexOf('externalPlaybackOwners.set(')
+        < externalHoldBlock.indexOf('void initialize()'),
+    'a cold external hold must be recorded synchronously before initialization starts'
+);
+assert.equal(externalHoldBlock.includes('await requireInitialized()'), false);
+assert.match(
+    runtimeSource,
+    /if \(vrmReady\(\) && externalPlaybackOwners\.size === 0\) \{\s*await player\.enterRest/
+);
 
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),
@@ -379,4 +396,136 @@ assert.match(modelManagerSource, /cancel\('model_manager_stop', \{ resume: false
 assert.match(modelManagerSource, /normalizeBundledVrmAnimationUrl/);
 assert.match(modelManagerTemplate, /static\/vrm\/motion\/player\.js/);
 
-console.log('VRM motion policy and source integrity: OK (75 gzip assets)');
+function createRuntimeHarness(fetchImplementation) {
+    const calls = [];
+    const players = [];
+    const listeners = new Map();
+    class FakeMotionCore {
+        registerActionCards() {}
+        stats() { return {}; }
+    }
+    class FakeMotionPlayer {
+        constructor() {
+            this.assets = [];
+            this.owners = new Map();
+            players.push(this);
+        }
+        holdExternalPlayback(owner, options) {
+            this.owners.set(owner, options.token);
+            calls.push(['hold', owner, options.token]);
+            return true;
+        }
+        async releaseExternalPlayback(owner, options) {
+            if (!this.owners.has(owner) || this.owners.get(owner) !== options.token) return false;
+            this.owners.delete(owner);
+            calls.push(['release', owner, options.token, options.resume]);
+            return true;
+        }
+        async load() { return this; }
+        async enterRest() {
+            calls.push(['rest']);
+            return true;
+        }
+        setSavedRestAnimations() { return 0; }
+        setProfile() {}
+        cancel() { return true; }
+        stats() { return {}; }
+    }
+    const context = {
+        AbortController,
+        clearInterval: function () {},
+        clearTimeout,
+        console: {
+            debug: function () {},
+            error: function () {},
+            info: function () {},
+            log: function () {},
+            warn: function () {}
+        },
+        document: { documentElement: { lang: 'zh-CN' } },
+        fetch: fetchImplementation,
+        navigator: { language: 'zh-CN' },
+        setInterval: function () { return 1; },
+        setTimeout,
+        CustomEvent: class CustomEvent {
+            constructor(type, options) {
+                this.type = type;
+                this.detail = options && options.detail;
+            }
+        }
+    };
+    context.window = context;
+    context.lanlan_config = { model_type: 'live2d' };
+    context.NekoMotionCore = FakeMotionCore;
+    context.NekoMotionPlayer = FakeMotionPlayer;
+    context.NekoMotionText = { extractClosedStages: function () { return []; } };
+    context.vrmManager = {
+        currentModel: { vrm: {} },
+        playVRMAAnimation: async function () { return true; }
+    };
+    context.addEventListener = function (name, listener) { listeners.set(name, listener); };
+    context.removeEventListener = function (name) { listeners.delete(name); };
+    context.dispatchEvent = function () { return true; };
+    vm.runInNewContext(runtimeSource, context, { filename: 'runtime.js' });
+    return { calls, context, players };
+}
+
+async function flushMicrotasks(count = 12) {
+    for (let index = 0; index < count; index += 1) await Promise.resolve();
+}
+
+async function verifyColdExternalPlaybackOwnership() {
+    let resolveSemantics;
+    const semanticsResponse = new Promise(function (resolve) {
+        resolveSemantics = function () {
+            resolve({ ok: true, json: async function () { return {}; } });
+        };
+    });
+    const harness = createRuntimeHarness(function () { return semanticsResponse; });
+    harness.context.lanlan_config.model_type = 'vrm';
+
+    let holdSettled = false;
+    const holdResult = harness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 71 })
+        .then(function (held) {
+            holdSettled = true;
+            return held;
+        });
+    await flushMicrotasks(2);
+    assert.equal(holdSettled, true, 'a cold external hold must not wait for runtime initialization');
+    assert.equal(await holdResult, true);
+    assert.equal(harness.players.length, 0, 'the hold should resolve while semantics are still loading');
+
+    resolveSemantics();
+    await flushMicrotasks();
+    assert.equal(harness.players.length, 1);
+    assert.deepEqual(harness.calls, [['hold', 'jukebox', 71]]);
+    assert.equal(
+        await harness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 71, resume: true }),
+        true
+    );
+    assert.deepEqual(harness.calls, [
+        ['hold', 'jukebox', 71],
+        ['release', 'jukebox', 71, true]
+    ]);
+
+    const failedHarness = createRuntimeHarness(async function () {
+        throw new Error('semantics unavailable');
+    });
+    failedHarness.context.lanlan_config.model_type = 'vrm';
+    assert.equal(
+        await failedHarness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 72 }),
+        true
+    );
+    assert.equal(
+        await failedHarness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 72, resume: true }),
+        false,
+        'a failed background initialization must leave idle restoration to the caller'
+    );
+}
+
+verifyColdExternalPlaybackOwnership().then(function () {
+    console.log('VRM motion policy and source integrity: OK (75 gzip assets)');
+}).catch(function (error) {
+    console.error(error);
+    process.exitCode = 1;
+});

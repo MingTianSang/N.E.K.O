@@ -519,6 +519,18 @@ async function waitForLoadStart(predicate, message) {
     assert.equal(externalResume.seed, 'external-release:jukebox');
     assert.equal(externalResume.scheduleNext, true);
 
+    const staleQueuePlayer = new global.NekoMotionPlayer();
+    const staleFirst = staleQueuePlayer.enqueuePlan([{ intent: 'wave' }], { seed: 'first' });
+    const staleSecond = staleQueuePlayer.enqueuePlan([{ intent: 'nod' }], { seed: 'second' });
+    staleQueuePlayer.holdExternalPlayback('jukebox', { token: 51 });
+    assert.deepEqual(await Promise.all([staleFirst, staleSecond]), [false, false]);
+    assert.equal(staleQueuePlayer.busy, false);
+    assert.equal(await staleQueuePlayer.releaseExternalPlayback('jukebox', {
+        token: 51,
+        resume: false
+    }), true);
+    assert.equal(staleQueuePlayer.busy, false);
+
     savedCatalogPlayer.assets = [{
         id: 'saved-motion-pack',
         m: 'idle',
