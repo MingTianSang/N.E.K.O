@@ -14,8 +14,7 @@ INTERPAGE_SCRIPT = (
 )
 
 
-@pytest.mark.frontend
-def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
+def _set_up_mmd_reload_page(page: Page):
     page.set_content(
         """
         <div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
@@ -84,6 +83,11 @@ def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
     )
     page.add_script_tag(path=str(INTERPAGE_SCRIPT))
 
+
+@pytest.mark.frontend
+def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
+    _set_up_mmd_reload_page(page)
+
     result = page.evaluate(
         """
         async () => {
@@ -132,6 +136,59 @@ def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
         "reloadSucceeded": True,
         "rendering": True,
         "containerHidden": False,
+        "containerDisplay": "block",
+        "canvasVisibility": "visible",
+        "canvasPointerEvents": "auto",
+        "finalCanvasSession": "",
+    }
+
+
+@pytest.mark.frontend
+def test_failed_mmd_hot_reload_clears_session_before_deferred_show(page: Page):
+    _set_up_mmd_reload_page(page)
+
+    result = page.evaluate(
+        """
+        async () => {
+            const interpage = window.__appInterpageParts;
+            window.__overlayFailed = false;
+            window.MMDLoadingOverlay.fail = () => { window.__overlayFailed = true; };
+            window.mmdManager.loadModel = () => new Promise((resolve, reject) => {
+                window.__failMmdLoad = () => reject(new Error('expected MMD load failure'));
+            });
+
+            interpage.handleHideMainUI();
+            const reloadPromise = interpage.handleModelReload('TestMMD');
+            while (typeof window.__failMmdLoad !== 'function') {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+
+            interpage.handleHideMainUI();
+            interpage.handleShowMainUI();
+            window.__failMmdLoad();
+            await reloadPromise;
+
+            const container = document.getElementById('mmd-container');
+            const canvas = document.getElementById('mmd-canvas');
+            return {
+                overlayFailed: window.__overlayFailed,
+                reloadSucceeded: window._lastModelReloadResult,
+                mainUIHiddenByModelManager: document.body.classList.contains(
+                    'neko-main-ui-hidden-by-model-manager'
+                ),
+                containerDisplay: getComputedStyle(container).display,
+                canvasVisibility: canvas.style.visibility,
+                canvasPointerEvents: canvas.style.pointerEvents,
+                finalCanvasSession: canvas.dataset.mmdLoadingSessionId || ''
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "overlayFailed": True,
+        "reloadSucceeded": False,
+        "mainUIHiddenByModelManager": False,
         "containerDisplay": "block",
         "canvasVisibility": "visible",
         "canvasPointerEvents": "auto",

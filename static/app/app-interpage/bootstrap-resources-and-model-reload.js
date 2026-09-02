@@ -1560,6 +1560,10 @@ I.mod = window.appInterpage;
             console.error('[Model] 模型热切换失败:', error);
             if (activeMmdLoadingSessionId) {
                 window.MMDLoadingOverlay?.fail(activeMmdLoadingSessionId, { detail: error?.message || String(error) });
+                var failedMmdCanvas = document.getElementById('mmd-canvas');
+                if (isMMDLoadingSessionActive(failedMmdCanvas, activeMmdLoadingSessionId)) {
+                    clearMMDCanvasLoadingSession(failedMmdCanvas);
+                }
                 if (mmdRequestSessionId === activeMmdLoadingSessionId) {
                     mmdRequestSessionId = '';
                 }
