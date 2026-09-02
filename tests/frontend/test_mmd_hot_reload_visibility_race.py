@@ -108,12 +108,15 @@ def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
             const container = document.getElementById('mmd-container');
             const canvas = document.getElementById('mmd-canvas');
             return {
+                mainUIHiddenByModelManager: document.body.classList.contains(
+                    'neko-main-ui-hidden-by-model-manager'
+                ),
                 sessionAfterSecondHide,
                 overlayEnded: window.__overlayEnded,
                 reloadSucceeded: window._lastModelReloadResult,
                 rendering: window.mmdManager._shouldRender,
                 containerHidden: container.classList.contains('hidden'),
-                containerDisplay: container.style.display,
+                containerDisplay: getComputedStyle(container).display,
                 canvasVisibility: canvas.style.visibility,
                 canvasPointerEvents: canvas.style.pointerEvents,
                 finalCanvasSession: canvas.dataset.mmdLoadingSessionId || ''
@@ -123,6 +126,7 @@ def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
     )
 
     assert result == {
+        "mainUIHiddenByModelManager": False,
         "sessionAfterSecondHide": "mmd-visibility-race",
         "overlayEnded": True,
         "reloadSucceeded": True,
@@ -132,4 +136,48 @@ def test_mmd_hot_reload_survives_hide_show_during_model_loading(page: Page):
         "canvasVisibility": "visible",
         "canvasPointerEvents": "auto",
         "finalCanvasSession": "",
+    }
+
+
+@pytest.mark.frontend
+def test_non_mmd_reload_does_not_preserve_stale_mmd_loading_session(page: Page):
+    page.set_content(
+        """
+        <div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
+        <div id="vrm-container"><canvas id="vrm-canvas"></canvas></div>
+        <div id="mmd-container"><canvas id="mmd-canvas"></canvas></div>
+        """
+    )
+    page.evaluate(
+        """
+        () => {
+            window.appState = {};
+            window.lanlan_config = { model_type: 'pngtuber' };
+        }
+        """
+    )
+    page.add_script_tag(path=str(INTERPAGE_SCRIPT))
+
+    result = page.evaluate(
+        """
+        () => {
+            const canvas = document.getElementById('mmd-canvas');
+            canvas.dataset.mmdLoadingSessionId = 'stale-mmd-session';
+            window._modelReloadInFlight = true;
+
+            window.__appInterpageParts.handleHideMainUI();
+
+            return {
+                finalCanvasSession: canvas.dataset.mmdLoadingSessionId || '',
+                canvasVisibility: canvas.style.visibility,
+                canvasPointerEvents: canvas.style.pointerEvents
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "finalCanvasSession": "",
+        "canvasVisibility": "hidden",
+        "canvasPointerEvents": "none",
     }
