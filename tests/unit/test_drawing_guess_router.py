@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -33,6 +34,25 @@ def _load_drawing_guess_context_payload(raw: str) -> dict:
     assert raw.endswith(end)
     body = raw.removeprefix(begin).removesuffix(end)
     return json.loads(body.strip())
+
+
+def _put_sdk_drawing_route(
+    session_id: str,
+    generation: str,
+    *,
+    memory_enabled: bool = False,
+) -> dict:
+    state = {
+        "game_type": "drawing_guess",
+        "game_route_active": True,
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "_sdk_route_instance_id": generation,
+        "game_memory_enabled": memory_enabled,
+        "last_state": {},
+    }
+    _game_route_states[_route_state_key("YUI", "drawing_guess")] = state
+    return state
 
 
 @pytest.mark.unit
@@ -808,7 +828,7 @@ def test_every_drawing_guess_word_has_non_heart_static_fallback():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_round_start_normalizes_memory_consent():
+async def test_legacy_round_start_normalizes_memory_consent():
     default_result = await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-memory-default",
@@ -826,6 +846,66 @@ async def test_round_start_normalizes_memory_consent():
     assert summary_result["ok"] is True
     assert dgr._drawing_guess_sessions["YUI:dg-memory-default"]["memory_consent"] == "none"
     assert dgr._drawing_guess_sessions["YUI:dg-memory-summary"]["memory_consent"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_round_start_uses_only_host_memory_policy():
+    _put_sdk_drawing_route("dg-sdk-memory-disabled", "route-memory-disabled")
+    disabled_result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-disabled",
+        "sdk_route_instance_id": "route-memory-disabled",
+        "game_memory_enabled": False,
+        "memory_consent": "summary",
+    }))
+
+    _put_sdk_drawing_route(
+        "dg-sdk-memory-enabled",
+        "route-memory-enabled",
+        memory_enabled=True,
+    )
+    enabled_result = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-enabled",
+        "sdk_route_instance_id": "route-memory-enabled",
+        "game_memory_enabled": True,
+        "memory_consent": "none",
+    }))
+
+    assert disabled_result["ok"] is True
+    assert enabled_result["ok"] is True
+    assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-disabled"]["memory_consent"] == "none"
+    assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-enabled"]["memory_consent"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_round_start_rejects_memory_policy_drift_from_active_route():
+    _put_sdk_drawing_route("dg-sdk-memory-payload-only", "route-payload-only")
+    payload_only = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-payload-only",
+        "sdk_route_instance_id": "route-payload-only",
+        "game_memory_enabled": True,
+    }))
+
+    _put_sdk_drawing_route(
+        "dg-sdk-memory-route-only",
+        "route-route-only",
+        memory_enabled=True,
+    )
+    route_only = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-route-only",
+        "sdk_route_instance_id": "route-route-only",
+        "game_memory_enabled": False,
+    }))
+
+    assert payload_only["ok"] is True
+    assert route_only["ok"] is True
+    assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-payload-only"]["memory_consent"] == "none"
+    assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-route-only"]["memory_consent"] == "none"
 
 
 @pytest.mark.unit
@@ -856,6 +936,74 @@ async def test_memory_summary_skips_without_consent(monkeypatch):
 
     assert result == {"status": "skipped", "reason": "memory_consent_none"}
     assert session["memory_summary_result"] == result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_memory_summary_rechecks_disabled_active_route_before_post(monkeypatch):
+    _put_sdk_drawing_route("dg-sdk-memory-revoked", "route-memory-revoked")
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-revoked",
+        "sdk_route_instance_id": "route-memory-revoked",
+        "game_memory_enabled": False,
+    }))
+    assert started["ok"] is True
+    session = dgr._drawing_guess_sessions["YUI:dg-sdk-memory-revoked"]
+    session["memory_consent"] = "summary"
+
+    async def fail_post(*_args, **_kwargs):
+        raise AssertionError("disabled SDK route must not write persistent memory")
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", fail_post)
+    result = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale="en",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    )
+
+    assert result == {"status": "skipped", "reason": "memory_consent_none"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_memory_summary_writes_with_matching_enabled_active_route(monkeypatch):
+    _put_sdk_drawing_route(
+        "dg-sdk-memory-authorized",
+        "route-memory-authorized",
+        memory_enabled=True,
+    )
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-authorized",
+        "sdk_route_instance_id": "route-memory-authorized",
+        "game_memory_enabled": True,
+    }))
+    assert started["ok"] is True
+    session = dgr._drawing_guess_sessions["YUI:dg-sdk-memory-authorized"]
+    captured = []
+
+    async def fake_post(lanlan_name, summary):
+        captured.append((lanlan_name, summary))
+        return {"status": "written", "source": "memory_server_cache", "count": 1}
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", fake_post)
+    result = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session,
+        locale="en",
+        lanlan_name="YUI",
+        correct=True,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["dog"],
+        attempts=1,
+    )
+
+    assert result == {"status": "written", "source": "memory_server_cache", "count": 1}
+    assert len(captured) == 1
 
 
 @pytest.mark.unit
@@ -2694,3 +2842,295 @@ async def test_external_voice_canvas_context_only_used_in_visible_canvas_phases(
         },
     )
     assert captured[-1]["image_data_url"] == "data:image/png;base64,abc"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_round_start_rejects_missing_and_stale_window_generation():
+    _put_sdk_drawing_route("dg-sdk-window", "route-B")
+
+    missing = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-window",
+        "client_round_token": "round-missing",
+    }))
+    stale = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-window",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-stale",
+    }))
+    current = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-window",
+        "sdk_route_instance_id": "route-B",
+        "client_round_token": "round-current",
+    }))
+
+    assert missing == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert stale == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert current["ok"] is True
+    session = dgr._drawing_guess_sessions["YUI:dg-sdk-window"]
+    assert session["_sdk_route_instance_id"] == "route-B"
+    assert session["client_round_token"] == "round-current"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "extra"),
+    (
+        ("drawing_guess_ai_draw", {}),
+        ("drawing_guess_input", {"text": "cat"}),
+        ("drawing_guess_choose_word", {"word_id": "cat"}),
+        ("drawing_guess_timeout", {}),
+        ("drawing_guess_vision_guess", {"image_data_url": "data:image/jpeg;base64,YQ=="}),
+    ),
+)
+@pytest.mark.parametrize("generation", (None, "route-A"))
+async def test_sdk_round_endpoints_reject_missing_or_stale_generation(
+    handler_name,
+    extra,
+    generation,
+):
+    _put_sdk_drawing_route("dg-sdk-endpoints", "route-B")
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-endpoints",
+        "sdk_route_instance_id": "route-B",
+        "client_round_token": "round-B",
+    }))
+    assert started["ok"] is True
+
+    payload = {
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-endpoints",
+        "client_round_token": "round-B",
+        **extra,
+    }
+    if generation is not None:
+        payload["sdk_route_instance_id"] = generation
+    result = await getattr(dgr, handler_name)(_FakeRequest(payload))
+
+    assert result == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert dgr._drawing_guess_sessions["YUI:dg-sdk-endpoints"]["phase"] == "ai_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delayed_ai_draw_cannot_land_after_same_session_sdk_supersede(monkeypatch):
+    route_a = _put_sdk_drawing_route("dg-sdk-delayed", "route-A")
+    started_a = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-delayed",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+    }))
+    assert started_a["ok"] is True
+    session_a = dgr._drawing_guess_sessions["YUI:dg-sdk-delayed"]
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_drawing(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+        return {
+            "svg": "<svg></svg>",
+            "caption": "",
+            "source": "model",
+            "sanitizer": {"ok": True},
+        }
+
+    async def fail_persona_line(**_kwargs):
+        raise AssertionError("stale AI draw must stop before the next model side effect")
+
+    monkeypatch.setattr(dgr, "_generate_model_drawing", delayed_drawing)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fail_persona_line)
+    pending = asyncio.create_task(dgr.drawing_guess_ai_draw(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-delayed",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+    })))
+    await entered.wait()
+
+    route_a["game_route_active"] = False
+    route_b = _put_sdk_drawing_route("dg-sdk-delayed", "route-B")
+    started_b = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-delayed",
+        "sdk_route_instance_id": "route-B",
+        "client_round_token": "round-B",
+    }))
+    assert started_b["ok"] is True
+    session_b = dgr._drawing_guess_sessions["YUI:dg-sdk-delayed"]
+
+    release.set()
+    stale_result = await pending
+
+    assert stale_result == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert session_a["phase"] == "ai_drawing"
+    assert session_b["phase"] == "ai_drawing"
+    assert route_b["last_state"]["client_round_token"] == "round-B"
+
+    dgr._sync_active_route_state(session_a, "en")
+    assert route_b["last_state"]["client_round_token"] == "round-B"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_transcript_injects_backend_route_generation(monkeypatch):
+    route_state = _put_sdk_drawing_route("dg-sdk-external", "route-trusted")
+    route_state["memory_consent"] = "summary"
+    route_state["last_state"]["memory_consent"] = "summary"
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-external",
+        "sdk_route_instance_id": "route-trusted",
+        "client_round_token": "round-trusted",
+    }))
+    assert started["ok"] is True
+    captured = {}
+
+    async def capture(data):
+        captured.update(data)
+        return {"ok": True, "handled": True}
+
+    monkeypatch.setattr(dgr, "_handle_drawing_guess_input_payload", capture)
+    result = await dgr.handle_external_drawing_guess_transcript(
+        "YUI",
+        "dg-sdk-external",
+        "voice input",
+        route_state=route_state,
+        request_id="voice-sdk",
+    )
+
+    assert result["ok"] is True
+    assert captured["sdk_route_instance_id"] == "route-trusted"
+    assert "memory_consent" not in captured
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_session_identity_is_rechecked_after_waiting_for_round_lock(monkeypatch):
+    route_a = _put_sdk_drawing_route("dg-sdk-lock", "route-A")
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-lock",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+    }))
+    assert started["ok"] is True
+    session_a = dgr._drawing_guess_sessions["YUI:dg-sdk-lock"]
+    original_acquire = dgr._acquire_session_lock
+
+    async def acquire_then_supersede(session, locale):
+        lock, busy = await original_acquire(session, locale)
+        route_a["game_route_active"] = False
+        _put_sdk_drawing_route("dg-sdk-lock", "route-B")
+        session_b = dict(session_a)
+        session_b["_sdk_route_instance_id"] = "route-B"
+        session_b["client_round_token"] = "round-B"
+        session_b[dgr._SESSION_LOCK_KEY] = asyncio.Lock()
+        dgr._drawing_guess_sessions["YUI:dg-sdk-lock"] = session_b
+        return lock, busy
+
+    monkeypatch.setattr(dgr, "_acquire_session_lock", acquire_then_supersede)
+    result = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-lock",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+    }))
+
+    assert result == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert session_a["phase"] == "ai_drawing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_superseded_sdk_session_cannot_write_persistent_memory(monkeypatch):
+    route_a = _put_sdk_drawing_route("dg-sdk-memory", "route-A", memory_enabled=True)
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+        "game_memory_enabled": True,
+        "memory_consent": "summary",
+    }))
+    assert started["ok"] is True
+    session_a = dgr._drawing_guess_sessions["YUI:dg-sdk-memory"]
+    route_a["game_route_active"] = False
+    _put_sdk_drawing_route("dg-sdk-memory", "route-B")
+
+    async def fail_memory_write(*_args, **_kwargs):
+        raise AssertionError("superseded round must not reach persistent memory")
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", fail_memory_write)
+    result = await dgr._maybe_write_drawing_guess_memory_summary(
+        session=session_a,
+        locale="en",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    )
+
+    assert result == {"status": "skipped", "reason": "stale_route_instance"}
+    assert "memory_summary_result" not in session_a
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_memory_commit_is_serialized_with_route_supersede(monkeypatch):
+    route_a = _put_sdk_drawing_route("dg-sdk-memory-lock", "route-A", memory_enabled=True)
+    started = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-memory-lock",
+        "sdk_route_instance_id": "route-A",
+        "client_round_token": "round-A",
+        "game_memory_enabled": True,
+        "memory_consent": "summary",
+    }))
+    assert started["ok"] is True
+    session_a = dgr._drawing_guess_sessions["YUI:dg-sdk-memory-lock"]
+    post_entered = asyncio.Event()
+    release_post = asyncio.Event()
+    superseded = asyncio.Event()
+
+    async def delayed_post(_lanlan_name, _summary):
+        post_entered.set()
+        await release_post.wait()
+        return {"status": "written", "source": "memory_server_cache", "count": 1}
+
+    monkeypatch.setattr(dgr, "_post_drawing_guess_memory_summary", delayed_post)
+    write_task = asyncio.create_task(dgr._maybe_write_drawing_guess_memory_summary(
+        session=session_a,
+        locale="en",
+        lanlan_name="YUI",
+        correct=False,
+        answer=dgr._WORD_BY_ID["dog"],
+        guessed_word=dgr._WORD_BY_ID["cat"],
+        attempts=3,
+    ))
+    await post_entered.wait()
+
+    async def supersede():
+        async with dgr._get_route_lock("YUI", "drawing_guess"):
+            route_a["game_route_active"] = False
+            _put_sdk_drawing_route("dg-sdk-memory-lock", "route-B")
+            superseded.set()
+
+    supersede_task = asyncio.create_task(supersede())
+    await asyncio.sleep(0)
+    assert superseded.is_set() is False
+
+    release_post.set()
+    result = await write_task
+    await supersede_task
+
+    assert result == {"status": "written", "source": "memory_server_cache", "count": 1}
+    assert superseded.is_set() is True

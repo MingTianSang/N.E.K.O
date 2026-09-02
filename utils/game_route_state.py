@@ -58,6 +58,40 @@ def _route_state_key(lanlan_name: str, game_type: str) -> _RouteStateKey:
     return (str(lanlan_name or ""), str(game_type or ""))
 
 
+def game_route_identity_mismatch_reason(
+    *,
+    expected_session_id: object = "",
+    expected_sdk_route_instance_id: object = "",
+    actual_session_id: object = "",
+    actual_sdk_route_instance_id: object = "",
+) -> str | None:
+    """Return the first mismatch between two route identities.
+
+    This helper is deliberately pure: it does not read the global route-state
+    registry and it does not mutate either identity.  The lifecycle router,
+    game-specific round routers, TTS admission, and WebSocket admission can
+    therefore apply exactly the same comparison rules without importing one
+    another.
+
+    Session ids retain the historical compatibility rule where an omitted
+    caller id is not itself a mismatch.  SDK generations are stricter: once
+    either side declares a generation, both sides must declare the same one.
+    Consequently an SDK-owned route rejects both generation-less and stale
+    callers, while a generation-less legacy route remains compatible with
+    generation-less callers.
+    """
+    expected_session = str(expected_session_id or "").strip()
+    actual_session = str(actual_session_id or "").strip()
+    if actual_session and actual_session != expected_session:
+        return "session_id_mismatch"
+
+    expected_generation = str(expected_sdk_route_instance_id or "").strip()
+    actual_generation = str(actual_sdk_route_instance_id or "").strip()
+    if (expected_generation or actual_generation) and actual_generation != expected_generation:
+        return "route_instance_id_mismatch"
+    return None
+
+
 # Per-(lanlan_name, game_type) ``asyncio.Lock`` registry.
 #
 # Used by ``main_routers/game_router`` to serialize lifecycle transitions
@@ -170,6 +204,7 @@ async def route_external_voice_transcript(
     request_id: str | None = None,
     game_type: str | None = None,
     session_id: str | None = None,
+    sdk_route_instance_id: str | None = None,
 ) -> bool:
     """Dispatch a voice transcript into the active game route, if any.
 
@@ -180,10 +215,11 @@ async def route_external_voice_transcript(
     handler = _voice_transcript_handler
     if handler is None:
         return False
-    return bool(await handler(
-        lanlan_name,
-        transcript,
-        request_id=request_id,
-        game_type=game_type,
-        session_id=session_id,
-    ))
+    kwargs = {
+        "request_id": request_id,
+        "game_type": game_type,
+        "session_id": session_id,
+    }
+    if sdk_route_instance_id is not None:
+        kwargs["sdk_route_instance_id"] = sdk_route_instance_id
+    return bool(await handler(lanlan_name, transcript, **kwargs))

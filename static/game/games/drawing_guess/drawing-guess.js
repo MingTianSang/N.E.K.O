@@ -2,8 +2,62 @@
   'use strict';
 
   var GAME_TYPE = 'drawing_guess';
-  var ROUTE_API = '/api/game/' + GAME_TYPE;
-  var ROUND_API = '/api/game/drawing_guess';
+  var SDK_GAME_ID = 'drawing-guess';
+  var SDK_GAME_VERSION = '0.1.0';
+  var ROUND_COMMANDS = Object.freeze({
+    START: 'round:start',
+    AI_DRAW: 'round:ai-draw',
+    INPUT: 'round:input',
+    FEEDBACK: 'round:feedback',
+    CHOOSE_WORD: 'round:choose-word',
+    TIMEOUT: 'round:timeout',
+    VISION_GUESS: 'round:vision-guess'
+  });
+  var ROUND_COMMAND_RESPONSE_SCHEMA = Object.freeze({
+    type: 'object',
+    properties: { ok: { type: 'boolean' } },
+    required: ['ok'],
+    additionalProperties: true
+  });
+
+  function roundCommandRequestSchema(extraProperties, requiredProperties) {
+    return {
+      request: {
+        type: 'object',
+        properties: Object.assign({
+          client_round_token: { type: 'integer', minimum: 0 }
+        }, extraProperties || {}),
+        required: ['client_round_token'].concat(requiredProperties || []),
+        additionalProperties: false
+      },
+      response: ROUND_COMMAND_RESPONSE_SCHEMA
+    };
+  }
+
+  var ROUND_COMMAND_CONTRACTS = Object.freeze({
+    'round:start': roundCommandRequestSchema({
+      debug_start_phase: { type: 'string', enum: ['word_picking'] }
+    }),
+    'round:ai-draw': roundCommandRequestSchema(),
+    'round:input': roundCommandRequestSchema({
+      text: { type: 'string', maxLength: 2000 },
+      summary_chat_only: { type: 'boolean' }
+    }, ['text']),
+    'round:feedback': roundCommandRequestSchema({
+      text: { type: 'string', maxLength: 2000 },
+      image_data_url: { type: 'string', maxLength: 1800000 }
+    }, ['text', 'image_data_url']),
+    'round:choose-word': roundCommandRequestSchema({
+      word_id: { type: 'string', minLength: 1, maxLength: 64 }
+    }, ['word_id']),
+    'round:timeout': roundCommandRequestSchema(),
+    'round:vision-guess': roundCommandRequestSchema({
+      image_data_url: { type: 'string', maxLength: 1800000 },
+      user_hint: { type: 'string', maxLength: 260 },
+      settle_on_miss: { type: 'boolean' },
+      time_expired: { type: 'boolean' }
+    }, ['image_data_url'])
+  });
   var ROUND_FALLBACK_SECONDS = 5 * 60;
   var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;
   var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
@@ -15,6 +69,10 @@
   var AI_DRAWING_PLACEHOLDER_DELAY_MS = 1200;
   var COLOR_HISTORY_VISIBLE_COUNT = 7;
   var COLOR_HISTORY_MAX_COUNT = 28;
+  var MODEL_VIEW_SETTINGS_MAX_COUNT = 32;
+  var SDK_PREFERENCE_HYDRATION_MAX_ATTEMPTS = 3;
+  var SDK_PREFERENCE_HYDRATION_RETRY_DELAY_MS = 160;
+  var SDK_ROUTE_CANVAS_DATA_MAX_CHARS = 200 * 1024;
   var boot = window.__DRAWING_GUESS_BOOT__ || {};
 
   var state = {
@@ -23,9 +81,23 @@
     windowLanlanName: '',
     routeActive: false,
     routeEnding: false,
-    heartbeatTimer: null,
-    routeDrainTimer: null,
-    routeDrainInFlight: false,
+    sdkClient: null,
+    sdkConnectPromise: null,
+    sdkStartPromise: null,
+    sdkReconcilePromise: null,
+    sdkOutputUnsubscribe: null,
+    sdkStateUnsubscribe: null,
+    sdkInactiveUnsubscribe: null,
+    sdkPageExitUnsubscribe: null,
+    sdkSpeechStateUnsubscribe: null,
+    sdkSpeechErrorUnsubscribe: null,
+    sdkLocaleUnsubscribe: null,
+    locale: 'zh-CN',
+    sdkPulseForceRequestedSequence: 0,
+    sdkPulseForceAcknowledgedSequence: 0,
+    sdkPulsePayloadForce: false,
+    sdkPulsePromise: null,
+    sdkPulseGeneration: 0,
     countdownTimer: null,
     thinkingTimer: null,
     placeholderDotsTimer: null,
@@ -41,24 +113,18 @@
     aiGuessNextAt: 0,
     nekoVoiceQueue: [],
     nekoVoiceInFlight: false,
-    speechAudioSocket: null,
-    speechAudioTapReady: false,
-    speechAudioReconnectTimer: null,
-    speechAudioPingTimer: null,
-    speechAudioManualClose: false,
+    nekoVoiceController: null,
     lipSyncActive: false,
-    lipSyncAnalyser: null,
-    lipSyncDriver: '',
-    lipSyncFrame: null,
     lipSyncRetryTimer: null,
     lipSyncStopTimer: null,
     lipSyncRetryDeadline: 0,
-    lipSyncMouthOpen: 0,
     voiceRouteActive: false,
     voiceRouteStatusNotified: false,
     lastExternalInputRequestId: '',
     canvasContextLastHash: '',
     canvasContextLastSentAt: 0,
+    canvasContextLastClearAttemptAt: 0,
+    canvasContextLastPayloadKind: '',
     thinkingMessageNode: null,
     modelMoodTimer: null,
     modelResizeHandler: null,
@@ -66,11 +132,13 @@
     debugGestureTimer: null,
     debugCountdownTimer: null,
     debugCharactersLoaded: false,
+    debugSwitchPromise: null,
     debugRotateRounds: true,
     debugRoundMode: 'auto',
     debugWordCycle: null,
     roundFlowToken: 0,
     activeRoundToken: 0,
+    roundRequestControllers: new Set(),
     guessTimeoutRetryTimer: null,
     aiGuessTimeoutRetryTimer: null,
     aiGuessDeadline: 0,
@@ -106,16 +174,13 @@
       x: 0,
       y: 28
     },
+    modelViewSettings: [],
     modelDrag: null,
     sideSplitRatio: 0.64,
     sideResize: null,
-    modelFitBase: null,
-    live2dMood: '',
-    live2dMouthParameterId: '',
-    live2dManager: null,
-    vrmManager: null,
-    mmdManager: null,
-    pngtuberManager: null,
+    avatarController: null,
+    avatarMountPromise: null,
+    avatarLoadToken: 0,
     recentNekoMessages: [],
     roundNumber: 0,
     currentRoundSummarySaved: false,
@@ -222,15 +287,7 @@
   }
 
   function currentLanguage() {
-    var candidates = [];
-    try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
-    try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
-    try { candidates.push(localStorage.getItem('neko_i18n_language')); } catch (_) {}
-    for (var i = 0; i < candidates.length; i += 1) {
-      var value = String(candidates[i] || '').trim();
-      if (value) return value;
-    }
-    return document.documentElement.lang || 'zh-CN';
+    return String(state.locale || 'zh-CN');
   }
 
   var ZH_PLACEHOLDER_FALLBACKS = {
@@ -307,12 +364,208 @@
     };
   }
 
-  function modelViewStorageKey() {
-    return 'drawingGuess.modelView.' + encodeURIComponent(state.lanlanName || 'default');
+  function normalizeModelViewSettings(value) {
+    var entries = Array.isArray(value) ? value : [];
+    var seen = Object.create(null);
+    var normalized = [];
+    for (var i = 0; i < entries.length && normalized.length < MODEL_VIEW_SETTINGS_MAX_COUNT; i += 1) {
+      var entry = entries[i];
+      if (!entry || typeof entry !== 'object') continue;
+      var character = String(entry.character || '').trim().slice(0, 128);
+      if (!character || seen[character]) continue;
+      var view = normalizeModelView(entry.view);
+      // The old page used 100/0/0 as an implicit baseline. Do not revive that
+      // stale value after the SDK migration changed the fitted default.
+      if (view.scale === 100 && view.x === 0 && view.y === 0) continue;
+      seen[character] = true;
+      normalized.push({ character: character, view: view });
+    }
+    return normalized;
   }
 
-  function sideSplitStorageKey() {
-    return 'drawingGuess.sideSplitRatio';
+  function modelViewSettingForCharacter(character) {
+    var name = String(character || '').trim();
+    for (var i = 0; i < state.modelViewSettings.length; i += 1) {
+      if (state.modelViewSettings[i].character === name) return state.modelViewSettings[i].view;
+    }
+    return null;
+  }
+
+  var sdkPreferenceChannels = null;
+
+  function createSdkPreferenceChannel(key, normalize, snapshot, apply) {
+    return {
+      key: key,
+      normalize: normalize,
+      snapshot: snapshot,
+      apply: apply,
+      revision: 0,
+      loadEpoch: 0,
+      hydrated: false,
+      hydrating: false,
+      hydrationPromise: null,
+      hydrationFailures: 0,
+      retryTimer: null,
+      dirty: false,
+      inFlight: false
+    };
+  }
+
+  function ensureSdkPreferenceChannels() {
+    if (sdkPreferenceChannels) return sdkPreferenceChannels;
+    sdkPreferenceChannels = {
+      modelViews: createSdkPreferenceChannel(
+        'settings/model-views',
+        normalizeModelViewSettings,
+        function () { return normalizeModelViewSettings(state.modelViewSettings); },
+        function (value, stale) {
+          state.modelViewSettings = stale
+            ? normalizeModelViewSettings(state.modelViewSettings.concat(value))
+            : normalizeModelViewSettings(value);
+          loadModelViewSettings();
+        }
+      ),
+      sideSplit: createSdkPreferenceChannel(
+        'settings/side-split-ratio',
+        normalizeSideSplitRatio,
+        function () { return normalizeSideSplitRatio(state.sideSplitRatio); },
+        function (value, stale) {
+          if (!stale) applySideSplitRatio(value, false);
+        }
+      ),
+      colorHistory: createSdkPreferenceChannel(
+        'settings/color-history',
+        normalizeColorHistory,
+        function () { return normalizeColorHistory(state.colorHistory); },
+        function (value, stale) {
+          if (stale) return;
+          state.colorHistory = normalizeColorHistory(value);
+          renderColorHistory();
+        }
+      )
+    };
+    return sdkPreferenceChannels;
+  }
+
+  function sdkStorageClient() {
+    var client = state.sdkClient;
+    return client && !client.disposed && client.capabilities.has('storage') ? client : null;
+  }
+
+  function flushSdkPreferenceChannel(channel) {
+    // Do not persist a partial local snapshot before the first SDK read has
+    // settled. In particular, model-view settings are shared by character: a
+    // write racing the initial read could otherwise erase entries for every
+    // character that has not been rendered in this page yet.
+    if (!channel || !channel.hydrated || channel.inFlight || !channel.dirty) {
+      return Promise.resolve(false);
+    }
+    var client = sdkStorageClient();
+    if (!client) return Promise.resolve(false);
+    var targetRevision = channel.revision;
+    var snapshot = channel.snapshot();
+    channel.dirty = false;
+    channel.inFlight = true;
+    return client.storage.set(channel.key, snapshot, { timeoutMs: 8000 }).then(function (response) {
+      var data = response && response.data && typeof response.data === 'object' ? response.data : {};
+      if (!response || response.ok === false || data.ok === false || data.stored === false) {
+        channel.dirty = true;
+        return false;
+      }
+      return true;
+    }).catch(function () {
+      channel.dirty = true;
+      return false;
+    }).finally(function () {
+      channel.inFlight = false;
+      if (state.sdkClient !== client || client.disposed) return;
+      if (channel.revision !== targetRevision) {
+        channel.dirty = true;
+        flushSdkPreferenceChannel(channel);
+      }
+    });
+  }
+
+  function queueSdkPreferenceWrite(name) {
+    var channel = ensureSdkPreferenceChannels()[name];
+    if (!channel) return;
+    channel.revision += 1;
+    channel.dirty = true;
+    var client = sdkStorageClient();
+    if (!channel.hydrated && client && !channel.hydrating && !channel.retryTimer
+        && channel.hydrationFailures >= SDK_PREFERENCE_HYDRATION_MAX_ATTEMPTS) {
+      channel.hydrationFailures = 0;
+      hydrateSdkPreferenceChannel(client, channel);
+    }
+    // User gesture commit points start the SDK write in the same task. This
+    // lets the SDK dispatch before a later pagehide disposes the client while
+    // the in-flight/revision fence still coalesces rapid wheel/key events.
+    flushSdkPreferenceChannel(channel);
+  }
+
+  function hydrateSdkPreferenceChannel(client, channel) {
+    if (channel.hydrating && channel.hydrationPromise) return channel.hydrationPromise;
+    if (channel.retryTimer) {
+      clearTimeout(channel.retryTimer);
+      channel.retryTimer = null;
+    }
+    var readRevision = channel.revision;
+    var readEpoch = channel.loadEpoch + 1;
+    channel.loadEpoch = readEpoch;
+    channel.hydrating = true;
+    var storageRead;
+    try {
+      storageRead = client.storage.get(channel.key, { timeoutMs: 8000 });
+    } catch (error) {
+      storageRead = Promise.reject(error);
+    }
+    var hydrationPromise = Promise.resolve(storageRead).then(function (response) {
+      if (state.sdkClient !== client || client.disposed || channel.loadEpoch !== readEpoch) return false;
+      var data = response && response.data && typeof response.data === 'object' ? response.data : {};
+      if (!response || response.ok === false || data.ok === false || typeof data.found !== 'boolean') {
+        throw new Error('sdk_preference_read_failed');
+      }
+      channel.hydrated = true;
+      channel.hydrationFailures = 0;
+      if (data.found === true) {
+        channel.apply(channel.normalize(data.value), channel.dirty || channel.revision !== readRevision);
+      }
+      if (channel.dirty) flushSdkPreferenceChannel(channel);
+      return true;
+    }).catch(function () {
+      if (state.sdkClient === client && !client.disposed && channel.loadEpoch === readEpoch) {
+        // A failed read is not evidence that the key is absent. Keep dirty
+        // local state fenced from writes until a later read can merge it with
+        // any settings already stored for other characters.
+        channel.hydrated = false;
+        channel.hydrationFailures += 1;
+        if (channel.hydrationFailures < SDK_PREFERENCE_HYDRATION_MAX_ATTEMPTS) {
+          var failedEpoch = readEpoch;
+          channel.retryTimer = setTimeout(function () {
+            channel.retryTimer = null;
+            if (state.sdkClient !== client || client.disposed || channel.hydrated
+                || channel.loadEpoch !== failedEpoch) return;
+            hydrateSdkPreferenceChannel(client, channel);
+          }, SDK_PREFERENCE_HYDRATION_RETRY_DELAY_MS * channel.hydrationFailures);
+        }
+      }
+      return false;
+    }).finally(function () {
+      if (channel.loadEpoch === readEpoch) {
+        channel.hydrating = false;
+        channel.hydrationPromise = null;
+      }
+    });
+    channel.hydrationPromise = hydrationPromise;
+    return hydrationPromise;
+  }
+
+  function hydrateSdkPreferences(client) {
+    if (!client || !client.capabilities.has('storage')) return Promise.resolve(false);
+    var channels = ensureSdkPreferenceChannels();
+    return Promise.all(Object.keys(channels).map(function (name) {
+      return hydrateSdkPreferenceChannel(client, channels[name]);
+    })).then(function () { return true; });
   }
 
   function applyModelView() {
@@ -323,10 +576,8 @@
       els.modelStage.style.setProperty('--dg-model-offset-x', view.x + '%');
       els.modelStage.style.setProperty('--dg-model-offset-y', view.y + '%');
     }
-    if (state.modelKind === 'live2d') {
-      fitLive2DModelToSlot();
-    } else if (state.modelKind === 'vrm' || state.modelKind === 'mmd') {
-      resizeActiveModelRenderer();
+    if (state.avatarController && !state.avatarController.disposed) {
+      Promise.resolve(state.avatarController.setView(view)).catch(function () {});
     }
   }
 
@@ -337,24 +588,16 @@
   }
 
   function saveModelViewSettings() {
-    try {
-      localStorage.setItem(modelViewStorageKey(), JSON.stringify(normalizeModelView(state.modelView)));
-    } catch (_) {}
+    var character = String(state.lanlanName || '').trim().slice(0, 128);
+    if (!character) return;
+    state.modelViewSettings = normalizeModelViewSettings([
+      { character: character, view: normalizeModelView(state.modelView) }
+    ].concat(state.modelViewSettings));
+    queueSdkPreferenceWrite('modelViews');
   }
 
   function loadModelViewSettings() {
-    var loaded = null;
-    try {
-      loaded = JSON.parse(localStorage.getItem(modelViewStorageKey()) || 'null');
-    } catch (_) {
-      loaded = null;
-    }
-    if (loaded
-      && Number(loaded.scale) === 100
-      && Number(loaded.x) === 0
-      && Number(loaded.y) === 0) {
-      loaded = null;
-    }
+    var loaded = modelViewSettingForCharacter(state.lanlanName);
     state.modelView = normalizeModelView(loaded || MODEL_VIEW_DEFAULTS);
     applyModelView();
   }
@@ -391,15 +634,11 @@
     if (!state.sideResize) {
       resizeActiveModelRenderer();
     }
-    if (shouldSave) {
-      try { localStorage.setItem(sideSplitStorageKey(), String(normalized)); } catch (_) {}
-    }
+    if (shouldSave) queueSdkPreferenceWrite('sideSplit');
   }
 
   function loadSideSplitRatio() {
-    var value = null;
-    try { value = localStorage.getItem(sideSplitStorageKey()); } catch (_) { value = null; }
-    applySideSplitRatio(value == null ? SIDE_SPLIT_DEFAULT_RATIO : Number(value), false);
+    applySideSplitRatio(state.sideSplitRatio, false);
   }
 
   function beginSideResize(event) {
@@ -466,12 +705,6 @@
     var rect = els.modelStage ? els.modelStage.getBoundingClientRect() : null;
     var width = Math.max(1, rect && rect.width || 1);
     var height = Math.max(1, rect && rect.height || 1);
-    if (state.modelKind === 'live2d' && state.modelFitBase) {
-      return {
-        width: Math.max(1, Math.min(width, state.modelFitBase.width || width)),
-        height: Math.max(1, Math.min(height, state.modelFitBase.height || height))
-      };
-    }
     var target = modelViewTranslateTarget();
     if (target) {
       width = Math.max(1, target.offsetWidth || target.clientWidth || width);
@@ -569,8 +802,9 @@
     }
     state.modelMood = normalized;
     if (els.modelStage) els.modelStage.dataset.modelMood = normalized;
-    applyLive2DMood(normalized);
-    applyPNGTuberMood(normalized);
+    if (state.avatarController && !state.avatarController.disposed) {
+      Promise.resolve(state.avatarController.setEmotion(normalized)).catch(function () {});
+    }
   }
 
   function pulseModelMood(mood, durationMs) {
@@ -581,25 +815,6 @@
       state.modelMoodTimer = null;
       setModelMood(modelMoodForPhase(state.phase));
     }, durationMs || 1600);
-  }
-
-  function applyLive2DMood(mood) {
-    if (state.modelKind !== 'live2d') return;
-    var manager = state.live2dManager;
-    if (!manager || !manager.currentModel || typeof manager.setEmotion !== 'function') return;
-    if (manager.isEmotionChanging) return;
-    var emotionMap = {
-      idle: 'Idle',
-      drawing: 'thinking',
-      thinking: 'thinking',
-      guessing: 'thinking',
-      talking: 'happy',
-      happy: 'happy'
-    };
-    var emotion = emotionMap[mood] || 'Idle';
-    if (state.live2dMood === emotion) return;
-    state.live2dMood = emotion;
-    Promise.resolve(manager.setEmotion(emotion)).catch(function () {});
   }
 
   function applyEmbeddedModelSlotStyles(kind) {
@@ -638,46 +853,8 @@
   }
 
   function resizeActiveModelRenderer() {
-    requestAnimationFrame(function () {
-      if (state.modelKind === 'live2d') {
-        fitLive2DModelToSlot();
-        return;
-      }
-      if (state.modelKind === 'vrm') {
-        applyEmbeddedModelSlotStyles('vrm');
-        if (state.vrmManager && typeof state.vrmManager.onWindowResize === 'function') {
-          state.vrmManager.onWindowResize();
-        }
-        return;
-      }
-      if (state.modelKind === 'mmd') {
-        applyEmbeddedModelSlotStyles('mmd');
-        if (state.mmdManager && typeof state.mmdManager.onWindowResize === 'function') {
-          state.mmdManager.onWindowResize();
-        }
-        return;
-      }
-      if (state.modelKind === 'pngtuber') {
-        applyEmbeddedModelSlotStyles('pngtuber');
-      }
-    });
-  }
-
-  function applyPNGTuberMood(mood) {
-    if (state.modelKind !== 'pngtuber') return;
-    var manager = state.pngtuberManager;
-    if (!manager || typeof manager.setState !== 'function') return;
-    var stateMap = {
-      idle: 'idle',
-      drawing: 'idle',
-      thinking: 'idle',
-      guessing: 'idle',
-      talking: 'talking',
-      happy: 'happy'
-    };
-    try {
-      manager.setState(stateMap[mood] || 'idle');
-    } catch (_) {}
+    if (!state.avatarController || state.avatarController.disposed) return;
+    Promise.resolve(state.avatarController.setView(normalizeModelView(state.modelView))).catch(function () {});
   }
 
   function setPhase(phase) {
@@ -705,6 +882,16 @@
     return ['user_drawing', 'ai_guessing', 'ai_guess_feedback'].indexOf(state.phase) >= 0;
   }
 
+  function isCanvasInteractionEnabled() {
+    return !!state.lanlanName
+      && state.routeActive
+      && !state.routeEnding
+      && !state.sdkStartPromise
+      && !state.sdkReconcilePromise
+      && !state.debugSwitchPromise
+      && isCanvasEditablePhase();
+  }
+
   function syncVoiceRouteButton() {
     if (!els.voiceRouteButton) return;
     var active = !!state.voiceRouteActive;
@@ -722,9 +909,11 @@
   }
 
   function updateControls() {
-    var routeReady = !!state.lanlanName && !state.routeEnding;
+    var lifecycleBusy = state.routeEnding || !!state.sdkStartPromise || !!state.sdkReconcilePromise || !!state.debugSwitchPromise;
+    var memoryLocked = lifecycleBusy || !!(state.sdkClient && state.sdkClient.memory.consent.locked);
+    var routeReady = !!state.lanlanName && state.routeActive && !lifecycleBusy;
     var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;
-    var canvasEditable = isCanvasEditablePhase();
+    var canvasEditable = isCanvasInteractionEnabled();
     var roundSummaryOpen = state.phase === 'summary';
     var finalSummaryOpen = state.phase === 'final_summary';
     els.characterName.textContent = state.lanlanName || '-';
@@ -734,14 +923,17 @@
     els.doneButton.hidden = roundSummaryOpen || finalSummaryOpen;
     els.nextRoundButton.hidden = !roundSummaryOpen;
     els.endButton.hidden = finalSummaryOpen;
-    els.endButton.disabled = !state.routeActive || state.routeEnding;
+    els.endButton.disabled = !routeReady;
     els.doneButton.disabled = tutorialOpen || !routeReady || !canvasEditable;
     els.clearCanvasButton.disabled = !canvasEditable;
-    els.nextRoundButton.disabled = state.phase !== 'summary' || !state.routeActive;
-    els.chatSubmit.disabled = state.phase !== 'user_guessing' && state.phase !== 'drawing_pick' && state.phase !== 'user_drawing' && state.phase !== 'ai_guess_feedback' && state.phase !== 'summary' && state.phase !== 'final_summary';
+    els.nextRoundButton.disabled = state.phase !== 'summary' || !routeReady;
+    els.chatSubmit.disabled = !routeReady || (state.phase !== 'user_guessing' && state.phase !== 'drawing_pick' && state.phase !== 'user_drawing' && state.phase !== 'ai_guess_feedback' && state.phase !== 'summary' && state.phase !== 'final_summary');
     els.chatInput.disabled = els.chatSubmit.disabled;
     els.undoTool.disabled = !canvasEditable || state.history.length <= 1;
     els.redoTool.disabled = !canvasEditable || state.redo.length === 0;
+    document.querySelectorAll('input[name="memory-consent"]').forEach(function (input) {
+      input.disabled = memoryLocked;
+    });
     if (!canvasEditable || (state.brushMode === 'brush' && state.brushToolKind === 'bucket')) hideSizePreview();
     syncVoiceRouteButton();
     syncDebugPanelState();
@@ -833,20 +1025,25 @@
   }
 
   function syncDebugPanelState() {
+    var lifecycleBusy = !!state.debugSwitchPromise || !!state.sdkStartPromise || state.routeEnding;
     if (els.debugRotateRounds) {
       els.debugRotateRounds.checked = !!state.debugRotateRounds;
+      els.debugRotateRounds.disabled = lifecycleBusy;
     }
     if (els.debugAiRound) {
       els.debugAiRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'ai' ? 'true' : 'false');
+      els.debugAiRound.disabled = lifecycleBusy;
     }
     if (els.debugUserRound) {
       els.debugUserRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'user' ? 'true' : 'false');
+      els.debugUserRound.disabled = lifecycleBusy;
     }
     if (els.debugCharacterSelect && state.lanlanName) {
       els.debugCharacterSelect.value = state.lanlanName;
+      els.debugCharacterSelect.disabled = lifecycleBusy;
     }
     if (els.debugTriggerAiGuess) {
-      els.debugTriggerAiGuess.disabled = !isDebugAiGuessAvailable() || state.aiGuessInFlight;
+      els.debugTriggerAiGuess.disabled = lifecycleBusy || !isDebugAiGuessAvailable() || state.aiGuessInFlight;
     }
     updateDebugWordCycle();
     updateDebugGuessCountdown();
@@ -857,7 +1054,15 @@
     state.debugCountdownTimer = setInterval(updateDebugGuessCountdown, 300);
   }
 
+  function abortRoundRequests() {
+    state.roundRequestControllers.forEach(function (controller) {
+      try { controller.abort(); } catch (_) {}
+    });
+    state.roundRequestControllers.clear();
+  }
+
   function beginRoundFlow() {
+    abortRoundRequests();
     clearTimeout(state.guessTimeoutRetryTimer);
     state.guessTimeoutRetryTimer = null;
     clearTimeout(state.aiGuessTimeoutRetryTimer);
@@ -934,12 +1139,17 @@
   }
 
   function closeDrawingGuessWindow() {
-    var host = window.nekoHost;
-    if (host && typeof host.closeWindow === 'function') {
+    var client = state.sdkClient;
+    if (client
+      && !client.disposed
+      && client.capabilities.has('window-control')
+      && client.window
+      && typeof client.window.close === 'function') {
       try {
-        Promise.resolve(host.closeWindow())
-          .then(function (result) {
-            if (result && result.ok === false) {
+        Promise.resolve(client.window.close({ timeoutMs: 3000 }))
+          .then(function (response) {
+            if (!response || response.ok !== true
+              || !response.data || response.data.closed !== true) {
               closeDrawingGuessBrowserFallback();
             }
           })
@@ -998,12 +1208,10 @@
 
   function loadDebugCharacters() {
     if (!els.debugCharacterSelect || state.debugCharactersLoaded) return;
-    fetch('/api/characters', { cache: 'no-store' }).then(function (res) {
-      if (!res.ok) throw new Error('characters_fetch_failed_' + res.status);
-      return res.json();
-    }).then(function (data) {
-      var characters = data && data['猫娘'];
-      var names = Object.keys(characters || {}).sort(function (a, b) {
+    connectMiniGameSdk().then(function (client) {
+      return client.avatar.listCharacters();
+    }).then(function (characterNames) {
+      var names = Array.prototype.slice.call(characterNames || []).sort(function (a, b) {
         return a.localeCompare(b);
       });
       if (!names.length && state.lanlanName) names = [state.lanlanName];
@@ -1022,31 +1230,32 @@
   }
 
   function endRouteForDebugSwitch(lanlanName, sessionId) {
-    if (!lanlanName || !sessionId) return Promise.resolve();
-    clearInterval(state.heartbeatTimer);
-    stopRouteDrain();
-    var payload = {
-      session_id: sessionId,
-      lanlan_name: lanlanName,
-      source: 'drawing_guess',
-      game_type: GAME_TYPE,
-      i18n_language: currentLanguage(),
-      reason: 'drawing_guess_debug_character_switch',
-      roundCompleted: false,
-      round_completed: false,
-      postgameProactive: false,
-      window_lanlan_name: state.windowLanlanName || lanlanName,
-      suppressWindowStateChange: true,
-      suppressRouteEndStatus: true
-    };
-    return fetch(ROUTE_API + '/route/end', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).catch(function () {});
+    if (!lanlanName || !sessionId) return Promise.resolve(true);
+    return connectMiniGameSdk().then(function (client) {
+      var runtimeState = client.runtime.state;
+      if (['idle', 'ended', 'inactive'].indexOf(runtimeState) >= 0) return { skipped: true };
+      // runtime.end() owns the starting-settlement wait. An already-ending
+      // route belongs to another lifecycle action and must not be reset out
+      // from underneath it.
+      if (runtimeState === 'ending') return { busy: true };
+      return client.runtime.end(sdkRouteEndPayload({
+        reason: 'drawing_guess_debug_character_switch',
+        completedRoute: false,
+        suppressWindowStateChange: true,
+        suppressRouteEndStatus: true
+      }), { timeoutMs: 12000 });
+    }).then(function (response) {
+      if (response && response.skipped) return true;
+      if (response && response.busy) return false;
+      var data = sdkResponseData(response);
+      return !!response && response.ok !== false && data.ok !== false
+        && state.sdkClient && state.sdkClient.runtime.state === 'ended';
+    }).catch(function () {
+      return false;
+    });
   }
 
-  function switchDebugCharacter(name) {
+  function performDebugCharacterSwitch(name) {
     var nextName = String(name || '').trim();
     if (!nextName || nextName === state.lanlanName) return Promise.resolve();
     var oldName = state.lanlanName;
@@ -1055,12 +1264,29 @@
     var previousRotateRounds = state.debugRotateRounds;
     var shouldContinueRound = state.phase !== 'tutorial' && state.phase !== 'ended' && state.phase !== 'final_summary';
     if (!state.windowLanlanName) state.windowLanlanName = oldName;
-    return endRouteForDebugSwitch(oldName, oldSessionId).finally(function () {
-      clearNekoVoiceQueue();
-      stopSpeechAudioSocket();
-      stopCountdown();
-      stopDrawPickAnimation();
-      stopAiGuessSchedule();
+    // Freeze the old round before awaiting SDK end. Otherwise a timeout, chat
+    // submit, or late round response can mutate the session while route
+    // ownership is already being handed to the next character.
+    state.routeEnding = true;
+    cleanupRouteResources({ preserveCanvasRouteState: true });
+    setStatus('ending', 'Ending');
+    updateControls();
+    return connectMiniGameSdk().then(function () {
+      return endRouteForDebugSwitch(oldName, oldSessionId);
+    }).then(function (ended) {
+      if (!ended) {
+        state.routeEnding = false;
+        if (state.routeActive) {
+          setStatus('active', 'Active');
+        }
+        addMessage('', 'Debug: could not close the current SDK route; character switch was cancelled.');
+        if (!state.routeActive || !shouldContinueRound) return false;
+        // The old asynchronous round was deliberately invalidated above. Start
+        // a clean replacement so the visible UI is never left attached to dead
+        // timers and request controllers after a cancelled switch.
+        return startRound().then(function () { return false; }, function () { return false; });
+      }
+      cleanupRouteResources();
       stopThinkingEventMessage();
       state.routeActive = false;
       state.routeEnding = false;
@@ -1069,13 +1295,10 @@
       state.lastExternalInputRequestId = '';
       state.canvasContextLastHash = '';
       state.canvasContextLastSentAt = 0;
-      state.roundFlowToken += 1;
-      state.sessionId = makeSessionId();
+      state.sessionId = state.sdkClient.runtime.reset({ newSession: true }).id;
       state.lanlanName = nextName;
       state.debugRoundMode = previousDebugMode || 'auto';
       state.debugRotateRounds = previousRotateRounds;
-      window.lanlan_config = window.lanlan_config || {};
-      window.lanlan_config.lanlan_name = nextName;
       loadModelViewSettings();
       initModelSlotForCurrentCharacter(nextName).catch(function () {});
       showPlaceholder();
@@ -1093,10 +1316,37 @@
         if (!state.debugRotateRounds && state.debugRoundMode === 'ai') return startDebugAiRound(true);
         return startRound();
       });
+    }).catch(function (error) {
+      state.routeEnding = false;
+      if (state.routeActive) {
+        setStatus('active', 'Active');
+      }
+      throw error;
     }).finally(function () {
       syncDebugPanelState();
       updateControls();
     });
+  }
+
+  function switchDebugCharacter(name) {
+    var nextName = String(name || '').trim();
+    if (!nextName || nextName === state.lanlanName) return Promise.resolve(false);
+    if (state.debugSwitchPromise) {
+      if (els.debugCharacterSelect) els.debugCharacterSelect.value = state.lanlanName;
+      return state.debugSwitchPromise;
+    }
+    if (els.debugCharacterSelect) els.debugCharacterSelect.disabled = true;
+    var switchPromise = performDebugCharacterSwitch(nextName).catch(function (error) {
+      addMessage('', 'Debug: character switch failed: ' + sdkErrorReason(error));
+      return false;
+    }).finally(function () {
+      if (state.debugSwitchPromise === switchPromise) state.debugSwitchPromise = null;
+      if (els.debugCharacterSelect) els.debugCharacterSelect.disabled = false;
+      syncDebugPanelState();
+      updateControls();
+    });
+    state.debugSwitchPromise = switchPromise;
+    return switchPromise;
   }
 
   function ensureDebugRouteReady() {
@@ -1119,7 +1369,7 @@
     return ensureDebugRouteReady().then(function (ok) {
       if (!ok) return false;
       var flowToken = resetRoundStartState();
-      return post(ROUND_API + '/round/start', roundPayload({ debug_start_phase: 'word_picking' }), 10000)
+      return executeRoundCommand(ROUND_COMMANDS.START, roundCommandPayload({ debug_start_phase: 'word_picking' }), 10000)
         .then(function (res) {
           ensureCurrentRoundFlow(flowToken);
           if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
@@ -1161,213 +1411,36 @@
     return node;
   }
 
-  function speechAudioSocketUrl() {
-    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return protocol + '//' + window.location.host + ROUTE_API + '/speech/ws'
-      + '?lanlan_name=' + encodeURIComponent(state.lanlanName || '')
-      + '&session_id=' + encodeURIComponent(state.sessionId || '');
-  }
-
-  function pushSpeechAudioHeader(response) {
-    var appState = window.appState;
-    if (!appState || !Array.isArray(appState.pendingAudioChunkMetaQueue)) return;
-    var speechId = String((response && (response.speech_id || response.speechId)) || '').trim();
-    if (!speechId) return;
-    // suppress_primary_audio 时本 tap 是音频分片唯一的 header 入口，必须与
-    // app-websocket.js 的 audio_chunk 处理保持一致：被打断 speech 的迟到分片
-    // 要跳过，新 speech 要消费挂起的解码器重置
-    var shouldSkip = false;
-    if (appState.interruptedSpeechId && speechId === appState.interruptedSpeechId) {
-      shouldSkip = true;
-    } else if (speechId !== appState.currentPlayingSpeechId) {
-      if (appState.pendingDecoderReset) {
-        appState.decoderResetPromise = Promise.resolve(
-          typeof window.resetOggOpusDecoder === 'function' ? window.resetOggOpusDecoder() : null
-        ).then(function () {
-          appState.pendingDecoderReset = false;
-        });
-      } else {
-        appState.pendingDecoderReset = false;
-      }
-      appState.currentPlayingSpeechId = speechId;
-      appState.interruptedSpeechId = null;
-    }
-    appState.pendingAudioChunkMetaQueue.push({
-      speechId: speechId,
-      turnId: String((response && (response.turn_id || response.turnId)) || speechId),
-      shouldSkip: shouldSkip,
-      epoch: appState.incomingAudioEpoch || 0,
-      receivedAt: Date.now()
-    });
-    if (window.appAudioPlayback &&
-        typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
-      window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
-    } else if (typeof window.schedulePendingAudioMetaStallCheck === 'function') {
-      window.schedulePendingAudioMetaStallCheck();
-    }
-  }
-
-  function currentLive2DSlotModel() {
-    var manager = state.live2dManager;
-    if (!manager) return null;
-    try {
-      if (typeof manager.getCurrentModel === 'function') return manager.getCurrentModel();
-    } catch (_) {}
-    return manager.currentModel || null;
-  }
-
-  function currentSpeechAnalyser() {
-    var appState = window.appState || null;
-    return (appState && appState.globalAnalyser) || window.globalAnalyser || null;
-  }
-
-  function live2DModelHasParameter(coreModel, parameterId) {
-    if (!coreModel || !parameterId) return false;
-    try {
-      if (typeof coreModel.getParameterIndex === 'function') {
-        return Number(coreModel.getParameterIndex(parameterId)) >= 0;
-      }
-    } catch (_) {}
-    try {
-      if (typeof coreModel.getParameterCount === 'function' && typeof coreModel.getParameterId === 'function') {
-        var count = Number(coreModel.getParameterCount()) || 0;
-        for (var i = 0; i < count; i += 1) {
-          if (coreModel.getParameterId(i) === parameterId) return true;
-        }
-        return false;
-      }
-    } catch (_) {}
-    return true;
-  }
-
-  function resolveLive2DMouthParameterId(coreModel) {
-    if (state.live2dMouthParameterId && live2DModelHasParameter(coreModel, state.live2dMouthParameterId)) {
-      return state.live2dMouthParameterId;
-    }
-    var ids = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamA', 'ParamO'];
-    for (var i = 0; i < ids.length; i += 1) {
-      if (live2DModelHasParameter(coreModel, ids[i])) {
-        state.live2dMouthParameterId = ids[i];
-        return ids[i];
-      }
-    }
-    state.live2dMouthParameterId = '';
-    return '';
-  }
-
-  function setLive2DSlotMouth(value) {
-    var model = currentLive2DSlotModel();
-    var coreModel = model && model.internalModel && model.internalModel.coreModel;
-    if (!coreModel || typeof coreModel.setParameterValueById !== 'function') return false;
-    var mouthValue = Math.max(0, Math.min(1, Number(value) || 0));
-    var parameterId = resolveLive2DMouthParameterId(coreModel);
-    if (!parameterId) return false;
-    try {
-      coreModel.setParameterValueById(parameterId, mouthValue);
-      return true;
-    } catch (_) {}
-    return false;
-  }
-
   function stopDrawingGuessLipSync() {
     clearTimeout(state.lipSyncRetryTimer);
     clearTimeout(state.lipSyncStopTimer);
     state.lipSyncRetryTimer = null;
     state.lipSyncStopTimer = null;
     state.lipSyncRetryDeadline = 0;
-    if (state.lipSyncDriver === 'vrm' && state.vrmManager && state.vrmManager.animation &&
-        typeof state.vrmManager.animation.stopLipSync === 'function') {
-      try { state.vrmManager.animation.stopLipSync(); } catch (_) {}
-    }
-    if (state.lipSyncDriver === 'mmd' && state.mmdManager && state.mmdManager.animationModule &&
-        typeof state.mmdManager.animationModule.stopLipSync === 'function') {
-      try { state.mmdManager.animationModule.stopLipSync(); } catch (_) {}
-    }
-    if (state.lipSyncDriver === 'pngtuber' && state.pngtuberManager &&
-        typeof state.pngtuberManager.setSpeaking === 'function') {
-      try { state.pngtuberManager.setSpeaking(false); } catch (_) {}
-    }
-    if (state.lipSyncFrame) {
-      cancelAnimationFrame(state.lipSyncFrame);
-      state.lipSyncFrame = null;
+    if (state.avatarController && !state.avatarController.disposed) {
+      Promise.resolve(state.avatarController.setSpeaking(false)).catch(function () {});
     }
     state.lipSyncActive = false;
-    state.lipSyncAnalyser = null;
-    state.lipSyncDriver = '';
-    state.lipSyncMouthOpen = 0;
-    setLive2DSlotMouth(0);
   }
 
   function startDrawingGuessLipSync() {
-    var analyser = currentSpeechAnalyser();
-    var kind = state.modelKind;
     if (state.routeEnding || !state.routeActive) return false;
-    if (state.lipSyncActive && state.lipSyncAnalyser === analyser && state.lipSyncDriver === kind) return true;
-    if (kind === 'vrm') {
-      if (!analyser || !state.vrmManager || !state.vrmManager.currentModel || !state.vrmManager.animation ||
-          typeof state.vrmManager.animation.startLipSync !== 'function') return false;
-      if (state.lipSyncActive) stopDrawingGuessLipSync();
-      state.vrmManager.animation.startLipSync(analyser);
-      state.lipSyncActive = true;
-      state.lipSyncAnalyser = analyser;
-      state.lipSyncDriver = 'vrm';
-      return true;
-    }
-    if (kind === 'mmd') {
-      if (!analyser || !state.mmdManager || !state.mmdManager.currentModel || !state.mmdManager.animationModule ||
-          typeof state.mmdManager.animationModule.startLipSync !== 'function') return false;
-      if (state.lipSyncActive) stopDrawingGuessLipSync();
-      state.mmdManager.animationModule.startLipSync(analyser);
-      state.lipSyncActive = true;
-      state.lipSyncAnalyser = analyser;
-      state.lipSyncDriver = 'mmd';
-      return true;
-    }
-    if (kind === 'pngtuber') {
-      if (!state.pngtuberManager || typeof state.pngtuberManager.setSpeaking !== 'function') return false;
-      if (state.lipSyncActive) stopDrawingGuessLipSync();
-      state.pngtuberManager.setSpeaking(true);
-      state.lipSyncActive = true;
-      state.lipSyncAnalyser = analyser || null;
-      state.lipSyncDriver = 'pngtuber';
-      return true;
-    }
-    if (kind !== 'live2d' || !analyser || !currentLive2DSlotModel()) return false;
-    if (state.lipSyncActive) stopDrawingGuessLipSync();
-    if (state.lipSyncFrame) {
-      cancelAnimationFrame(state.lipSyncFrame);
-      state.lipSyncFrame = null;
-    }
-    var dataArray = new Uint8Array(analyser.fftSize || analyser.frequencyBinCount || 2048);
+    if (!state.avatarController || state.avatarController.disposed) return false;
+    if (state.lipSyncActive) return true;
     state.lipSyncActive = true;
-    state.lipSyncAnalyser = analyser;
-    state.lipSyncDriver = 'live2d';
-    state.lipSyncMouthOpen = 0;
-
-    function animate() {
-      if (!state.lipSyncActive || state.lipSyncAnalyser !== analyser) return;
-      if (state.modelKind !== 'live2d' || !currentLive2DSlotModel()) {
-        stopDrawingGuessLipSync();
-        return;
+    Promise.resolve(state.avatarController.setSpeaking(true)).then(function (started) {
+      if (started === false) {
+        state.lipSyncActive = false;
+        if (Date.now() < state.lipSyncRetryDeadline && !state.lipSyncRetryTimer) {
+          state.lipSyncRetryTimer = setTimeout(function () {
+            state.lipSyncRetryTimer = null;
+            startDrawingGuessLipSync();
+          }, 120);
+        }
       }
-      try {
-        analyser.getByteTimeDomainData(dataArray);
-      } catch (_) {
-        stopDrawingGuessLipSync();
-        return;
-      }
-      var sum = 0;
-      for (var i = 0; i < dataArray.length; i += 1) {
-        var sample = (dataArray[i] - 128) / 128;
-        sum += sample * sample;
-      }
-      var target = Math.min(1, Math.sqrt(sum / Math.max(1, dataArray.length)) * 10);
-      state.lipSyncMouthOpen = state.lipSyncMouthOpen * 0.55 + target * 0.45;
-      setLive2DSlotMouth(state.lipSyncMouthOpen);
-      state.lipSyncFrame = requestAnimationFrame(animate);
-    }
-
-    animate();
+    }).catch(function () {
+      state.lipSyncActive = false;
+    });
     return true;
   }
 
@@ -1375,8 +1448,8 @@
     clearTimeout(state.lipSyncRetryTimer);
     state.lipSyncRetryTimer = null;
     if (state.routeEnding || !state.routeActive) return;
-    if (startDrawingGuessLipSync()) return;
     state.lipSyncRetryDeadline = Date.now() + 5000;
+    if (startDrawingGuessLipSync()) return;
     function retry() {
       state.lipSyncRetryTimer = null;
       if (startDrawingGuessLipSync()) return;
@@ -1408,8 +1481,8 @@
     }, delay);
   }
 
-  function handleSpeechPlaybackState(event) {
-    var detail = (event && event.detail) || {};
+  function handleSpeechPlaybackState(playbackState) {
+    var detail = (playbackState && playbackState.detail) || playbackState || {};
     if (isSpeechPlaybackAudible(detail)) {
       scheduleDrawingGuessLipSyncStart();
       armDrawingGuessLipSyncStop(detail);
@@ -1418,105 +1491,12 @@
     stopDrawingGuessLipSync();
   }
 
-  function handleSpeechAudioSocketMessage(event) {
-    if (event && event.data instanceof Blob) {
-      if (typeof window.enqueueIncomingAudioBlob === 'function') {
-        window.enqueueIncomingAudioBlob(event.data);
-      }
-      return;
-    }
-    var response = null;
-    try {
-      response = JSON.parse(String((event && event.data) || '{}'));
-    } catch (_) {
-      return;
-    }
-    if (response && response.type === 'speech_tap_ready') {
-      state.speechAudioTapReady = !!response.ok;
-      if (state.speechAudioTapReady) flushNekoVoiceQueue();
-      return;
-    }
-    if (response && response.type === 'audio_chunk') {
-      pushSpeechAudioHeader(response);
-    }
-  }
-
-  function dispatchSpeechAudioTurnEnd(speechId) {
-    var normalized = String(speechId || '').trim();
-    if (!normalized || typeof window.CustomEvent !== 'function') return;
-    window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
-      detail: {
-        turnId: normalized,
-        source: 'drawing_guess_speak'
-      }
-    }));
-  }
-
-  function clearSpeechAudioTimers() {
-    if (state.speechAudioReconnectTimer) {
-      clearTimeout(state.speechAudioReconnectTimer);
-      state.speechAudioReconnectTimer = null;
-    }
-    if (state.speechAudioPingTimer) {
-      clearInterval(state.speechAudioPingTimer);
-      state.speechAudioPingTimer = null;
-    }
-  }
-
-  function scheduleSpeechAudioReconnect() {
-    if (state.speechAudioReconnectTimer || state.speechAudioManualClose) return;
-    if (!state.routeActive || state.routeEnding || !state.lanlanName || !state.sessionId) return;
-    state.speechAudioReconnectTimer = setTimeout(function () {
-      state.speechAudioReconnectTimer = null;
-      startSpeechAudioSocket();
-    }, 400);
-  }
-
-  function startSpeechAudioSocket() {
-    if (!window.WebSocket || !state.routeActive || state.routeEnding || !state.lanlanName || !state.sessionId) return;
-    var existing = state.speechAudioSocket;
-    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
-    clearSpeechAudioTimers();
-    state.speechAudioManualClose = false;
-    state.speechAudioTapReady = false;
-    var socket = new WebSocket(speechAudioSocketUrl());
-    socket.binaryType = 'blob';
-    state.speechAudioSocket = socket;
-    socket.onopen = function () {
-      if (state.speechAudioSocket !== socket) return;
-      state.speechAudioPingTimer = setInterval(function () {
-        try {
-          if (state.speechAudioSocket === socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'ping', session_id: state.sessionId }));
-          }
-        } catch (_) {}
-      }, 15000);
-    };
-    socket.onmessage = handleSpeechAudioSocketMessage;
-    socket.onclose = function () {
-      if (state.speechAudioSocket === socket) {
-        state.speechAudioSocket = null;
-      }
-      state.speechAudioTapReady = false;
-      clearSpeechAudioTimers();
-      scheduleSpeechAudioReconnect();
-    };
-    socket.onerror = function () {};
-  }
-
-  function stopSpeechAudioSocket() {
-    state.speechAudioManualClose = true;
-    state.speechAudioTapReady = false;
-    clearSpeechAudioTimers();
-    var socket = state.speechAudioSocket;
-    state.speechAudioSocket = null;
-    if (socket) {
-      try { socket.close(1000, 'drawing_guess_closed'); } catch (_) {}
-    }
-  }
-
   function clearNekoVoiceQueue() {
     state.nekoVoiceQueue = [];
+    if (state.nekoVoiceController) {
+      try { state.nekoVoiceController.abort(); } catch (_) {}
+      state.nekoVoiceController = null;
+    }
     state.nekoVoiceInFlight = false;
     stopDrawingGuessLipSync();
   }
@@ -1532,17 +1512,31 @@
       flushNekoVoiceQueue();
       return;
     }
+    if (item.roundFlowToken !== state.roundFlowToken
+      || item.sessionId !== state.sessionId
+      || item.routeInstanceId !== sdkRouteInstanceId()) {
+      flushNekoVoiceQueue();
+      return;
+    }
+    var client = state.sdkClient;
+    if (!client || !client.capabilities.has('speech-output')) {
+      state.nekoVoiceQueue = [];
+      return;
+    }
+    var controller = new AbortController();
+    var speechFlowToken = item.roundFlowToken;
+    var speechSessionId = item.sessionId;
+    var speechRouteInstanceId = item.routeInstanceId;
+    state.nekoVoiceController = controller;
     state.nekoVoiceInFlight = true;
-    post(ROUTE_API + '/speak', routePayload({
-      line: item.line,
-      // 与 soccer/badminton 的 speak 一致：机器生成输出必须用后端
-      // closed-route guard 认识的 source，route 关闭后的迟到请求才会被跳过
+    client.speech.speak({
+      text: item.line,
       source: 'game-llm-result',
-      request_id: item.requestId,
-      mirror_text: false,
-      emit_turn_end: true,
-      interrupt_audio: false,
-      suppress_primary_audio: state.speechAudioTapReady,
+      requestId: item.requestId,
+      eventKey: 'drawing-guess:' + String(state.roundNumber),
+      mirrorText: false,
+      emitTurnEnd: true,
+      interruptExisting: false,
       event: {
         kind: 'drawing_guess_neko_line',
         source: 'drawing_guess',
@@ -1550,15 +1544,31 @@
         round: state.roundNumber,
         text_length: item.line.length
       }
-    }), 7000).catch(function (error) {
-      console.warn('[DrawingGuessVoice] project TTS unavailable:', error && error.message ? error.message : error);
-    }).then(function (res) {
-      if (res && res.speech_id && res.turn_end_emitted) {
-        dispatchSpeechAudioTurnEnd(res.speech_id);
+    }, { signal: controller.signal, timeoutMs: 70000 }).then(function (response) {
+      var data = sdkResponseData(response);
+      if (!response || response.ok === false || data.ok === false) {
+        var error = new Error(String((data && data.reason) || 'speech_output_failed'));
+        error.code = String((data && data.reason) || 'speech_output_failed');
+        throw error;
+      }
+    }).catch(function (error) {
+      if (controller.signal.aborted
+        || !isCurrentRoundFlow(speechFlowToken)
+        || speechSessionId !== state.sessionId
+        || speechRouteInstanceId !== sdkRouteInstanceId()) return;
+      if (state.sdkClient) {
+        state.sdkClient.logger.warn('speech', 'speak_failed', '小游戏 SDK 语音输出失败', {
+          reason: sdkErrorReason(error)
+        });
       }
     }).finally(function () {
+      if (state.nekoVoiceController !== controller) return;
+      state.nekoVoiceController = null;
       state.nekoVoiceInFlight = false;
-      if (state.nekoVoiceQueue.length) {
+      if (isCurrentRoundFlow(speechFlowToken)
+        && speechSessionId === state.sessionId
+        && speechRouteInstanceId === sdkRouteInstanceId()
+        && state.nekoVoiceQueue.length) {
         setTimeout(flushNekoVoiceQueue, 120);
       }
     });
@@ -1569,7 +1579,10 @@
     if (!line || !state.lanlanName || state.routeEnding) return;
     state.nekoVoiceQueue.push({
       line: line,
-      requestId: makeRequestId('drawing-guess-voice')
+      requestId: makeRequestId('drawing-guess-voice'),
+      roundFlowToken: state.roundFlowToken,
+      sessionId: state.sessionId,
+      routeInstanceId: sdkRouteInstanceId()
     });
     if (state.nekoVoiceQueue.length > 5) {
       state.nekoVoiceQueue.splice(0, state.nekoVoiceQueue.length - 5);
@@ -1688,37 +1701,50 @@
     return node;
   }
 
-  function post(url, payload, timeoutMs) {
+  function executeRoundCommand(command, payload, timeoutMs) {
+    // The SDK owns endpoint selection, trusted route identity, response schema
+    // validation and transport cancellation. The round token remains a second,
+    // game-level fence because a new round can start inside one live SDK route.
+    if (!state.routeActive || state.routeEnding) return Promise.resolve(undefined);
     var controller = new AbortController();
-    var didTimeout = false;
-    var timer = setTimeout(function () {
-      didTimeout = true;
-      controller.abort();
-    }, timeoutMs || 10000);
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload || {}),
-      signal: controller.signal
-    }).then(function (res) {
-      return res.json().catch(function () { return { ok: res.ok }; });
+    var requestFlowToken = state.roundFlowToken;
+    state.roundRequestControllers.add(controller);
+    return connectMiniGameSdk().then(function (client) {
+      return client.commands.execute(command, payload || {}, {
+        signal: controller.signal,
+        timeoutMs: timeoutMs || 10000
+      });
+    }).then(function (response) {
+      return sdkResponseData(response);
     }).then(function (data) {
-      if (data && data.state) applyRoundState(data.state);
+      // Route termination, SDK inactivity, or a new round invalidates every
+      // earlier command. Do not let its state projection land before the
+      // caller's own stale-flow guard gets a chance to reject it.
+      if (data && data.state && isCurrentRoundFlow(requestFlowToken)) {
+        applyRoundState(data.state);
+      }
       return data;
     }).catch(function (err) {
-      if (didTimeout || (err && err.name === 'AbortError')) {
+      if (!isCurrentRoundFlow(requestFlowToken)) {
+        // Lifecycle cleanup aborts every request from the retired round. Treat
+        // that as a neutral stale result: callers already guard their `.then`
+        // handlers with the captured round token, while rejecting here would
+        // create unhandled promises for fire-and-forget chat/guess actions.
+        return undefined;
+      }
+      if (err && (err.code === 'timeout' || err.code === 'request_timeout')) {
         var timeoutError = new Error('request_timeout');
         timeoutError.code = 'request_timeout';
         throw timeoutError;
       }
       throw err;
     }).finally(function () {
-      clearTimeout(timer);
+      state.roundRequestControllers.delete(controller);
     });
   }
 
   function readableRequestError(err) {
-    if (err && (err.code === 'request_timeout' || err.message === 'request_timeout')) {
+    if (err && (err.code === 'request_timeout' || err.code === 'timeout' || err.message === 'request_timeout')) {
       return t('drawingGuess.messages.requestTimeout', 'Request timed out. Please try again.');
     }
     return err && err.message ? err.message : 'unknown';
@@ -1737,22 +1763,49 @@
     ].join(':');
   }
 
+  function captureRouteCanvasSnapshot() {
+    if (!els.canvas) return '';
+    try {
+      var sourceWidth = Math.max(1, Number(els.canvas.width) || 800);
+      var sourceHeight = Math.max(1, Number(els.canvas.height) || 600);
+      var scale = Math.min(1, 480 / sourceWidth, 360 / sourceHeight);
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      var context = canvas.getContext('2d');
+      context.fillStyle = '#fffdfa';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(els.canvas, 0, 0, canvas.width, canvas.height);
+      var qualities = [0.72, 0.58, 0.44, 0.32];
+      for (var i = 0; i < qualities.length; i += 1) {
+        var dataUrl = canvas.toDataURL('image/jpeg', qualities[i]);
+        if (dataUrl && dataUrl.length <= SDK_ROUTE_CANVAS_DATA_MAX_CHARS) return dataUrl;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   function canvasContextPayload(force) {
+    state.canvasContextLastPayloadKind = '';
     if (!shouldShareCanvasContext()) {
       if (state.canvasContextLastHash) {
-        state.canvasContextLastHash = '';
-        state.canvasContextLastSentAt = 0;
+        var clearNow = Date.now();
+        if (!force && clearNow - state.canvasContextLastClearAttemptAt < 15000) return {};
+        state.canvasContextLastClearAttemptAt = clearNow;
+        state.canvasContextLastPayloadKind = 'clear';
         return { canvas_context_clear: true };
       }
       return {};
     }
-    var dataUrl = captureUserCanvasPng();
-    if (!dataUrl || dataUrl.length > 1800000) {
+    var dataUrl = captureRouteCanvasSnapshot();
+    if (!dataUrl || dataUrl.length > SDK_ROUTE_CANVAS_DATA_MAX_CHARS) {
       // 当前画布导出失败/超限时不能留着服务端旧快照，否则外部语音的
       // 视觉猜测会拿到过期画面
       if (state.canvasContextLastHash) {
-        state.canvasContextLastHash = '';
-        state.canvasContextLastSentAt = 0;
+        var failedCaptureNow = Date.now();
+        if (!force && failedCaptureNow - state.canvasContextLastClearAttemptAt < 15000) return {};
+        state.canvasContextLastClearAttemptAt = failedCaptureNow;
+        state.canvasContextLastPayloadKind = 'clear';
         return { canvas_context_clear: true };
       }
       return {};
@@ -1764,26 +1817,27 @@
     }
     state.canvasContextLastHash = hash;
     state.canvasContextLastSentAt = now;
+    state.canvasContextLastClearAttemptAt = 0;
+    state.canvasContextLastPayloadKind = 'image';
     return { canvas_image_data_url: dataUrl };
+  }
+
+  function sdkRouteInstanceId() {
+    var client = state.sdkClient;
+    return String((client && client.runtime && client.runtime.session.routeInstanceId) || '').trim();
   }
 
   function routePayload(extra) {
     return Object.assign({
-      session_id: state.sessionId,
       lanlan_name: state.lanlanName,
       window_lanlan_name: state.windowLanlanName || state.lanlanName,
       source: 'drawing_guess',
-      game_type: GAME_TYPE,
-      i18n_language: currentLanguage(),
       gameStarted: state.phase !== 'tutorial',
       game_started: state.phase !== 'tutorial',
-      memory_consent: state.memoryConsent,
       client_round_token: state.roundFlowToken,
       currentState: {
         game: GAME_TYPE,
         phase: state.phase,
-        memory_consent: state.memoryConsent,
-        i18n_language: currentLanguage(),
         client_round_token: state.roundFlowToken,
         round: state.roundNumber,
         has_user_canvas: !!state.hasDrawn,
@@ -1792,42 +1846,288 @@
     }, extra || {});
   }
 
-  function pushCanvasContextForRoute(force) {
-    if (!state.routeActive || state.routeEnding) return Promise.resolve(false);
-    var payload = canvasContextPayload(!!force);
-    if (!payload.canvas_image_data_url && !payload.canvas_context_clear) return Promise.resolve(false);
+  function sdkRuntimePayload() {
     var visible = !document.hidden;
-    return post(ROUTE_API + '/route/heartbeat', routePayload(Object.assign({
+    var forceCanvas = state.sdkPulsePayloadForce;
+    var canvasPayload = canvasContextPayload(forceCanvas);
+    return routePayload(Object.assign({
       visible: visible,
       pageVisible: visible,
       visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-    }, payload)), 5000).then(function (res) {
-      return !!(res && res.ok !== false);
-    }).catch(function () {
-      return false;
+    }, canvasPayload));
+  }
+
+  function sdkRouteEndPayload(options) {
+    options = options || {};
+    var completedRoute = options.completedRoute === undefined
+      ? (!!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary')
+      : !!options.completedRoute;
+    return routePayload({
+      reason: options.reason || (completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned'),
+      roundCompleted: completedRoute,
+      round_completed: completedRoute,
+      postgameProactive: false,
+      suppressWindowStateChange: options.suppressWindowStateChange === true,
+      suppressRouteEndStatus: options.suppressRouteEndStatus === true
     });
+  }
+
+  function sdkResponseData(response) {
+    return response && response.data && typeof response.data === 'object' ? response.data : {};
+  }
+
+  function sdkErrorReason(error) {
+    return String((error && (error.code || error.message)) || 'request_failed');
+  }
+
+  function isSdkRouteRunning(client) {
+    return !!client
+      && state.sdkClient === client
+      && state.routeActive
+      && !state.routeEnding
+      && client.runtime.state === 'running';
+  }
+
+  function cleanupRouteResources(options) {
+    options = options || {};
+    beginRoundFlow();
+    state.activeRoundToken = state.roundFlowToken;
+    state.isDrawing = false;
+    if (els.ctx) {
+      els.ctx.globalCompositeOperation = 'source-over';
+      els.ctx.beginPath();
+    }
+    hideSizePreview();
+    state.aiGuessInFlight = false;
+    state.chatInFlight = false;
+    state.pendingAutoGuess = false;
+    state.pendingAutoGuessImage = '';
+    state.pendingSupplementGuess = false;
+    state.pendingSupplementImage = '';
+    state.pendingAiGuessTimeout = false;
+    stopThinkingEventMessage();
+    clearNekoVoiceQueue();
+    state.voiceRouteActive = false;
+    state.voiceRouteStatusNotified = false;
+    state.lastExternalInputRequestId = '';
+    if (!options.preserveCanvasRouteState) {
+      state.canvasContextLastHash = '';
+      state.canvasContextLastSentAt = 0;
+      state.canvasContextLastClearAttemptAt = 0;
+      state.canvasContextLastPayloadKind = '';
+    }
+    state.sdkPulseForceRequestedSequence = 0;
+    state.sdkPulseForceAcknowledgedSequence = 0;
+    state.sdkPulsePayloadForce = false;
+    state.sdkPulsePromise = null;
+    state.sdkPulseGeneration += 1;
+    stopCountdown();
+    stopDrawPickAnimation();
+    stopAiGuessSchedule();
+  }
+
+  function handleSdkRuntimeState(event) {
+    var current = String((event && event.payload && event.payload.current) || '');
+    if (current === 'running') {
+      // The SDK starts heartbeat/output monitoring before runtime.start()
+      // resolves to this page. Mirror the SDK event synchronously so the first
+      // drain batch cannot be dropped by a stale local guard.
+      state.routeActive = true;
+    } else if (['idle', 'ended', 'inactive'].indexOf(current) >= 0) {
+      state.routeActive = false;
+    }
+    updateControls();
+  }
+
+  function handleSdkRuntimeInactive(event) {
+    state.routeActive = false;
+    state.routeEnding = false;
+    cleanupRouteResources();
+    showPlaceholder();
+    if (els.tutorialOverlay) els.tutorialOverlay.hidden = false;
+    setPhase('tutorial');
+    setStatus('heartbeatLost', 'Route inactive');
+    if (state.sdkClient) {
+      state.sdkClient.logger.warn('runtime', 'route_inactive', '小游戏宿主路由已失效', {
+        reason: String((event && event.payload && event.payload.reason) || 'inactive')
+      });
+    }
+    updateControls();
+  }
+
+  function applySdkLocale(locale) {
+    var language = String((locale && locale.language) || '').trim();
+    if (!language || language === state.locale) return;
+    state.locale = language;
+    updateControls();
+    setPhase(state.phase);
+    syncBrushToolButton();
+  }
+
+  function connectMiniGameSdk() {
+    if (state.sdkClient) return Promise.resolve(state.sdkClient);
+    if (state.sdkConnectPromise) return state.sdkConnectPromise;
+    if (!window.NekoMiniGame || !window.nekoMiniGameSameOriginHostReady) {
+      return Promise.reject(new Error('minigame_sdk_unavailable'));
+    }
+    state.sdkConnectPromise = Promise.resolve(window.nekoMiniGameSameOriginHostReady)
+      .then(function (createHost) {
+        var transport = createHost({
+          gameType: SDK_GAME_ID,
+          gameVersion: SDK_GAME_VERSION,
+          source: 'drawing_guess',
+          displayName: 'Drawing Guess',
+          sessionId: state.sessionId
+        });
+        return window.NekoMiniGame.connect({
+          id: SDK_GAME_ID,
+          version: SDK_GAME_VERSION,
+          protocolVersion: '1',
+          requiredCapabilities: ['runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory'],
+          optionalCapabilities: ['window-control', 'storage'],
+          contracts: {
+            commands: ROUND_COMMAND_CONTRACTS
+          }
+        }, { transport: transport });
+      })
+      .then(function (client) {
+        state.sdkClient = client;
+        state.sessionId = client.runtime.session.id || state.sessionId;
+        applySdkLocale(client.locale.current);
+        state.sdkLocaleUnsubscribe = client.locale.onChange(applySdkLocale);
+        hydrateSdkPreferences(client).catch(function () {});
+        client.logger.configure({
+          captureGlobalErrors: false,
+          contextProvider: function () {
+            return { sessionId: state.sessionId, lanlanName: state.lanlanName };
+          }
+        });
+        client.runtime.configure({
+          payload: sdkRuntimePayload,
+          heartbeat: { intervalMs: 2500, timeoutMs: 5000 },
+          outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 },
+          pageExit: {
+            payload: function (context) {
+              return sdkRouteEndPayload({ reason: String((context && context.type) || 'page-exit') });
+            }
+          }
+        });
+        state.sdkOutputUnsubscribe = client.events.on('runtime-output', function (event) {
+          handleRouteDrainOutput(event.payload);
+        });
+        state.sdkStateUnsubscribe = client.events.on('runtime-state', handleSdkRuntimeState);
+        state.sdkInactiveUnsubscribe = client.events.on('runtime-inactive', handleSdkRuntimeInactive);
+        state.sdkPageExitUnsubscribe = client.events.on('page-exit', cleanupRouteResources);
+        state.sdkSpeechStateUnsubscribe = client.speech.onState(handleSpeechPlaybackState);
+        state.sdkSpeechErrorUnsubscribe = client.speech.onError(function (error) {
+          client.logger.warn('speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
+            reason: String((error && (error.code || error.message)) || 'unknown')
+          });
+        });
+        updateControls();
+        return client;
+      })
+      .catch(function (error) {
+        state.sdkConnectPromise = null;
+        throw error;
+      });
+    return state.sdkConnectPromise;
+  }
+
+  function pulseRouteState(forceCanvas) {
+    if (!state.routeActive || state.routeEnding) return Promise.resolve(false);
+    if (forceCanvas) state.sdkPulseForceRequestedSequence += 1;
+    if (state.sdkPulsePromise) return state.sdkPulsePromise;
+    var pulseSessionId = state.sessionId;
+    var pulseGeneration = state.sdkPulseGeneration;
+    var pulsePromise;
+
+    function samePulseOwner() {
+      return state.sessionId === pulseSessionId && state.sdkPulseGeneration === pulseGeneration;
+    }
+
+    function finishPulse(result) {
+      // Clear synchronously in the final network continuation. Using only a
+      // `.finally()` leaves a microtask gap where a new force request can attach
+      // to an already-settled promise and never receive its own delivery.
+      if (state.sdkPulsePromise === pulsePromise) state.sdkPulsePromise = null;
+      return result;
+    }
+
+    function runPulse() {
+      var targetForceSequence = state.sdkPulseForceRequestedSequence;
+      var forceThisPulse = targetForceSequence > state.sdkPulseForceAcknowledgedSequence;
+      var previousCanvasHash = state.canvasContextLastHash;
+      var previousCanvasSentAt = state.canvasContextLastSentAt;
+      var previousClearAttemptAt = state.canvasContextLastClearAttemptAt;
+      var expectedCanvas = shouldShareCanvasContext();
+      var attemptedCanvasKind = '';
+      return connectMiniGameSdk().then(function (client) {
+        // runtime.pulse() invokes its configured payload factory synchronously.
+        // Keep force scoped to that call so ordinary SDK heartbeats cannot keep
+        // resending a JPEG merely because an earlier explicit pulse failed.
+        state.sdkPulsePayloadForce = forceThisPulse;
+        try {
+          var request = client.runtime.pulse(true);
+          attemptedCanvasKind = state.canvasContextLastPayloadKind;
+          return request;
+        } finally {
+          state.sdkPulsePayloadForce = false;
+        }
+      }).then(function (response) {
+        var pulseData = sdkResponseData(response);
+        var ok = !!(response && response.ok !== false && pulseData.ok !== false && pulseData.active !== false);
+        var ownerCurrent = samePulseOwner();
+        var delivered = ownerCurrent && ok && (!forceThisPulse || !!attemptedCanvasKind || !expectedCanvas);
+        if (ownerCurrent && ok && attemptedCanvasKind === 'clear') {
+          state.canvasContextLastHash = '';
+          state.canvasContextLastSentAt = 0;
+          state.canvasContextLastClearAttemptAt = 0;
+        }
+        if (ownerCurrent && delivered && forceThisPulse) {
+          state.sdkPulseForceAcknowledgedSequence = Math.max(
+            state.sdkPulseForceAcknowledgedSequence,
+            targetForceSequence
+          );
+        }
+        if (ownerCurrent && !ok && (forceThisPulse || attemptedCanvasKind)) {
+          state.canvasContextLastHash = previousCanvasHash;
+          state.canvasContextLastSentAt = previousCanvasSentAt;
+          state.canvasContextLastClearAttemptAt = previousClearAttemptAt;
+        }
+        if (ownerCurrent && state.sdkPulseForceRequestedSequence > targetForceSequence) {
+          return runPulse();
+        }
+        return finishPulse(delivered);
+      }).catch(function () {
+        var ownerCurrent = samePulseOwner();
+        if (ownerCurrent && (forceThisPulse || attemptedCanvasKind)) {
+          state.canvasContextLastHash = previousCanvasHash;
+          state.canvasContextLastSentAt = previousCanvasSentAt;
+          state.canvasContextLastClearAttemptAt = previousClearAttemptAt;
+        }
+        if (ownerCurrent && state.sdkPulseForceRequestedSequence > targetForceSequence) {
+          return runPulse();
+        }
+        return finishPulse(false);
+      });
+    }
+
+    pulsePromise = runPulse();
+    state.sdkPulsePromise = pulsePromise;
+    return pulsePromise;
+  }
+
+  function pushCanvasContextForRoute(force) {
+    return pulseRouteState(!!force);
   }
 
   function publishFinalSummaryRouteState() {
-    if (!state.routeActive || state.routeEnding) return Promise.resolve(false);
-    var visible = !document.hidden;
-    return post(ROUTE_API + '/route/heartbeat', routePayload({
-      visible: visible,
-      pageVisible: visible,
-      visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-    }), 5000).then(function (res) {
-      return !!(res && res.ok !== false);
-    }).catch(function () {
-      return false;
-    });
+    return pulseRouteState(false);
   }
 
-  function roundPayload(extra) {
+  function roundCommandPayload(extra) {
     return Object.assign({
-      session_id: state.sessionId,
-      lanlan_name: state.lanlanName,
-      i18n_language: currentLanguage(),
-      memory_consent: state.memoryConsent,
       client_round_token: state.activeRoundToken != null ? state.activeRoundToken : state.roundFlowToken
     }, extra || {});
   }
@@ -2218,63 +2518,67 @@
     updateControls();
   }
 
-  function pollRouteDrain() {
-    if (!state.routeActive || state.routeEnding || state.routeDrainInFlight) return;
-    state.routeDrainInFlight = true;
-    var visible = !document.hidden;
-    var payload = Object.assign({
-      visible: visible,
-      pageVisible: visible,
-      visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-    }, canvasContextPayload(false));
-    post(ROUTE_API + '/route/drain', routePayload(payload), 6000).then(function (res) {
-      if (!res || !res.ok) return;
-      if (res.state && res.state.game_route_active === false) {
-        state.routeActive = false;
-        state.voiceRouteActive = false;
-        stopRouteDrain();
-        updateControls();
-        return;
+  function reconcileFailedSdkStart(client, reason) {
+    if (!client || client.runtime.state !== 'degraded') return Promise.resolve(false);
+    if (state.sdkReconcilePromise) return state.sdkReconcilePromise;
+    // A transport timeout is ambiguous: the backend may already own the route
+    // even though start() rejected locally. End with every unresolved SDK
+    // generation before another start can mint more candidates.
+    // Do not let an unsuccessful reconciliation heartbeat or poll an unknown
+    // route forever. Keep only the SDK's page-exit listener so closing the
+    // window can still make one last beacon attempt; a later Start click retries
+    // this exact end before it may mint a new generation.
+    try { client.runtime.startMonitoring({ heartbeat: false, outputs: false }); } catch (_) {}
+    var reconcilePromise = client.runtime.end(sdkRouteEndPayload({
+      reason: 'drawing_guess_sdk_start_reconcile_' + String(reason || 'failed'),
+      completedRoute: false,
+      suppressWindowStateChange: true,
+      suppressRouteEndStatus: true
+    }), { timeoutMs: 10000 }).then(function (response) {
+      var data = sdkResponseData(response);
+      var ended = !!response && response.ok !== false && data.ok !== false
+        && client.runtime.state === 'ended';
+      if (ended) cleanupRouteResources();
+      else {
+        try { client.runtime.startMonitoring({ heartbeat: false, outputs: false }); } catch (_) {}
       }
-      (Array.isArray(res.outputs) ? res.outputs : []).forEach(handleRouteDrainOutput);
-    }).catch(function () {}).finally(function () {
-      state.routeDrainInFlight = false;
+      return ended;
+    }).catch(function () {
+      try { client.runtime.startMonitoring({ heartbeat: false, outputs: false }); } catch (_) {}
+      return false;
+    }).finally(function () {
+      if (state.sdkReconcilePromise === reconcilePromise) state.sdkReconcilePromise = null;
     });
+    state.sdkReconcilePromise = reconcilePromise;
+    return reconcilePromise;
   }
 
-  function startRouteDrain() {
-    stopRouteDrain();
-    pollRouteDrain();
-    state.routeDrainTimer = setInterval(pollRouteDrain, 900);
+  function sdkStartRecoveryBlockedError() {
+    var error = new Error('sdk_route_reconciliation_pending');
+    error.code = 'sdk_route_reconciliation_pending';
+    error.sdkRecoveryBlocked = true;
+    return error;
   }
 
-  function stopRouteDrain() {
-    clearInterval(state.routeDrainTimer);
-    state.routeDrainTimer = null;
-    state.routeDrainInFlight = false;
-  }
-
-  function startHeartbeat() {
-    clearInterval(state.heartbeatTimer);
-    state.heartbeatTimer = setInterval(function () {
-      if (!state.routeActive) return;
-      var visible = !document.hidden;
-      var heartbeatPayload = Object.assign({
-        visible: visible,
-        pageVisible: visible,
-        visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-      }, canvasContextPayload(false));
-      post(ROUTE_API + '/route/heartbeat', routePayload(heartbeatPayload), 5000).then(function (res) {
-        if (res && res.active === false) {
-          state.routeActive = false;
-          clearInterval(state.heartbeatTimer);
-          stopRouteDrain();
-          state.voiceRouteActive = false;
-          setStatus('heartbeatLost', 'Route inactive');
-          updateControls();
-        }
-      }).catch(function () {});
-    }, 2500);
+  function configureSdkMemoryConsent(client) {
+    var requested = state.memoryConsent === 'summary';
+    var consent = client.memory.consent;
+    if (consent.locked) {
+      if (consent.configured && consent.enabled === requested) return Promise.resolve(true);
+      var lockedError = new Error('memory_consent_locked');
+      lockedError.code = 'memory_consent_locked';
+      return Promise.reject(lockedError);
+    }
+    if (consent.configured && consent.enabled === requested) return Promise.resolve(true);
+    return client.memory.configureConsent(requested, { timeoutMs: 8000 }).then(function (response) {
+      var data = sdkResponseData(response);
+      if (!response || response.ok === false || data.ok === false || data.enabled !== requested) {
+        var rejectedError = new Error('memory_consent_rejected');
+        rejectedError.code = 'memory_consent_rejected';
+        throw rejectedError;
+      }
+      return true;
+    });
   }
 
   function startRoute() {
@@ -2285,83 +2589,115 @@
       return Promise.resolve(false);
     }
     if (state.routeActive) return Promise.resolve(true);
+    if (state.sdkStartPromise) return state.sdkStartPromise;
     state.routeEnding = false;
     setStatus('starting', 'Starting');
     updateControls();
-    return post(ROUTE_API + '/route/start', routePayload(), 12000).then(function (res) {
-      if (!res || !res.ok) {
-        setStatus('failed', 'Start failed');
-        addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: (res && res.reason) || 'unknown' });
-        return false;
+    var startPromise = connectMiniGameSdk().then(function (client) {
+      return configureSdkMemoryConsent(client).then(function () { return client; });
+    }).then(function (client) {
+      if (client.runtime.state !== 'degraded') {
+        return client.runtime.start(routePayload(), { timeoutMs: 12000 });
+      }
+      // A previous ambiguous start/end failure must be reconciled before a new
+      // generation is allowed. Otherwise every click can create another
+      // unresolved backend route while the first one still owns main input.
+      return reconcileFailedSdkStart(client, 'retry_before_start').then(function (reconciled) {
+        if (!reconciled) throw sdkStartRecoveryBlockedError();
+        return client.runtime.start(routePayload(), { timeoutMs: 12000 });
+      });
+    }).then(function (response) {
+      var client = state.sdkClient;
+      var res = sdkResponseData(response);
+      if (!response || response.ok === false || res.ok === false || !client || client.runtime.state !== 'running') {
+        var rejectedReason = (res && res.reason) || 'unknown';
+        return reconcileFailedSdkStart(client, rejectedReason).then(function () {
+          setStatus('failed', 'Start failed');
+          addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: rejectedReason });
+          return false;
+        });
       }
       state.routeActive = true;
       state.voiceRouteActive = false;
       state.voiceRouteStatusNotified = false;
+      state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
-      startSpeechAudioSocket();
-      startHeartbeat();
-      startRouteDrain();
-      return true;
-    }).catch(function () {
-      setStatus('failed', 'Start failed');
-      addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: 'request_failed' });
-      return false;
+      // Do not expose the active round until the session-scoped logging gate
+      // has settled. The host bounds and aborts this enable request, preventing
+      // a late /logs/enable from reactivating an already-ended session.
+      return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
+        if (!isSdkRouteRunning(client)) return false;
+        if (logResult && logResult.ok) {
+          client.logger.info('runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
+            sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
+            host_version: String(client.host && client.host.version || ''),
+            capabilities: client.capabilities.granted.slice()
+          });
+        }
+        return true;
+      }).catch(function () { return isSdkRouteRunning(client); });
+    }).catch(function (error) {
+      var failureReason = sdkErrorReason(error);
+      if (error && error.sdkRecoveryBlocked) {
+        setStatus('failed', 'Start failed');
+        addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: failureReason });
+        return false;
+      }
+      return reconcileFailedSdkStart(state.sdkClient, failureReason).then(function () {
+        setStatus('failed', 'Start failed');
+        addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: failureReason });
+        return false;
+      });
     }).finally(function () {
       stopThinkingEventMessage();
+      if (state.sdkStartPromise === startPromise) state.sdkStartPromise = null;
       updateControls();
     });
+    state.sdkStartPromise = startPromise;
+    updateControls();
+    return startPromise;
   }
 
   function endRoute(useBeacon, options) {
     options = options || {};
-    var completedRoute = !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary';
-    clearNekoVoiceQueue();
-    stopSpeechAudioSocket();
-    stopRouteDrain();
-    state.voiceRouteActive = false;
-    state.voiceRouteStatusNotified = false;
-    state.lastExternalInputRequestId = '';
-    state.canvasContextLastHash = '';
-    state.canvasContextLastSentAt = 0;
-    stopCountdown();
-    stopDrawPickAnimation();
-    stopAiGuessSchedule();
     if (!state.routeActive && !useBeacon) return Promise.resolve({ ok: true });
     state.routeEnding = true;
     setStatus('ending', 'Ending');
     updateControls();
-    clearInterval(state.heartbeatTimer);
-    var payload = JSON.stringify(routePayload({
-      reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned',
-      roundCompleted: completedRoute,
-      round_completed: completedRoute,
-      postgameProactive: false
-    }));
-    if (useBeacon && navigator.sendBeacon) {
-      try {
-        if (navigator.sendBeacon(ROUTE_API + '/route/end', new Blob([payload], { type: 'application/json' }))) {
-          return Promise.resolve({ ok: true, beacon: true });
-        }
-      } catch (_) {}
-    }
-    return fetch(ROUTE_API + '/route/end', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload
-    }).then(function (res) {
-      return res.json().catch(function () { return { ok: res.ok }; });
-    }).catch(function () {
-      return { ok: false, reason: 'request_failed' };
-    }).finally(function () {
-      state.routeActive = false;
-      state.routeEnding = false;
+    return connectMiniGameSdk().then(function (client) {
+      client.logger.info('runtime', 'sdk_route_ending', '你画我猜正在通过小游戏 SDK 结束', {
+        completed: !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary'
+      });
+      return client.runtime.end(sdkRouteEndPayload(options), {
+        timeoutMs: 12000,
+        useBeacon: useBeacon === true
+      });
+    }).then(function (response) {
+      var data = sdkResponseData(response);
+      var ended = !!response && response.ok !== false && data.ok !== false
+        && state.sdkClient && state.sdkClient.runtime.state === 'ended';
+      state.routeActive = !ended && !!state.sdkClient
+        && ['running', 'degraded'].indexOf(state.sdkClient.runtime.state) >= 0;
+      if (!ended) {
+        setStatus(state.routeActive ? 'active' : 'failed', state.routeActive ? 'Active' : 'End failed');
+        return response;
+      }
+      cleanupRouteResources();
       setStatus('ended', 'Ended');
       if (options.finalSummary) {
         renderFinalSummary();
       } else {
         setPhase('ended');
       }
+      return response;
+    }).catch(function (error) {
+      state.routeActive = !!state.sdkClient
+        && ['running', 'degraded'].indexOf(state.sdkClient.runtime.state) >= 0;
+      setStatus(state.routeActive ? 'active' : 'failed', state.routeActive ? 'Active' : 'End failed');
+      return { ok: false, reason: sdkErrorReason(error) };
+    }).finally(function () {
+      state.routeEnding = false;
       updateControls();
     });
   }
@@ -2469,7 +2805,7 @@
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
     attempt = Number(attempt || 0);
     var flowToken = state.roundFlowToken;
-    return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
+    return executeRoundCommand(ROUND_COMMANDS.TIMEOUT, roundCommandPayload(), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         if (res && res.reason === 'session_busy') {
@@ -2558,6 +2894,7 @@
 
   function resetRoundStartState() {
     var token = beginRoundFlow();
+    clearNekoVoiceQueue();
     // 后端 _require_session 校验的是 round/start 当时存的 token；此后前端
     // 因终态作废等原因 bump roundFlowToken 时（如 renderFinalSummary），发给
     // 后端的 client_round_token 必须继续用本轮实际注册的值，否则 final_summary
@@ -2600,14 +2937,14 @@
     options = options || {};
     if (options.debugRoundMode) state.debugRoundMode = options.debugRoundMode;
     var flowToken = resetRoundStartState();
-    return post(ROUND_API + '/round/start', roundPayload(), 10000)
+    return executeRoundCommand(ROUND_COMMANDS.START, roundCommandPayload(), 10000)
       .then(function (res) {
         ensureCurrentRoundFlow(flowToken);
         if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
         setPhase('ai_drawing');
         setBadge(t('drawingGuess.phases.ai_drawing', 'Neko drawing'));
         scheduleAiDrawingPlaceholderHint();
-        return post(ROUND_API + '/ai-draw', roundPayload(), AI_DRAW_REQUEST_TIMEOUT_MS);
+        return executeRoundCommand(ROUND_COMMANDS.AI_DRAW, roundCommandPayload(), AI_DRAW_REQUEST_TIMEOUT_MS);
       })
       .then(function (res) {
         ensureCurrentRoundFlow(flowToken);
@@ -2659,7 +2996,7 @@
   }
 
   function requestGuessTimeout(flowToken, attempt) {
-    return post(ROUND_API + '/timeout', roundPayload(), 10000).then(function (res) {
+    return executeRoundCommand(ROUND_COMMANDS.TIMEOUT, roundCommandPayload(), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) throw new Error((res && res.reason) || 'timeout_failed');
       state.guessTimeoutRetryTimer = null;
@@ -2692,7 +3029,7 @@
 
   function submitUserGuess(text) {
     var flowToken = state.roundFlowToken;
-    return post(ROUND_API + '/input', roundPayload({ text: text }), 10000).then(function (res) {
+    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload({ text: text }), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
@@ -2718,7 +3055,7 @@
     options = options || {};
     var flowToken = state.roundFlowToken;
     state.chatInFlight = true;
-    return post(ROUND_API + '/input', roundPayload({
+    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload({
       text: text,
       summary_chat_only: !!options.summaryChatOnly
     }), 20000).then(function (res) {
@@ -2741,7 +3078,7 @@
     var flowToken = state.roundFlowToken;
     var feedbackImage = captureUserCanvasPng();
     if (feedbackImage) state.userPng = feedbackImage;
-    return post(ROUND_API + '/input', roundPayload({
+    return executeRoundCommand(ROUND_COMMANDS.FEEDBACK, roundCommandPayload({
       text: text,
       image_data_url: feedbackImage || state.userPng
     }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
@@ -2822,7 +3159,7 @@
       addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
     };
     var flowToken = state.roundFlowToken;
-    return post(ROUND_API + '/choose-word', roundPayload({ word_id: wordId }), 10000).then(function (res) {
+    return executeRoundCommand(ROUND_COMMANDS.CHOOSE_WORD, roundCommandPayload({ word_id: wordId }), 10000).then(function (res) {
       // 与其它异步回合回调一致：End/换轮之后的迟到 choose-word 结果不再落地
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
@@ -2894,7 +3231,7 @@
     state.aiGuessInFlight = true;
     var flowToken = state.roundFlowToken;
     var imageDataUrl = (options && options.image_data_url) || state.userPng;
-    return post(ROUND_API + '/vision-guess', roundPayload({
+    return executeRoundCommand(ROUND_COMMANDS.VISION_GUESS, roundCommandPayload({
       image_data_url: imageDataUrl,
       user_hint: userHint || '',
       settle_on_miss: !!(options && options.settle_on_miss),
@@ -2988,6 +3325,7 @@
     // 最终结算是回合终态：无论从结束按钮还是 route end 进入，都统一作废仍在途的
     // round-start / ai-draw / vision-guess / timeout 回调。
     beginRoundFlow();
+    clearNekoVoiceQueue();
     state.aiGuessInFlight = false;
     state.chatInFlight = false;
     state.pendingAutoGuess = false;
@@ -3173,460 +3511,130 @@
     }).catch(function () {});
   }
 
-  function cleanConfigValue(value) {
-    if (value == null) return '';
-    var text = String(value).trim();
-    var lower = text.toLowerCase();
-    if (!text || lower === 'undefined' || lower === 'null') return '';
-    return text;
+  function disposeAvatarController() {
+    state.avatarLoadToken += 1;
+    stopDrawingGuessLipSync();
+    if (!state.avatarController) return;
+    try { state.avatarController.dispose(); } catch (_) {}
+    state.avatarController = null;
   }
 
-  function cleanStringConfigValue(value) {
-    return typeof value === 'string' ? cleanConfigValue(value) : '';
-  }
-
-  function getReservedAvatar(character) {
-    if (!character || typeof character !== 'object') return {};
-    var reserved = character._reserved && typeof character._reserved === 'object' ? character._reserved : {};
-    return reserved.avatar && typeof reserved.avatar === 'object' ? reserved.avatar : {};
-  }
-
-  function normalizeAvatarConfig(character) {
-    var avatar = getReservedAvatar(character);
-    var live2d = avatar.live2d && typeof avatar.live2d === 'object' ? avatar.live2d : {};
-    var vrm = avatar.vrm && typeof avatar.vrm === 'object' ? avatar.vrm : {};
-    var mmd = avatar.mmd && typeof avatar.mmd === 'object' ? avatar.mmd : {};
-    var pngtuberAvatar = avatar.pngtuber && typeof avatar.pngtuber === 'object' ? avatar.pngtuber : {};
-    var pngtuberTop = character && character.pngtuber && typeof character.pngtuber === 'object' ? character.pngtuber : {};
-    var pngtuberConfig = Object.assign({}, pngtuberTop, pngtuberAvatar);
-    var modelType = cleanConfigValue(character && character.model_type) || cleanConfigValue(avatar.model_type) || 'live2d';
-    var live3dSubType = cleanConfigValue(character && character.live3d_sub_type) || cleanConfigValue(avatar.live3d_sub_type);
-    var modelPath = cleanStringConfigValue(character && character.model_path);
-    var vrmPath = cleanStringConfigValue(character && character.vrm) || cleanStringConfigValue(vrm.model_path);
-    var mmdPath = cleanStringConfigValue(character && character.mmd) || cleanStringConfigValue(mmd.model_path);
-    var live2dPath = cleanStringConfigValue(character && character.live2d) || cleanStringConfigValue(live2d.model_path);
-    var pngtuberPath = cleanStringConfigValue(pngtuberConfig.idle_image)
-      || cleanStringConfigValue(character && character.pngtuber_idle_image)
-      || cleanStringConfigValue(character && character.pngtuber)
-      || modelPath;
-    var modelTypeLower = modelType.toLowerCase();
-    var live3dSubTypeLower = live3dSubType.toLowerCase();
-    if (!vrmPath && (modelTypeLower === 'vrm' || (modelTypeLower === 'live3d' && live3dSubTypeLower === 'vrm'))) {
-      vrmPath = modelPath;
-    }
-    if (!mmdPath && (modelTypeLower === 'mmd' || (modelTypeLower === 'live3d' && live3dSubTypeLower === 'mmd'))) {
-      mmdPath = modelPath;
-    }
-    if (!live2dPath && modelTypeLower === 'live2d') {
-      live2dPath = modelPath;
-    }
-    if (!pngtuberConfig.idle_image && pngtuberPath) {
-      pngtuberConfig.idle_image = pngtuberPath;
-    }
-    if (!pngtuberConfig.talking_image) {
-      var talkingPath = cleanStringConfigValue(character && character.pngtuber_talking_image);
-      if (talkingPath) pngtuberConfig.talking_image = talkingPath;
-    }
-    var effectiveKind = modelTypeLower;
-    if (effectiveKind === 'live3d') {
-      if (live3dSubTypeLower === 'mmd') {
-        effectiveKind = 'mmd';
-      } else if (live3dSubTypeLower === 'vrm' || vrmPath) {
-        effectiveKind = 'vrm';
-      }
-    } else if (!effectiveKind || effectiveKind === 'default') {
-      effectiveKind = pngtuberPath ? 'pngtuber' : (vrmPath ? 'vrm' : 'live2d');
-    } else if (effectiveKind === 'png' || effectiveKind === 'png-tuber') {
-      effectiveKind = 'pngtuber';
-    }
-    return {
-      modelType: modelType,
-      live3dSubType: live3dSubType,
-      effectiveKind: effectiveKind,
-      modelPath: modelPath,
-      live2dPath: live2dPath,
-      vrmPath: vrmPath,
-      mmdPath: mmdPath,
-      pngtuberConfig: pngtuberConfig,
-      lighting: character && character.lighting,
-      vrmIdleAnimation: character && character.idleAnimation,
-      vrmIdleAnimations: character && character.idleAnimations
-    };
-  }
-
-  function syncLanlanAvatarConfig(config) {
-    window.lanlan_config = window.lanlan_config || {};
-    if (config.effectiveKind === 'vrm' || config.effectiveKind === 'mmd') {
-      window.lanlan_config.model_type = 'live3d';
-      window.lanlan_config.live3d_sub_type = config.effectiveKind;
-    } else if (config.effectiveKind === 'pngtuber') {
-      window.lanlan_config.model_type = 'pngtuber';
-      window.lanlan_config.live3d_sub_type = '';
-    } else {
-      window.lanlan_config.model_type = config.modelType || '';
-      window.lanlan_config.live3d_sub_type = config.live3dSubType || '';
-    }
-    if (config.modelPath) window.lanlan_config.model_path = config.modelPath;
-    if (config.vrmPath) {
-      window.lanlan_config.vrm = config.vrmPath;
-      window.vrmModel = config.vrmPath;
-    }
-    if (config.mmdPath) {
-      window.lanlan_config.mmd = config.mmdPath;
-      window.mmdModel = config.mmdPath;
-    }
-    if (config.pngtuberConfig && Object.keys(config.pngtuberConfig).length > 0) {
-      window.lanlan_config.pngtuber = Object.assign({}, config.pngtuberConfig);
-    }
-    if (config.lighting) window.lanlan_config.lighting = config.lighting;
-    if (config.vrmIdleAnimation) window.lanlan_config.vrmIdleAnimation = config.vrmIdleAnimation;
-    if (Array.isArray(config.vrmIdleAnimations)) window.lanlan_config.vrmIdleAnimations = config.vrmIdleAnimations;
-  }
-
-  function fetchCharacterAvatarConfig(name) {
-    if (!name) return Promise.resolve(normalizeAvatarConfig(null));
-    return fetch('/api/characters', { cache: 'no-store' }).then(function (res) {
-      if (!res.ok) throw new Error('characters_fetch_failed_' + res.status);
-      return res.json();
-    }).then(function (data) {
-      var characters = data && data['猫娘'];
-      var character = characters && characters[name];
-      return normalizeAvatarConfig(character || null);
-    }).catch(function () {
-      return normalizeAvatarConfig(null);
-    });
-  }
-
-  function waitForModelRuntime(predicate, readyEvent, failedEvent, timeoutMs, label) {
-    if (predicate()) return Promise.resolve(true);
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timer = null;
-      function cleanup() {
-        if (timer) clearTimeout(timer);
-        if (readyEvent) window.removeEventListener(readyEvent, onReady);
-        if (failedEvent) window.removeEventListener(failedEvent, onFailed);
-      }
-      function finish(ok, error) {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (ok) resolve(true);
-        else reject(error || new Error((label || 'model runtime') + '_unavailable'));
-      }
-      function onReady() {
-        if (predicate()) finish(true);
-      }
-      function onFailed(event) {
-        var failed = event && event.detail && event.detail.failedModules;
-        finish(false, new Error((label || 'model runtime') + '_failed' + (failed ? ':' + failed.join(',') : '')));
-      }
-      if (readyEvent) window.addEventListener(readyEvent, onReady);
-      if (failedEvent) window.addEventListener(failedEvent, onFailed);
-      timer = setTimeout(function () {
-        finish(predicate(), new Error((label || 'model runtime') + '_timeout'));
-      }, timeoutMs || 10000);
-    });
-  }
-
-  function cleanupPNGTuberSlotControls() {
-    Array.prototype.slice.call(document.querySelectorAll('#pngtuber-floating-buttons, #pngtuber-lock-icon, #pngtuber-return-button-container'))
-      .forEach(function (node) {
-        if (node && node.parentNode) node.parentNode.removeChild(node);
-      });
-  }
-
-  function suppressSlotManagerChrome(manager) {
-    if (!manager) return;
-    manager.setupFloatingButtons = function () {};
-    manager.setupHTMLLockIcon = function () {};
-  }
-
-  function loadVRMSlot(config) {
-    var modelPath = cleanConfigValue(config && config.vrmPath) || '/static/vrm/sister1.0.vrm';
-    return waitForModelRuntime(function () {
-      return window.vrmModuleLoaded && typeof window.VRMManager === 'function';
-    }, 'vrm-modules-ready', 'vrm-modules-failed', 10000, 'vrm_runtime').then(function () {
-      var manager = state.vrmManager || window.vrmManager || new window.VRMManager();
-      state.vrmManager = manager;
-      window.vrmManager = manager;
-      suppressSlotManagerChrome(manager);
-      showModelLayer('vrm');
-      setModelLoadState('loading');
-      applyEmbeddedModelSlotStyles('vrm');
-      var modelUrl = typeof window.convertVRMModelPath === 'function' ? window.convertVRMModelPath(modelPath) : modelPath;
-      return Promise.resolve(manager.initThreeJS('vrm-canvas', 'vrm-container', config && config.lighting ? config.lighting : null))
-        .then(function (ok) {
-          if (ok === false) throw new Error('vrm_scene_init_failed');
-          suppressSlotManagerChrome(manager);
-          applyEmbeddedModelSlotStyles('vrm');
-          return manager.loadModel(modelUrl, {
-            canvasId: 'vrm-canvas',
-            containerId: 'vrm-container'
-          });
-        })
-        .then(function () {
-          showModelLayer('vrm');
-          setModelLoadState('ready');
-          installModelResizeHandler();
-          resizeActiveModelRenderer();
-          return true;
-        });
-    });
-  }
-
-  function loadMMDSlot(config) {
-    var modelPath = cleanConfigValue(config && config.mmdPath) || '/static/mmd/Miku/Miku.pmx';
-    return waitForModelRuntime(function () {
-      return window.mmdModuleLoaded && typeof window.MMDManager === 'function';
-    }, 'mmd-modules-ready', 'mmd-modules-failed', 10000, 'mmd_runtime').then(function () {
-      var manager = state.mmdManager || window.mmdManager || new window.MMDManager();
-      state.mmdManager = manager;
-      window.mmdManager = manager;
-      suppressSlotManagerChrome(manager);
-      showModelLayer('mmd');
-      setModelLoadState('loading');
-      applyEmbeddedModelSlotStyles('mmd');
-      var fetchPaths = typeof window.fetchMMDConfig === 'function'
-        ? Promise.resolve(window.fetchMMDConfig()).catch(function () { return false; })
-        : Promise.resolve(false);
-      return fetchPaths.then(function () {
-        var resolvedPath = typeof window._mmdConvertPath === 'function' ? window._mmdConvertPath(modelPath) : modelPath;
-        var initPromise = manager.core && manager.core.renderer
-          ? Promise.resolve(true)
-          : Promise.resolve(manager.init('mmd-canvas', 'mmd-container'));
-        return initPromise.then(function () {
-          suppressSlotManagerChrome(manager);
-          applyEmbeddedModelSlotStyles('mmd');
-          return manager.loadModel(resolvedPath, {});
-        });
-      }).then(function () {
-        showModelLayer('mmd');
-        setModelLoadState('ready');
-        installModelResizeHandler();
-        resizeActiveModelRenderer();
-        return true;
-      });
-    });
-  }
-
-  function loadPNGTuberSlot(config) {
-    var pngtuberConfig = Object.assign({}, (config && config.pngtuberConfig) || {});
-    if (!pngtuberConfig.idle_image && config && config.modelPath) {
-      pngtuberConfig.idle_image = config.modelPath;
-    }
-    if (!pngtuberConfig.idle_image) {
-      return Promise.reject(new Error('pngtuber_idle_image_missing'));
-    }
-    return waitForModelRuntime(function () {
-      return typeof window.PNGTuberManager === 'function';
-    }, null, null, 10000, 'pngtuber_runtime').then(function () {
-      var manager = state.pngtuberManager || new window.PNGTuberManager('pngtuber-container');
-      state.pngtuberManager = manager;
-      window.pngtuberManager = manager;
-      suppressSlotManagerChrome(manager);
-      showModelLayer('pngtuber');
-      setModelLoadState('loading');
-      applyEmbeddedModelSlotStyles('pngtuber');
-      return Promise.resolve(manager.load(pngtuberConfig)).then(function () {
-        manager.detachSpeechListeners && manager.detachSpeechListeners();
-        manager.detachDragListeners && manager.detachDragListeners();
-        manager.detachLayeredHotkeys && manager.detachLayeredHotkeys();
-        manager.detachLayeredPlayEvent && manager.detachLayeredPlayEvent();
-        manager.cleanupFloatingButtons && manager.cleanupFloatingButtons();
-        cleanupPNGTuberSlotControls();
-        manager.setSpeaking && manager.setSpeaking(false);
-        manager.setState && manager.setState('idle');
-        manager.show && manager.show();
-        manager.clearLayeredTimers && manager.clearLayeredTimers();
-        if (manager.isLayeredActive && manager.isLayeredActive() && manager.drawLayeredState) {
-          manager.drawLayeredState('idle');
-        }
-        applyEmbeddedModelSlotStyles('pngtuber');
-        showModelLayer('pngtuber');
-        setModelLoadState('ready');
-        installModelResizeHandler();
-        applyPNGTuberMood(state.modelMood);
-        return true;
-      });
-    });
-  }
-
-  function ensureLive2DSlotMethods(manager) {
-    if (!manager) return;
-    manager.setupFloatingButtons = function () {};
-    manager.setupHTMLLockIcon = function () {};
-    manager.setFullscreenTrackingEnabled = function () {};
-    manager.enableMouseTracking = function () {};
-    manager.setupDragAndDrop = function (model) {
-      if (model) model.interactive = false;
-    };
-  }
-
-  function fitLive2DModelToSlot() {
-    var manager = state.live2dManager;
-    if (!manager || !manager.pixi_app || !manager.pixi_app.renderer || !els.modelStage) return;
-    var rect = els.modelStage.getBoundingClientRect();
-    var stageWidth = Math.max(1, Math.round(rect.width || 1));
-    var stageHeight = Math.max(1, Math.round(rect.height || 1));
-    if (!state.modelFitBase) {
-      state.modelFitBase = {
-        width: stageWidth,
-        height: stageHeight
-      };
-    }
-    var fitWidth = Math.max(1, Math.min(stageWidth, state.modelFitBase.width));
-    var fitHeight = Math.max(1, Math.min(stageHeight, state.modelFitBase.height));
-    try {
-      manager.pixi_app.renderer.resize(stageWidth, stageHeight);
-      var canvas = manager.pixi_app.view || (manager.pixi_app.renderer && manager.pixi_app.renderer.view) || els.live2dCanvas;
-      if (canvas && canvas.style) {
-        canvas.style.setProperty('width', stageWidth + 'px', 'important');
-        canvas.style.setProperty('height', stageHeight + 'px', 'important');
-      }
-    } catch (_) {}
-    var model = typeof manager.getCurrentModel === 'function' ? manager.getCurrentModel() : manager.currentModel;
-    if (!model) return;
-    try {
-      var view = normalizeModelView(state.modelView);
-      if (model.anchor && typeof model.anchor.set === 'function') model.anchor.set(0.5, 0.5);
-      var localBounds = null;
-      try {
-        localBounds = typeof model.getLocalBounds === 'function' ? model.getLocalBounds() : null;
-      } catch (_) {}
-      var rawWidth = localBounds && localBounds.width > 0 ? localBounds.width : 1200;
-      var rawHeight = localBounds && localBounds.height > 0 ? localBounds.height : 1800;
-      var scale = Math.min(fitWidth * 0.78 / rawWidth, fitHeight * 0.86 / rawHeight) * (view.scale / 100);
-      if (!Number.isFinite(scale) || scale <= 0) scale = Math.min(fitWidth, fitHeight) / 1600;
-      scale = Math.max(0.025, Math.min(0.68, scale));
-      if (model.scale && typeof model.scale.set === 'function') model.scale.set(scale);
-      model.x = fitWidth * 0.5;
-      model.y = fitHeight * 0.5;
-      var bounds = null;
-      try {
-        bounds = typeof model.getBounds === 'function' ? model.getBounds() : null;
-      } catch (_) {
-        bounds = null;
-      }
-      if (bounds && bounds.width > 0 && bounds.height > 0) {
-        model.x += fitWidth * 0.5 - (bounds.x + bounds.width / 2);
-        model.y += fitHeight * 0.5 - (bounds.y + bounds.height / 2);
-      }
-      model.x += fitWidth * (view.x / 100);
-      model.y += fitHeight * (view.y / 100);
-    } catch (err) {
-      console.warn('[drawing_guess] Live2D slot fit failed:', err);
-    }
-  }
-
-  function installModelResizeHandler() {
-    if (state.modelResizeHandler) return;
-    state.modelResizeHandler = function () {
-      resizeActiveModelRenderer();
-    };
-    window.addEventListener('resize', state.modelResizeHandler);
-  }
-
-  function loadLive2DSlot(name) {
-    if (typeof window.Live2DManager !== 'function' || !window.PIXI || !window.PIXI.live2d) {
-      return Promise.reject(new Error('live2d_runtime_unavailable'));
-    }
-    var modelConfigUrl = '';
-    return fetch('/api/characters/current_live2d_model?catgirl_name=' + encodeURIComponent(name || ''), { cache: 'no-store' })
-      .then(function (res) {
-        if (!res.ok) throw new Error('live2d_config_fetch_failed_' + res.status);
-        return res.json();
-      })
-      .then(function (data) {
-        modelConfigUrl = data && data.success && data.model_info ? cleanConfigValue(data.model_info.path) : '';
-        if (!modelConfigUrl) throw new Error((data && data.error) || 'live2d_model_path_missing');
-        return fetch(modelConfigUrl, { cache: 'no-store' });
-      })
-      .then(function (res) {
-        if (!res.ok) throw new Error('live2d_model_json_failed_' + res.status);
-        return res.json();
-      })
-      .then(function (modelConfig) {
-        modelConfig.url = modelConfigUrl;
-        var manager = state.live2dManager || new window.Live2DManager();
-        state.live2dManager = manager;
-        state.modelFitBase = null;
-        state.live2dMouthParameterId = '';
-        ensureLive2DSlotMethods(manager);
-        if (els.live2dContainer) els.live2dContainer.hidden = false;
-        setModelLoadState('loading');
-        var initPromise = typeof manager.ensurePIXIReady === 'function'
-          ? manager.ensurePIXIReady('live2d-canvas', 'live2d-container', { backgroundAlpha: 0, antialias: true })
-          : manager.initPIXI('live2d-canvas', 'live2d-container', { backgroundAlpha: 0, antialias: true });
-        return initPromise.then(function () {
-          ensureLive2DSlotMethods(manager);
-          return manager.loadModel(modelConfig, {
-            isMobile: false,
-            skipCloseWindows: true,
-            suppressPersistentExpressions: true
-          });
-        }).then(function () {
-          if (manager.pixi_app && manager.pixi_app.ticker && !manager.pixi_app.ticker.started) {
-            manager.pixi_app.ticker.start();
-          }
-          installModelResizeHandler();
-          requestAnimationFrame(fitLive2DModelToSlot);
-          showModelLayer('live2d');
-          setModelLoadState('ready');
-          applyLive2DMood(state.modelMood);
-          return true;
-        });
-      });
-  }
-
-  function showConfiguredFallback(config) {
+  function showConfiguredFallback() {
     showModelLayer('fallback');
     setModelLoadState('fallback');
-    if (config && (config.effectiveKind === 'vrm' || config.effectiveKind === 'mmd' || config.effectiveKind === 'pngtuber')) {
-      setModelKind('fallback');
-    }
   }
 
-  function initModelSlotForCurrentCharacter(name) {
+  function mountAvatarDescriptor(client, descriptor, loadToken) {
+    if (!descriptor || !descriptor.rendererAvailable || !descriptor.model) {
+      showConfiguredFallback();
+      return Promise.resolve(false);
+    }
+    var modelKind = String(descriptor.model.type || '').toLowerCase();
+    var previousMount = state.avatarMountPromise;
+    var mountPromise = (previousMount
+      ? previousMount.catch(function () {})
+      : Promise.resolve()
+    ).then(function () {
+      if (loadToken !== state.avatarLoadToken || descriptor.name !== state.lanlanName) return null;
+      return client.avatar.mount({
+        slot: 'drawing-guess-character',
+        characterName: descriptor.name,
+        model: descriptor.model,
+        viewport: { mode: 'container' },
+        fit: {
+          mode: 'contain',
+          align: 'center',
+          padding: 0,
+          scaleMultiplier: 1
+        },
+        resize: { mode: 'container' }
+      });
+    }).then(function (controller) {
+      if (!controller) return false;
+      if (loadToken !== state.avatarLoadToken || descriptor.name !== state.lanlanName) {
+        controller.dispose();
+        return false;
+      }
+      state.avatarController = controller;
+      showModelLayer(modelKind);
+      setModelLoadState('ready');
+      applyModelView();
+      setModelMood(state.modelMood);
+      if (state.lipSyncActive) {
+        Promise.resolve(controller.setSpeaking(true)).catch(function () {});
+      }
+      return true;
+    });
+    var trackedMount = mountPromise.finally(function () {
+      if (state.avatarMountPromise === trackedMount) state.avatarMountPromise = null;
+    });
+    state.avatarMountPromise = trackedMount;
+    return trackedMount;
+  }
+
+  function avatarDescriptor(name) {
+    return connectMiniGameSdk().then(function (client) {
+      var requestedName = String(name || '').trim();
+      var request = requestedName
+        ? client.avatar.getCharacter(requestedName)
+        : client.avatar.getCurrentCharacter();
+      return Promise.resolve(request).then(function (descriptor) {
+        return { client: client, descriptor: descriptor };
+      });
+    });
+  }
+
+  function initModelSlotForCurrentCharacter(name, knownDescriptor) {
     if (!els.modelStage) return Promise.resolve(false);
+    disposeAvatarController();
+    var loadToken = state.avatarLoadToken;
     showModelLayer('loading');
     setModelLoadState('loading');
     setModelMood(modelMoodForPhase(state.phase));
-    return fetchCharacterAvatarConfig(name).then(function (config) {
-      syncLanlanAvatarConfig(config);
-      if (config.effectiveKind === 'live2d') {
-        return loadLive2DSlot(name).catch(function (err) {
-          console.warn('[drawing_guess] Live2D slot fallback:', err && err.message ? err.message : err);
-          showConfiguredFallback(config);
-          return false;
-        });
+    var lookup = knownDescriptor
+      ? connectMiniGameSdk().then(function (client) {
+        return { client: client, descriptor: knownDescriptor };
+      })
+      : avatarDescriptor(name);
+    return lookup.then(function (resolved) {
+      if (loadToken !== state.avatarLoadToken) return false;
+      return mountAvatarDescriptor(resolved.client, resolved.descriptor, loadToken);
+    }).catch(function (error) {
+      if (loadToken === state.avatarLoadToken) {
+        console.warn('[drawing_guess] SDK Avatar fallback:', sdkErrorReason(error));
+        showConfiguredFallback();
       }
-      if (config.effectiveKind === 'vrm') {
-        return loadVRMSlot(config).catch(function (err) {
-          console.warn('[drawing_guess] VRM slot fallback:', err && err.message ? err.message : err);
-          showConfiguredFallback(config);
-          return false;
-        });
-      }
-      if (config.effectiveKind === 'mmd') {
-        return loadMMDSlot(config).catch(function (err) {
-          console.warn('[drawing_guess] MMD slot fallback:', err && err.message ? err.message : err);
-          showConfiguredFallback(config);
-          return false;
-        });
-      }
-      if (config.effectiveKind === 'pngtuber') {
-        return loadPNGTuberSlot(config).catch(function (err) {
-          console.warn('[drawing_guess] PNGTuber slot fallback:', err && err.message ? err.message : err);
-          showConfiguredFallback(config);
-          return false;
-        });
-      }
-      showConfiguredFallback(config);
       return false;
     });
   }
 
+  function loadCurrentCharacter() {
+    setStatus('loadingCharacter', 'Loading character');
+    var requestedName = state.lanlanName;
+    return avatarDescriptor(requestedName).then(function (resolved) {
+      var descriptor = resolved.descriptor;
+      var name = String((descriptor && descriptor.name) || '').trim();
+      state.lanlanName = name;
+      if (name && !state.windowLanlanName) state.windowLanlanName = name;
+      if (name) setStatus('ready', 'Ready');
+      else setStatus('missingCharacter', 'Missing character');
+      loadModelViewSettings();
+      updateControls();
+      if (!name) {
+        showConfiguredFallback();
+        return '';
+      }
+      return initModelSlotForCurrentCharacter(name, descriptor).then(function () {
+        return name;
+      });
+    }).catch(function () {
+      state.lanlanName = '';
+      setStatus('missingCharacter', 'Missing character');
+      showConfiguredFallback();
+      updateControls();
+      return '';
+    });
+  }
   function normalizeMemoryConsent(value) {
     return String(value || '') === 'summary' ? 'summary' : 'none';
   }
@@ -3635,43 +3643,6 @@
     var selected = document.querySelector('input[name="memory-consent"]:checked');
     state.memoryConsent = normalizeMemoryConsent(selected ? selected.value : 'none');
     updateControls();
-  }
-
-  function loadCurrentCharacter() {
-    if (state.lanlanName) {
-      setStatus('ready', 'Ready');
-      loadModelViewSettings();
-      updateControls();
-      initModelSlotForCurrentCharacter(state.lanlanName).catch(function () {});
-      return Promise.resolve(state.lanlanName);
-    }
-    setStatus('loadingCharacter', 'Loading character');
-    return fetch('/api/characters/current_catgirl', { cache: 'no-store' }).then(function (res) {
-      return res.json();
-    }).then(function (data) {
-      var name = String((data && data.current_catgirl) || '').trim();
-      state.lanlanName = name;
-      if (name && !state.windowLanlanName) state.windowLanlanName = name;
-      if (name) {
-        window.lanlan_config = window.lanlan_config || {};
-        window.lanlan_config.lanlan_name = name;
-        setStatus('ready', 'Ready');
-      } else {
-        setStatus('missingCharacter', 'Missing character');
-      }
-      loadModelViewSettings();
-      updateControls();
-      if (!name) return name;
-      return initModelSlotForCurrentCharacter(name).then(function () {
-        return name;
-      }).catch(function () {
-        return name;
-      });
-    }).catch(function () {
-      setStatus('missingCharacter', 'Missing character');
-      updateControls();
-      return '';
-    });
   }
 
   function resetCanvas() {
@@ -3773,26 +3744,21 @@
     }).join('');
   }
 
-  function colorHistoryStorageKey() {
-    return 'drawingGuess.colorHistory';
-  }
-
-  function loadColorHistory() {
-    var loaded = [];
-    try {
-      loaded = JSON.parse(localStorage.getItem(colorHistoryStorageKey()) || '[]');
-    } catch (_) {
-      loaded = [];
-    }
-    state.colorHistory = Array.isArray(loaded)
-      ? loaded.map(normalizeHexColor).filter(Boolean).slice(0, COLOR_HISTORY_MAX_COUNT)
+  function normalizeColorHistory(value) {
+    return Array.isArray(value)
+      ? value.map(normalizeHexColor).filter(function (color, index, colors) {
+        return color && colors.indexOf(color) === index;
+      }).slice(0, COLOR_HISTORY_MAX_COUNT)
       : [];
   }
 
+  function loadColorHistory() {
+    state.colorHistory = normalizeColorHistory(state.colorHistory);
+  }
+
   function saveColorHistory() {
-    try {
-      localStorage.setItem(colorHistoryStorageKey(), JSON.stringify(state.colorHistory.slice(0, COLOR_HISTORY_MAX_COUNT)));
-    } catch (_) {}
+    state.colorHistory = normalizeColorHistory(state.colorHistory);
+    queueSdkPreferenceWrite('colorHistory');
   }
 
   function renderColorHistory() {
@@ -3988,13 +3954,13 @@
   }
 
   function canvasCursorTool() {
-    if (!isCanvasEditablePhase()) return '';
+    if (!isCanvasInteractionEnabled()) return '';
     if (state.brushMode === 'brush' && state.brushToolKind === 'bucket') return '';
     return state.brushMode === 'eraser' ? 'eraser' : 'brush';
   }
 
   function isPointerInsideCanvas(event) {
-    if (!event || !els.canvas || !isCanvasEditablePhase()) return false;
+    if (!event || !els.canvas || !isCanvasInteractionEnabled()) return false;
     var rect = els.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return false;
     return event.clientX >= rect.left
@@ -4226,7 +4192,7 @@
   }
 
   function beginStroke(event) {
-    if (!isCanvasEditablePhase() || event.button !== 0) return;
+    if (!isCanvasInteractionEnabled() || event.button !== 0) return;
     event.preventDefault();
     updateCanvasCursorPreview(event);
     var p = canvasPoint(event);
@@ -4248,7 +4214,7 @@
 
   function moveStroke(event) {
     updateCanvasCursorPreview(event);
-    if (!state.isDrawing || !isCanvasEditablePhase()) return;
+    if (!state.isDrawing || !isCanvasInteractionEnabled()) return;
     event.preventDefault();
     var p = canvasPoint(event);
     configureStrokeContext();
@@ -4524,20 +4490,16 @@
     document.querySelectorAll('input[name="memory-consent"]').forEach(function (input) {
       input.addEventListener('change', readMemoryConsent);
     });
-    window.addEventListener('beforeunload', function () {
-      if (state.routeActive) endRoute(true);
-    });
-    window.addEventListener('localechange', function () {
-      updateControls();
-      setPhase(state.phase);
-      syncBrushToolButton();
-    });
     window.addEventListener('resize', function () {
       requestAnimationFrame(function () {
         applySideSplitRatio(state.sideSplitRatio, false);
       });
     });
-    window.addEventListener('neko-speech-playback-state', handleSpeechPlaybackState);
+    window.addEventListener('pageshow', function (event) {
+      // The SDK intentionally disposes on pagehide. A BFCache restoration would
+      // otherwise reuse that disposed client and resolved connect promise.
+      if (event && event.persisted) window.location.reload();
+    });
   }
 
   function init() {
@@ -4547,7 +4509,7 @@
     renderColorHistory();
     syncBrushToolButton();
     state.sessionId = String(boot.sessionId || '') || makeSessionId();
-    state.lanlanName = String(boot.lanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '').trim();
+    state.lanlanName = String(boot.lanlanName || '').trim();
     state.windowLanlanName = state.lanlanName;
     loadModelViewSettings();
     loadSideSplitRatio();
@@ -4557,6 +4519,9 @@
     readMemoryConsent();
     bindEvents();
     startDebugCountdownUpdater();
+    connectMiniGameSdk().catch(function (error) {
+      console.warn('[DrawingGuessSDK] SDK connection unavailable:', sdkErrorReason(error));
+    });
     loadCurrentCharacter();
   }
 

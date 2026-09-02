@@ -128,6 +128,22 @@ async def game_log_enable(request: Request):
     if validation_error is not None:
         return validation_error
 
+    enable_reason = str(data.get("reason") or "manual").strip()
+    if enable_reason == "route_start":
+        # SDK logging is enabled only after runtime.start succeeds. Bind that
+        # enable to a still-active route so a timed-out/aborted request cannot
+        # arrive after route end and reactivate the completed diagnostic log.
+        from .route_lifecycle import _find_game_route_state_for_session
+
+        route_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
+        if not route_state or route_state.get("game_route_active") is not True:
+            return {
+                "ok": False,
+                "reason": "route_inactive",
+                "session_id": session_id,
+                "game_type": game_type,
+            }
+
     entry = _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
     if entry is None:
         return {"ok": False, "reason": "enable_failed", "session_id": session_id, "game_type": game_type}
@@ -138,8 +154,12 @@ async def game_log_enable(request: Request):
         category="route",
         event="session_log_enabled",
         source=str(data.get("source") or "backend"),
-        message="小游戏场次诊断日志已手动启用",
-        details={"reason": str(data.get("reason") or "manual")},
+        message=(
+            "小游戏场次诊断日志已在 SDK 路由启动后启用"
+            if enable_reason == "route_start"
+            else "小游戏场次诊断日志已手动启用"
+        ),
+        details={"reason": enable_reason},
     )
     return {
         "ok": True,
@@ -204,5 +224,8 @@ async def game_log_ingest(request: Request):
         sensitive_possible=bool(data.get("sensitive_possible") or data.get("sensitivePossible")),
         preserve_message=preserve_message,
         preserve_details=preserve_details,
+        # Page-exit keepalive logging can arrive just after route end. This flag
+        # is endpoint-only; internal append callers remain strict active-only.
+        allow_recently_ended=True,
     )
     return {"ok": item is not None, "seq": item.get("seq") if isinstance(item, dict) else None}

@@ -41,7 +41,11 @@ from config.prompts.prompts_drawing_guess import (
     get_drawing_guess_event_roles,
     get_drawing_guess_scene_premise,
 )
-from utils.game_route_state import _get_active_game_route_state
+from utils.game_route_state import (
+    _get_active_game_route_state,
+    _get_route_lock,
+    game_route_identity_mismatch_reason,
+)
 from utils.logger_config import get_module_logger
 
 
@@ -1071,6 +1075,9 @@ def _require_session(data: dict[str, Any]) -> tuple[dict[str, Any] | None, str |
     session = _drawing_guess_sessions.get(_session_key(lanlan_name, session_id))
     if session is None:
         return None, "session_not_found"
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    if identity_error:
+        return None, identity_error
     client_round_token = data.get("client_round_token")
     session_round_token = session.get("client_round_token")
     if session_round_token is not None:
@@ -1078,6 +1085,80 @@ def _require_session(data: dict[str, Any]) -> tuple[dict[str, Any] | None, str |
             return None, "stale_round_flow"
     _touch(session)
     return session, None
+
+
+def _drawing_guess_route_identity_error(
+    data: dict[str, Any],
+    session: dict[str, Any] | None = None,
+) -> str | None:
+    """Validate a direct round request against its session and active route.
+
+    Legacy sessions have no SDK generation and continue to work without an
+    active lifecycle route, matching the pre-SDK standalone-page behaviour.
+    Once either the round session or active route owns an SDK generation, the
+    caller must present that exact generation and the route must still exist.
+    """
+    lanlan_name = str(data.get("lanlan_name") or "").strip()
+    session_id = str(data.get("session_id") or "").strip()
+    requested_generation = str(data.get("sdk_route_instance_id") or "").strip()
+
+    bound_generation = ""
+    if isinstance(session, dict):
+        bound_generation = str(session.get("_sdk_route_instance_id") or "").strip()
+        mismatch = game_route_identity_mismatch_reason(
+            expected_session_id=session.get("session_id"),
+            expected_sdk_route_instance_id=bound_generation,
+            actual_session_id=session_id,
+            actual_sdk_route_instance_id=requested_generation,
+        )
+        if mismatch:
+            return mismatch
+
+    route_state = (
+        _get_active_game_route_state(lanlan_name, "drawing_guess")
+        if lanlan_name
+        else None
+    )
+    if isinstance(route_state, dict):
+        return game_route_identity_mismatch_reason(
+            expected_session_id=route_state.get("session_id"),
+            expected_sdk_route_instance_id=route_state.get("_sdk_route_instance_id"),
+            actual_session_id=session_id,
+            actual_sdk_route_instance_id=requested_generation,
+        )
+    if bound_generation or requested_generation:
+        return "route_instance_id_mismatch"
+    return None
+
+
+def _drawing_guess_session_identity_error(
+    data: dict[str, Any],
+    session: dict[str, Any],
+) -> str | None:
+    """Revalidate a captured session, including replacement while awaiting a lock."""
+    identity_error = _drawing_guess_route_identity_error(data, session)
+    if identity_error:
+        return identity_error
+    lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "").strip()
+    session_id = str(session.get("session_id") or data.get("session_id") or "").strip()
+    if _drawing_guess_sessions.get(_session_key(lanlan_name, session_id)) is not session:
+        if str(session.get("_sdk_route_instance_id") or data.get("sdk_route_instance_id") or "").strip():
+            return "route_instance_id_mismatch"
+        return "stale_round_flow"
+    return None
+
+
+def _sdk_bound_drawing_guess_session_is_current(session: dict[str, Any]) -> bool:
+    """Return whether an SDK-bound round session still owns the active route."""
+    generation = str(session.get("_sdk_route_instance_id") or "").strip()
+    if not generation:
+        return True
+    identity_data = {
+        "lanlan_name": session.get("lanlan_name"),
+        "session_id": session.get("session_id"),
+        "sdk_route_instance_id": generation,
+    }
+    return _drawing_guess_session_identity_error(identity_data, session) is None
 
 
 def _score_payload(session: dict[str, Any]) -> dict[str, int]:
@@ -1141,10 +1222,17 @@ def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
 def _sync_active_route_state(session: dict[str, Any], locale: str) -> None:
     lanlan_name = str(session.get("lanlan_name") or "")
     session_id = str(session.get("session_id") or "")
+    if _drawing_guess_sessions.get(_session_key(lanlan_name, session_id)) is not session:
+        return
     state = _get_active_game_route_state(lanlan_name, "drawing_guess") if lanlan_name else None
     if not isinstance(state, dict):
         return
-    if session_id and str(state.get("session_id") or "") != session_id:
+    if game_route_identity_mismatch_reason(
+        expected_session_id=state.get("session_id"),
+        expected_sdk_route_instance_id=state.get("_sdk_route_instance_id"),
+        actual_session_id=session_id,
+        actual_sdk_route_instance_id=session.get("_sdk_route_instance_id"),
+    ):
         return
     state["last_state"] = _public_round_state(session, locale)
     state["client_round_token"] = session.get("client_round_token")
@@ -1208,6 +1296,41 @@ def _safe_llm_error_summary(exc: Exception, *, limit: int = 500) -> str:
 
 def _normalize_memory_consent(value: Any) -> str:
     return "summary" if str(value or "").strip().lower() == "summary" else "none"
+
+
+def _drawing_guess_round_memory_consent(
+    data: dict[str, Any],
+    *,
+    sdk_route_instance_id: str,
+) -> str:
+    """Resolve legacy consent or the SDK host-owned memory policy.
+
+    SDK-bound round commands receive ``game_memory_enabled`` from the trusted
+    host after caller-supplied policy fields have been stripped. Keep the
+    legacy ``memory_consent`` input only for standalone/direct callers that do
+    not participate in an SDK route generation.
+    """
+    if sdk_route_instance_id:
+        lanlan_name = str(data.get("lanlan_name") or "").strip()
+        session_id = str(data.get("session_id") or "").strip()
+        route_state = (
+            _get_active_game_route_state(lanlan_name, "drawing_guess")
+            if lanlan_name
+            else None
+        )
+        route_matches = isinstance(route_state, dict) and not game_route_identity_mismatch_reason(
+            expected_session_id=route_state.get("session_id"),
+            expected_sdk_route_instance_id=route_state.get("_sdk_route_instance_id"),
+            actual_session_id=session_id,
+            actual_sdk_route_instance_id=sdk_route_instance_id,
+        )
+        memory_enabled = (
+            route_matches
+            and route_state.get("game_memory_enabled") is True
+            and data.get("game_memory_enabled") is True
+        )
+        return "summary" if memory_enabled else "none"
+    return _normalize_memory_consent(data.get("memory_consent"))
 
 
 def _sanitize_memory_summary_text(value: Any) -> str:
@@ -1314,6 +1437,8 @@ async def _maybe_write_drawing_guess_memory_summary(
     guessed_word: DrawingGuessWord | None,
     attempts: int,
 ) -> dict[str, Any]:
+    if not _sdk_bound_drawing_guess_session_is_current(session):
+        return {"status": "skipped", "reason": "stale_route_instance"}
     cached_result = session.get("memory_summary_result")
     if isinstance(cached_result, dict):
         return dict(cached_result)
@@ -1337,16 +1462,40 @@ async def _maybe_write_drawing_guess_memory_summary(
         session["memory_summary_result"] = result
         return result
 
-    try:
-        result = await _post_drawing_guess_memory_summary(lanlan_name or str(session.get("lanlan_name") or ""), summary)
-    except Exception as exc:
-        logger.info(
-            "drawing_guess memory summary unavailable: lanlan=%s session=%s err=%s",
-            lanlan_name,
-            session.get("session_id") or "",
-            type(exc).__name__,
-        )
-        result = {"status": "failed", "reason": "memory_server_unavailable"}
+    async def _write_summary() -> dict[str, Any]:
+        try:
+            return await _post_drawing_guess_memory_summary(
+                lanlan_name or str(session.get("lanlan_name") or ""),
+                summary,
+            )
+        except Exception as exc:
+            logger.info(
+                "drawing_guess memory summary unavailable: lanlan=%s session=%s err=%s",
+                lanlan_name,
+                session.get("session_id") or "",
+                type(exc).__name__,
+            )
+            return {"status": "failed", "reason": "memory_server_unavailable"}
+
+    # SDK persistence is serialized with lifecycle transitions.  This makes
+    # the final current-check and remote commit one route operation, rather
+    # than leaving a check→POST window where a newer window can supersede it.
+    generation = str(session.get("_sdk_route_instance_id") or "").strip()
+    if generation:
+        route_lanlan = str(session.get("lanlan_name") or lanlan_name or "")
+        async with _get_route_lock(route_lanlan, "drawing_guess"):
+            if not _sdk_bound_drawing_guess_session_is_current(session):
+                return {"status": "skipped", "reason": "stale_route_instance"}
+            route_state = _get_active_game_route_state(route_lanlan, "drawing_guess")
+            if not isinstance(route_state, dict) or route_state.get("game_memory_enabled") is not True:
+                result = {"status": "skipped", "reason": "memory_consent_none"}
+                session["memory_summary_result"] = result
+                return dict(result)
+            result = await _write_summary()
+            session["memory_summary_result"] = dict(result)
+            return dict(result)
+
+    result = await _write_summary()
     session["memory_summary_result"] = dict(result)
     return dict(result)
 
@@ -2841,10 +2990,22 @@ async def drawing_guess_round_start(request: Request):
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
 
+    identity_error = _drawing_guess_route_identity_error(data)
+    if identity_error:
+        return {"ok": False, "reason": identity_error}
+
     _cleanup_sessions()
     locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
     session_key = _session_key(lanlan_name, session_id)
     previous_session = _drawing_guess_sessions.get(session_key)
+    requested_generation = str(data.get("sdk_route_instance_id") or "").strip()
+    if isinstance(previous_session, dict) and game_route_identity_mismatch_reason(
+        expected_session_id=previous_session.get("session_id"),
+        expected_sdk_route_instance_id=previous_session.get("_sdk_route_instance_id"),
+        actual_session_id=session_id,
+        actual_sdk_route_instance_id=requested_generation,
+    ):
+        previous_session = None
     word_cycle = _normalize_word_cycle_state(previous_session.get("word_cycle") if previous_session else None)
     ai_word, user_options = _pick_round_words(word_cycle)
     now = time.time()
@@ -2863,11 +3024,16 @@ async def drawing_guess_round_start(request: Request):
         "ai_guess_attempts": 0,
         "created_at": now,
         "last_activity": now,
-        "memory_consent": _normalize_memory_consent(data.get("memory_consent")),
+        "memory_consent": _drawing_guess_round_memory_consent(
+            data,
+            sdk_route_instance_id=requested_generation,
+        ),
         "game_chat_history": [],
         "client_round_token": data.get("client_round_token"),
         "word_cycle": word_cycle,
     }
+    if requested_generation:
+        session["_sdk_route_instance_id"] = requested_generation
     _drawing_guess_sessions[session_key] = session
     _sync_active_route_state(session, locale)
     response = {"ok": True, "state": _public_round_state(session, locale)}
@@ -2891,6 +3057,9 @@ async def drawing_guess_ai_draw(request: Request):
     if busy is not None:
         return busy
     try:
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
         return await _drawing_guess_ai_draw_locked(data, session, locale)
     finally:
         if lock is not None:
@@ -2909,6 +3078,9 @@ async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str,
     word = _WORD_BY_ID[str(session["ai_word_id"])]
     lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
     drawing = await _generate_model_drawing(word, locale, lanlan_name)
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    if identity_error:
+        return {"ok": False, "reason": identity_error}
     if not drawing:
         drawing = {
             "svg": _fallback_svg(word.id),
@@ -2925,7 +3097,6 @@ async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str,
         bool((drawing.get("sanitizer") or {}).get("fallback")),
         (drawing.get("sanitizer") or {}).get("repair"),
     )
-    session["phase"] = "user_guessing"
     line, line_source = await _generate_persona_game_line(
         session=session,
         locale=locale,
@@ -2933,6 +3104,10 @@ async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str,
         event="ai_drawing_ready",
         fallback=_localized_line(locale, "ai_drawing_ready"),
     )
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    if identity_error:
+        return {"ok": False, "reason": identity_error}
+    session["phase"] = "user_guessing"
     _append_game_chat(session, "assistant", line, kind="game_line")
     return {
         "ok": True,
@@ -2957,7 +3132,12 @@ async def _handle_drawing_guess_input_payload(data: dict[str, Any]) -> dict[str,
     if busy is not None:
         return busy
     try:
-        return await _handle_drawing_guess_input_payload_locked(data, session, locale, text)
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
+        result = await _handle_drawing_guess_input_payload_locked(data, session, locale, text)
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        return {"ok": False, "reason": identity_error} if identity_error else result
     finally:
         if lock is not None:
             lock.release()
@@ -3264,12 +3444,16 @@ async def handle_external_drawing_guess_transcript(
     data: dict[str, Any] = {
         "lanlan_name": lanlan_name,
         "session_id": session_id,
+        # This value comes from the already-admitted backend route state,
+        # never from an external transcript payload.  It lets the common
+        # round admission path reject a transcript captured by a superseded
+        # SDK window while preserving generation-less legacy routing.
+        "sdk_route_instance_id": str(state.get("_sdk_route_instance_id") or ""),
         "text": text,
         "source": source or "external_voice_route",
         "input_kind": kind or "user-voice",
         "request_id": request_id or "",
         "i18n_language": state.get("i18n_language") or last_state.get("i18n_language") or "",
-        "memory_consent": state.get("memory_consent") or last_state.get("memory_consent") or "none",
     }
     round_token = (
         session.get("client_round_token")
@@ -3297,6 +3481,9 @@ async def drawing_guess_choose_word(request: Request):
     if busy is not None:
         return busy
     try:
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
         return _drawing_guess_choose_word_locked(data, session, locale)
     finally:
         if lock is not None:
@@ -3348,11 +3535,16 @@ async def drawing_guess_timeout(request: Request):
     if busy is not None:
         return busy
     try:
-        return await _handle_drawing_guess_timeout_payload(
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
+        result = await _handle_drawing_guess_timeout_payload(
             data=data,
             session=session,
             locale=locale,
         )
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        return {"ok": False, "reason": identity_error} if identity_error else result
     finally:
         if lock is not None:
             lock.release()
@@ -3627,9 +3819,12 @@ async def drawing_guess_vision_guess(request: Request):
     if busy is not None:
         return busy
     try:
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
         if session.get("phase") not in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
             return {"ok": True, "handled": False, "reason": "not_ai_guessing", "state": _public_round_state(session, locale)}
-        return await _run_drawing_guess_vision_turn(
+        result = await _run_drawing_guess_vision_turn(
             session=session,
             locale=locale,
             lanlan_name=str(session.get("lanlan_name") or data.get("lanlan_name") or ""),
@@ -3637,6 +3832,8 @@ async def drawing_guess_vision_guess(request: Request):
             user_hint=str(data.get("user_hint") or "").strip(),
             settle_on_miss=bool(data.get("settle_on_miss") or data.get("time_expired")),
         )
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        return {"ok": False, "reason": identity_error} if identity_error else result
     finally:
         if lock is not None:
             lock.release()

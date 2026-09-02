@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from main_routers import game_router
 from main_routers.game_router import badminton_scores as gr_scores
 from main_routers.game_router import runtime as gr_runtime
+from utils import game_route_state
 
 
 def gr_patch_all(monkeypatch, name, value, raising=True):
@@ -38,6 +39,11 @@ def reset_game_route_state():
     gr_runtime._game_sessions.clear()
     gr_runtime._game_route_states.clear()
     gr_scores._badminton_recent_score_sessions.clear()
+    # asyncio primitives bind to the loop once contended.  pytest creates
+    # isolated loops, so retaining a registry entry across tests can make an
+    # otherwise-correct concurrency test await a lock owned by a closed loop.
+    game_route_state._route_state_locks.clear()
+    game_route_state._route_supersede_locks.clear()
     try:
         yield
     finally:
@@ -47,6 +53,8 @@ def reset_game_route_state():
         gr_runtime._game_route_states.update(routes_snapshot)
         gr_scores._badminton_recent_score_sessions.clear()
         gr_scores._badminton_recent_score_sessions.update(badminton_score_sessions_snapshot)
+        game_route_state._route_state_locks.clear()
+        game_route_state._route_supersede_locks.clear()
 
 
 def mark_game_started(state, elapsed_ms=12_000):

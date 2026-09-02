@@ -163,6 +163,206 @@ async def test_game_speech_broadcast_serializes_header_and_audio_per_socket(monk
         b"audio-2",
     ]
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_speech_claim_ignores_interleaved_tts_and_never_retargets_new_generation(monkeypatch):
+    class _SpeechSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def send_bytes(self, payload):
+            self.sent.append(payload)
+
+    class _InterleavedManager(_FakeGameRouteManager):
+        async def mirror_assistant_speech(self, line, **kwargs):
+            self.spoken.append((line, kwargs))
+            # An unrelated old/non-game id arrives first.  Pending admission
+            # must buffer without claiming either id.
+            assert await gr_runtime._broadcast_game_speech("Lan", b"other", "speech-other")
+            assert await gr_runtime._broadcast_game_speech("Lan", b"game-a", "speech-A")
+            return {
+                "ok": True,
+                "method": "project_tts",
+                "speech_id": "speech-A",
+                "audio_sent": True,
+            }
+
+    with reset_game_route_state():
+        mgr = _InterleavedManager()
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+        _gr_patch_all(monkeypatch, "_absorb_request_language", lambda *_args, **_kwargs: None)
+        state_a = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state_a["_sdk_route_instance_id"] = "route-A"
+        key_a = gr_runtime._game_speech_subscriber_key(
+            "Lan", "drawing_guess", "drawing-sdk", "route-A",
+        )
+        socket_a = _SpeechSocket()
+        gr_runtime._game_speech_subscribers[key_a] = {socket_a}
+        try:
+            result = await gr_runtime.game_project_speak(
+                "drawing_guess",
+                _FakeRequest({
+                    "line": "A line",
+                    "lanlan_name": "Lan",
+                    "session_id": "drawing-sdk",
+                    "sdk_route_instance_id": "route-A",
+                }),
+            )
+
+            assert result["speech_id"] == "speech-A"
+            assert socket_a.sent == [
+                {"type": "audio_chunk", "speech_id": "speech-A"},
+                b"game-a",
+            ]
+            assert ("Lan", "speech-other") not in gr_runtime._game_speech_route_identities
+
+            state_a["game_route_active"] = False
+            state_b = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+            state_b["_sdk_route_instance_id"] = "route-B"
+            key_b = gr_runtime._game_speech_subscriber_key(
+                "Lan", "drawing_guess", "drawing-sdk", "route-B",
+            )
+            socket_b = _SpeechSocket()
+            gr_runtime._game_speech_subscribers[key_b] = {socket_b}
+
+            delivered = await gr_runtime._broadcast_game_speech("Lan", b"late-a", "speech-A")
+
+            assert delivered is False
+            assert socket_b.sent == []
+        finally:
+            for key in (key_a, locals().get("key_b")):
+                if key:
+                    gr_runtime._game_speech_subscribers.pop(key, None)
+            for socket in (socket_a, locals().get("socket_b")):
+                if socket:
+                    gr_runtime._game_speech_subscriber_send_locks.pop(socket, None)
+            gr_runtime._discard_pending_game_speech("Lan")
+            for identity_key in list(gr_runtime._game_speech_route_identities):
+                if identity_key[0] == "Lan":
+                    gr_runtime._game_speech_route_identities.pop(identity_key, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_speech_claim_drains_buffer_and_live_arrivals_in_fifo_order(monkeypatch):
+    first_chunk_sending = asyncio.Event()
+    release_first_chunk = asyncio.Event()
+
+    class _SpeechSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def send_bytes(self, payload):
+            if payload == b"old-1":
+                first_chunk_sending.set()
+                await release_first_chunk.wait()
+            self.sent.append(payload)
+
+    class _BufferedManager(_FakeGameRouteManager):
+        async def mirror_assistant_speech(self, line, **kwargs):
+            self.spoken.append((line, kwargs))
+            assert await gr_runtime._broadcast_game_speech("Lan", b"old-1", "speech-A")
+            assert await gr_runtime._broadcast_game_speech("Lan", b"old-2", "speech-A")
+            return {
+                "ok": True,
+                "method": "project_tts",
+                "speech_id": "speech-A",
+                "audio_sent": True,
+            }
+
+    with reset_game_route_state():
+        mgr = _BufferedManager()
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+        _gr_patch_all(monkeypatch, "_absorb_request_language", lambda *_args, **_kwargs: None)
+        state = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state["_sdk_route_instance_id"] = "route-A"
+        key = gr_runtime._game_speech_subscriber_key(
+            "Lan", "drawing_guess", "drawing-sdk", "route-A",
+        )
+        socket = _SpeechSocket()
+        gr_runtime._game_speech_subscribers[key] = {socket}
+        try:
+            speak_task = asyncio.create_task(gr_runtime.game_project_speak(
+                "drawing_guess",
+                _FakeRequest({
+                    "line": "A line",
+                    "lanlan_name": "Lan",
+                    "session_id": "drawing-sdk",
+                    "sdk_route_instance_id": "route-A",
+                }),
+            ))
+            await first_chunk_sending.wait()
+
+            assert ("Lan", "speech-A") not in gr_runtime._game_speech_route_identities
+            assert await gr_runtime._broadcast_game_speech("Lan", b"live-3", "speech-A")
+            release_first_chunk.set()
+            result = await speak_task
+
+            assert result["speech_id"] == "speech-A"
+            assert socket.sent == [
+                {"type": "audio_chunk", "speech_id": "speech-A"},
+                b"old-1",
+                {"type": "audio_chunk", "speech_id": "speech-A"},
+                b"old-2",
+                {"type": "audio_chunk", "speech_id": "speech-A"},
+                b"live-3",
+            ]
+            assert ("Lan", "speech-A") in gr_runtime._game_speech_route_identities
+            assert ("Lan", "speech-A") not in gr_runtime._game_speech_draining_chunks
+        finally:
+            release_first_chunk.set()
+            gr_runtime._game_speech_subscribers.pop(key, None)
+            gr_runtime._game_speech_subscriber_send_locks.pop(socket, None)
+            gr_runtime._discard_pending_game_speech("Lan")
+            gr_runtime._game_speech_route_identities.pop(("Lan", "speech-A"), None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sdk_speech_rechecks_generation_between_header_and_bytes(monkeypatch):
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+        state_a = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state_a["_sdk_route_instance_id"] = "route-A"
+        key_a = gr_runtime._game_speech_subscriber_key(
+            "Lan", "drawing_guess", "drawing-sdk", "route-A",
+        )
+
+        class _SwitchingSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, payload):
+                self.sent.append(payload)
+                state_a["game_route_active"] = False
+                state_b = gr_runtime._activate_game_route(
+                    "drawing_guess", "drawing-sdk", "Lan",
+                )
+                state_b["_sdk_route_instance_id"] = "route-B"
+
+            async def send_bytes(self, payload):
+                self.sent.append(payload)
+
+        socket = _SwitchingSocket()
+        identity = gr_runtime._capture_game_speech_route_identity("Lan", state_a)
+        gr_runtime._remember_game_speech_route_identity("Lan", "speech-A", identity)
+        gr_runtime._game_speech_subscribers[key_a] = {socket}
+        try:
+            delivered = await gr_runtime._broadcast_game_speech("Lan", b"must-drop", "speech-A")
+            assert delivered is False
+            assert socket.sent == [{"type": "audio_chunk", "speech_id": "speech-A"}]
+        finally:
+            gr_runtime._game_speech_subscribers.pop(key_a, None)
+            gr_runtime._game_speech_subscriber_send_locks.pop(socket, None)
+            gr_runtime._game_speech_route_identities.pop(("Lan", "speech-A"), None)
+
 @pytest.mark.unit
 def test_badminton_removed_modes_are_not_public_or_scored():
     assert gr_scores._normalize_badminton_mode("shooter") == "spectator"
@@ -422,6 +622,50 @@ async def test_game_debug_log_ingest_and_query():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_sdk_route_start_log_enable_cannot_reactivate_ended_route(monkeypatch):
+    session_id = "drawing-sdk-log-route"
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("drawing_guess", session_id, "Lan")
+        enabled = await gr_logs.game_log_enable(
+            _FakeRequest({
+                "session_id": session_id,
+                "game_type": "drawing_guess",
+                "lanlan_name": "Lan",
+                "source": "drawing_guess",
+                "reason": "route_start",
+            }, path="/api/game/logs/enable"),
+        )
+        assert enabled["ok"] is True
+
+        state["game_route_active"] = False
+        game_log.mark_game_session_debug_log_ended(
+            "drawing_guess",
+            session_id,
+            lanlan_name="Lan",
+            reason="test",
+        )
+        ended_at = game_log.find_game_session_debug_log(session_id, "drawing_guess")["ended_at"]
+
+        late_enable = await gr_logs.game_log_enable(
+            _FakeRequest({
+                "session_id": session_id,
+                "game_type": "drawing_guess",
+                "lanlan_name": "Lan",
+                "source": "drawing_guess",
+                "reason": "route_start",
+            }, path="/api/game/logs/enable"),
+        )
+
+    assert late_enable["ok"] is False
+    assert late_enable["reason"] == "route_inactive"
+    entry = game_log.find_game_session_debug_log(session_id, "drawing_guess")
+    assert entry["status"] == "ended"
+    assert entry["ended_at"] == ended_at
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_game_debug_log_ingest_does_not_create_session_before_enable():
     result = await gr_logs.game_log_ingest(
         _FakeRequest({
@@ -626,6 +870,55 @@ def test_game_debug_logs_do_not_append_after_session_ended():
         "before_end",
         "session_ended",
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_debug_log_endpoint_accepts_only_recent_page_exit_fallback():
+    session_id = "drawing-debug-late-ingest"
+    game_log.enable_game_session_debug_log("drawing_guess", session_id, lanlan_name="Lan")
+    game_log.mark_game_session_debug_log_ended(
+        "drawing_guess",
+        session_id,
+        lanlan_name="Lan",
+        reason="pagehide",
+    )
+    entry = game_log.find_game_session_debug_log(session_id, "drawing_guess")
+    assert entry is not None
+    original_ended_at = entry["ended_at"]
+
+    accepted = await gr_logs.game_log_ingest(
+        _FakeRequest({
+            "session_id": session_id,
+            "game_type": "drawing_guess",
+            "lanlan_name": "Lan",
+            "event": "page_exit_keepalive_fallback",
+            "message": "late final transport settled",
+        }, path="/api/game/logs"),
+    )
+
+    assert accepted["ok"] is True
+    assert entry["status"] == "ended"
+    assert entry["ended_at"] == original_ended_at
+    assert entry["entries"][-1]["event"] == "page_exit_keepalive_fallback"
+
+    entry["ended_at"] = (
+        game_log.time.time()
+        - game_log.GAME_SESSION_DEBUG_LATE_INGEST_GRACE_SECONDS
+        - 1
+    )
+    rejected = await gr_logs.game_log_ingest(
+        _FakeRequest({
+            "session_id": session_id,
+            "game_type": "drawing_guess",
+            "lanlan_name": "Lan",
+            "event": "too_late",
+            "message": "must be rejected",
+        }, path="/api/game/logs"),
+    )
+
+    assert rejected == {"ok": False, "seq": None}
+    assert entry["entries"][-1]["event"] == "page_exit_keepalive_fallback"
 
 
 @pytest.mark.unit
@@ -4129,7 +4422,7 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
         "score": {"player": 1, "ai": 4},
     }
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         assert game_type == "soccer"
         assert session_id == "match_1"
         assert event["kind"] == "user-text"
@@ -4185,7 +4478,7 @@ async def test_route_external_text_uses_no_memory_input_type_when_game_memory_di
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
     _set_soccer_game_memory_policy(state, enabled=False)
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         assert event["kind"] == "user-text"
         assert event["soccerGameMemoryPlayerInteractionEnabled"] is False
         return {"line": "这句只在本局里回应。", "control": {}, "llm_source": {"provider": "fake"}}
@@ -4301,7 +4594,7 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         assert game_type == "soccer"
         assert session_id == "match_1"
         assert event["kind"] == "user-voice"
@@ -4432,7 +4725,7 @@ async def test_route_external_voice_transcript_dedup_idempotent_on_request_id(mo
 
     chat_calls = []
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         chat_calls.append((event["userVoiceText"], event.get("requestId")))
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
 
@@ -4470,7 +4763,7 @@ async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
@@ -4508,7 +4801,7 @@ async def test_route_external_voice_transcript_dedup_membership_check_before_lru
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
@@ -4549,7 +4842,7 @@ async def test_route_external_voice_transcript_dedup_no_request_id_fallback_wind
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_kwargs):
         return {"line": "好。", "control": {}, "llm_source": {"provider": "fake"}}
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
@@ -4986,6 +5279,190 @@ async def test_project_speak_rejects_stale_route_session(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("generation", (None, "route-A"))
+async def test_project_speak_rejects_missing_or_stale_sdk_generation_before_tts(
+    monkeypatch,
+    generation,
+):
+    with reset_game_route_state():
+        mgr = _FakeGameRouteManager()
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+        state = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state["_sdk_route_instance_id"] = "route-B"
+        admission_side_effects = []
+        _gr_patch_all(
+            monkeypatch,
+            "get_session_manager",
+            lambda: admission_side_effects.append("manager") or {"Lan": mgr},
+        )
+        _gr_patch_all(
+            monkeypatch,
+            "_absorb_request_language",
+            lambda *_args, **_kwargs: admission_side_effects.append("language"),
+        )
+        payload = {
+            "line": "stale drawing line",
+            "session_id": "drawing-sdk",
+            "lanlan_name": "Lan",
+            "source": "game-llm-result",
+            "request_id": "req-stale-sdk-speak",
+        }
+        if generation is not None:
+            payload["sdk_route_instance_id"] = generation
+
+        result = await gr_runtime.game_project_speak(
+            "drawing_guess",
+            _FakeRequest(payload),
+        )
+
+        assert result["ok"] is False
+        assert result["reason"] == "route_instance_id_mismatch"
+        assert result["handled"] is False
+        assert result["audio_sent"] is False
+        assert mgr.spoken == []
+        assert admission_side_effects == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation", (None, "route-A"))
+async def test_game_speech_websocket_rejects_missing_or_stale_sdk_generation(monkeypatch, generation):
+    class _SpeechWebSocket:
+        def __init__(self):
+            self.query_params = {
+                "lanlan_name": "Lan",
+                "session_id": "drawing-sdk",
+            }
+            if generation is not None:
+                self.query_params["sdk_route_instance_id"] = generation
+            self.accepted = False
+            self.closed = []
+
+        async def accept(self):
+            self.accepted = True
+
+        async def close(self, code):
+            self.closed.append(code)
+
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+        state = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state["_sdk_route_instance_id"] = "route-B"
+        websocket = _SpeechWebSocket()
+
+        await gr_runtime.game_route_speech_ws("drawing_guess", websocket)
+
+        assert websocket.accepted is False
+        assert websocket.closed == [1008]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_speech_websocket_rechecks_after_accept_before_registration(monkeypatch):
+    class _RacingSpeechWebSocket:
+        def __init__(self, state_a):
+            self.state_a = state_a
+            self.query_params = {
+                "lanlan_name": "Lan",
+                "session_id": "drawing-sdk",
+                "sdk_route_instance_id": "route-A",
+            }
+            self.closed = []
+            self.sent = []
+
+        async def accept(self):
+            # B finishes its stale-subscriber sweep before A resumes from
+            # accept.  The post-accept registration check must still catch it.
+            self.state_a["game_route_active"] = False
+            state_b = gr_runtime._activate_game_route(
+                "drawing_guess", "drawing-sdk", "Lan",
+            )
+            state_b["_sdk_route_instance_id"] = "route-B"
+            await gr_runtime._close_stale_game_speech_subscribers("Lan")
+
+        async def close(self, code):
+            self.closed.append(code)
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+        state_a = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state_a["_sdk_route_instance_id"] = "route-A"
+        websocket = _RacingSpeechWebSocket(state_a)
+
+        await gr_runtime.game_route_speech_ws("drawing_guess", websocket)
+
+        assert websocket.closed == [1008]
+        assert websocket.sent == []
+        assert not any(
+            websocket in subscribers
+            for subscribers in gr_runtime._game_speech_subscribers.values()
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_speech_websocket_closes_when_sdk_generation_is_superseded(monkeypatch):
+    class _SpeechWebSocket:
+        def __init__(self):
+            self.query_params = {
+                "lanlan_name": "Lan",
+                "session_id": "drawing-sdk",
+                "sdk_route_instance_id": "route-A",
+            }
+            self.accepted = asyncio.Event()
+            self.closed = asyncio.Event()
+            self.close_codes = []
+            self.sent = []
+
+        async def accept(self):
+            self.accepted.set()
+
+        async def close(self, code):
+            self.close_codes.append(code)
+            self.closed.set()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+        async def receive_text(self):
+            await self.closed.wait()
+            raise gr_runtime.WebSocketDisconnect()
+
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+        state_a = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+        state_a["_sdk_route_instance_id"] = "route-A"
+        websocket = _SpeechWebSocket()
+        task = asyncio.create_task(gr_runtime.game_route_speech_ws("drawing_guess", websocket))
+        await websocket.accepted.wait()
+        try:
+            state_a["game_route_active"] = False
+            state_b = gr_runtime._activate_game_route("drawing_guess", "drawing-sdk", "Lan")
+            state_b["_sdk_route_instance_id"] = "route-B"
+
+            await gr_runtime._close_stale_game_speech_subscribers("Lan")
+            await task
+
+            assert websocket.close_codes == [1000]
+            assert websocket.sent[0]["type"] == "speech_tap_ready"
+            assert not any(websocket in sockets for sockets in gr_runtime._game_speech_subscribers.values())
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            for key, sockets in list(gr_runtime._game_speech_subscribers.items()):
+                if websocket in sockets:
+                    sockets.discard(websocket)
+                    if not sockets:
+                        gr_runtime._game_speech_subscribers.pop(key, None)
+            gr_runtime._game_speech_subscriber_send_locks.pop(websocket, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_speak_rejects_closed_game_route_output(monkeypatch):
     with reset_game_route_state():
         mgr = _FakeGameRouteManager()
@@ -5301,7 +5778,7 @@ async def test_game_end_under_10s_skips_archive_without_suppressing_user_reply_m
     _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state, elapsed_ms=5_000)
 
-    async def fake_run_game_chat(_game_type, _session_id, event):
+    async def fake_run_game_chat(_game_type, _session_id, event, **_kwargs):
         assert event["kind"] == "user-voice"
         assert "skipOrdinaryMemory" not in event
         return {"line": "先热身一下。", "control": {}, "llm_source": {"provider": "fake"}}
@@ -5737,3 +6214,107 @@ async def test_game_end_skips_postgame_on_manual_return_to_start(monkeypatch):
     assert result["postgame"] == {"ok": True, "action": "skip", "reason": "disabled"}
     assert mgr.prepare_calls == []
     assert state["exit_reason"] == "manual_return_to_start"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_external_transcript_holds_route_generation_through_game_llm(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    llm_entered = asyncio.Event()
+    release_llm = asyncio.Event()
+    superseded = asyncio.Event()
+
+    async def fake_run_game_chat(game_type, session_id, event, **kwargs):
+        assert game_type == "soccer"
+        assert session_id == "shared-session"
+        assert kwargs["expected_route_state"] is state_a
+        llm_entered.set()
+        await release_llm.wait()
+        return {"line": "A reply", "control": {}, "llm_source": {"provider": "fake"}}
+
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+        _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
+        state_a = gr_runtime._activate_game_route("soccer", "shared-session", "Lan")
+        state_a["_sdk_route_instance_id"] = "route-A"
+
+        transcript_task = asyncio.create_task(gr_runtime.route_external_voice_transcript(
+            "Lan",
+            "A text",
+            request_id="voice-A",
+            game_type="soccer",
+            session_id="shared-session",
+            sdk_route_instance_id="route-A",
+        ))
+        await llm_entered.wait()
+
+        async def supersede():
+            async with gr_runtime._get_route_lock("Lan", "soccer"):
+                state_a["game_route_active"] = False
+                state_b = gr_runtime._activate_game_route("soccer", "shared-session", "Lan")
+                state_b["_sdk_route_instance_id"] = "route-B"
+                superseded.set()
+
+        supersede_task = asyncio.create_task(supersede())
+        await asyncio.sleep(0)
+        assert superseded.is_set() is False
+
+        release_llm.set()
+        assert await transcript_task is True
+        await supersede_task
+
+        state_b = gr_runtime._get_active_game_route_state("Lan", "soccer")
+        assert state_b is not state_a
+        assert state_b["_sdk_route_instance_id"] == "route-B"
+        assert state_b.get("game_dialog_log") == []
+        assert any(item.get("text") == "A text" for item in state_a["game_dialog_log"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_drawing_external_common_manager_effects_finish_before_supersede(monkeypatch):
+    mirror_entered = asyncio.Event()
+    release_mirror = asyncio.Event()
+    superseded = asyncio.Event()
+
+    class _BlockingMirrorManager(_FakeGameRouteManager):
+        async def mirror_user_input(self, text, **kwargs):
+            mirror_entered.set()
+            await release_mirror.wait()
+            self.mirrored.append((text, kwargs))
+
+    with reset_game_route_state():
+        mgr = _BlockingMirrorManager()
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+        state_a = gr_runtime._activate_game_route(
+            "drawing_guess", "shared-drawing", "Lan",
+        )
+        state_a["_sdk_route_instance_id"] = "route-A"
+
+        transcript_task = asyncio.create_task(gr_runtime.route_external_stream_message(
+            "Lan",
+            {"input_type": "text", "data": "A drawing text", "request_id": "text-A"},
+        ))
+        await mirror_entered.wait()
+
+        async def supersede():
+            async with gr_runtime._get_route_lock("Lan", "drawing_guess"):
+                state_a["game_route_active"] = False
+                state_b = gr_runtime._activate_game_route(
+                    "drawing_guess", "shared-drawing", "Lan",
+                )
+                state_b["_sdk_route_instance_id"] = "route-B"
+                superseded.set()
+
+        supersede_task = asyncio.create_task(supersede())
+        await asyncio.sleep(0)
+        assert superseded.is_set() is False
+
+        release_mirror.set()
+        assert await transcript_task is True
+        await supersede_task
+
+        state_b = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+        assert state_b is not state_a
+        assert state_b.get("game_dialog_log") == []
+        assert mgr.mirrored[0][0] == "A drawing text"

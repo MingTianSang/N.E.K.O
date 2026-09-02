@@ -21,6 +21,38 @@
       window.__DRAWING_GUESS_AVATAR_SLOT__ = true;
     })();
   </script>
+  <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
+  <script src="/static/game/sdk/neko-minigame-drawing-avatar-host.js?v={{ static_asset_version }}"></script>
+  <script id="neko-minigame-host-launch" type="application/json">
+    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","speech-output","avatar-renderer","memory","window-control","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":330000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":330000}}}}}
+  </script>
+  <script>
+    (function () {
+      var launchNode = document.getElementById('neko-minigame-host-launch');
+      var avatarRuntime = window.NekoMiniGameAvatarHost;
+      var drawingAvatarRuntime = window.NekoMiniGameDrawingAvatarHost;
+      if (launchNode && avatarRuntime && drawingAvatarRuntime) {
+        Object.defineProperty(launchNode, 'nekoCapabilityProviders', {
+          value: Object.freeze({
+            'drawing-guess': Object.freeze({
+              avatarHostFactory: function (options) {
+                return drawingAvatarRuntime.create(Object.assign({}, options, {
+                  avatarRuntime: avatarRuntime
+                }));
+              }
+            })
+          }),
+          configurable: false,
+          enumerable: false,
+          writable: false
+        });
+      }
+      try { delete window.NekoMiniGameDrawingAvatarHost; } catch (_) {}
+      try { delete window.NekoMiniGameAvatarHost; } catch (_) {}
+    })();
+  </script>
+  <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version }}"></script>
+  <script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version }}"></script>
   <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
   <style>
     :root {
@@ -2342,279 +2374,6 @@
     </section>
   </div>
 
-  <script>
-    (function () {
-      return;
-      var GAME_TYPE = 'drawing_guess';
-      var API_ROOT = '/api/game/' + GAME_TYPE;
-      var state = {
-        sessionId: '',
-        lanlanName: '',
-        routeActive: false,
-        heartbeatTimer: null,
-        memoryConsent: 'none',
-        phase: 'tutorial',
-        ending: false
-      };
-
-      var boot = window.__DRAWING_GUESS_BOOT__ || {};
-      var els = {
-        routeStatus: document.getElementById('route-status'),
-        characterName: document.getElementById('character-name'),
-        sessionId: document.getElementById('session-id'),
-        memoryState: document.getElementById('memory-state'),
-        startButton: document.getElementById('start-button'),
-        endButton: document.getElementById('end-button'),
-        reloadCharacterButton: document.getElementById('reload-character-button'),
-        tutorialOverlay: document.getElementById('tutorial-overlay'),
-        tutorialStartButton: document.getElementById('tutorial-start-button'),
-        messageLog: document.getElementById('message-log'),
-        chatForm: document.getElementById('chat-form')
-      };
-
-      function text(key, fallback, params) {
-        if (typeof window.t === 'function') {
-          var translated = window.t(key, params || {});
-          if (translated && translated !== key) return translated;
-        }
-        return String(fallback || '').replace(/\{\{(\w+)\}\}/g, function (_, name) {
-          return params && params[name] != null ? String(params[name]) : '';
-        });
-      }
-
-      function currentLanguage() {
-        var candidates = [];
-        try { candidates.push(window.i18next && window.i18next.language); } catch (_) {}
-        try { candidates.push(window.__nekoI18nLanguage || window.NEKO_I18N_LANGUAGE); } catch (_) {}
-        try { candidates.push(localStorage.getItem('neko_i18n_language')); } catch (_) {}
-        for (var i = 0; i < candidates.length; i += 1) {
-          var value = String(candidates[i] || '').trim();
-          if (value) return value;
-        }
-        return document.documentElement.lang || 'zh-CN';
-      }
-
-      function makeSessionId() {
-        return 'drawing-guess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-      }
-
-      function setStatus(key, fallback) {
-        els.routeStatus.setAttribute('data-i18n', 'drawingGuess.status.' + key);
-        els.routeStatus.textContent = text('drawingGuess.status.' + key, fallback);
-      }
-
-      function setPhase(phase) {
-        state.phase = phase;
-      }
-
-      function updateIdentity() {
-        els.characterName.textContent = state.lanlanName || '-';
-        els.sessionId.textContent = state.sessionId || '-';
-        els.startButton.disabled = !state.lanlanName || state.routeActive || state.ending;
-        els.endButton.disabled = !state.routeActive || state.ending;
-        els.memoryState.setAttribute('data-i18n', 'drawingGuess.memory.' + state.memoryConsent + 'Short');
-        els.memoryState.textContent = text('drawingGuess.memory.' + state.memoryConsent + 'Short', state.memoryConsent);
-      }
-
-      function addMessage(key, fallback, params) {
-        var node = document.createElement('div');
-        node.className = 'dg-message dg-message-system';
-        node.textContent = text(key, fallback, params || {});
-        els.messageLog.appendChild(node);
-        els.messageLog.scrollTop = els.messageLog.scrollHeight;
-      }
-
-      function routePayload(extra) {
-        return Object.assign({
-          session_id: state.sessionId,
-          lanlan_name: state.lanlanName,
-          source: 'drawing_guess',
-          game_type: GAME_TYPE,
-          i18n_language: currentLanguage(),
-          gameStarted: false,
-          game_started: false,
-          memory_consent: state.memoryConsent,
-          currentState: {
-            game: GAME_TYPE,
-            phase: state.phase,
-            memory_consent: state.memoryConsent
-          }
-        }, extra || {});
-      }
-
-      function post(path, payload, timeoutMs) {
-        var controller = new AbortController();
-        var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 8000);
-        return fetch(API_ROOT + path, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload || {}),
-          signal: controller.signal
-        }).then(function (res) {
-          return res.json().catch(function () { return { ok: res.ok }; });
-        }).finally(function () {
-          clearTimeout(timer);
-        });
-      }
-
-      function startHeartbeat() {
-        clearInterval(state.heartbeatTimer);
-        state.heartbeatTimer = setInterval(function () {
-          if (!state.routeActive) return;
-          var visible = !document.hidden;
-          post('/route/heartbeat', routePayload({
-            visible: visible,
-            pageVisible: visible,
-            visibilityState: document.visibilityState || (visible ? 'visible' : 'hidden')
-          }), 5000).then(function (res) {
-            if (res && res.active === false) {
-              state.routeActive = false;
-              clearInterval(state.heartbeatTimer);
-              setStatus('heartbeatLost', 'Route inactive');
-              updateIdentity();
-            }
-          }).catch(function () {});
-        }, 2500);
-      }
-
-      function startRoute() {
-        if (!state.lanlanName) {
-          setStatus('missingCharacter', 'Missing character');
-          addMessage('drawingGuess.messages.missingCharacter', 'Open this page with a character or load the current one first.');
-          updateIdentity();
-          return;
-        }
-        state.ending = false;
-        setStatus('starting', 'Starting');
-        setPhase('tutorial');
-        updateIdentity();
-        post('/route/start', routePayload(), 12000).then(function (res) {
-          if (!res || !res.ok) {
-            setStatus('failed', 'Start failed');
-            addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: (res && res.reason) || 'unknown' });
-            return;
-          }
-          state.routeActive = true;
-          if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
-          setStatus('active', 'Active');
-          startHeartbeat();
-        }).catch(function () {
-          setStatus('failed', 'Start failed');
-          addMessage('drawingGuess.messages.startFailed', 'Route start failed: {{reason}}', { reason: 'request_failed' });
-        }).finally(function () {
-          updateIdentity();
-        });
-      }
-
-      function endRoute(useBeacon) {
-        if (!state.routeActive && !useBeacon) return Promise.resolve({ ok: true });
-        state.ending = true;
-        setStatus('ending', 'Ending');
-        updateIdentity();
-        clearInterval(state.heartbeatTimer);
-        var payload = JSON.stringify(routePayload({
-          reason: 'drawing_guess_closed',
-          roundCompleted: false,
-          round_completed: false,
-          postgameProactive: false
-        }));
-        if (useBeacon && navigator.sendBeacon) {
-          try {
-            navigator.sendBeacon(API_ROOT + '/route/end', new Blob([payload], { type: 'application/json' }));
-            return Promise.resolve({ ok: true, beacon: true });
-          } catch (_) {}
-        }
-        return fetch(API_ROOT + '/route/end', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload
-        }).then(function (res) {
-          return res.json().catch(function () { return { ok: res.ok }; });
-        }).catch(function () {
-          return { ok: false, reason: 'request_failed' };
-        }).finally(function () {
-          state.routeActive = false;
-          state.ending = false;
-          setStatus('ended', 'Ended');
-          updateIdentity();
-        });
-      }
-
-      function readMemoryConsent() {
-        var selected = document.querySelector('input[name="memory-consent"]:checked');
-        state.memoryConsent = selected ? selected.value : 'none';
-        updateIdentity();
-      }
-
-      function hideTutorialAndStart() {
-        readMemoryConsent();
-        els.tutorialOverlay.hidden = true;
-        startRoute();
-      }
-
-      function loadCurrentCharacter() {
-        if (state.lanlanName) {
-          setStatus('ready', 'Ready');
-          updateIdentity();
-          return Promise.resolve(state.lanlanName);
-        }
-        setStatus('loadingCharacter', 'Loading character');
-        return fetch('/api/characters/current_catgirl', { cache: 'no-store' }).then(function (res) {
-          return res.json();
-        }).then(function (data) {
-          var name = String((data && data.current_catgirl) || '').trim();
-          state.lanlanName = name;
-          if (name) {
-            window.lanlan_config = window.lanlan_config || {};
-            window.lanlan_config.lanlan_name = name;
-            setStatus('ready', 'Ready');
-          } else {
-            setStatus('missingCharacter', 'Missing character');
-          }
-          updateIdentity();
-          return name;
-        }).catch(function () {
-          setStatus('missingCharacter', 'Missing character');
-          updateIdentity();
-          return '';
-        });
-      }
-
-      function init() {
-        state.sessionId = String(boot.sessionId || '') || makeSessionId();
-        state.lanlanName = String(boot.lanlanName || (window.lanlan_config && window.lanlan_config.lanlan_name) || '').trim();
-        updateIdentity();
-        loadCurrentCharacter();
-
-        els.startButton.addEventListener('click', startRoute);
-        els.tutorialStartButton.addEventListener('click', hideTutorialAndStart);
-        els.endButton.addEventListener('click', function () { endRoute(false); });
-        els.reloadCharacterButton.addEventListener('click', function () {
-          state.lanlanName = '';
-          loadCurrentCharacter();
-        });
-        els.chatForm.addEventListener('submit', function (event) {
-          event.preventDefault();
-        });
-        document.querySelectorAll('input[name="memory-consent"]').forEach(function (input) {
-          input.addEventListener('change', readMemoryConsent);
-        });
-        window.addEventListener('beforeunload', function () {
-          if (state.routeActive) endRoute(true);
-        });
-        window.addEventListener('localechange', function () {
-          updateIdentity();
-          setPhase(state.phase);
-        });
-      }
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init, { once: true });
-      } else {
-        init();
-      }
-    })();
-  </script>
   <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
   <script src="/static/libs/live2d.min.js?v={{ static_asset_version }}"></script>
   <script src="/static/libs/pixi.min.js?v={{ static_asset_version }}"></script>

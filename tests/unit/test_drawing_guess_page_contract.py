@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -55,18 +56,186 @@ async def test_drawing_guess_page_renders_shell(monkeypatch):
 
 
 @pytest.mark.unit
+def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
+    html = _html()
+    script = _script()
+    launch_match = re.search(
+        r'<script id="neko-minigame-host-launch" type="application/json">\s*(.*?)\s*</script>',
+        html,
+        re.DOTALL,
+    )
+    assert launch_match is not None
+    launch = json.loads(launch_match.group(1))
+    registration = launch["registrations"]["drawing-guess"]
+    assert registration == {
+        "mode": "development",
+        "gameId": "drawing-guess",
+        "routeGameType": "drawing_guess",
+        "publisherId": "project-neko",
+        "version": "0.1.0",
+        "allowedCapabilities": [
+            "runtime",
+            "logging",
+            "speech-output",
+            "avatar-renderer",
+            "memory",
+            "window-control",
+            "storage",
+        ],
+        "commandRoutes": {
+            "round:start": {
+                "path": "round/start",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 30000,
+            },
+            "round:ai-draw": {
+                "path": "ai-draw",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 90000,
+            },
+            "round:input": {
+                "path": "input",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 30000,
+            },
+            "round:feedback": {
+                "path": "input",
+                "maxRequestBytes": 2097152,
+                "maxTimeoutMs": 330000,
+            },
+            "round:choose-word": {
+                "path": "choose-word",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 30000,
+            },
+            "round:timeout": {
+                "path": "timeout",
+                "maxRequestBytes": 65536,
+                "maxTimeoutMs": 30000,
+            },
+            "round:vision-guess": {
+                "path": "vision-guess",
+                "maxRequestBytes": 2097152,
+                "maxTimeoutMs": 330000,
+            },
+        },
+    }
+    assert html.index("neko-minigame-avatar-host.js") < html.index("neko-minigame-host-launch")
+    assert html.index("neko-minigame-drawing-avatar-host.js") < html.index("neko-minigame-host-launch")
+    assert html.index("avatarHostFactory: function (options)") < html.index(
+        "neko-minigame-same-origin-bootstrap.js"
+    )
+    assert "delete window.NekoMiniGameDrawingAvatarHost" in html
+    assert "delete window.NekoMiniGameAvatarHost" in html
+    assert html.index("neko-minigame-same-origin-bootstrap.js") < html.index("neko-minigame-sdk.js")
+    assert html.index("neko-minigame-sdk.js") < html.index("drawing-guess.js")
+
+    assert "var SDK_GAME_ID = 'drawing-guess';" in script
+    assert (
+        "requiredCapabilities: ['runtime', 'logging', 'speech-output', "
+        "'avatar-renderer', 'memory']"
+    ) in script
+    assert "optionalCapabilities: ['window-control', 'storage']" in script
+    assert "commands: ROUND_COMMAND_CONTRACTS" in script
+    assert "window.NekoMiniGame.connect" in script
+    assert "client.runtime.configure" in script
+    assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
+    assert "client.runtime.end(sdkRouteEndPayload(options)" in script
+    assert "state.sdkClient.runtime.reset({ newSession: true })" in script
+    assert "client.events.on('runtime-output'" in script
+    assert "client.events.on('runtime-state'" in script
+    assert "client.events.on('runtime-inactive'" in script
+    assert "client.events.on('page-exit'" in script
+    assert "client.logger.enableAfterRuntimeStart()" in script
+    assert "heartbeat: { intervalMs: 2500, timeoutMs: 5000 }" in script
+    assert "outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 }" in script
+    assert "SDK_ROUTE_CANVAS_DATA_MAX_CHARS = 200 * 1024" in script
+    assert "captureRouteCanvasSnapshot" in script
+    assert "function sdkRouteInstanceId()" in script
+    assert "client.runtime.session.routeInstanceId" in script
+    assert "session_id:" not in script
+    assert "sdk_route_instance_id:" not in script
+    assert "game_type:" not in script
+    assert "&sdk_route_instance_id=" not in script
+
+    for suffix in ("start", "heartbeat", "drain", "end"):
+        assert f"ROUTE_API + '/route/{suffix}'" not in script
+        assert f"'/route/{suffix}'" not in html
+    assert "heartbeatTimer" not in script
+    assert "routeDrainTimer" not in script
+    assert "window.addEventListener('beforeunload'" not in script
+    assert "window.addEventListener('pageshow'" in script
+    assert "if (event && event.persisted) window.location.reload();" in script
+    assert "navigator.sendBeacon" not in script
+    assert "heartbeatTimer" not in html
+    assert "navigator.sendBeacon" not in html
+
+    # Game code declares portable commands and speech capability; endpoint
+    # selection, route identity, audio transport, and playback all stay host-owned.
+    for command in (
+        "round:start",
+        "round:ai-draw",
+        "round:input",
+        "round:feedback",
+        "round:choose-word",
+        "round:timeout",
+        "round:vision-guess",
+    ):
+        assert f"'{command}'" in script
+    assert "client.commands.execute(command, payload || {}" in script
+    assert "client.speech.speak({" in script
+    assert "client.speech.onState(handleSpeechPlaybackState)" in script
+    assert "client.window.close({ timeoutMs: 3000 })" in script
+    assert "window.nekoHost" not in script
+    assert "try { window.close(); }" in script
+    assert "window.location.assign('/')" in script
+    assert "startSpeechAudioSocket" not in script
+    for direct_transport_marker in (
+        "/api/game",
+        "ROUND_API",
+        "ROUTE_API",
+        "new WebSocket",
+        "speech/ws",
+        "/speak",
+        "speechAudioSocket",
+        "pendingAudioChunkMetaQueue",
+        "enqueueIncomingAudioBlob",
+        "pushSpeechAudioHeader",
+        "suppress_primary_audio",
+    ):
+        assert direct_transport_marker not in script
+
+    sdk_dir = ROOT / "static" / "game" / "sdk"
+    for name in (
+        "neko-minigame-sdk.js",
+        "neko-minigame-sdk.d.ts",
+        "neko-minigame-manifest.schema.json",
+        "neko-minigame-same-origin-bootstrap.js",
+        "neko-minigame-same-origin-host.js",
+        "neko-minigame-avatar-host.js",
+        "neko-minigame-drawing-avatar-host.js",
+        "README.md",
+    ):
+        assert (sdk_dir / name).is_file()
+
+
+@pytest.mark.unit
 def test_drawing_guess_static_route_contract():
     html = _html()
     script = _script()
 
     assert "/static/game/games/drawing_guess/drawing-guess.js" in html
     assert "var GAME_TYPE = 'drawing_guess';" in script
-    assert "var ROUND_API = '/api/game/drawing_guess';" in script
+    assert "ROUND_API" not in script
+    assert "ROUTE_API" not in script
     assert "lanlan_name: queryLanlan || ''" in html
     assert "lanlan_name: queryLanlan || 'drawing_guess_demo'" not in html
     assert "source: 'drawing_guess_demo'" not in html
     assert "source: 'drawing_guess_demo'" not in script
-    assert "fetch('/api/characters/current_catgirl'" in script
+    assert "client.avatar.getCurrentCharacter()" in script
+    assert "client.avatar.getCharacter(requestedName)" in script
+    assert "client.avatar.listCharacters()" in script
+    assert "fetch('/api/characters" not in script
     assert '<button id="start-button"' not in html
     assert '<button id="reload-character-button"' not in html
     assert 'data-i18n="drawingGuess.layout.modelTitle"' not in html
@@ -196,7 +365,6 @@ def test_drawing_guess_static_route_contract():
     assert "function handleModelWheel" in script
     assert "function modelViewTranslateTarget" in script
     assert "function modelViewDragReferenceSize" in script
-    assert "Math.min(width, state.modelFitBase.width || width)" in script
     assert "target.offsetWidth || target.clientWidth || width" in script
     assert "function beginModelDrag" in script
     assert "function moveModelDrag" in script
@@ -213,66 +381,115 @@ def test_drawing_guess_static_route_contract():
     assert "function handleSideResizeKey" in script
     assert "els.sideResizer.addEventListener('pointerdown', beginSideResize);" in script
     assert "if (!state.sideResize)" in script
-    assert "state.modelFitBase" in script
-    assert "var fitWidth = Math.max(1, Math.min(stageWidth, state.modelFitBase.width));" in script
-    assert "var fitHeight = Math.max(1, Math.min(stageHeight, state.modelFitBase.height));" in script
-    assert "manager.pixi_app.renderer.resize(stageWidth, stageHeight);" in script
-    assert "canvas.style.setProperty('width', stageWidth + 'px', 'important')" in script
+    assert "state.avatarController.setView(view)" in script
+    assert "state.avatarController.setView(normalizeModelView(state.modelView))" in script
     assert "clampNumber(view.scale, 0.5, 5000" in script
     assert "scale: 190" in script
     assert "y: 28" in script
     assert "function resetModelView" in script
     assert "function loadModelViewSettings" in script
-    assert "model.anchor.set(0.5, 0.5)" in script
-    assert "model.x = fitWidth * 0.5;" in script
-    assert "model.y = fitHeight * 0.5;" in script
-    assert "model.x += fitWidth * (view.x / 100);" in script
-    assert "model.y += fitHeight * (view.y / 100);" in script
     assert "function pulseModelMood" in script
-    assert "function applyLive2DMood" in script
+    assert "state.avatarController.setEmotion(normalized)" in script
     assert "function initModelSlotForCurrentCharacter" in script
     assert "['loading', els.modelLoading]" in script
     assert "['mmd', els.mmdContainer]" in script
     assert "['pngtuber', els.pngtuberContainer]" in script
     assert "showModelLayer('loading');" in script
-    assert "function loadLive2DSlot" in script
-    assert "function loadVRMSlot" in script
-    assert "function loadMMDSlot" in script
-    assert "function loadPNGTuberSlot" in script
-    assert "fetchCharacterAvatarConfig" in script
-    assert "current_live2d_model?catgirl_name=" in script
+    assert "function mountAvatarDescriptor" in script
+    assert "client.avatar.mount({" in script
+    assert "slot: 'drawing-guess-character'" in script
+    assert "characterName: descriptor.name" in script
+    assert "function disposeAvatarController" in script
+    assert "controller.dispose();" in script
     assert "/static/pngtuber-core.js" in html
     assert "/static/vrm/vrm-init.js" in html
     assert "/static/mmd/mmd-init.js" in html
     assert '"@moeru/three-mmd"' in html
     assert "window.__DRAWING_GUESS_AVATAR_SLOT__ = true;" in html
     assert "window._cardExportPage = true;" in html
-    assert "state.vrmManager.animation.startLipSync(analyser);" in script
-    assert "state.mmdManager.animationModule.startLipSync(analyser);" in script
-    assert "state.pngtuberManager.setSpeaking(true);" in script
+    assert "state.avatarController.setSpeaking(true)" in script
+    assert "state.avatarController.setSpeaking(false)" in script
+    for direct_avatar_marker in (
+        "window.Live2DManager",
+        "window.VRMManager",
+        "window.MMDManager",
+        "window.PNGTuberManager",
+        "window.appState",
+        "window.globalAnalyser",
+        "window.lanlan_config",
+    ):
+        assert direct_avatar_marker not in script
     assert "lipSyncStopTimer: null" in script
     assert "function isSpeechPlaybackAudible" in script
     assert "function armDrawingGuessLipSyncStop" in script
     assert "if (isSpeechPlaybackAudible(detail))" in script
     assert "scheduleDrawingGuessLipSyncStart();\n      return;\n    }\n    var response" not in script
-    assert "ROUTE_API + '/route/start'" in script
-    assert "ROUTE_API + '/route/heartbeat'" in script
-    assert "ROUTE_API + '/route/end'" in script
+    assert "window.NekoMiniGame.connect" in script
+    assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
+    assert "client.runtime.end(sdkRouteEndPayload(options)" in script
+    assert "client.events.on('runtime-output'" in script
     assert "function pushCanvasContextForRoute" in script
     assert "function publishFinalSummaryRouteState" in script
-    assert "canvasContextPayload(!!force)" in script
+    assert "sdkPulseForceRequestedSequence: 0" in script
+    assert "sdkPulseForceAcknowledgedSequence: 0" in script
+    assert "sdkPulsePayloadForce: false" in script
+    assert "var forceCanvas = state.sdkPulsePayloadForce;" in script
+    assert "forceCanvasContext" not in script
+    assert "state.sdkPulseForceRequestedSequence += 1;" in script
+    assert "client.runtime.pulse(true)" in script
+    assert "var targetForceSequence = state.sdkPulseForceRequestedSequence;" in script
+    assert "return runPulse();" in script
+    assert "state.sdkPulseForceAcknowledgedSequence" in script
+    assert "state.sdkPulsePayloadForce = forceThisPulse;" in script
+    assert "state.sdkPulsePayloadForce = false;" in script
+    assert "if (state.sdkPulsePromise === pulsePromise) state.sdkPulsePromise = null;" in script
+    assert "state.canvasContextLastPayloadKind = 'clear';" in script
+    assert "attemptedCanvasKind === 'clear'" in script
+    assert "cleanupRouteResources({ preserveCanvasRouteState: true });" in script
     assert "output.type === 'game_canvas_context_request'" in script
-    assert "ROUND_API + '/round/start'" in script
-    assert "ROUND_API + '/ai-draw'" in script
-    assert "ROUND_API + '/input'" in script
-    assert "ROUND_API + '/choose-word'" in script
-    assert "ROUND_API + '/timeout'" in script
-    assert "ROUND_API + '/vision-guess'" in script
-    assert "var completedRoute = !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary';" in script
-    assert "reason: completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned'" in script
+    command_timeout_patterns = {
+        "round start": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.START,\s*"
+            r"roundCommandPayload\(\),\s*10000\)"
+        ),
+        "AI draw": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.AI_DRAW,\s*"
+            r"roundCommandPayload\(\),\s*AI_DRAW_REQUEST_TIMEOUT_MS\)"
+        ),
+        "user input": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
+            r"roundCommandPayload\(\{\s*text: text\s*\}\),\s*10000\)"
+        ),
+        "round chat": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
+            r"roundCommandPayload\(\{[^}]*summary_chat_only:[^}]*\}\),\s*20000\)"
+        ),
+        "drawing feedback": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.FEEDBACK,\s*"
+            r"roundCommandPayload\(\{[^}]*image_data_url:[^}]*\}\),\s*"
+            r"AI_GUESS_REQUEST_TIMEOUT_MS\)"
+        ),
+        "word choice": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.CHOOSE_WORD,\s*"
+            r"roundCommandPayload\(\{\s*word_id: wordId\s*\}\),\s*10000\)"
+        ),
+        "round timeout": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.TIMEOUT,\s*"
+            r"roundCommandPayload\(\),\s*10000\)"
+        ),
+        "vision guess": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.VISION_GUESS,\s*"
+            r"roundCommandPayload\(\{[^}]*image_data_url:[^}]*\}\),\s*"
+            r"AI_GUESS_REQUEST_TIMEOUT_MS\)"
+        ),
+    }
+    for flow, pattern in command_timeout_patterns.items():
+        assert re.search(pattern, script, re.DOTALL), f"missing SDK command/timeout contract for {flow}"
+    assert "var completedRoute = options.completedRoute === undefined" in script
+    assert "reason: options.reason || (completedRoute ? 'drawing_guess_game_over' : 'drawing_guess_abandoned')" in script
     assert "roundCompleted: completedRoute" in script
     assert "function renderFinalSummary() {\n    // 最终结算是回合终态" in script
-    assert "beginRoundFlow();\n    state.aiGuessInFlight = false;" in script
+    assert "beginRoundFlow();\n    clearNekoVoiceQueue();\n    state.aiGuessInFlight = false;" in script
     assert "if (state.phase !== 'ai_drawing') return;" in script
     assert "function continueAfterAiDrawingHalf(res, flowToken) {\n    if (!isCurrentRoundFlow(flowToken)) return;" in script
     assert "function requestGuessTimeout(flowToken, attempt)" in script
@@ -298,9 +515,25 @@ def test_drawing_guess_static_route_contract():
     assert "function updateDebugGuessCountdown" in script
     assert "state.aiGuessNextAt = Date.now() + delay;" in script
     assert "roundFlowToken: 0" in script
+    assert "roundRequestControllers: new Set()" in script
+    assert "function abortRoundRequests()" in script
     assert "client_round_token: state.roundFlowToken" in script
     assert "function ensureCurrentRoundFlow" in script
+    stale_abort_guard = script.index("if (!isCurrentRoundFlow(requestFlowToken)) {")
+    timeout_abort_guard = script.index(
+        "if (err && (err.code === 'timeout' || err.code === 'request_timeout')) {"
+    )
+    assert stale_abort_guard < timeout_abort_guard
+    assert "return undefined;" in script[stale_abort_guard:timeout_abort_guard]
+    assert "if (!state.routeActive || state.routeEnding) return Promise.resolve(undefined);" in script
     assert "if (err && err.staleRoundFlow) return;" in script
+    assert "function reconcileFailedSdkStart" in script
+    assert "client.runtime.end(sdkRouteEndPayload({" in script
+    assert "client.runtime.startMonitoring({ heartbeat: false, outputs: false });" in script
+    assert "if (state.sdkReconcilePromise) return state.sdkReconcilePromise;" in script
+    assert "if (state.sdkStartPromise) return state.sdkStartPromise;" in script
+    assert "if (!reconciled) throw sdkStartRecoveryBlockedError();" in script
+    assert "debugSwitchPromise: null" in script
     assert "!state.debugRotateRounds && state.debugRoundMode === 'ai'" in script
     assert "!state.debugRotateRounds && state.debugRoundMode === 'user'" in script
     assert "els.debugTrigger.addEventListener('contextmenu'" in script
@@ -315,10 +548,39 @@ def test_drawing_guess_static_route_contract():
     assert "drawingGuess.tutorial.quickSummary" in html
     assert "drawingGuess.tutorial.voiceHint" in html
     assert "function normalizeMemoryConsent" in script
-    assert "memory_consent: state.memoryConsent" in script
+    assert "function configureSdkMemoryConsent(client)" in script
+    assert "client.memory.configureConsent(requested, { timeoutMs: 8000 })" in script
+    assert script.index("configureSdkMemoryConsent(client)") < script.index(
+        "client.runtime.start(routePayload(), { timeoutMs: 12000 })"
+    )
+    assert "memory_consent: state.memoryConsent" not in script
+    assert "i18n_language: currentLanguage()" not in script
+    assert "client.locale.onChange(applySdkLocale)" in script
+    assert "hydrateSdkPreferences(client)" in script
+    assert "'settings/model-views'" in script
+    assert "'settings/side-split-ratio'" in script
+    assert "'settings/color-history'" in script
+    assert "client.storage.get(channel.key" in script
+    assert "client.storage.set(channel.key" in script
+    for direct_platform_marker in (
+        "localStorage",
+        "window.i18next",
+        "window.__nekoI18nLanguage",
+        "window.NEKO_I18N_LANGUAGE",
+        "window.addEventListener('localechange'",
+    ):
+        assert direct_platform_marker not in script
     assert "gameStarted: state.phase !== 'tutorial'" in script
     assert "var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;" in script
+    assert "var routeReady = !!state.lanlanName && state.routeActive && !lifecycleBusy;" in script
+    assert "if (els.tutorialOverlay) els.tutorialOverlay.hidden = false;" in script
     assert "function isCanvasEditablePhase()" in script
+    assert "function isCanvasInteractionEnabled()" in script
+    assert "if (!isCanvasInteractionEnabled() || event.button !== 0) return;" in script
+    assert "if (!state.isDrawing || !isCanvasInteractionEnabled()) return;" in script
+    assert "state.isDrawing = false;" in script
+    assert "if (!isSdkRouteRunning(client)) return false;" in script
+    assert "catch(function () { return isSdkRouteRunning(client); });" in script
     assert "els.doneButton.hidden = roundSummaryOpen || finalSummaryOpen;" in script
     assert "els.nextRoundButton.hidden = !roundSummaryOpen;" in script
     assert "els.endButton.hidden = finalSummaryOpen;" in script
@@ -411,7 +673,10 @@ def test_drawing_guess_static_route_contract():
     assert "scheduleAiDrawingPlaceholderHint();" in script
     assert "clearAiDrawingPlaceholderHint(true);" in script
     assert "startCountdown(res.guess_seconds || ROUND_FALLBACK_SECONDS" in script
-    assert "post(ROUND_API + '/ai-draw', roundPayload(), AI_DRAW_REQUEST_TIMEOUT_MS)" in script
+    assert (
+        "executeRoundCommand(ROUND_COMMANDS.AI_DRAW, roundCommandPayload(), "
+        "AI_DRAW_REQUEST_TIMEOUT_MS)"
+    ) in script
     assert "timeoutError.code = 'request_timeout';" in script
     assert "function readableRequestError" in script
     assert "startCountdown(seconds || ROUND_FALLBACK_SECONDS" in script
@@ -463,9 +728,17 @@ def test_drawing_guess_static_route_contract():
     assert "addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });\n                updateControls();" in script
     assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
     assert "reason: readableRequestError(err)" in script
-    assert "speechAudioTapReady: false" in script
-    assert "response.type === 'speech_tap_ready'" in script
-    assert "suppress_primary_audio: state.speechAudioTapReady" in script
+    assert "client.speech.speak({" in script
+    assert "client.speech.onState(handleSpeechPlaybackState)" in script
+    assert "roundFlowToken: state.roundFlowToken" in script
+    assert "sessionId: state.sessionId" in script
+    assert "routeInstanceId: sdkRouteInstanceId()" in script
+    assert "item.roundFlowToken !== state.roundFlowToken" in script
+    assert "item.sessionId !== state.sessionId" in script
+    assert "item.routeInstanceId !== sdkRouteInstanceId()" in script
+    assert "speechAudioTapReady" not in script
+    assert "speech_tap_ready" not in script
+    assert "suppress_primary_audio" not in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.chatInFlight = false;" in script
     assert "function submitGameChat(text, options) {\n    options = options || {};\n    var flowToken = state.roundFlowToken;" in script
     assert "if (!isCurrentRoundFlow(flowToken)) return;\n      state.aiGuessInFlight = false;" in script
@@ -543,7 +816,7 @@ def test_drawing_guess_static_route_contract():
     assert "var viewBoxRatio = 240 / 180;" in script
     assert "transform 180ms" not in script
     assert "prefers-reduced-motion: reduce" in script
-    assert "navigator.sendBeacon" in script
+    assert "navigator.sendBeacon" not in script
 
 
 @pytest.mark.unit

@@ -36,6 +36,10 @@ GAME_SESSION_DEBUG_LOG_ENTRY_LIMIT = 1000
 GAME_SESSION_DEBUG_ACTIVE_IDLE_TTL_SECONDS = 10 * 60
 GAME_SESSION_DEBUG_RETAINED_SESSION_LIMIT = 1
 GAME_SESSION_DEBUG_RETAINED_SESSION_TTL_SECONDS = 5 * 60
+# A page-exit log uses sendBeacon first and an 8-second keepalive fetch fallback.
+# Route end can win that race, so the ingest endpoint gets one narrowly scoped
+# grace window. Internal append callers keep the strict active-only default.
+GAME_SESSION_DEBUG_LATE_INGEST_GRACE_SECONDS = 15
 # Retention is scoped to the single current mini-game scene for this process.
 # game_type and lanlan_name are diagnostic/filter metadata, not retention keys:
 # a new active scene intentionally clears completed logs from other game types
@@ -252,6 +256,7 @@ def append_game_session_debug_log(
     sensitive_possible: bool = False,
     preserve_message: bool = False,
     preserve_details: bool = False,
+    allow_recently_ended: bool = False,
 ) -> dict | None:
     """Append one mini-game session log entry.
 
@@ -273,7 +278,15 @@ def append_game_session_debug_log(
         if entry is None:
             return None
         if entry.get("status") != "active":
-            return None
+            ended_at = float(entry.get("ended_at") or 0.0)
+            recently_ended = (
+                allow_recently_ended
+                and entry.get("status") == "ended"
+                and ended_at > 0
+                and time.time() - ended_at <= GAME_SESSION_DEBUG_LATE_INGEST_GRACE_SECONDS
+            )
+            if not recently_ended:
+                return None
         entry["seq"] = int(entry.get("seq") or 0) + 1
         now = time.time()
         item = {

@@ -158,6 +158,9 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/libs/three-mmd.module.js",
     _PROJECT_ROOT / "static/libs/three-mmd-physics-ammo.module.js",
     _PROJECT_ROOT / "static/libs/ammojs-typed.module.js",
+    _PROJECT_ROOT / "static/game/sdk/neko-minigame-same-origin-bootstrap.js",
+    _PROJECT_ROOT / "static/game/sdk/neko-minigame-same-origin-host.js",
+    _PROJECT_ROOT / "static/game/sdk/neko-minigame-sdk.js",
     _PROJECT_ROOT / "static/game/games/drawing_guess/drawing-guess.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )

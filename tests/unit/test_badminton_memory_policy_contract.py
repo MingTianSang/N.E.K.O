@@ -9,6 +9,7 @@ import pytest
 from .game_route_test_helpers import (
     gr_patch_all as _gr_patch_all,
     mark_game_started,
+    reset_game_route_state,
 )
 from main_routers import game_router
 from main_routers.game_router import archive as gr_archive
@@ -154,40 +155,56 @@ def test_badminton_memory_controls_external_events_and_archive_filters(monkeypat
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_external_transcript_meta_uses_badminton_prefix(monkeypatch):
-    state = _badminton_route_state(monkeypatch)
-    state.update(
-        {
-            "badminton_game_memory_enabled": True,
-            "badminton_game_memory_player_interaction_enabled": False,
-            "badminton_game_memory_event_reply_enabled": True,
-            "last_state": {"score": {"player": 3, "ai": 2}, "round": 5},
-        }
-    )
-    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    with reset_game_route_state():
+        state = _badminton_route_state(monkeypatch)
+        state.update(
+            {
+                "badminton_game_memory_enabled": True,
+                "badminton_game_memory_player_interaction_enabled": False,
+                "badminton_game_memory_event_reply_enabled": True,
+                "last_state": {"score": {"player": 3, "ai": 2}, "round": 5},
+            }
+        )
+        gr_runtime._game_route_states[
+            gr_runtime._route_state_key("Lan", "badminton")
+        ] = state
+        _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
-    async def fake_run_game_chat(game_type, session_id, event):
-        return {"line": "ok", "control": {}, "game_type": game_type, "session_id": session_id}
+        async def fake_run_game_chat(
+            game_type,
+            session_id,
+            event,
+            *,
+            expected_route_state=None,
+        ):
+            assert expected_route_state is state
+            return {
+                "line": "ok",
+                "control": {},
+                "game_type": game_type,
+                "session_id": session_id,
+            }
 
-    _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
+        _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
-    handled = await gr_runtime._route_external_transcript_to_game(
-        "Lan",
-        state,
-        "nice shot",
-        source="external_text_route",
-        mode="text",
-        kind="user-text",
-        request_id="req-1",
-    )
+        handled = await gr_runtime._route_external_transcript_to_game(
+            "Lan",
+            state,
+            "nice shot",
+            source="external_text_route",
+            mode="text",
+            kind="user-text",
+            request_id="req-1",
+        )
 
-    assert handled is True
-    first_meta = state["pending_outputs"][0]["meta"]
-    result_meta = state["pending_outputs"][1]["meta"]
-    assert first_meta["badmintonGameMemoryPlayerInteractionEnabled"] is False
-    assert first_meta["badminton_game_memory_player_interaction_enabled"] is False
-    assert "soccerGameMemoryPlayerInteractionEnabled" not in first_meta
-    assert result_meta["badmintonGameMemoryPlayerInteractionEnabled"] is False
-    assert result_meta["gameMemoryEnabled"] is False
+        assert handled is True
+        first_meta = state["pending_outputs"][0]["meta"]
+        result_meta = state["pending_outputs"][1]["meta"]
+        assert first_meta["badmintonGameMemoryPlayerInteractionEnabled"] is False
+        assert first_meta["badminton_game_memory_player_interaction_enabled"] is False
+        assert "soccerGameMemoryPlayerInteractionEnabled" not in first_meta
+        assert result_meta["badmintonGameMemoryPlayerInteractionEnabled"] is False
+        assert result_meta["gameMemoryEnabled"] is False
 
 
 @pytest.mark.unit
