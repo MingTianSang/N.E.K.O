@@ -1,8 +1,9 @@
 (function () {
     'use strict';
 
-    // Ownership is acquired only after the catalog is ready. A failed startup
-    // must not leave the official idle controller permanently disabled.
+    // A cold external hold acquires ownership before the catalog is ready so
+    // the official idle scheduler cannot race the jukebox. Failed startup must
+    // hand ownership back after the last external owner releases it.
     window.__nekoMotionOwnsVrmPlayback = false;
 
     const SEMANTICS_URL = '/static/vrm/motion/semantics.json';
@@ -442,7 +443,12 @@
         })().catch(function (error) {
             console.error('[NekoMotion] initialization failed:', error);
             runtimeReady = false;
-            releasePlaybackOwnership();
+            if (player && typeof player.cancel === 'function') {
+                player.cancel('initialization_failed', { resume: false });
+            }
+            core = null;
+            player = null;
+            if (externalPlaybackOwners.size === 0) releasePlaybackOwnership();
             readyPromise = null;
             return false;
         });
@@ -1269,6 +1275,7 @@
             const token = Object.prototype.hasOwnProperty.call(settings, 'token')
                 ? settings.token : null;
             externalPlaybackOwners.set(ownerKey, token);
+            if (refreshMode() === 'vrm') acquirePlaybackOwnership();
             if (player) player.holdExternalPlayback(ownerKey, settings);
             if (!runtimeReady) void initialize();
             return true;
@@ -1292,12 +1299,19 @@
                 }));
                 if (released !== true) return false;
             } else if (!pendingInitialization) {
+                if (externalPlaybackOwners.size === 0) releasePlaybackOwnership();
                 return false;
             }
             if (pendingInitialization) {
                 // hold 是乐观且立即成功的；若后台初始化最终失败，必须把失败传给调用方，
                 // 让点歌台回退到底层 VRM 待机恢复，不能把“已删除 owner”误报成“已恢复”。
-                return await pendingInitialization === true;
+                const initialized = await pendingInitialization === true;
+                if (!initialized && externalPlaybackOwners.size === 0) releasePlaybackOwnership();
+                return initialized;
+            }
+            if (!runtimeReady) {
+                if (externalPlaybackOwners.size === 0) releasePlaybackOwnership();
+                return false;
             }
             return true;
         },

@@ -1469,6 +1469,9 @@ Object.assign(window.Jukebox, {
     const nextSong = Jukebox.getNextSongToPlay(endedSong);
     rollback.markAdvanced();
     const nextAction = nextSong ? Jukebox.getActionForModel(nextSong) : null;
+    // 自动续播也是一条独立播放请求：先作废旧歌曲仍在加载的动作。没有接班动作时
+    // stopVMD(false) 可能再推进一次世代来保护异步待机恢复，下面会取它的最终值。
+    if (nextSong) Jukebox.State.playRequestId += 1;
     Jukebox.stopVMD(!!nextAction);
     Jukebox.State.isPlaying = false;
     Jukebox.State.isPaused = false;
@@ -1477,6 +1480,8 @@ Object.assign(window.Jukebox, {
     Jukebox.updateStoppedStatus();
 
     if (nextSong) {
+      // 旧歌曲与接班歌曲不能复用 runtime hold token，否则旧请求收尾时会误释放
+      // 接班者；若上面的待机恢复又推进了世代，以推进后的值为准。
       const requestId = Jukebox.State.playRequestId;
       const scheduledMode = Jukebox.State.playbackMode;
       const fromQueue = scheduledMode === 'random';

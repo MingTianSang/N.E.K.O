@@ -396,7 +396,7 @@ assert.match(modelManagerSource, /cancel\('model_manager_stop', \{ resume: false
 assert.match(modelManagerSource, /normalizeBundledVrmAnimationUrl/);
 assert.match(modelManagerTemplate, /static\/vrm\/motion\/player\.js/);
 
-function createRuntimeHarness(fetchImplementation) {
+function createRuntimeHarness(fetchImplementation, options = {}) {
     const calls = [];
     const players = [];
     const listeners = new Map();
@@ -421,7 +421,10 @@ function createRuntimeHarness(fetchImplementation) {
             calls.push(['release', owner, options.token, options.resume]);
             return true;
         }
-        async load() { return this; }
+        async load() {
+            if (options.failPlayerLoad === true) throw new Error('manifest unavailable');
+            return this;
+        }
         async enterRest() {
             calls.push(['rest']);
             return true;
@@ -459,6 +462,10 @@ function createRuntimeHarness(fetchImplementation) {
     context.NekoMotionCore = FakeMotionCore;
     context.NekoMotionPlayer = FakeMotionPlayer;
     context.NekoMotionText = { extractClosedStages: function () { return []; } };
+    context._stopVrmIdleRotation = function () { calls.push(['official-stop']); };
+    context._startVrmIdleRotation = function (urls) {
+        calls.push(['official-start', Array.isArray(urls) ? urls.join('|') : '']);
+    };
     context.vrmManager = {
         currentModel: { vrm: {} },
         playVRMAAnimation: async function () { return true; }
@@ -494,33 +501,55 @@ async function verifyColdExternalPlaybackOwnership() {
     assert.equal(holdSettled, true, 'a cold external hold must not wait for runtime initialization');
     assert.equal(await holdResult, true);
     assert.equal(harness.players.length, 0, 'the hold should resolve while semantics are still loading');
+    assert.deepEqual(harness.calls, [['official-stop']]);
+    assert.equal(harness.context.__nekoMotionOwnsVrmPlayback, true);
 
     resolveSemantics();
     await flushMicrotasks();
     assert.equal(harness.players.length, 1);
-    assert.deepEqual(harness.calls, [['hold', 'jukebox', 71]]);
+    assert.deepEqual(harness.calls, [
+        ['official-stop'],
+        ['hold', 'jukebox', 71]
+    ]);
     assert.equal(
         await harness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 71, resume: true }),
         true
     );
     assert.deepEqual(harness.calls, [
+        ['official-stop'],
         ['hold', 'jukebox', 71],
         ['release', 'jukebox', 71, true]
     ]);
 
     const failedHarness = createRuntimeHarness(async function () {
-        throw new Error('semantics unavailable');
-    });
-    failedHarness.context.lanlan_config.model_type = 'vrm';
+        return { ok: true, json: async function () { return {}; } };
+    }, { failPlayerLoad: true });
+    failedHarness.context.lanlan_config = {
+        model_type: 'vrm',
+        vrmIdleAnimations: ['/idle-a.vrma', '/idle-b.vrma']
+    };
     assert.equal(
         await failedHarness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 72 }),
         true
+    );
+    await flushMicrotasks();
+    assert.equal(failedHarness.players.length, 1, 'the failure must happen after player assignment');
+    assert.equal(failedHarness.context.NekoMotion.stats().ready, false);
+    assert.equal(failedHarness.context.__nekoMotionOwnsVrmPlayback, true);
+    assert.equal(
+        failedHarness.calls.some(function (entry) { return entry[0] === 'official-start'; }),
+        false,
+        'official idle must stay stopped while the external dance still owns playback'
     );
     assert.equal(
         await failedHarness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 72, resume: true }),
         false,
         'a failed background initialization must leave idle restoration to the caller'
     );
+    assert.equal(failedHarness.context.__nekoMotionOwnsVrmPlayback, false);
+    assert.deepEqual(failedHarness.calls.slice(-1), [
+        ['official-start', '/idle-a.vrma|/idle-b.vrma']
+    ]);
 }
 
 verifyColdExternalPlaybackOwnership().then(function () {

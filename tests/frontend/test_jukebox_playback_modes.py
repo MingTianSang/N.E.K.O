@@ -3642,7 +3642,7 @@ def test_jukebox_audio_end_queued_next_respects_request_generation(mock_page: Pa
     assert result == {
         "played": [],
         "currentSong": None,
-        "playRequestId": 8,
+        "playRequestId": 9,
     }
 
 
@@ -5083,6 +5083,49 @@ def test_jukebox_auto_advance_restores_idle_when_the_successor_animation_fails(m
     assert result["advanced"] == "song2"
     # 接班动画没起来 -> 待机必须接回去。
     assert result["idleRestored"] is True
+
+
+@pytest.mark.frontend
+def test_jukebox_auto_advance_allocates_a_fresh_playback_request(mock_page: Page):
+    """A successor must not share the ended track's VRMA hold token."""
+    setup_headless_jukebox_page(mock_page)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const J = window.Jukebox;
+          await J.ensureRuntime({ headless: true });
+          J.State.playbackMode = 'sequence';
+          J.State.currentSong = J.State.songs[0];
+          J.State.isPlaying = true;
+          J.State.isVMDPlaying = false;
+          J.State.playRequestId = 73;
+
+          let successorRequestId = null;
+          const originalPlaySong = J.playSong;
+          J.playSong = async (songId, options = {}) => {
+            successorRequestId = options.requestId;
+            return J.State.songs.find(song => song.id === songId) || null;
+          };
+          try {
+            J.handleAudioEnded(J.getPlayer());
+            await new Promise(resolve => setTimeout(resolve, 20));
+          } finally {
+            J.playSong = originalPlaySong;
+          }
+
+          return {
+            successorRequestId,
+            currentRequestId: J.State.playRequestId
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "successorRequestId": 74,
+        "currentRequestId": 74,
+    }
 
 
 @pytest.mark.frontend
