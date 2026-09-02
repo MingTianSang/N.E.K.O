@@ -511,6 +511,19 @@ async function verifyColdExternalPlaybackOwnership() {
         ['official-stop'],
         ['hold', 'jukebox', 71]
     ]);
+    const originalRelease = harness.players[0].releaseExternalPlayback.bind(harness.players[0]);
+    let forwardedMissingTokenRelease = 0;
+    harness.players[0].releaseExternalPlayback = async function (owner, options) {
+        forwardedMissingTokenRelease += 1;
+        return originalRelease(owner, options);
+    };
+    assert.equal(
+        await harness.context.NekoMotion.releaseExternalPlayback('jukebox', { resume: true }),
+        false,
+        'the runtime must reject a tokenless release of a tokenized owner'
+    );
+    assert.equal(forwardedMissingTokenRelease, 0, 'a rejected release must not reach the player');
+    harness.players[0].releaseExternalPlayback = originalRelease;
     assert.equal(
         await harness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 71, resume: true }),
         true
@@ -519,6 +532,22 @@ async function verifyColdExternalPlaybackOwnership() {
         ['official-stop'],
         ['hold', 'jukebox', 71],
         ['release', 'jukebox', 71, true]
+    ]);
+
+    harness.context.lanlan_config.vrmIdleAnimations = ['/ready-idle.vrma'];
+    assert.equal(
+        await harness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 74 }),
+        true
+    );
+    assert.equal(
+        await harness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 74, resume: false }),
+        true
+    );
+    assert.equal(harness.context.__nekoMotionOwnsVrmPlayback, false);
+    assert.deepEqual(harness.calls.slice(-3), [
+        ['hold', 'jukebox', 74],
+        ['release', 'jukebox', 74, false],
+        ['official-start', '/ready-idle.vrma']
     ]);
 
     const failedHarness = createRuntimeHarness(async function () {

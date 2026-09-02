@@ -182,14 +182,8 @@
         var motionRuntimeHeld = false;
 
         try {
-          if (state.vrmMotionRuntimeToken !== null) {
-            var previousRelease = releaseOwnedNekoMotionPlayback(state, {
-              resume: false,
-              scheduleNext: false
-            });
-            if (previousRelease !== false) await previousRelease;
-            if (playRequestId !== state.playRequestId) return;
-          }
+          // 同一个 owner 的新 token 会在运行时内原子替换旧 token。先释放再占用会在
+          // 冷启动时等待完整初始化，让接班舞蹈落后于已经开始的音频。
           var holdResult = holdNekoMotionPlayback(playRequestId);
           motionRuntimeHeld = holdResult === false ? false : await holdResult;
           if (playRequestId !== state.playRequestId) {

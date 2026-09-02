@@ -1284,8 +1284,10 @@
             const settings = options || {};
             const ownerKey = String(owner || 'external');
             if (!externalPlaybackOwners.has(ownerKey)) return false;
-            if (Object.prototype.hasOwnProperty.call(settings, 'token')
-                && externalPlaybackOwners.get(ownerKey) !== settings.token) {
+            const hasToken = Object.prototype.hasOwnProperty.call(settings, 'token');
+            const heldToken = externalPlaybackOwners.get(ownerKey);
+            if ((hasToken && heldToken !== settings.token)
+                || (!hasToken && heldToken !== null)) {
                 return false;
             }
             externalPlaybackOwners.delete(ownerKey);
@@ -1308,7 +1310,18 @@
                 // 最后一个 owner 释放时让点歌台回退到底层 VRM 待机恢复；其他 owner
                 // 仍持有播放权时则保持成功，避免其中一个调用方提前恢复待机。
                 const initialized = await pendingInitialization === true;
-                if (initialized || externalPlaybackOwners.size > 0) return true;
+                if (externalPlaybackOwners.size > 0) return true;
+                if (initialized) {
+                    if (settings.resume === false) {
+                        // 初始化可能在 owner 删除后短暂进入了语义待机；无恢复释放必须
+                        // 清掉该状态并交还官方待机调度，不能遗留全局播放所有权。
+                        if (player && typeof player.cancel === 'function') {
+                            player.cancel('external_release_without_resume', { resume: false });
+                        }
+                        releasePlaybackOwnership();
+                    }
+                    return true;
+                }
                 releasePlaybackOwnership();
                 return false;
             }
@@ -1316,6 +1329,9 @@
                 if (externalPlaybackOwners.size > 0) return true;
                 releasePlaybackOwnership();
                 return false;
+            }
+            if (externalPlaybackOwners.size === 0 && settings.resume === false) {
+                releasePlaybackOwnership();
             }
             return true;
         },

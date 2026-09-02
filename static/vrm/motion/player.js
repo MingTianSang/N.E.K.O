@@ -737,8 +737,10 @@
             const settings = options || {};
             const ownerKey = String(owner || 'external');
             if (!this.externalPlaybackOwners.has(ownerKey)) return false;
-            if (Object.prototype.hasOwnProperty.call(settings, 'token')
-                && this.externalPlaybackOwners.get(ownerKey) !== settings.token) {
+            const hasToken = Object.prototype.hasOwnProperty.call(settings, 'token');
+            const heldToken = this.externalPlaybackOwners.get(ownerKey);
+            if ((hasToken && heldToken !== settings.token)
+                || (!hasToken && heldToken !== null)) {
                 return false;
             }
 

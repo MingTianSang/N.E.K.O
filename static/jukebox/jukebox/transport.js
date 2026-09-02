@@ -1880,14 +1880,8 @@ Object.assign(window.Jukebox, {
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
       const playRequestId = Jukebox.State.playRequestId;
       motionRuntimeToken = playRequestId;
-      if (Jukebox.State.vrmMotionRuntimeToken !== null) {
-        const previousRelease = Jukebox.releaseVrmMotionRuntime({
-          resume: false,
-          scheduleNext: false
-        });
-        if (previousRelease !== false) await previousRelease;
-        if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
-      }
+      // 同一个 owner 的新 token 会在运行时内原子替换旧 token。先释放再占用会在
+      // 冷启动时等待完整初始化，让接班舞蹈落后于已经开始的音频。
       const holdResult = Jukebox.holdVrmMotionRuntime(playRequestId);
       motionRuntimeHeld = holdResult === false ? false : await holdResult;
       if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;

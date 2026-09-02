@@ -299,9 +299,9 @@ async function waitForLoadStart(predicate, message) {
     });
 
     const heldCancelPlayer = new global.NekoMotionPlayer();
-    let heldCancelResumeCount = 0;
-    heldCancelPlayer._playAsset = async function () {
-        heldCancelResumeCount += 1;
+    const heldCancelResumeAssets = [];
+    heldCancelPlayer._playAsset = async function (asset) {
+        heldCancelResumeAssets.push(asset.id);
         return true;
     };
     heldCancelPlayer.state.posture = 'lie';
@@ -311,14 +311,18 @@ async function waitForLoadStart(predicate, message) {
     heldCancelPlayer.holdExternalPlayback('jukebox', { token: 91 });
     heldCancelPlayer.cancel('assistant_speech_cancel', { resume: true });
     await Promise.resolve();
-    assert.equal(heldCancelResumeCount, 0, 'cancel recovery must not replace held external playback');
+    assert.equal(heldCancelResumeAssets.length, 0, 'cancel recovery must not replace held external playback');
     assert.equal(heldCancelPlayer.state.phase, 'external');
     assert.equal(await heldCancelPlayer.releaseExternalPlayback('jukebox', {
         token: 91,
         resume: true,
         scheduleNext: false
     }), true);
-    assert.equal(heldCancelResumeCount, 1, 'the saved pose may resume after the final external release');
+    assert.deepEqual(
+        heldCancelResumeAssets,
+        ['held-pose'],
+        'the saved pose may resume after the final external release'
+    );
 
     const staleCatalogPlayer = new global.NekoMotionPlayer();
     const staleCatalogAsset = { id: 'stale-catalog', m: 'wave', i: 2 };
@@ -517,6 +521,12 @@ async function waitForLoadStart(predicate, message) {
     // A newer song reuses the same owner but replaces its token. The stale
     // loader must not release the newer dance when it finally settles.
     scheduledRestPlayer.holdExternalPlayback('jukebox', { token: 42 });
+    assert.equal(
+        await scheduledRestPlayer.releaseExternalPlayback('jukebox', { resume: true }),
+        false,
+        'a tokenized hold must not be released without its token'
+    );
+    assert.equal(scheduledRestPlayer.externalPlaybackOwners.get('jukebox'), 42);
     assert.equal(
         await scheduledRestPlayer.releaseExternalPlayback('jukebox', {
             token: 41,
