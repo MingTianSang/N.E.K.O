@@ -528,10 +528,10 @@ async function verifyColdExternalPlaybackOwnership() {
         model_type: 'vrm',
         vrmIdleAnimations: ['/idle-a.vrma', '/idle-b.vrma']
     };
-    assert.equal(
-        await failedHarness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 72 }),
-        true
-    );
+    const failedJukeboxHold = failedHarness.context.NekoMotion.holdExternalPlayback('jukebox', { token: 72 });
+    const failedPreviewHold = failedHarness.context.NekoMotion.holdExternalPlayback('preview', { token: 73 });
+    assert.equal(await failedJukeboxHold, true);
+    assert.equal(await failedPreviewHold, true);
     await flushMicrotasks();
     assert.equal(failedHarness.players.length, 1, 'the failure must happen after player assignment');
     assert.equal(failedHarness.context.NekoMotion.stats().ready, false);
@@ -543,6 +543,17 @@ async function verifyColdExternalPlaybackOwnership() {
     );
     assert.equal(
         await failedHarness.context.NekoMotion.releaseExternalPlayback('jukebox', { token: 72, resume: true }),
+        true,
+        'a failed runtime must stay held while another external owner remains'
+    );
+    assert.equal(failedHarness.context.__nekoMotionOwnsVrmPlayback, true);
+    assert.equal(
+        failedHarness.calls.some(function (entry) { return entry[0] === 'official-start'; }),
+        false,
+        'releasing one owner must not restart official idle for the remaining owner'
+    );
+    assert.equal(
+        await failedHarness.context.NekoMotion.releaseExternalPlayback('preview', { token: 73, resume: true }),
         false,
         'a failed background initialization must leave idle restoration to the caller'
     );

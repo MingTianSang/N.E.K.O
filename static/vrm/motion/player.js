@@ -829,6 +829,10 @@
 
         async _resumeBase(generation, seed, scheduleNext) {
             if (generation !== this.queueGeneration) return false;
+            if (this.externalPlaybackOwners.size > 0) {
+                this.metrics.externalPlaybackBlocks += 1;
+                return false;
+            }
             if (this.state.posture !== 'stand' && this.state.poseAsset) {
                 this.state.phase = 'pose';
                 const played = await this._playAsset(this.state.poseAsset, generation, {

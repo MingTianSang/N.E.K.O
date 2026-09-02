@@ -1299,18 +1299,22 @@
                 }));
                 if (released !== true) return false;
             } else if (!pendingInitialization) {
-                if (externalPlaybackOwners.size === 0) releasePlaybackOwnership();
+                if (externalPlaybackOwners.size > 0) return true;
+                releasePlaybackOwnership();
                 return false;
             }
             if (pendingInitialization) {
                 // hold 是乐观且立即成功的；若后台初始化最终失败，必须把失败传给调用方，
-                // 让点歌台回退到底层 VRM 待机恢复，不能把“已删除 owner”误报成“已恢复”。
+                // 最后一个 owner 释放时让点歌台回退到底层 VRM 待机恢复；其他 owner
+                // 仍持有播放权时则保持成功，避免其中一个调用方提前恢复待机。
                 const initialized = await pendingInitialization === true;
-                if (!initialized && externalPlaybackOwners.size === 0) releasePlaybackOwnership();
-                return initialized;
+                if (initialized || externalPlaybackOwners.size > 0) return true;
+                releasePlaybackOwnership();
+                return false;
             }
             if (!runtimeReady) {
-                if (externalPlaybackOwners.size === 0) releasePlaybackOwnership();
+                if (externalPlaybackOwners.size > 0) return true;
+                releasePlaybackOwnership();
                 return false;
             }
             return true;

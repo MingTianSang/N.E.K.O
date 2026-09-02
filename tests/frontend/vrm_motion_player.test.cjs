@@ -298,6 +298,28 @@ async function waitForLoadStart(predicate, message) {
         poseStyle: null
     });
 
+    const heldCancelPlayer = new global.NekoMotionPlayer();
+    let heldCancelResumeCount = 0;
+    heldCancelPlayer._playAsset = async function () {
+        heldCancelResumeCount += 1;
+        return true;
+    };
+    heldCancelPlayer.state.posture = 'lie';
+    heldCancelPlayer.state.phase = 'pose';
+    heldCancelPlayer.state.poseAsset = { id: 'held-pose', mode: 'loop' };
+    heldCancelPlayer.state.poseStyle = 'side';
+    heldCancelPlayer.holdExternalPlayback('jukebox', { token: 91 });
+    heldCancelPlayer.cancel('assistant_speech_cancel', { resume: true });
+    await Promise.resolve();
+    assert.equal(heldCancelResumeCount, 0, 'cancel recovery must not replace held external playback');
+    assert.equal(heldCancelPlayer.state.phase, 'external');
+    assert.equal(await heldCancelPlayer.releaseExternalPlayback('jukebox', {
+        token: 91,
+        resume: true,
+        scheduleNext: false
+    }), true);
+    assert.equal(heldCancelResumeCount, 1, 'the saved pose may resume after the final external release');
+
     const staleCatalogPlayer = new global.NekoMotionPlayer();
     const staleCatalogAsset = { id: 'stale-catalog', m: 'wave', i: 2 };
     let finishCatalogLoad;
