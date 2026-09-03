@@ -128,11 +128,12 @@ _SUPPORTED_SNAPSHOT_KINDS = {
 def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, Path]) -> str:
     """Resolve explicit snapshot semantics and fail safe for legacy manifests.
 
-    Before ``snapshot_kind`` existed, per-character exports omitted both global
-    payloads while full exports always included them.  Treating an ambiguous
-    legacy payload as a character collection is intentionally conservative: a
-    merge can leave extra local data behind, while a mistaken full replacement
-    can erase the owner profile and unrelated character memories.
+    Before ``snapshot_kind`` existed, per-character exports did not stage the
+    global payloads but could retain copies from an earlier full export.
+    Treating every ambiguous legacy payload as a character collection is
+    intentionally conservative: a merge can leave extra local data behind,
+    while a mistaken full replacement can erase the owner profile and
+    unrelated character memories.
     """
     full_runtime_markers = {
         "profiles/conversation_settings.json",
@@ -149,29 +150,12 @@ def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, P
             raise ValueError("full_runtime cloudsave snapshot is missing required global payloads")
         return snapshot_kind
 
-    if full_runtime_markers <= set(staged_entries):
-        # A legacy single-character upload rebuilt the manifest from every
-        # file already on disk. When it followed a full export, the two
-        # global marker files survived even though the newer upload only
-        # represented a character collection. The current-character marker
-        # carries the sequence of the full export, so only treat the legacy
-        # bundle as a proven full snapshot when it agrees with the manifest.
-        # Any malformed or missing sequence stays on the non-destructive path.
-        marker_payload = _load_staged_json_file(
-            staged_entries, "catalog/current_character.json",
-        )
-        manifest_sequence = int(manifest.get("sequence_number") or 0)
-        marker_sequence = (
-            int(
-                marker_payload.get("entry_sequence_number")
-                or marker_payload.get("sequence_number")
-                or 0
-            )
-            if isinstance(marker_payload, dict)
-            else 0
-        )
-        if manifest_sequence > 0 and marker_sequence == manifest_sequence:
-            return SNAPSHOT_KIND_FULL_RUNTIME
+    # Legacy full exports and single-character uploads can have identical file
+    # shapes. A character upload rebuilt its manifest from files already on
+    # disk, retaining both global markers from an earlier full export; across
+    # devices, its new sequence can also collide with the retained marker's
+    # sequence. There is therefore no reliable proof that a kind-less manifest
+    # is a full snapshot. Always choose the non-destructive merge semantics.
     return SNAPSHOT_KIND_CHARACTER_COLLECTION
 
 

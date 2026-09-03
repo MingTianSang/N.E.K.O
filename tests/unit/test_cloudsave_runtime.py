@@ -2435,7 +2435,8 @@ def test_character_collection_import_preserves_owner_globals_and_unrelated_chara
 
 
 @pytest.mark.unit
-def test_legacy_collection_with_retained_full_markers_uses_merge_semantics(tmp_path):
+@pytest.mark.parametrize("marker_sequence", [None, "invalid"], ids=["collision", "malformed"])
+def test_legacy_snapshot_without_kind_uses_merge_semantics(tmp_path, marker_sequence):
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
 
@@ -2448,8 +2449,17 @@ def test_legacy_collection_with_retained_full_markers_uses_merge_semantics(tmp_p
         (source_cm.cloudsave_catalog_dir / "current_character.json").read_text(encoding="utf-8")
     )
     manifest.pop("snapshot_kind", None)
-    manifest["sequence_number"] = int(marker_payload["entry_sequence_number"]) + 1
-    manifest["fingerprint"] = ""
+    if marker_sequence is None:
+        assert int(marker_payload["entry_sequence_number"]) == int(manifest["sequence_number"])
+    else:
+        marker_payload["entry_sequence_number"] = marker_sequence
+        atomic_write_json(
+            source_cm.cloudsave_catalog_dir / "current_character.json",
+            marker_payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+        manifest["fingerprint"] = ""
     atomic_write_json(
         source_cm.cloudsave_manifest_path,
         manifest,
