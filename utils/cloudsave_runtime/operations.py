@@ -125,6 +125,13 @@ _SUPPORTED_SNAPSHOT_KINDS = {
 }
 
 
+def _manifest_schema_version(manifest: dict[str, Any]) -> int:
+    try:
+        return int(manifest.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, Path]) -> str:
     """Resolve explicit snapshot semantics and fail safe for legacy manifests.
 
@@ -139,10 +146,7 @@ def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, P
         "profiles/conversation_settings.json",
         "catalog/current_character.json",
     }
-    try:
-        schema_version = int(manifest.get("schema_version") or 1)
-    except (TypeError, ValueError):
-        schema_version = 1
+    schema_version = _manifest_schema_version(manifest)
     snapshot_kind = str(manifest.get("snapshot_kind") or "").strip()
     # Legacy writers preserve unknown top-level keys while rebuilding the
     # manifest, so a stale ``full_runtime`` kind can survive a character-only
@@ -1175,6 +1179,7 @@ def _rebuild_cloudsave_manifest_from_disk(
         client_id=str(manifest.get("client_id", "")),
         sequence_number=int(manifest.get("sequence_number") or 0),
         files=files,
+        snapshot_kind=SNAPSHOT_KIND_CHARACTER_COLLECTION,
     )
     save_cloudsave_manifest(config_manager, manifest)
     return manifest
@@ -1427,6 +1432,7 @@ def export_local_cloudsave_snapshot(
             client_id=manifest["client_id"],
             sequence_number=sequence_number,
             files=files,
+            snapshot_kind=SNAPSHOT_KIND_FULL_RUNTIME,
         )
 
         _assert_deadline_not_exceeded(
@@ -1509,12 +1515,22 @@ def import_local_cloudsave_snapshot(
             }
             for relative_path, staged_path in sorted(staged_entries.items())
         }
+        schema_version = _manifest_schema_version(manifest)
+        fingerprint_snapshot_kind = (
+            str(manifest.get("snapshot_kind") or "").strip()
+            if schema_version >= 2
+            else ""
+        )
+        manifest_fingerprint = str(manifest.get("fingerprint") or "")
+        if schema_version >= 2 and fingerprint_snapshot_kind and not manifest_fingerprint:
+            raise ValueError("schema 2 cloudsave manifest fingerprint is required")
         computed_fingerprint = _build_manifest_fingerprint(
             client_id=str(manifest.get("client_id", "")),
             sequence_number=int(manifest.get("sequence_number") or 0),
             files=computed_files,
+            snapshot_kind=fingerprint_snapshot_kind,
         )
-        if manifest.get("fingerprint") and manifest["fingerprint"] != computed_fingerprint:
+        if manifest_fingerprint and manifest_fingerprint != computed_fingerprint:
             raise ValueError("cloudsave manifest fingerprint mismatch")
 
         snapshot_kind = _resolve_snapshot_kind(manifest, staged_entries)

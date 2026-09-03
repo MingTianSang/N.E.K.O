@@ -1279,6 +1279,37 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("manifest_update", "error_match"),
+    [
+        ({"snapshot_kind": "character_collection"}, "fingerprint mismatch"),
+        ({"fingerprint": ""}, "fingerprint is required"),
+    ],
+    ids=["kind_tamper", "missing_fingerprint"],
+)
+def test_schema_two_manifest_binds_snapshot_kind_to_fingerprint(
+    tmp_path, manifest_update, error_match,
+):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    _write_runtime_state(cm)
+    export_local_cloudsave_snapshot(cm)
+    manifest = json.loads(cm.cloudsave_manifest_path.read_text(encoding="utf-8"))
+    manifest.update(manifest_update)
+    atomic_write_json(
+        cm.cloudsave_manifest_path,
+        manifest,
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        import_local_cloudsave_snapshot(cm)
+
+
+@pytest.mark.unit
 def test_local_cloudsave_import_failure_restores_recent_redirects(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -1417,7 +1448,9 @@ def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_pa
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["files"][hostile_key] = {"sha256": "0" * 64, "size": 2}
     # 攻击场景里 manifest 由存档作者产出，fingerprint 留空即可跳过一致性校验，
-    # 因此路径约束不能依赖 fingerprint 这道闸。
+    # 因此旧版路径约束不能依赖 fingerprint 这道闸。
+    manifest["schema_version"] = 1
+    manifest["min_reader_schema_version"] = 1
     manifest["fingerprint"] = ""
     atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
 
@@ -2451,8 +2484,17 @@ def test_legacy_snapshot_without_kind_uses_merge_semantics(tmp_path, marker_sequ
         (source_cm.cloudsave_catalog_dir / "current_character.json").read_text(encoding="utf-8")
     )
     manifest.pop("snapshot_kind", None)
+    manifest["schema_version"] = 1
+    manifest["min_reader_schema_version"] = 1
     if marker_sequence is None:
         assert int(marker_payload["entry_sequence_number"]) == int(manifest["sequence_number"])
+        from utils.cloudsave_runtime.staging import _build_manifest_fingerprint
+
+        manifest["fingerprint"] = _build_manifest_fingerprint(
+            client_id=str(manifest.get("client_id") or ""),
+            sequence_number=int(manifest.get("sequence_number") or 0),
+            files=manifest["files"],
+        )
     else:
         marker_payload["entry_sequence_number"] = marker_sequence
         atomic_write_json(
@@ -2492,6 +2534,7 @@ def test_schema_one_stale_full_kind_uses_merge_semantics(tmp_path):
     target_cm = _make_config_manager(tmp_path / "target")
 
     from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+    from utils.cloudsave_runtime.staging import _build_manifest_fingerprint
 
     _write_runtime_state(source_cm, character_name="云端角色")
     export_local_cloudsave_snapshot(source_cm)
@@ -2499,6 +2542,11 @@ def test_schema_one_stale_full_kind_uses_merge_semantics(tmp_path):
     assert manifest["snapshot_kind"] == "full_runtime"
     manifest["schema_version"] = 1
     manifest["min_reader_schema_version"] = 1
+    manifest["fingerprint"] = _build_manifest_fingerprint(
+        client_id=str(manifest.get("client_id") or ""),
+        sequence_number=int(manifest.get("sequence_number") or 0),
+        files=manifest["files"],
+    )
     atomic_write_json(
         source_cm.cloudsave_manifest_path,
         manifest,
@@ -2529,11 +2577,19 @@ def test_legacy_character_collection_repairs_missing_owner_without_replacing_rol
     target_cm = _make_config_manager(tmp_path / "target")
 
     from utils.cloudsave_runtime import export_cloudsave_character_unit, import_local_cloudsave_snapshot
+    from utils.cloudsave_runtime.staging import _build_manifest_fingerprint
 
     _write_runtime_state(source_cm, character_name="云端角色")
     export_cloudsave_character_unit(source_cm, "云端角色")
     manifest = json.loads(source_cm.cloudsave_manifest_path.read_text(encoding="utf-8"))
     manifest.pop("snapshot_kind", None)
+    manifest["schema_version"] = 1
+    manifest["min_reader_schema_version"] = 1
+    manifest["fingerprint"] = _build_manifest_fingerprint(
+        client_id=str(manifest.get("client_id") or ""),
+        sequence_number=int(manifest.get("sequence_number") or 0),
+        files=manifest["files"],
+    )
     atomic_write_json(
         source_cm.cloudsave_manifest_path,
         manifest,
