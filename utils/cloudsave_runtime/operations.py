@@ -139,8 +139,16 @@ def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, P
         "profiles/conversation_settings.json",
         "catalog/current_character.json",
     }
+    try:
+        schema_version = int(manifest.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
     snapshot_kind = str(manifest.get("snapshot_kind") or "").strip()
-    if snapshot_kind:
+    # Legacy writers preserve unknown top-level keys while rebuilding the
+    # manifest, so a stale ``full_runtime`` kind can survive a character-only
+    # upload. Those writers reset schema_version to 1; only schema 2+ binds the
+    # kind to writer semantics we understand.
+    if snapshot_kind and schema_version >= 2:
         if snapshot_kind not in _SUPPORTED_SNAPSHOT_KINDS:
             raise ValueError(f"unsupported cloudsave snapshot kind: {snapshot_kind}")
         if (
@@ -1404,8 +1412,8 @@ def export_local_cloudsave_snapshot(
 
         manifest.update(
             {
-                "schema_version": 1,
-                "min_reader_schema_version": 1,
+                "schema_version": 2,
+                "min_reader_schema_version": 2,
                 "min_app_version": "",
                 "client_id": str(cloud_state.get("client_id", "")),
                 "device_id": str(manifest.get("device_id", "")),

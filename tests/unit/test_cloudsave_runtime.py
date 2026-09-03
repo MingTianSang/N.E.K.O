@@ -1218,6 +1218,8 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
 
     export_result = export_local_cloudsave_snapshot(cm)
     assert export_result["manifest"]["sequence_number"] == 1
+    assert export_result["manifest"]["schema_version"] == 2
+    assert export_result["manifest"]["min_reader_schema_version"] == 2
     assert export_result["manifest"]["snapshot_kind"] == "full_runtime"
     assert (cm.cloudsave_dir / "profiles" / "characters.json").is_file()
     assert (cm.cloudsave_dir / "memory" / "小满" / "recent.json").is_file()
@@ -2460,6 +2462,43 @@ def test_legacy_snapshot_without_kind_uses_merge_semantics(tmp_path, marker_sequ
             indent=2,
         )
         manifest["fingerprint"] = ""
+    atomic_write_json(
+        source_cm.cloudsave_manifest_path,
+        manifest,
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    _write_runtime_state(target_cm, character_name="本地角色")
+    target_characters = target_cm.load_characters()
+    target_characters["主人"]["档案名"] = "本地主人"
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    unrelated_recent = Path(target_cm.memory_dir) / "本地角色" / "recent.json"
+    unrelated_recent_before = unrelated_recent.read_bytes()
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_local_cloudsave_snapshot(target_cm)
+
+    imported_characters = target_cm.load_characters()
+    assert result["snapshot_kind"] == "character_collection"
+    assert imported_characters["主人"]["档案名"] == "本地主人"
+    assert {"本地角色", "云端角色"} <= set(imported_characters["猫娘"])
+    assert unrelated_recent.read_bytes() == unrelated_recent_before
+
+
+@pytest.mark.unit
+def test_schema_one_stale_full_kind_uses_merge_semantics(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_local_cloudsave_snapshot(source_cm)
+    manifest = json.loads(source_cm.cloudsave_manifest_path.read_text(encoding="utf-8"))
+    assert manifest["snapshot_kind"] == "full_runtime"
+    manifest["schema_version"] = 1
+    manifest["min_reader_schema_version"] = 1
     atomic_write_json(
         source_cm.cloudsave_manifest_path,
         manifest,
