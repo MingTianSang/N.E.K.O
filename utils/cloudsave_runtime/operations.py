@@ -116,6 +116,9 @@ from .staging import (
 
 SNAPSHOT_KIND_CHARACTER_COLLECTION = "character_collection"
 SNAPSHOT_KIND_FULL_RUNTIME = "full_runtime"
+CHARACTER_COLLECTION_PROFILE_PATH = "profiles/character_collection.json"
+LEGACY_RUNTIME_PROFILE_PATH = "profiles/characters.json"
+CLOUDSAVE_READER_SCHEMA_VERSION = 2
 _SUPPORTED_SNAPSHOT_KINDS = {
     SNAPSHOT_KIND_CHARACTER_COLLECTION,
     SNAPSHOT_KIND_FULL_RUNTIME,
@@ -147,8 +150,41 @@ def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, P
         return snapshot_kind
 
     if full_runtime_markers <= set(staged_entries):
-        return SNAPSHOT_KIND_FULL_RUNTIME
+        # A legacy single-character upload rebuilt the manifest from every
+        # file already on disk. When it followed a full export, the two
+        # global marker files survived even though the newer upload only
+        # represented a character collection. The current-character marker
+        # carries the sequence of the full export, so only treat the legacy
+        # bundle as a proven full snapshot when it agrees with the manifest.
+        # Any malformed or missing sequence stays on the non-destructive path.
+        marker_payload = _load_staged_json_file(
+            staged_entries, "catalog/current_character.json",
+        )
+        manifest_sequence = int(manifest.get("sequence_number") or 0)
+        marker_sequence = (
+            int(
+                marker_payload.get("entry_sequence_number")
+                or marker_payload.get("sequence_number")
+                or 0
+            )
+            if isinstance(marker_payload, dict)
+            else 0
+        )
+        if manifest_sequence > 0 and marker_sequence == manifest_sequence:
+            return SNAPSHOT_KIND_FULL_RUNTIME
     return SNAPSHOT_KIND_CHARACTER_COLLECTION
+
+
+def _validate_manifest_reader_compatibility(manifest: dict[str, Any]) -> None:
+    try:
+        min_reader_schema_version = int(manifest.get("min_reader_schema_version") or 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid cloudsave minimum reader schema version") from exc
+    if min_reader_schema_version > CLOUDSAVE_READER_SCHEMA_VERSION:
+        raise ValueError(
+            "cloudsave snapshot requires a newer reader schema: "
+            f"{min_reader_schema_version}"
+        )
 
 
 def _has_usable_master_profile(payload: Any) -> bool:
@@ -287,9 +323,9 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
                 for name, payload in sorted(merged_cloud_character_map.items())
             },
         }
-        staged_entries["profiles/characters.json"] = _stage_json_file(
+        staged_entries[CHARACTER_COLLECTION_PROFILE_PATH] = _stage_json_file(
             stage_root,
-            "profiles/characters.json",
+            CHARACTER_COLLECTION_PROFILE_PATH,
             cloud_profiles_payload,
         )
 
@@ -368,6 +404,7 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
         delete_targets: set[Path] = {
             path
             for path in (
+                config_manager.cloudsave_profiles_dir / "characters.json",
                 config_manager.cloudsave_profiles_dir / "conversation_settings.json",
                 config_manager.cloudsave_catalog_dir / "current_character.json",
             )
@@ -388,6 +425,7 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
 
         mutation_targets = {
             config_manager.cloudsave_profiles_dir / "characters.json",
+            config_manager.cloudsave_profiles_dir / "character_collection.json",
             config_manager.cloudsave_bindings_dir / f"{character_name}.json",
             config_manager.cloudsave_catalog_dir / "catgirls_index.json",
             config_manager.cloudsave_catalog_dir / "character_tombstones.json",
@@ -1130,8 +1168,8 @@ def _rebuild_cloudsave_manifest_from_disk(
     }
     manifest.update(
         {
-            "schema_version": 1,
-            "min_reader_schema_version": 1,
+            "schema_version": 2,
+            "min_reader_schema_version": 2,
             "min_app_version": "",
             "client_id": str(client_id or manifest.get("client_id", "")),
             "device_id": str(manifest.get("device_id", "")),
@@ -1454,6 +1492,7 @@ def import_local_cloudsave_snapshot(
             stage="prepare_import",
         )
         manifest = load_cloudsave_manifest(config_manager)
+        _validate_manifest_reader_compatibility(manifest)
         manifest_files = manifest.get("files") or {}
         if not isinstance(manifest_files, dict) or not manifest_files:
             raise ValueError("cloudsave manifest does not contain any staged files")
@@ -1486,13 +1525,18 @@ def import_local_cloudsave_snapshot(
         if manifest.get("fingerprint") and manifest["fingerprint"] != computed_fingerprint:
             raise ValueError("cloudsave manifest fingerprint mismatch")
 
+        snapshot_kind = _resolve_snapshot_kind(manifest, staged_entries)
+        profile_path = (
+            CHARACTER_COLLECTION_PROFILE_PATH
+            if snapshot_kind == SNAPSHOT_KIND_CHARACTER_COLLECTION
+            and CHARACTER_COLLECTION_PROFILE_PATH in staged_entries
+            else LEGACY_RUNTIME_PROFILE_PATH
+        )
         cloud_characters_payload = _load_staged_json_file(
-            staged_entries, "profiles/characters.json", required=True,
+            staged_entries, profile_path, required=True,
         )
         if not isinstance(cloud_characters_payload, dict):
-            raise ValueError("profiles/characters.json must contain a JSON object")
-
-        snapshot_kind = _resolve_snapshot_kind(manifest, staged_entries)
+            raise ValueError(f"{profile_path} must contain a JSON object")
 
         conversation_settings = _load_staged_json_file(staged_entries, "profiles/conversation_settings.json") or {}
         if not isinstance(conversation_settings, dict):
@@ -1512,16 +1556,16 @@ def import_local_cloudsave_snapshot(
 
         snapshot_character_map = deepcopy(cloud_characters_payload.get("猫娘") or {})
         if not isinstance(snapshot_character_map, dict):
-            raise ValueError("profiles/characters.json 猫娘 must contain a JSON object")
+            raise ValueError(f"{profile_path} 猫娘 must contain a JSON object")
         live_character_names = sorted(snapshot_character_map.keys())
         name_audit = audit_cloudsave_character_names(live_character_names, tombstone_names)
         _raise_for_name_audit(name_audit, context="import")
 
         catalog_character_names = _parse_catalog_character_names(catalog_index_payload)
         if catalog_character_names and catalog_character_names != set(live_character_names):
-            raise ValueError("catalog/catgirls_index.json is inconsistent with profiles/characters.json")
+            raise ValueError(f"catalog/catgirls_index.json is inconsistent with {profile_path}")
         if binding_payloads and set(binding_payloads) != set(live_character_names):
-            raise ValueError("bindings/ payloads are inconsistent with profiles/characters.json")
+            raise ValueError(f"bindings/ payloads are inconsistent with {profile_path}")
 
         for tombstone_name in tombstone_names:
             snapshot_character_map.pop(tombstone_name, None)
