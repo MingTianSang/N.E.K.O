@@ -565,17 +565,6 @@
             drainPnQueue();
         }
 
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) stopStatusPointerTracking(false);
-            else if (isStatusToastVisible() && !prominentNoticeInteractive) startStatusPointerTracking();
-        });
-
-        window.addEventListener('beforeunload', function() {
-            prominentNoticeInteractive = false;
-            stopStatusPointerTracking(true);
-            setToastMouseThrough(true, true);
-        });
-
         // ===== IPC 监听（Electron 环境下由 preload-toast.js 注入 API）=====
         if (api) {
             // status toast / voice preparing：文本由调用方传入，不依赖 i18n
@@ -596,6 +585,17 @@
                 whenI18nReady(function() { showProminentNotice(data); });
             });
         }
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) stopStatusPointerTracking(false);
+            else if (isStatusToastVisible() && !prominentNoticeInteractive) startStatusPointerTracking();
+        });
+
+        window.addEventListener('beforeunload', function() {
+            prominentNoticeInteractive = false;
+            stopStatusPointerTracking(true);
+            setToastMouseThrough(true, true);
+        });
 
         console.log('[Toast] 页面初始化完成');
     })();
