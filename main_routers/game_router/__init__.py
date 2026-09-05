@@ -39,6 +39,7 @@ from utils.game_route_state import (  # noqa: F401  (re-exports: websocket_route
     _get_route_lock,
     _get_supersede_lock,
     _route_state_key,
+    is_game_external_input_takeover_active,
     is_game_route_active,
 )
 

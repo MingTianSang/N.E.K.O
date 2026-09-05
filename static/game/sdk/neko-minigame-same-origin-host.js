@@ -2678,7 +2678,11 @@
       bridge.onError = typeof options.onError === 'function' ? options.onError : null;
 
       const acceptMessage = (data, source) => {
-        if (!data || !['game_voice_control_state', 'game_voice_transcript'].includes(data.type)) return;
+        if (!data || ![
+          'game_voice_control_state',
+          'game_voice_transcript',
+          'game_voice_control_error',
+        ].includes(data.type)) return;
         const messageId = String(data.message_id || data.storage_nonce || '');
         if (messageId) {
           if (bridge.seenMessageIds.has(messageId)) return;
@@ -2690,6 +2694,27 @@
         }
         if (String(data.game_type || '') !== this.routeGameType) return;
         if (data.session_id && String(data.session_id) !== this.sessionId) return;
+        const messageRouteInstanceId = String(data.sdk_route_instance_id || '').trim();
+        const activeRouteInstanceId = String(this._activeRouteIdentity?.routeInstanceId || '').trim();
+        if (
+          messageRouteInstanceId
+          && activeRouteInstanceId
+          && messageRouteInstanceId !== activeRouteInstanceId
+        ) return;
+        const requestId = String(data.request_id || '');
+        const pending = requestId ? bridge.pending.get(requestId) : null;
+        if (
+          pending?.routeInstanceId
+          && messageRouteInstanceId !== pending.routeInstanceId
+        ) return;
+        if (data.type === 'game_voice_control_error') {
+          try {
+            bridge.onError?.(Object.freeze({ ...data }), source);
+          } catch (error) {
+            this._window.console?.error?.('[NekoMiniGameHost] voice error listener failed', error);
+          }
+          return;
+        }
         if (data.type === 'game_voice_transcript') {
           const text = String(data.text || '').trim();
           if (!text) return;
@@ -2701,12 +2726,6 @@
           return;
         }
         bridge.lastState = data;
-        const requestId = String(data.request_id || '');
-        const pending = requestId ? bridge.pending.get(requestId) : null;
-        if (
-          pending?.routeInstanceId
-          && String(data.sdk_route_instance_id || '') !== pending.routeInstanceId
-        ) return;
         if (pending && data.reason !== 'working') {
           this._window.clearTimeout(pending.timeoutId);
           bridge.pending.delete(requestId);
@@ -2817,13 +2836,18 @@
         }));
       }
       const normalizedAction = String(action || 'query');
-      if (!['query', 'start', 'stop', 'toggle'].includes(normalizedAction)) {
+      if (!['query', 'start', 'stop', 'toggle', 'handoff'].includes(normalizedAction)) {
         return Promise.reject(this._hostError('invalid_request', 'Unknown voice control action', {
           operation: 'voice_control',
         }));
       }
       const signal = options.signal || null;
       const routeInstanceId = String(options.sdkRouteInstanceId || '').trim();
+      const handoffIntentEpoch = Number(options.handoffIntentEpoch);
+      const hasHandoffIntentEpoch = normalizedAction === 'handoff'
+        && Object.prototype.hasOwnProperty.call(options, 'handoffIntentEpoch')
+        && Number.isSafeInteger(handoffIntentEpoch)
+        && handoffIntentEpoch >= 0;
       if (signal?.aborted) {
         return Promise.reject(this._hostError('cancelled', 'Voice control request was cancelled', {
           operation: 'voice_control',
@@ -2876,6 +2900,7 @@
           game_type: this.routeGameType,
           session_id: this.sessionId,
           ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
+          ...(hasHandoffIntentEpoch ? { ordinary_voice_intent_epoch: handoffIntentEpoch } : {}),
         });
         if (!posted) {
           this._window.clearTimeout(timeoutId);

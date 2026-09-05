@@ -91,6 +91,16 @@ match the live route, and the generation is required rather than optional, which
 is what keeps the built-in soccer/badminton routes (they mint none) out of it.
 None of those three are secrets -- `GET /api/game/route/active` returns them
 unauthenticated -- so a reloaded host page recovers voice control on its own.
+`game.voice.handoff()` is the conditional entry operation: it starts route-bound
+game voice only when an ordinary voice session is already active, ends that
+ordinary session after game recognition acquires the microphone, and otherwise
+returns an inactive state without prompting for microphone access. A completed
+handoff is one-way; stopping game voice does not reopen the ended session.
+If speech playback defers a handoff, the returned
+`ordinary_voice_intent_epoch` can be passed back as `handoffIntentEpoch` on a
+retry. The main-window owner rejects that retry if the user has requested a new
+ordinary voice session in the meantime, so delayed game work cannot steal the
+microphone back from an explicit user action.
 
 There is deliberately no bearer credential here. One existed briefly and was
 removed: every page sharing this origin is inside the same trust boundary

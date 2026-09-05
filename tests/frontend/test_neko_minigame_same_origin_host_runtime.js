@@ -601,10 +601,26 @@ async function main() {
   };
   windowMock.addEventListener('neko-game-voice-control-message', aliasedVoiceController);
   aliasedRouteHost.startVoiceControlBridge({ BroadcastChannelImpl: null, onState() {} });
-  const aliasedVoiceResponse = await aliasedRouteHost.requestVoiceControl('query', { timeoutMs: 500 });
-  assert(aliasedVoiceRequest?.game_type === 'drawing_guess'
-    && aliasedVoiceResponse.reason === 'alias-probe',
-  'voice control escaped the registered backend route alias');
+  for (const action of ['query', 'start', 'stop', 'toggle']) {
+    const aliasedVoiceResponse = await aliasedRouteHost.requestVoiceControl(action, {
+      timeoutMs: 500,
+      handoffIntentEpoch: 17,
+    });
+    assert(aliasedVoiceRequest?.action === action
+      && aliasedVoiceRequest.game_type === 'drawing_guess'
+      && !Object.hasOwn(aliasedVoiceRequest, 'ordinary_voice_intent_epoch')
+      && aliasedVoiceResponse.reason === 'alias-probe',
+    `voice ${action} leaked the handoff-only intent fence or escaped the route alias`);
+  }
+  const aliasedHandoffResponse = await aliasedRouteHost.requestVoiceControl('handoff', {
+    timeoutMs: 500,
+    handoffIntentEpoch: 17,
+  });
+  assert(aliasedVoiceRequest?.action === 'handoff'
+    && aliasedVoiceRequest.game_type === 'drawing_guess'
+    && aliasedVoiceRequest.ordinary_voice_intent_epoch === 17
+    && aliasedHandoffResponse.reason === 'alias-probe',
+  'the trusted host rejected or rewrote the voice handoff action/intent fence');
   aliasedRouteHost.stopVoiceControlBridge();
   windowMock.removeEventListener('neko-game-voice-control-message', aliasedVoiceController);
 
@@ -1511,9 +1527,11 @@ async function main() {
     'millisecond control timestamps were changed during normalization');
 
   let sameDocumentState = null;
+  let sameDocumentVoiceError = null;
   host.startVoiceControlBridge({
     BroadcastChannelImpl: null,
     onState: (state, source) => { sameDocumentState = { state, source }; },
+    onError: (error, source) => { sameDocumentVoiceError = { error, source }; },
   });
   windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
     detail: {
@@ -1539,6 +1557,18 @@ async function main() {
   assert(sameDocumentState?.state.route_active === false
     && sameDocumentState.state.reason === 'route_closed',
   'the trusted host dropped the closing route inactive voice state');
+  windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
+    detail: {
+      type: 'game_voice_control_error',
+      game_type: 'example-game',
+      session_id: 'server-session',
+      code: 'not-allowed',
+      reason: 'not-allowed',
+    },
+  }));
+  assert(sameDocumentVoiceError?.source === 'same_document'
+    && sameDocumentVoiceError.error.code === 'not-allowed',
+  'same-document voice control errors were not delivered to the SDK bridge');
   const sameDocumentController = (event) => {
     if (event?.detail?.type !== 'game_voice_control_request') return;
     windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {

@@ -181,6 +181,24 @@ def is_game_route_active(lanlan_name: str, game_type: str | None = None) -> bool
     return _get_active_game_route_state(lanlan_name, game_type) is not None
 
 
+def is_game_external_input_takeover_active(
+    lanlan_name: str,
+    game_type: str | None = None,
+) -> bool:
+    """True iff an active game route owns the ordinary external-input entry.
+
+    Older route states do not carry ``external_input_takeover_enabled``. Treat
+    that missing field as enabled so legacy games keep their historical
+    routing behavior across rolling upgrades and direct state construction in
+    tests/plugins.
+    """
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    return bool(
+        state is not None
+        and state.get("external_input_takeover_enabled", True) is not False
+    )
+
+
 _VoiceTranscriptHandler = Callable[..., Awaitable[bool]]
 _voice_transcript_handler: Optional[_VoiceTranscriptHandler] = None
 

@@ -11,6 +11,10 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    let ordinaryMicCaptureEpoch = 0;
+    let ordinaryMicCaptureBlockedForMiniGameVoice = false;
+    const ordinaryMicCaptureOperations = new Set();
+    let ordinaryVoiceEndPromise = null;
 
     // ======================== DOM 辅助 ========================
 
@@ -134,6 +138,7 @@
     }
 
     function releaseOrdinaryMicCaptureForGameVoiceSttGate() {
+        let audioContextClosePromise = Promise.resolve();
         if (S.workletNode) {
             try { S.workletNode.disconnect(); } catch (_) { /* noop */ }
             S.workletNode = null;
@@ -150,11 +155,14 @@
             const context = S.audioContext;
             S.audioContext = null;
             if (context.state !== 'closed') {
-                context.close().catch((error) => console.warn('[GameVoiceSTT] close ordinary audio context failed:', error));
+                audioContextClosePromise = context.close().catch((error) => {
+                    console.warn('[GameVoiceSTT] close ordinary audio context failed:', error);
+                });
             }
         }
 
         stopSilenceDetection();
+        return audioContextClosePromise;
     }
 
     function restoreOrdinaryMicCaptureAfterGameVoiceSttFailure(reason, error) {
@@ -169,15 +177,265 @@
 
     function restoreOrdinaryMicCaptureAfterGameVoiceSttStop(reason) {
         if (!S.isRecording || typeof startMicCapture !== 'function') {
-            return;
+            return Promise.resolve(false);
         }
         const ordinaryPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
         if (ordinaryPipelineAlive) {
-            return;
+            return Promise.resolve(false);
         }
-        Promise.resolve(startMicCapture()).catch(function (restoreError) {
+        return Promise.resolve(startMicCapture()).then(function () {
+            return true;
+        }).catch(function (restoreError) {
             console.warn(`[GameVoiceSTT] restore ordinary mic capture after ${reason || 'stop'} failed:`, restoreError);
+            return false;
         });
+    }
+
+    function waitForOrdinaryMicCaptureOperations(timeoutMs) {
+        const operations = Array.from(ordinaryMicCaptureOperations);
+        if (!operations.length) return Promise.resolve(true);
+        let timeoutId = null;
+        return Promise.race([
+            Promise.allSettled(operations).then(function () { return true; }),
+            new Promise(function (resolve) {
+                timeoutId = window.setTimeout(function () { resolve(false); }, timeoutMs);
+            })
+        ]).finally(function () {
+            if (timeoutId != null) window.clearTimeout(timeoutId);
+        });
+    }
+
+    // The mini-game SDK voice controller owns SpeechRecognition, while this
+    // module remains the single owner of the ordinary microphone pipeline.
+    // Keep that boundary explicit instead of letting the controller reach into
+    // appState's AudioContext/worklet/MediaStream fields directly.
+    async function suspendOrdinaryMicCaptureForMiniGameVoice() {
+        ordinaryMicCaptureBlockedForMiniGameVoice = true;
+        ordinaryMicCaptureEpoch += 1;
+        if ((S.voiceStartPending || window.isMicStarting)
+                && typeof window.cancelPendingSessionStart === 'function') {
+            window.cancelPendingSessionStart('Voice start cancelled by mini-game voice handoff');
+        }
+        if (!await waitForOrdinaryMicCaptureOperations(5000)) {
+            await Promise.resolve(releaseOrdinaryMicCaptureForGameVoiceSttGate());
+            // A capture can be stuck in getUserMedia after the backend has
+            // already opened the ordinary voice session.  Once the epoch fence
+            // cancels that late capture, restoring it is not reliable; close
+            // the backend session explicitly so the failed handoff cannot leave
+            // a silent orphan session behind.
+            const endResult = await endOrdinaryVoiceSession({
+                force: true,
+                reason: 'mini_game_voice_suspend_timeout',
+                cancelReason: 'Voice start cancelled after microphone handoff timeout',
+                clearAudio: false,
+                timeoutMs: 1500
+            });
+            const error = new Error('ordinary_microphone_suspend_timeout');
+            error.ordinaryVoiceCommitted = !!(
+                endResult
+                && (endResult.committed === true || endResult.ended === true)
+            );
+            // Leave the direct-capture fence in place until the controller
+            // either completes this forced end or performs a genuine restore.
+            throw error;
+        }
+        await Promise.resolve(releaseOrdinaryMicCaptureForGameVoiceSttGate());
+        return true;
+    }
+
+    async function restoreOrdinaryMicCaptureAfterMiniGameVoice(reason) {
+        ordinaryMicCaptureBlockedForMiniGameVoice = false;
+        ordinaryMicCaptureEpoch += 1;
+        if (!await waitForOrdinaryMicCaptureOperations(1500)) {
+            console.warn('[GameVoiceSTT] ordinary mic capture did not settle before restore');
+            return false;
+        }
+        return restoreOrdinaryMicCaptureAfterGameVoiceSttStop(
+            reason || 'mini-game voice stop'
+        );
+    }
+
+    function completeOrdinaryMicCaptureHandoff() {
+        ordinaryMicCaptureBlockedForMiniGameVoice = false;
+        ordinaryMicCaptureEpoch += 1;
+        return true;
+    }
+
+    function isOrdinaryVoiceSessionActive() {
+        return !!(
+            S.isRecording
+            || S.voiceChatActive
+            || S.voiceStartPending
+            || S._pendingSessionStartMode === 'audio'
+            || window.isRecording
+            || window.isMicStarting
+        );
+    }
+
+    function waitForOrdinaryVoiceSessionEnd(timeoutMs) {
+        return new Promise(function (resolve) {
+            let settled = false;
+            let timeoutId = null;
+            function finish() {
+                if (settled) return;
+                settled = true;
+                if (timeoutId != null) window.clearTimeout(timeoutId);
+                window.removeEventListener('neko:session-ended-by-server', finish);
+                window.removeEventListener('neko:character-left', finish);
+                resolve();
+            }
+            timeoutId = window.setTimeout(finish, Math.max(0, Number(timeoutMs || 1500)));
+            window.addEventListener('neko:session-ended-by-server', finish, { once: true });
+            window.addEventListener('neko:character-left', finish, { once: true });
+        });
+    }
+
+    function resetOrdinaryVoiceSessionUi() {
+        const _mic = micButton();
+        const _mute = muteButton();
+        const _screen = screenButton();
+        const _stop = stopButton();
+        const _reset = resetSessionButton();
+        if (_mic) {
+            _mic.classList.remove('active');
+            _mic.classList.remove('recording');
+            _mic.disabled = false;
+        }
+        if (_screen) {
+            _screen.classList.remove('active');
+            _screen.disabled = true;
+        }
+        if (_mute) _mute.disabled = true;
+        if (_stop) _stop.disabled = true;
+        if (_reset) _reset.disabled = false;
+        const textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        if (typeof window.syncFloatingScreenButtonState === 'function') {
+            window.syncFloatingScreenButtonState(false);
+        }
+    }
+
+    function finalizeOrdinaryVoiceSessionState() {
+        S.isRecording = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        S.isTextSessionActive = false;
+        S._pendingSessionStartMode = null;
+        window.isRecording = false;
+        window.isMicStarting = false;
+        try {
+            resetOrdinaryVoiceSessionUi();
+        } catch (error) {
+            console.warn('[VoiceSession] ordinary voice UI reset failed:', error);
+        }
+    }
+
+    function endOrdinaryVoiceSession(options) {
+        options = options || {};
+        if (ordinaryVoiceEndPromise) return ordinaryVoiceEndPromise;
+        if (options.force !== true && !isOrdinaryVoiceSessionActive()) {
+            return Promise.resolve({ ok: true, ended: false, reason: 'ordinary_voice_inactive' });
+        }
+        ordinaryVoiceEndPromise = (async function () {
+            let committed = false;
+            let endSignalSent = false;
+            try {
+                if (typeof window.cancelPendingSessionStart === 'function') {
+                    try {
+                        window.cancelPendingSessionStart(
+                            options.cancelReason || 'Voice session ended for input handoff'
+                        );
+                    } catch (error) {
+                        console.warn('[VoiceSession] pending voice start cancellation failed:', error);
+                    }
+                }
+                if (typeof window.hideVoicePreparingToast === 'function') {
+                    try {
+                        window.hideVoicePreparingToast();
+                    } catch (error) {
+                        console.warn('[VoiceSession] preparing toast cleanup failed:', error);
+                    }
+                }
+                // From this point on, local ordinary capture is deliberately
+                // torn down. Even if websocket cleanup later fails, reopening
+                // it would create two competing owners, so callers must treat
+                // the transfer as irreversibly committed.
+                committed = true;
+                stopRecording({ notifyServer: false });
+                stopSilenceDetection();
+                updateMicVolumeStatusNow(false);
+                await Promise.resolve(releaseOrdinaryMicCaptureForGameVoiceSttGate());
+
+                const WebSocketImpl = window.WebSocket;
+                const socketOpen = !!(
+                    S.socket
+                    && WebSocketImpl
+                    && S.socket.readyState === WebSocketImpl.OPEN
+                );
+                if (socketOpen) {
+                    const teardown = waitForOrdinaryVoiceSessionEnd(options.timeoutMs || 1500);
+                    S.socket.send(JSON.stringify({
+                        action: 'end_session',
+                        reason: String(options.reason || 'voice_input_handoff').slice(0, 64)
+                    }));
+                    endSignalSent = true;
+                    await teardown;
+                }
+                if (options.clearAudio === true && typeof window.clearAudioQueue === 'function') {
+                    await window.clearAudioQueue();
+                }
+
+                finalizeOrdinaryVoiceSessionState();
+                return {
+                    ok: true,
+                    ended: true,
+                    committed: true,
+                    reason: 'ordinary_voice_ended'
+                };
+            } catch (error) {
+                console.warn('[VoiceSession] ordinary voice handoff cleanup failed:', error);
+                if (committed) {
+                    try { stopRecording({ notifyServer: false }); } catch (_) { /* best effort */ }
+                    try { stopSilenceDetection(); } catch (_) { /* best effort */ }
+                    try { updateMicVolumeStatusNow(false); } catch (_) { /* best effort */ }
+                    try {
+                        await Promise.resolve(releaseOrdinaryMicCaptureForGameVoiceSttGate());
+                    } catch (_) { /* best effort */ }
+                    if (!endSignalSent) {
+                        try {
+                            const WebSocketImpl = window.WebSocket;
+                            if (S.socket
+                                    && WebSocketImpl
+                                    && S.socket.readyState === WebSocketImpl.OPEN) {
+                                S.socket.send(JSON.stringify({
+                                    action: 'end_session',
+                                    reason: String(options.reason || 'voice_input_handoff').slice(0, 64)
+                                }));
+                                endSignalSent = true;
+                            }
+                        } catch (_) { /* backend cleanup remains uncertain */ }
+                    }
+                    finalizeOrdinaryVoiceSessionState();
+                }
+                return {
+                    ok: false,
+                    ended: false,
+                    committed: committed,
+                    reason: committed
+                        ? 'ordinary_voice_end_uncertain'
+                        : 'ordinary_voice_end_failed'
+                };
+            } finally {
+                ordinaryVoiceEndPromise = null;
+            }
+        })();
+        return ordinaryVoiceEndPromise;
     }
 
     function startGameVoiceSttGate() {
@@ -882,6 +1140,21 @@
 
     // 开麦，按钮on click
     async function startMicCapture() {
+        const captureEpoch = ordinaryMicCaptureEpoch;
+        let settleCaptureOperation = null;
+        const captureOperation = new Promise(function (resolve) {
+            settleCaptureOperation = resolve;
+        });
+        ordinaryMicCaptureOperations.add(captureOperation);
+        function ensureOrdinaryMicCaptureAllowed() {
+            if (!ordinaryMicCaptureBlockedForMiniGameVoice
+                    && captureEpoch === ordinaryMicCaptureEpoch) return;
+            void Promise.resolve(releaseOrdinaryMicCaptureForGameVoiceSttGate());
+            const error = new Error('Ordinary microphone capture is owned by mini-game voice');
+            error.voiceStartCancelled = true;
+            error.miniGameVoiceCaptureBlocked = true;
+            throw error;
+        }
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -889,6 +1162,7 @@
         const _reset = resetSessionButton();
 
         try {
+            ensureOrdinaryMicCaptureAllowed();
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
 
@@ -910,6 +1184,7 @@
 
             if (S.audioPlayerContext.state === 'suspended') {
                 await S.audioPlayerContext.resume();
+                ensureOrdinaryMicCaptureAllowed();
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
@@ -927,6 +1202,7 @@
             };
 
             S.stream = await navigator.mediaDevices.getUserMedia(constraints);
+            ensureOrdinaryMicCaptureAllowed();
 
             // 检查音频轨道状态
             const audioTracks = S.stream.getAudioTracks();
@@ -949,6 +1225,7 @@
             }
 
             await startAudioWorklet(S.stream);
+            ensureOrdinaryMicCaptureAllowed();
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
             }
@@ -976,8 +1253,11 @@
                 window.stopProactiveChatSchedule();
             }
         } catch (err) {
-            console.error(window.t('console.getMicrophonePermissionFailed'), err);
-            window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            const blockedByMiniGameVoice = !!(err && err.miniGameVoiceCaptureBlocked);
+            if (!blockedByMiniGameVoice) {
+                console.error(window.t('console.getMicrophonePermissionFailed'), err);
+                window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            }
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
@@ -999,6 +1279,9 @@
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
+        } finally {
+            ordinaryMicCaptureOperations.delete(captureOperation);
+            settleCaptureOperation();
         }
     }
 
@@ -1362,6 +1645,11 @@
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     window.startGameVoiceSttGate = startGameVoiceSttGate;
     window.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    window.suspendOrdinaryMicCaptureForMiniGameVoice = suspendOrdinaryMicCaptureForMiniGameVoice;
+    window.restoreOrdinaryMicCaptureAfterMiniGameVoice = restoreOrdinaryMicCaptureAfterMiniGameVoice;
+    window.completeOrdinaryMicCaptureHandoff = completeOrdinaryMicCaptureHandoff;
+    window.isOrdinaryVoiceSessionActive = isOrdinaryVoiceSessionActive;
+    window.endOrdinaryVoiceSession = endOrdinaryVoiceSession;
 
     function isTutorialShortcutBlockedForMicMute() {
         if (typeof window.isNekoShortcutBlockedByTutorial === 'function') {
@@ -1458,6 +1746,11 @@
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    mod.suspendOrdinaryMicCaptureForMiniGameVoice = suspendOrdinaryMicCaptureForMiniGameVoice;
+    mod.restoreOrdinaryMicCaptureAfterMiniGameVoice = restoreOrdinaryMicCaptureAfterMiniGameVoice;
+    mod.completeOrdinaryMicCaptureHandoff = completeOrdinaryMicCaptureHandoff;
+    mod.isOrdinaryVoiceSessionActive = isOrdinaryVoiceSessionActive;
+    mod.endOrdinaryVoiceSession = endOrdinaryVoiceSession;
 
     // ======================== 麦克风设备列表 UI ========================
 

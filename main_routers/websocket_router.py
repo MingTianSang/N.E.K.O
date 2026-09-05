@@ -43,7 +43,10 @@ from .shared_state import (
     get_config_manager,
     get_session_id,
 )
-from .game_router import is_game_route_active, route_external_stream_message
+from .game_router import (
+    is_game_external_input_takeover_active,
+    route_external_stream_message,
+)
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -311,7 +314,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
                 input_type = message.get("input_type", "audio")
                 if input_type in _SESSION_INPUT_TYPES:
-                    if is_game_route_active(lanlan_name):
+                    if is_game_external_input_takeover_active(lanlan_name):
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
                             _fire_task(session_manager[lanlan_name].send_session_started("text"))
@@ -340,7 +343,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
-                if is_game_route_active(lanlan_name):
+                if is_game_external_input_takeover_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
                     else:

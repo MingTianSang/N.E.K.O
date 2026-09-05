@@ -5282,7 +5282,7 @@
             "quickDraw": "轮到你画时，抽一张题目牌，在画布上画完后点“画好了”。",
             "quickGuess": "轮到你猜时，在聊天框里输入猜测，也可以一边聊天一边要提示。",
             "quickSummary": "每轮结算会保留缩略图，最终结算里可以保存画作。",
-            "voiceHint": "想用语音的话，请先在主页面开启语音；小游戏开始后会自动接管。"
+            "voiceHint": "想用语音时，直接点击聊天输入框左侧的麦克风按钮。"
         },
         "actions": {
             "start": "开始",
@@ -5323,12 +5323,15 @@
             "requestLock": "请求锁"
         },
         "voice": {
-            "connected": "语音已接入这一局。",
-            "connectHint": "先在主页面开启语音，这一局会自动接管。",
-            "connectedNotice": "主页面语音已接入这一局。",
-            "connectHintNotice": "请先在主页面开启语音；开启后这一局会自动接管。",
+            "connected": "本局语音已开启，点击可关闭。",
+            "connectHint": "点击为这一局开启语音。",
+            "connectedNotice": "本局语音已开启。",
+            "connectHintNotice": "本局语音已关闭。",
+            "starting": "正在切换语音输入…",
+            "unavailable": "当前环境不支持局内语音。",
+            "controlFailed": "语音操作失败：{{reason}}",
             "routeNotReady": "先等游戏路由准备好，再使用语音。",
-            "buttonLabel": "语音聊天"
+            "buttonLabel": "语音输入"
         },
         "exitConfirm": {
             "title": "要离开吗？",

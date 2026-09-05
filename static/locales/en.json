@@ -5282,7 +5282,7 @@
             "quickDraw": "When it is your turn to draw, pick one card, draw it on the canvas, then press Done.",
             "quickGuess": "When it is your turn to guess, type your guess in chat; you can also chat and ask for hints.",
             "quickSummary": "Each round keeps thumbnails, and the final summary lets you save the drawings.",
-            "voiceHint": "If you want to use voice, turn it on from the main page first; this mini-game will take it over after it starts."
+            "voiceHint": "To use voice, click the microphone button to the left of the chat input."
         },
         "actions": {
             "start": "Start",
@@ -5323,12 +5323,15 @@
             "requestLock": "Request lock"
         },
         "voice": {
-            "connected": "Voice is connected to this round.",
-            "connectHint": "Open voice on the main page to let this round take it over.",
-            "connectedNotice": "Main-page voice is connected to this round.",
-            "connectHintNotice": "Open voice on the main page first; this round will take it over when it becomes active.",
+            "connected": "Voice is on for this round. Click to stop.",
+            "connectHint": "Click to turn on voice for this round.",
+            "connectedNotice": "Voice is on for this round.",
+            "connectHintNotice": "Voice is off for this round.",
+            "starting": "Switching voice input…",
+            "unavailable": "In-game voice is unavailable in this environment.",
+            "controlFailed": "Voice operation failed: {{reason}}",
             "routeNotReady": "Wait until the game route is ready before using voice.",
-            "buttonLabel": "Voice chat"
+            "buttonLabel": "Voice input"
         },
         "exitConfirm": {
             "title": "Leave this page?",

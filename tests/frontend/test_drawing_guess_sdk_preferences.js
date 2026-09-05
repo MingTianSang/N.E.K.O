@@ -136,6 +136,38 @@ function loadHarness() {
     configureSdkMemoryConsent: configureSdkMemoryConsent,
     applySdkLocale: applySdkLocale,
     currentLanguage: currentLanguage,
+    submitPlayerText: submitPlayerText,
+    handleSdkVoiceState: handleSdkVoiceState,
+    handleSpeechPlaybackState: handleSpeechPlaybackState,
+    handleSdkPageExit: handleSdkPageExit,
+    querySdkVoiceRouteState: querySdkVoiceRouteState,
+    handoffOrdinaryVoiceToSdk: handoffOrdinaryVoiceToSdk,
+    schedulePendingVoiceHandoffRetry: schedulePendingVoiceHandoffRetry,
+    handleVoiceRouteButton: handleVoiceRouteButton,
+    cleanupRouteResources: cleanupRouteResources,
+    startRoute: startRoute,
+    installPlayerTextSpies: function (handler) {
+      addUserMessage = function () {};
+      submitUserGuess = function (value, metadata) { return handler('user_guessing', value, metadata); };
+      submitGameChat = function (value, options) { return handler('game_chat', value, options); };
+      submitFeedbackInput = function (value, metadata) { return handler('feedback', value, metadata); };
+    },
+    installPageExitCleanupSpy: function (events) {
+      cleanupRouteResources = function () { events.push('cleanup'); };
+    },
+    installVoiceUiSpy: function (events) {
+      els.chatMessages = {};
+      addEventMessage = function (key) {
+        if (events) events.push(key);
+      };
+      updateControls = function () {};
+    },
+    installRouteUiSpies: function () {
+      setStatus = function () {};
+      addMessage = function () {};
+      stopThinkingEventMessage = function () {};
+      updateControls = function () {};
+    },
     installLocaleUiSpies: function () {
       var calls = { updateControls: 0, setPhase: 0, syncBrushToolButton: 0 };
       updateControls = function () { calls.updateControls += 1; };
@@ -475,6 +507,659 @@ async function testSdkLocaleUpdatesCachedLanguage() {
   assertEqual(uiCalls.updateControls, 1, 'an unchanged locale should not trigger another UI refresh');
 }
 
+async function testPlayerTextCommandsStaySerialized() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const first = deferred();
+  const calls = [];
+  api.installPlayerTextSpies((kind, value, metadata) => {
+    calls.push({ kind, value, metadata });
+    return value === 'first' ? first.promise : Promise.resolve();
+  });
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.phase = 'user_guessing';
+
+  assertEqual(api.submitPlayerText('first', { inputMetadata: { source: 'voice' } }), true,
+    'the first player input should be accepted');
+  assertEqual(api.submitPlayerText('second', { inputMetadata: { source: 'voice' } }), true,
+    'the second player input should be queued');
+  await Promise.resolve();
+  await Promise.resolve();
+  assertDeepEqual(calls.map((call) => call.value), ['first'],
+    'a later voice transcript must not start while the first command is in flight');
+
+  first.resolve();
+  await api.state.playerTextChain;
+  assertDeepEqual(calls.map((call) => call.value), ['first', 'second'],
+    'queued player inputs must preserve recognition order');
+}
+
+async function testQueuedPlayerTextDoesNotCrossPhaseBoundary() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const first = deferred();
+  const calls = [];
+  api.installPlayerTextSpies((_kind, value) => {
+    calls.push(value);
+    return value === 'first' ? first.promise : Promise.resolve();
+  });
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.phase = 'user_guessing';
+
+  api.submitPlayerText('first');
+  api.submitPlayerText('second');
+  await Promise.resolve();
+  await Promise.resolve();
+  api.state.phase = 'ai_guess_feedback';
+  first.resolve();
+  await api.state.playerTextChain;
+
+  assertDeepEqual(calls, ['first'],
+    'queued text from an earlier phase must not be reinterpreted after the phase changes');
+}
+
+async function testVoiceStateCannotClearAnActiveControlRequest() {
+  const harness = loadHarness();
+  const api = harness.api;
+  api.installVoiceUiSpy();
+  api.state.voiceControlPending = true;
+
+  api.handleSdkVoiceState({ active: true, reason: 'recognition_started' });
+
+  assertEqual(api.state.voiceControlPending, true,
+    'unsolicited recognition state must not clear the current toggle request fence');
+}
+
+async function testBackgroundVoiceQueryCannotClearANewerToggle() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const query = deferred();
+  const client = {
+    disposed: false,
+    runtime: { state: 'running' },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: { query() { return query.promise; } },
+  };
+  api.installVoiceUiSpy();
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceControlRequestSequence = 3;
+  const pendingQuery = api.querySdkVoiceRouteState(client);
+  api.state.voiceControlRequestSequence = 4;
+  api.state.voiceControlPending = true;
+  api.state.voiceRouteActive = true;
+  query.reject(new Error('query timeout'));
+  await pendingQuery;
+
+  assertEqual(api.state.voiceControlPending, true,
+    'a stale background query must not clear the newer toggle pending fence');
+  assertEqual(api.state.voiceRouteActive, true,
+    'a stale background query must not overwrite the newer voice state');
+}
+
+async function testAutomaticVoiceHandoffUsesPendingFence() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const handoff = deferred();
+  const calls = [];
+  const client = {
+    disposed: false,
+    runtime: { state: 'running' },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff(options) {
+        calls.push(options);
+        return handoff.promise;
+      },
+    },
+  };
+  api.installVoiceUiSpy();
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceControlRequestSequence = 7;
+
+  const pendingHandoff = api.handoffOrdinaryVoiceToSdk(client);
+  api.handoffOrdinaryVoiceToSdk(client);
+
+  assertEqual(calls.length, 1,
+    'an automatic handoff already in flight must not dispatch a duplicate request');
+  assertEqual(calls[0].timeoutMs, 12000,
+    'automatic handoff must use the bounded voice-control timeout');
+  assertEqual(api.state.voiceControlRequestSequence, 8,
+    'automatic handoff must claim the next voice-control request sequence');
+  assertEqual(api.state.voiceControlPending, true,
+    'automatic handoff must hold the shared voice-control pending fence');
+
+  handoff.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
+  await pendingHandoff;
+  assertEqual(api.state.voiceRouteActive, true,
+    'a successful automatic handoff must publish the SDK voice state');
+  assertEqual(api.state.voiceControlPending, false,
+    'the owning automatic handoff must release the shared pending fence');
+}
+
+async function testStaleAutomaticVoiceHandoffCannotOverwriteNewerRequest() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const handoff = deferred();
+  const client = {
+    disposed: false,
+    runtime: { state: 'running' },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: { handoff() { return handoff.promise; } },
+  };
+  api.installVoiceUiSpy();
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceControlRequestSequence = 12;
+
+  const staleHandoff = api.handoffOrdinaryVoiceToSdk(client);
+  api.state.voiceControlRequestSequence = 14;
+  api.state.voiceControlPending = true;
+  api.state.voiceRouteActive = false;
+  handoff.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
+  await staleHandoff;
+
+  assertEqual(api.state.voiceRouteActive, false,
+    'a stale handoff completion must not overwrite a newer voice request state');
+  assertEqual(api.state.voiceControlPending, true,
+    'a stale handoff completion must not release a newer request pending fence');
+}
+
+async function waitForCondition(predicate, message) {
+  const deadline = Date.now() + 500;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function testPlaybackBlockedHandoffRetriesAfterPlaybackStops() {
+  for (const failureMode of ['speech_playback_active', 'speech_playback_started']) {
+    const harness = loadHarness();
+    const api = harness.api;
+    const events = [];
+    let handoffCalls = 0;
+    const handoffOptions = [];
+    const intentEpoch = failureMode === 'speech_playback_active' ? 31 : 32;
+    const client = {
+      disposed: false,
+      runtime: { state: 'running', session: { id: `tts-${intentEpoch}` } },
+      capabilities: { has(name) { return name === 'voice-input'; } },
+      voice: {
+        handoff(options) {
+          handoffCalls += 1;
+          handoffOptions.push(options);
+          if (handoffCalls === 1) {
+            return Promise.resolve({
+              ok: false,
+              active: false,
+              reason: failureMode,
+              ordinary_voice_intent_epoch: intentEpoch,
+            });
+          }
+          return Promise.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
+        },
+      },
+    };
+    api.installVoiceUiSpy(events);
+    api.state.sdkClient = client;
+    api.state.routeActive = true;
+    api.state.routeEnding = false;
+    api.state.speechPlaybackActive = true;
+
+    const firstResult = await api.handoffOrdinaryVoiceToSdk(client);
+
+    assertEqual(firstResult, false,
+      `${failureMode} should defer rather than complete automatic handoff`);
+    assertEqual(api.state.voiceHandoffRetryPending, true,
+      `${failureMode} did not mark automatic handoff for retry`);
+    assertEqual(api.state.voiceHandoffIntentEpoch, intentEpoch,
+      `${failureMode} did not retain the ordinary-voice intent fence`);
+    assertEqual(handoffCalls, 1,
+      `${failureMode} retried while TTS was still active`);
+    assert(!events.includes('drawingGuess.voice.controlFailed'),
+      `${failureMode} surfaced as a user-visible voice failure`);
+
+    api.handleSpeechPlaybackState({ active: false });
+    await waitForCondition(
+      () => handoffCalls === 2 && api.state.voiceControlPending === false,
+      `${failureMode} was not retried after TTS became inactive`,
+    );
+
+    assertEqual(api.state.voiceRouteActive, true,
+      `${failureMode} retry did not activate SDK voice`);
+    assertEqual(handoffOptions[1].handoffIntentEpoch, intentEpoch,
+      `${failureMode} retry did not bind the original ordinary-voice intent epoch`);
+    assertEqual(api.state.voiceHandoffRetryPending, false,
+      `${failureMode} retry state survived a successful handoff`);
+    assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+      `${failureMode} retry attempt count survived a successful handoff`);
+    assertEqual(api.state.voiceHandoffIntentEpoch, null,
+      `${failureMode} retry retained the completed ordinary-voice intent fence`);
+    assert(!events.includes('drawingGuess.voice.controlFailed'),
+      `${failureMode} retry emitted a stale failure notice`);
+  }
+}
+
+async function testPendingAudioWorkDoesNotRetryHandoffEarly() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'pending-audio-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffIntentEpoch = 41;
+
+  api.handleSpeechPlaybackState({
+    active: true,
+    pendingAudioWork: true,
+    remainingSeconds: 0,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(api.state.speechPlaybackActive, true,
+    'queued TTS audio work was not treated as active playback');
+  assertEqual(handoffCalls, 0,
+    'queued TTS audio work triggered an early voice handoff retry');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'queued TTS audio work consumed a retry attempt without dispatching');
+  assertEqual(api.state.voiceHandoffRetryPending, true,
+    'queued TTS audio work discarded the pending handoff retry');
+}
+
+async function testPlaybackResumingBeforeRetryTimerDoesNotConsumeAttempt() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'playback-race-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.speechPlaybackActive = true;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffIntentEpoch = 42;
+
+  api.handleSpeechPlaybackState({ active: false });
+  api.handleSpeechPlaybackState({ active: true, pendingAudioWork: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(handoffCalls, 0,
+    'a false-to-true playback race dispatched the retry while TTS was active');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'a fenced retry timer consumed an attempt before dispatch');
+  assertEqual(api.state.voiceHandoffRetryPending, true,
+    'a fenced retry timer lost the retry needed after playback ends');
+}
+
+async function testNewOrdinaryVoiceIntentCancelsDeferredRetryQuietly() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = [];
+  const handoffOptions = [];
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'intent-change-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff(options) {
+        handoffOptions.push(options);
+        if (handoffOptions.length === 1) {
+          return Promise.resolve({
+            ok: false,
+            active: false,
+            reason: 'speech_playback_active',
+            ordinary_voice_intent_epoch: 77,
+          });
+        }
+        return Promise.resolve({
+          ok: false,
+          active: false,
+          reason: 'ordinary_voice_handoff_cancelled',
+          ordinary_voice_intent_epoch: 78,
+        });
+      },
+    },
+  };
+  api.installVoiceUiSpy(events);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.speechPlaybackActive = true;
+
+  await api.handoffOrdinaryVoiceToSdk(client);
+  api.handleSpeechPlaybackState({ active: false });
+  await waitForCondition(
+    () => handoffOptions.length === 2 && api.state.voiceControlPending === false,
+    'deferred handoff did not reach the ordinary-intent cancellation response',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(handoffOptions[1].handoffIntentEpoch, 77,
+    'deferred handoff was not fenced to the original ordinary-voice intent');
+  assertEqual(handoffOptions.length, 2,
+    'ordinary_voice_handoff_cancelled started another takeover attempt');
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'ordinary intent cancellation left a retry armed');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'ordinary intent cancellation did not clear retry attempts');
+  assertEqual(api.state.voiceHandoffIntentEpoch, null,
+    'ordinary intent cancellation retained the stale intent epoch');
+  assert(!events.includes('drawingGuess.voice.controlFailed'),
+    'ordinary intent cancellation surfaced as a voice failure');
+}
+
+async function testInitialPlaybackTransportFailureWithoutIntentDoesNotRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = [];
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'transport-failure-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.reject(Object.assign(
+          new Error('speech_playback_active'),
+          { code: 'speech_playback_active' },
+        ));
+      },
+    },
+  };
+  api.installVoiceUiSpy(events);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.speechPlaybackActive = true;
+
+  await api.handoffOrdinaryVoiceToSdk(client);
+  api.handleSpeechPlaybackState({ active: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(handoffCalls, 1,
+    'a transport failure without an intent epoch started an unfenced retry');
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'a transport failure without an intent epoch armed a retry');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'a transport failure without an intent epoch consumed retry attempts');
+  assert(!events.includes('drawingGuess.voice.controlFailed'),
+    'playback transport rejection surfaced as a user-visible failure');
+}
+
+async function testHandoffRetryMaxExhaustionClearsState() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'retry-max-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.speechPlaybackActive = false;
+  api.state.voiceControlPending = false;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffRetryAttempts = 2;
+  api.state.voiceHandoffIntentEpoch = 91;
+
+  assertEqual(api.schedulePendingVoiceHandoffRetry(), false,
+    'an exhausted handoff retry unexpectedly scheduled more work');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(handoffCalls, 0,
+    'an exhausted handoff retry dispatched another SDK request');
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'max retry exhaustion left a retry pending');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'max retry exhaustion retained the terminal attempt count');
+  assertEqual(api.state.voiceHandoffIntentEpoch, null,
+    'max retry exhaustion retained a stale ordinary-voice intent epoch');
+}
+
+async function testHandoffRetryWithoutRouteClearsState() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'missing-retry-route' } },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = false;
+  api.state.routeEnding = false;
+  api.state.speechPlaybackActive = false;
+  api.state.voiceControlPending = false;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffRetryAttempts = 1;
+  api.state.voiceHandoffIntentEpoch = 92;
+
+  assertEqual(api.schedulePendingVoiceHandoffRetry(), false,
+    'a handoff retry without a live route unexpectedly scheduled work');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(handoffCalls, 0,
+    'a handoff retry ran after its SDK route disappeared');
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'missing route left a handoff retry pending');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'missing route retained a handoff retry attempt count');
+  assertEqual(api.state.voiceHandoffIntentEpoch, null,
+    'missing route retained a stale ordinary-voice intent epoch');
+}
+
+async function testManualVoiceControlCancelsPendingHandoffRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running' },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      connected: true,
+      toggle() { return Promise.resolve({ ok: true, active: true }); },
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffRetryAttempts = 1;
+  api.state.voiceHandoffIntentEpoch = 55;
+
+  assertEqual(api.schedulePendingVoiceHandoffRetry(), true,
+    'test setup did not enqueue the pending automatic handoff retry');
+  api.handleVoiceRouteButton();
+
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'manual voice control did not cancel the pending automatic handoff retry');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'manual voice control did not reset the automatic retry attempt count');
+  assertEqual(api.state.voiceHandoffIntentEpoch, null,
+    'manual voice control retained the automatic retry intent fence');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertEqual(handoffCalls, 0,
+    'an already-scheduled automatic handoff ran after manual voice control took ownership');
+}
+
+async function testRouteCleanupCancelsPendingHandoffRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: { state: 'running' },
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      handoff() {
+        handoffCalls += 1;
+        return Promise.resolve({ ok: true, active: true });
+      },
+    },
+  };
+  api.installVoiceUiSpy([]);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.voiceHandoffRetryPending = true;
+  api.state.voiceHandoffRetryAttempts = 1;
+  api.state.voiceHandoffIntentEpoch = 56;
+
+  assertEqual(api.schedulePendingVoiceHandoffRetry(), true,
+    'test setup did not enqueue the route-owned automatic handoff retry');
+  api.cleanupRouteResources();
+
+  assertEqual(api.state.voiceHandoffRetryPending, false,
+    'route cleanup did not cancel the pending automatic handoff retry');
+  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
+    'route cleanup did not reset the automatic retry attempt count');
+  assertEqual(api.state.voiceHandoffIntentEpoch, null,
+    'route cleanup retained the automatic retry intent fence');
+  assertEqual(api.state.voiceControlPending, false,
+    'route cleanup left the voice-control fence pending');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assertEqual(handoffCalls, 0,
+    'an already-scheduled automatic handoff ran after route cleanup');
+}
+
+async function testRouteStartDoesNotWaitForAutomaticVoiceHandoff() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const handoff = deferred();
+  let handoffCalls = 0;
+  const client = {
+    disposed: false,
+    runtime: {
+      state: 'idle',
+      session: { id: 'drawing-handoff-session', routeInstanceId: 'drawing-handoff-route' },
+      start() {
+        this.state = 'running';
+        return Promise.resolve({ ok: true, data: { ok: true } });
+      },
+    },
+    memory: {
+      consent: { configured: true, enabled: false, locked: true },
+    },
+    capabilities: {
+      granted: ['voice-input'],
+      has(name) { return name === 'voice-input'; },
+    },
+    logger: {
+      enableAfterRuntimeStart() { return Promise.resolve({ ok: false }); },
+      info() {},
+    },
+    voice: {
+      handoff(options) {
+        handoffCalls += 1;
+        assertEqual(options.timeoutMs, 12000,
+          'route-start automatic handoff must use the bounded timeout');
+        return handoff.promise;
+      },
+    },
+  };
+  api.installRouteUiSpies();
+  api.state.lanlanName = 'SDK Neko';
+  api.state.sessionId = 'drawing-handoff-session';
+  api.state.sdkClient = client;
+
+  let routeStartTimeout = null;
+  const routeStarted = await Promise.race([
+    api.startRoute(),
+    new Promise((_resolve, reject) => {
+      routeStartTimeout = setTimeout(() => {
+        reject(new Error('route start waited for the optional voice handoff'));
+      }, 1000);
+    }),
+  ]);
+  clearTimeout(routeStartTimeout);
+
+  assertEqual(routeStarted, true,
+    'route start must resolve without awaiting the optional voice handoff Promise');
+  assertEqual(handoffCalls, 1,
+    'a successful route start must dispatch exactly one automatic voice handoff');
+  assertEqual(api.state.voiceControlPending, true,
+    'the still-pending background handoff must remain fenced after route start resolves');
+
+  handoff.resolve({ ok: true, active: false, reason: 'ordinary_voice_inactive' });
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function testPageExitPostsVoiceStopBeforeCleanup() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = [];
+  api.installPageExitCleanupSpy(events);
+  api.state.sdkClient = {
+    disposed: false,
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: {
+      stop(options) {
+        events.push(`stop:${options.timeoutMs}`);
+        return Promise.resolve({ ok: true });
+      },
+    },
+  };
+
+  api.handleSdkPageExit();
+
+  assertDeepEqual(events, ['stop:6500', 'cleanup'],
+    'page exit must synchronously post the voice stop before local route cleanup');
+}
+
 async function main() {
   await testLateHydrationKeepsLocalSideAndColorChanges();
   await testLateModelViewHydrationMergesWithLocalPriority();
@@ -484,6 +1169,23 @@ async function main() {
   await testUnavailableStorageNeverFallsBackToRawLocalStorage();
   await testMemoryConsentUsesSdkAndRejectsLockedMismatch();
   await testSdkLocaleUpdatesCachedLanguage();
+  await testPlayerTextCommandsStaySerialized();
+  await testQueuedPlayerTextDoesNotCrossPhaseBoundary();
+  await testVoiceStateCannotClearAnActiveControlRequest();
+  await testBackgroundVoiceQueryCannotClearANewerToggle();
+  await testAutomaticVoiceHandoffUsesPendingFence();
+  await testStaleAutomaticVoiceHandoffCannotOverwriteNewerRequest();
+  await testPlaybackBlockedHandoffRetriesAfterPlaybackStops();
+  await testPendingAudioWorkDoesNotRetryHandoffEarly();
+  await testPlaybackResumingBeforeRetryTimerDoesNotConsumeAttempt();
+  await testNewOrdinaryVoiceIntentCancelsDeferredRetryQuietly();
+  await testInitialPlaybackTransportFailureWithoutIntentDoesNotRetry();
+  await testHandoffRetryMaxExhaustionClearsState();
+  await testHandoffRetryWithoutRouteClearsState();
+  await testRouteCleanupCancelsPendingHandoffRetry();
+  await testManualVoiceControlCancelsPendingHandoffRetry();
+  await testRouteStartDoesNotWaitForAutomaticVoiceHandoff();
+  await testPageExitPostsVoiceStopBeforeCleanup();
   process.stdout.write('drawing guess SDK preference tests passed\n');
 }
 

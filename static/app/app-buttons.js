@@ -1957,6 +1957,25 @@
                 return;
             }
             if (micButton.classList.contains('active')) return;
+            if (typeof window.stopMiniGameVoiceForOrdinaryVoiceSession === 'function') {
+                micButton.disabled = true;
+                try {
+                    await window.stopMiniGameVoiceForOrdinaryVoiceSession();
+                } catch (error) {
+                    micButton.disabled = false;
+                    console.warn('[VoiceSession] failed to release mini-game voice:', error);
+                    window.showStatusToast(
+                        window.t ? window.t('app.sessionFailed') : 'Session启动失败',
+                        3000
+                    );
+                    return;
+                }
+                if (S.isRecording || mod._textSessionStartPromise
+                        || micButton.classList.contains('active')) {
+                    micButton.disabled = false;
+                    return;
+                }
+            }
 
             // Immediately activate
             micButton.classList.add('active');

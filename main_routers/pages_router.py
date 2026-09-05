@@ -145,6 +145,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/ogg-opus-decoder-wrapper.js",
     _PROJECT_ROOT / "static/app/app-state.js",
     _PROJECT_ROOT / "static/app/app-audio-playback.js",
+    _PROJECT_ROOT / "static/app/app-audio-capture.js",
+    _PROJECT_ROOT / "static/app/app-minigame-voice-controller.js",
     _PROJECT_ROOT / "static/live2d/live2d-core.js",
     _PROJECT_ROOT / "static/live2d/live2d-emotion.js",
     _PROJECT_ROOT / "static/live2d/live2d-interaction.js",

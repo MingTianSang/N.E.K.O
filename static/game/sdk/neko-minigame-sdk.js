@@ -4863,6 +4863,7 @@
       start(requestOptions) { return requestVoice('start', requestOptions); },
       stop(requestOptions) { return requestVoice('stop', requestOptions); },
       toggle(requestOptions) { return requestVoice('toggle', requestOptions); },
+      handoff(requestOptions) { return requestVoice('handoff', requestOptions); },
       onState(handler) {
         requireCapability('voice-input', 'voice.onState');
         return subscribe('voice-state', handler);

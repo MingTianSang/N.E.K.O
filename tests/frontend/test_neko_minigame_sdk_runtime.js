@@ -178,6 +178,9 @@ async function main() {
         ok: true,
         action,
         sdk_route_instance_id: options.sdkRouteInstanceId || '',
+        ...(action === 'handoff' && Number.isSafeInteger(options.handoffIntentEpoch)
+          ? { ordinary_voice_intent_epoch: options.handoffIntentEpoch }
+          : {}),
       };
     },
     stopVoiceControlBridge() { voiceStopped += 1; },
@@ -673,6 +676,27 @@ async function main() {
   assert(voiceState.action === 'toggle', 'voice toggle did not use the host transport');
   assert(voiceRequests.at(-1).options.sdkRouteInstanceId === routeInstanceId,
     'voice control was not bound to the active route generation');
+  const handoffState = await game.voice.handoff({ timeoutMs: 8765, handoffIntentEpoch: 17 });
+  assert(handoffState.action === 'handoff', 'voice handoff did not use the host transport');
+  assert(handoffState.ordinary_voice_intent_epoch === 17,
+    'voice handoff did not expose the returned ordinary-voice intent fence');
+  assert(voiceRequests.at(-1).action === 'handoff'
+    && voiceRequests.at(-1).options.timeoutMs === 8765
+    && voiceRequests.at(-1).options.handoffIntentEpoch === 17
+    && voiceRequests.at(-1).options.sdkRouteInstanceId === routeInstanceId,
+  'voice handoff did not preserve its options and active route generation');
+  const sdkTypes = fs.readFileSync(
+    path.resolve(__dirname, '../../static/game/sdk/neko-minigame-sdk.d.ts'),
+    'utf8',
+  );
+  assert(sdkTypes.includes('interface VoiceHandoffOptions extends RequestOptions')
+    && sdkTypes.includes('handoffIntentEpoch?: number;')
+    && sdkTypes.includes('interface VoiceControlState')
+    && sdkTypes.includes('readonly ordinary_voice_intent_epoch?: number;')
+    && sdkTypes.includes('handoff(options?: VoiceHandoffOptions): Promise<VoiceControlState>;')
+    && sdkTypes.includes('onState(handler: (state: VoiceControlState) => void): () => void;')
+    && !sdkTypes.includes('handoff(options?: VoiceHandoffOptions): Promise<unknown>;'),
+  'the public SDK types omitted the typed voice state or ordinary-voice intent fence');
   const dialogue = await game.dialogue.request({ event: 'checkpoint' });
   assert(dialogue.data.payload.event === 'checkpoint', 'dialogue request did not use the host transport');
   assert(dialogue.data.payload.session_id === 'sdk-test-session',

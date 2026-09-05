@@ -5282,7 +5282,7 @@
             "quickDraw": "Cuando te toque dibujar, elige una carta, dibuja en el lienzo y pulsa Listo.",
             "quickGuess": "Cuando te toque adivinar, escribe tu respuesta en el chat; también puedes conversar y pedir pistas.",
             "quickSummary": "Cada ronda conserva miniaturas, y en el resumen final puedes guardar los dibujos.",
-            "voiceHint": "Si quieres usar voz, actívala primero en la página principal; este minijuego la tomará al comenzar."
+            "voiceHint": "Para usar la voz, pulsa el botón del micrófono a la izquierda del campo de chat."
         },
         "actions": {
             "start": "Empezar",
@@ -5323,12 +5323,15 @@
             "requestLock": "Bloqueo de solicitud"
         },
         "voice": {
-            "connected": "La voz está conectada a esta ronda.",
-            "connectHint": "Activa primero la voz en la página principal para que esta ronda la tome.",
-            "connectedNotice": "La voz de la página principal está conectada a esta ronda.",
-            "connectHintNotice": "Activa primero la voz en la página principal; esta ronda la tomará cuando esté activa.",
+            "connected": "La voz está activa en esta ronda. Pulsa para detenerla.",
+            "connectHint": "Pulsa para activar la voz en esta ronda.",
+            "connectedNotice": "La voz está activa en esta ronda.",
+            "connectHintNotice": "La voz está desactivada en esta ronda.",
+            "starting": "Cambiando la entrada de voz…",
+            "unavailable": "La voz dentro del juego no está disponible en este entorno.",
+            "controlFailed": "Error en la operación de voz: {{reason}}",
             "routeNotReady": "Espera a que la ruta del juego esté lista antes de usar voz.",
-            "buttonLabel": "Chat de voz"
+            "buttonLabel": "Entrada de voz"
         },
         "exitConfirm": {
             "title": "¿Salir de esta página?",

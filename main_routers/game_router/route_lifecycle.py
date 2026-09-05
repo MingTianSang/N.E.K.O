@@ -191,6 +191,12 @@ def _build_route_state(
         "game_external_text_route_active": False,
         "game_input_mode": "none",
         "activation_source": "game_event",
+        # Legacy built-in games take over the ordinary text/audio entry points
+        # by default. SDK games may explicitly opt out at route/start and use
+        # their own granted input capabilities instead.
+        "external_input_takeover_enabled": True,
+        "_session_takeover_owned": False,
+        "_session_takeover_dispatcher": None,
         "external_suspended_by_game": False,
         "should_resume_external_on_exit": before_mode == "audio" and before_active,
         "game_input_activation_log": [],

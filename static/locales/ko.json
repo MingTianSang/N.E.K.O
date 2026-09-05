@@ -5282,7 +5282,7 @@
             "quickDraw": "내가 그릴 차례에는 카드 한 장을 고르고 캔버스에 그린 뒤, 다 그렸어요를 누르세요.",
             "quickGuess": "내가 맞힐 차례에는 채팅창에 답을 입력하세요. 대화하면서 힌트를 물어봐도 됩니다.",
             "quickSummary": "각 라운드는 썸네일로 남고, 최종 정산에서 그림을 저장할 수 있습니다.",
-            "voiceHint": "음성을 쓰고 싶다면 먼저 메인 페이지에서 음성을 켜 주세요. 미니게임이 시작되면 자동으로 이어받습니다."
+            "voiceHint": "음성을 사용하려면 채팅 입력창 왼쪽의 마이크 버튼을 누르세요."
         },
         "actions": {
             "start": "시작",
@@ -5323,12 +5323,15 @@
             "requestLock": "요청 잠금"
         },
         "voice": {
-            "connected": "이 라운드에 음성이 연결되어 있어요.",
-            "connectHint": "메인 화면에서 먼저 음성을 켜면 이 라운드가 이어받아요.",
-            "connectedNotice": "메인 화면 음성이 이 라운드에 연결되었어요.",
-            "connectHintNotice": "메인 화면에서 먼저 음성을 켜 주세요. 켜지면 이 라운드가 자동으로 이어받아요.",
+            "connected": "이 라운드의 음성이 켜져 있습니다. 클릭하면 끌 수 있습니다.",
+            "connectHint": "클릭하여 이 라운드의 음성을 켭니다.",
+            "connectedNotice": "이 라운드의 음성을 켰습니다.",
+            "connectHintNotice": "이 라운드의 음성을 껐습니다.",
+            "starting": "음성 입력을 전환하는 중…",
+            "unavailable": "현재 환경에서는 게임 내 음성을 사용할 수 없습니다.",
+            "controlFailed": "음성 작업 실패: {{reason}}",
             "routeNotReady": "음성을 사용하기 전에 게임 라우트가 준비될 때까지 기다려 주세요.",
-            "buttonLabel": "음성 채팅"
+            "buttonLabel": "음성 입력"
         },
         "exitConfirm": {
             "title": "페이지를 나갈까요?",

@@ -156,6 +156,29 @@ def test_sdk_public_lifecycle_state_excludes_context_and_internal_collections():
 
 
 @pytest.mark.unit
+def test_external_input_takeover_helper_defaults_to_legacy_and_honors_opt_out(
+    monkeypatch,
+):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = _sdk_state()
+
+    assert game_route_state.is_game_external_input_takeover_active(
+        "Lan",
+        "drawing_guess",
+    ) is True
+
+    state["external_input_takeover_enabled"] = False
+    assert game_route_state.is_game_external_input_takeover_active(
+        "Lan",
+        "drawing_guess",
+    ) is False
+
+    # States created before the opt-out field existed retain legacy takeover.
+    state.pop("external_input_takeover_enabled")
+    assert game_route_state.is_game_external_input_takeover_active("Lan") is True
+
+
+@pytest.mark.unit
 def test_generationless_public_lifecycle_state_keeps_the_legacy_shape():
     state = {
         "game_type": "soccer",
@@ -251,6 +274,196 @@ async def test_route_start_binds_generation_without_exposing_it(monkeypatch):
     assert state["_sdk_route_instance_id"] == "route-A"
     assert "sdk_route_instance_id" not in result["state"]
     assert "_sdk_route_instance_id" not in result["state"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_start_can_opt_out_of_external_input_takeover(monkeypatch):
+    existing_dispatcher = object()
+    mgr = SimpleNamespace(
+        _takeover_active=True,
+        _takeover_input_dispatcher=existing_dispatcher,
+        websocket=None,
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_detect_before_game_external_state",
+        lambda _mgr: ("audio", True),
+    )
+
+    result = await gr_runtime.game_route_start(
+        "drawing_guess",
+        _FakeRequest(_route_payload(
+            route_instance_id="route-opt-out",
+            externalInputTakeover=False,
+        )),
+    )
+    state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+
+    assert result["ok"] is True
+    assert state is not None
+    assert state["external_input_takeover_enabled"] is False
+    assert state["should_resume_external_on_exit"] is False
+    assert state["game_external_voice_route_active"] is False
+    assert state["_session_takeover_owned"] is False
+    assert state["_session_takeover_dispatcher"] is None
+    assert mgr._takeover_active is True
+    assert mgr._takeover_input_dispatcher is existing_dispatcher
+    assert await gr_runtime.route_external_stream_message(
+        "Lan",
+        {"input_type": "text", "data": "ordinary chat remains ordinary"},
+    ) is False
+    finalized = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="test_opt_out",
+    )
+    assert mgr._takeover_active is True
+    assert mgr._takeover_input_dispatcher is existing_dispatcher
+    assert finalized["realtime_restore"]["reason"] == "takeover_not_enabled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_start_accepts_snake_case_takeover_opt_out(monkeypatch):
+    mgr = SimpleNamespace(
+        _takeover_active=False,
+        _takeover_input_dispatcher=None,
+        websocket=None,
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+
+    result = await gr_runtime.game_route_start(
+        "drawing_guess",
+        _FakeRequest(_route_payload(
+            route_instance_id="route-snake-opt-out",
+            external_input_takeover="false",
+        )),
+    )
+
+    assert result["ok"] is True
+    assert result["state"]["external_input_takeover_enabled"] is False
+    assert mgr._takeover_active is False
+    assert mgr._takeover_input_dispatcher is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_finalize_only_releases_its_exact_takeover_dispatcher(monkeypatch):
+    mgr = SimpleNamespace(
+        _takeover_active=False,
+        _takeover_input_dispatcher=None,
+        websocket=None,
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+
+    await gr_runtime.game_route_start(
+        "drawing_guess",
+        _FakeRequest(_route_payload(route_instance_id="route-owned")),
+    )
+    state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+    assert state is not None
+    assert state["_session_takeover_owned"] is True
+    assert mgr._takeover_input_dispatcher is state["_session_takeover_dispatcher"]
+
+    replacement_dispatcher = object()
+    mgr._takeover_active = True
+    mgr._takeover_input_dispatcher = replacement_dispatcher
+    finalized = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="test_replaced_takeover",
+    )
+
+    assert mgr._takeover_active is True
+    assert mgr._takeover_input_dispatcher is replacement_dispatcher
+    assert finalized["realtime_restore"]["reason"] == "takeover_ownership_changed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_finalize_releases_takeover_it_owns(monkeypatch):
+    mgr = SimpleNamespace(
+        _takeover_active=False,
+        _takeover_input_dispatcher=None,
+        websocket=None,
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+
+    await gr_runtime.game_route_start(
+        "drawing_guess",
+        _FakeRequest(_route_payload(route_instance_id="route-owned")),
+    )
+    state = gr_runtime._get_active_game_route_state("Lan", "drawing_guess")
+    assert state is not None
+
+    finalized = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="test_owned_takeover",
+    )
+
+    assert mgr._takeover_active is False
+    assert mgr._takeover_input_dispatcher is None
+    assert state["_session_takeover_owned"] is False
+    assert finalized["realtime_restore"]["reason"] == "takeover_released"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_finalize_releases_legacy_takeover_without_ownership_metadata(
+    monkeypatch,
+):
+    legacy_dispatcher = object()
+    mgr = SimpleNamespace(
+        _takeover_active=True,
+        _takeover_input_dispatcher=legacy_dispatcher,
+        websocket=None,
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    state = _sdk_state(route_instance_id="legacy-route")
+    state.pop("external_input_takeover_enabled")
+    state.pop("_session_takeover_owned")
+    state.pop("_session_takeover_dispatcher")
+
+    finalized = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="test_legacy_takeover",
+    )
+
+    assert mgr._takeover_active is False
+    assert mgr._takeover_input_dispatcher is None
+    assert finalized["realtime_restore"]["reason"] == "takeover_released"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_any_active_route_exposes_sdk_route_instance_id(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    _sdk_state(route_instance_id="route-visible-to-owner")
+
+    result = await gr_runtime.game_route_any_active("Lan")
+
+    assert result == {
+        "ok": True,
+        "active": True,
+        "game_type": "drawing_guess",
+        "session_id": "sdk-shared-session",
+        "sdk_route_instance_id": "route-visible-to-owner",
+        "lanlan_name": "Lan",
+    }
+
+    exact_result = await gr_runtime.game_route_any_active(
+        game_type="drawing_guess",
+        session_id="sdk-shared-session",
+        sdk_route_instance_id="route-visible-to-owner",
+    )
+    assert exact_result == result
+
+    stale_result = await gr_runtime.game_route_any_active(
+        game_type="drawing_guess",
+        session_id="sdk-shared-session",
+        sdk_route_instance_id="stale-route",
+    )
+    assert stale_result == {"ok": True, "active": False}
 
 
 @pytest.mark.unit

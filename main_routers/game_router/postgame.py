@@ -975,13 +975,58 @@ async def _finalize_game_route_state_inner(
             game_type=str(state.get("game_type") or ""),
             session_id=str(state.get("session_id") or ""),
         )
-    # Release the SessionManager-level takeover so ordinary chat handlers come
-    # back online; chat LLM may produce auto-replies again, but the player has
-    # exited the game so that's the desired behavior.
-    if mgr is not None:
+    # Release only the takeover installed by this exact route generation. A
+    # newer route (or another feature) may have replaced the manager's
+    # dispatcher while this route was finalizing; clearing by character alone
+    # would then accidentally re-enable ordinary chat inside that newer owner.
+    # States created before takeover ownership metadata existed still own the
+    # legacy SessionManager takeover implicitly. Keep that narrow migration
+    # path separate from new states: if either ownership field exists, the
+    # exact-dispatcher fence below remains authoritative.
+    legacy_takeover_owned = (
+        "_session_takeover_owned" not in state
+        and "_session_takeover_dispatcher" not in state
+        and state.get("external_input_takeover_enabled", True) is not False
+    )
+    takeover_owned = state.get("_session_takeover_owned") is True
+    takeover_dispatcher = state.get("_session_takeover_dispatcher")
+    current_dispatcher = (
+        getattr(mgr, "_takeover_input_dispatcher", None)
+        if mgr is not None
+        else None
+    )
+    takeover_released = bool(
+        mgr is not None
+        and (
+            legacy_takeover_owned
+            or (
+                takeover_owned
+                and takeover_dispatcher is not None
+                and current_dispatcher is takeover_dispatcher
+            )
+        )
+    )
+    if takeover_released:
         mgr._takeover_active = False
         mgr._takeover_input_dispatcher = None
-    realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
+    if takeover_owned:
+        state["_session_takeover_owned"] = False
+
+    if takeover_released:
+        takeover_release_reason = "takeover_released"
+    elif state.get("external_input_takeover_enabled") is False:
+        takeover_release_reason = "takeover_not_enabled"
+    elif not takeover_owned and not legacy_takeover_owned:
+        takeover_release_reason = "takeover_not_owned"
+    elif mgr is None:
+        takeover_release_reason = "takeover_manager_unavailable"
+    else:
+        takeover_release_reason = "takeover_ownership_changed"
+    realtime_restore = {
+        "attempted": False,
+        "ok": True,
+        "reason": takeover_release_reason,
+    }
     state["realtime_restore"] = realtime_restore
     if mgr and hasattr(mgr, "send_status") and not state.get("_exit_suppress_status"):
         try:

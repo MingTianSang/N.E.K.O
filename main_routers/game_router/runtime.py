@@ -851,6 +851,7 @@ _SDK_LIFECYCLE_STATE_FIELDS = (
     "game_external_text_route_active",
     "game_input_mode",
     "activation_source",
+    "external_input_takeover_enabled",
     "external_suspended_by_game",
     "should_resume_external_on_exit",
     "game_memory_enabled",
@@ -1737,7 +1738,7 @@ async def game_passive_guard(game_type: str, request: Request):
 
 @router.post("/{game_type}/route/start")
 async def game_route_start(game_type: str, request: Request):
-    """Declare that the game window is open and main external inputs are hijacked."""
+    """Declare that a game window is open and configure its input routing."""
     if str(game_type or "") == "new_user_icebreaker":
         raise HTTPException(
             status_code=400,
@@ -1867,11 +1868,31 @@ async def game_route_start(game_type: str, request: Request):
             if route_instance_id:
                 state["_sdk_route_instance_id"] = route_instance_id
             state["window_lanlan_name"] = window_lanlan_name
-            # Take over the SessionManager: ordinary chat LLM output handlers must
-            # stay silent during the game, and any voice transcript that reaches
-            # the SessionManager must be redirected into route_external_voice_transcript.
+            takeover_enabled = None
+            for takeover_key in (
+                "externalInputTakeover",
+                "external_input_takeover",
+            ):
+                if takeover_key not in data:
+                    continue
+                takeover_enabled = _coerce_payload_bool(data.get(takeover_key))
+                if takeover_enabled is not None:
+                    break
+            if takeover_enabled is None:
+                takeover_enabled = True
+            state["external_input_takeover_enabled"] = takeover_enabled
+            if not takeover_enabled:
+                # The ordinary input pipeline remains untouched, so the route
+                # end must not ask the frontend to resume a session it never
+                # suspended.
+                state["should_resume_external_on_exit"] = False
+
+            # Legacy routes take over the SessionManager: ordinary chat LLM
+            # output handlers stay silent during the game, and voice
+            # transcripts reaching the manager are redirected into the game.
+            # SDK routes can opt out and use their own capability-bound input.
             mgr = get_session_manager().get(lanlan_name)
-            if mgr is not None:
+            if mgr is not None and takeover_enabled:
                 async def _takeover_dispatcher(_lan, transcript_text, *, request_id):
                     return await route_external_voice_transcript(
                         _lan,
@@ -1883,6 +1904,8 @@ async def game_route_start(game_type: str, request: Request):
                     )
                 mgr._takeover_active = True
                 mgr._takeover_input_dispatcher = _takeover_dispatcher
+                state["_session_takeover_owned"] = True
+                state["_session_takeover_dispatcher"] = _takeover_dispatcher
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
@@ -2017,7 +2040,11 @@ async def game_route_start(game_type: str, request: Request):
                     "reason": "superseded",
                     "state": {"game_route_active": False},
                 }
-    if state.get("before_game_external_mode") == "audio" and state.get("before_game_external_active"):
+    if (
+        state.get("external_input_takeover_enabled") is not False
+        and state.get("before_game_external_mode") == "audio"
+        and state.get("before_game_external_active")
+    ):
         await route_external_stream_message(lanlan_name, {"input_type": "audio"})
     if not (game_type == "soccer" or _is_badminton_game_type(game_type)):
         _append_game_session_debug_log(
@@ -2131,7 +2158,12 @@ async def game_route_state(game_type: str, lanlan_name: str = ""):
 
 
 @router.get("/route/active")
-async def game_route_any_active(lanlan_name: str = ""):
+async def game_route_any_active(
+    lanlan_name: str = "",
+    game_type: str = "",
+    session_id: str = "",
+    sdk_route_instance_id: str = "",
+):
     """Reconcile late subscribers with the current game window route state.
 
     ``game_window_state_change`` is edge-triggered, so a newly loaded or
@@ -2139,8 +2171,30 @@ async def game_route_any_active(lanlan_name: str = ""):
     while a route is already active. This read-only endpoint lets init code
     query the current state and dispatch its local opened event if needed.
     """
-    resolved = _resolve_lanlan_name(lanlan_name)
-    state = _get_active_game_route_state(resolved) if resolved else None
+    identity = (
+        str(game_type or "").strip(),
+        str(session_id or "").strip(),
+        str(sdk_route_instance_id or "").strip(),
+    )
+    if all(identity):
+        # The main window may have switched characters while a separate game
+        # window remains open. Voice ownership is route-generation scoped, so
+        # resolve its exact SDK triple instead of assuming the main window's
+        # current character still owns the route.
+        state = next(
+            (
+                candidate
+                for candidate in list(_game_route_states.values())
+                if candidate.get("game_route_active")
+                and str(candidate.get("game_type") or "") == identity[0]
+                and str(candidate.get("session_id") or "") == identity[1]
+                and str(candidate.get("_sdk_route_instance_id") or "") == identity[2]
+            ),
+            None,
+        )
+    else:
+        resolved = _resolve_lanlan_name(lanlan_name)
+        state = _get_active_game_route_state(resolved) if resolved else None
     if state is None:
         return {"ok": True, "active": False}
     return {
@@ -2148,6 +2202,7 @@ async def game_route_any_active(lanlan_name: str = ""):
         "active": True,
         "game_type": str(state.get("game_type") or ""),
         "session_id": str(state.get("session_id") or ""),
+        "sdk_route_instance_id": str(state.get("_sdk_route_instance_id") or ""),
         "lanlan_name": str(state.get("lanlan_name") or ""),
     }
 
@@ -3216,7 +3271,7 @@ async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:
 async def route_external_stream_message(lanlan_name: str, message: dict) -> bool:
     """Return True when a main WebSocket stream_data message was consumed by game routing."""
     state = _get_active_game_route_state(lanlan_name)
-    if not state:
+    if not state or state.get("external_input_takeover_enabled", True) is False:
         return False
 
     mgr = get_session_manager().get(lanlan_name)

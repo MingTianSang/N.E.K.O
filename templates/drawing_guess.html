@@ -24,7 +24,7 @@
   <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/sdk/neko-minigame-drawing-avatar-host.js?v={{ static_asset_version }}"></script>
   <script id="neko-minigame-host-launch" type="application/json">
-    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","speech-output","avatar-renderer","memory","window-control","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":330000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":330000}}}}}
+    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","voice-input","speech-output","avatar-renderer","memory","window-control","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":330000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":330000}}}}}
   </script>
   <script>
     (function () {
@@ -2236,7 +2236,7 @@
         </div>
         <div id="message-log" class="dg-log" aria-live="polite"></div>
         <form id="chat-form" class="dg-input-row">
-          <button id="voice-route-button" class="dg-voice-button" type="button" disabled aria-pressed="false" aria-label="Voice chat" data-i18n-aria="drawingGuess.voice.buttonLabel" data-i18n-title="drawingGuess.voice.connectHint" title="Open voice on the main page to let this round take it over.">
+          <button id="voice-route-button" class="dg-voice-button" type="button" disabled aria-pressed="false" aria-busy="false" aria-label="Voice chat" data-i18n-aria="drawingGuess.voice.buttonLabel" data-i18n-title="drawingGuess.voice.connectHint" title="Click to turn on voice for this round.">
             <img id="voice-route-icon" src="/static/icons/mic_icon_off.png" alt="" aria-hidden="true">
           </button>
           <input id="chat-input" type="text" autocomplete="off" aria-label="Chat input" data-i18n-aria="drawingGuess.input.ariaLabel" data-i18n-placeholder="drawingGuess.input.placeholder" placeholder="先等路由准备好">
@@ -2355,7 +2355,7 @@
             <li data-i18n="drawingGuess.tutorial.quickGuess">轮到你猜时，在聊天框里输入猜测，也可以一边聊天一边要提示。</li>
             <li data-i18n="drawingGuess.tutorial.quickSummary">每轮结算会保留缩略图，最终结算里可以保存画作。</li>
           </ul>
-          <p class="dg-tutorial-voice" data-i18n="drawingGuess.tutorial.voiceHint">想用语音的话，请先在主页面开启语音；小游戏开始后会自动接管。</p>
+          <p class="dg-tutorial-voice" data-i18n="drawingGuess.tutorial.voiceHint">想用语音时，直接点击聊天输入框左侧的麦克风按钮。</p>
         </div>
         <div class="dg-memory" role="radiogroup" aria-label="Memory options" data-i18n-aria="drawingGuess.tutorial.memoryTitle">
           <label>

@@ -161,6 +161,38 @@ declare namespace NekoMiniGame {
     timeoutMs?: number;
   }
 
+  interface VoiceHandoffOptions extends RequestOptions {
+    /** Continue the same deferred handoff only while ordinary-voice intent is unchanged. */
+    handoffIntentEpoch?: number;
+  }
+
+  type VoiceControlAction = 'query' | 'start' | 'stop' | 'toggle' | 'handoff';
+
+  /** Route-bound voice state returned by voice control operations and state events. */
+  interface VoiceControlState {
+    readonly type?: 'game_voice_control_state';
+    readonly message_id?: string;
+    readonly storage_nonce?: string;
+    readonly owner_id?: string;
+    readonly game_type?: string;
+    readonly session_id?: string;
+    readonly sdk_route_instance_id?: string;
+    readonly request_id?: string;
+    readonly action?: VoiceControlAction;
+    readonly ok?: boolean;
+    readonly reason?: string;
+    readonly timestamp?: number;
+    readonly active?: boolean;
+    readonly listening?: boolean;
+    readonly pending?: boolean;
+    readonly route_active?: boolean;
+    readonly ordinary_voice_active?: boolean;
+    readonly microphone_muted?: boolean;
+    /** Fence returned by a deferred handoff; pass it back as handoffIntentEpoch. */
+    readonly ordinary_voice_intent_epoch?: number;
+    readonly [key: string]: unknown;
+  }
+
   interface Capabilities {
     readonly granted: readonly Capability[];
     readonly unavailable: readonly Capability[];
@@ -482,12 +514,16 @@ declare namespace NekoMiniGame {
 
   interface VoiceInput {
     readonly connected: boolean;
-    request(action: 'query' | 'start' | 'stop' | 'toggle', options?: RequestOptions): Promise<unknown>;
-    query(options?: RequestOptions): Promise<unknown>;
-    start(options?: RequestOptions): Promise<unknown>;
-    stop(options?: RequestOptions): Promise<unknown>;
-    toggle(options?: RequestOptions): Promise<unknown>;
-    onState(handler: (state: Readonly<Record<string, unknown>>) => void): () => void;
+    request(
+      action: VoiceControlAction,
+      options?: RequestOptions | VoiceHandoffOptions,
+    ): Promise<VoiceControlState>;
+    query(options?: RequestOptions): Promise<VoiceControlState>;
+    start(options?: RequestOptions): Promise<VoiceControlState>;
+    stop(options?: RequestOptions): Promise<VoiceControlState>;
+    toggle(options?: RequestOptions): Promise<VoiceControlState>;
+    handoff(options?: VoiceHandoffOptions): Promise<VoiceControlState>;
+    onState(handler: (state: VoiceControlState) => void): () => void;
     onTranscript(handler: (transcript: VoiceTranscript) => void): () => void;
     onError(handler: (error: Readonly<Record<string, unknown>>) => void): () => void;
   }

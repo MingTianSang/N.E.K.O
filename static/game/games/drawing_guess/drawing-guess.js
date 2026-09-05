@@ -41,11 +41,17 @@
     'round:ai-draw': roundCommandRequestSchema(),
     'round:input': roundCommandRequestSchema({
       text: { type: 'string', maxLength: 2000 },
-      summary_chat_only: { type: 'boolean' }
+      summary_chat_only: { type: 'boolean' },
+      input_kind: { type: 'string', maxLength: 64 },
+      source: { type: 'string', maxLength: 128 },
+      request_id: { type: 'string', maxLength: 256 }
     }, ['text']),
     'round:feedback': roundCommandRequestSchema({
       text: { type: 'string', maxLength: 2000 },
-      image_data_url: { type: 'string', maxLength: 1800000 }
+      image_data_url: { type: 'string', maxLength: 1800000 },
+      input_kind: { type: 'string', maxLength: 64 },
+      source: { type: 'string', maxLength: 128 },
+      request_id: { type: 'string', maxLength: 256 }
     }, ['text', 'image_data_url']),
     'round:choose-word': roundCommandRequestSchema({
       word_id: { type: 'string', minLength: 1, maxLength: 64 }
@@ -85,12 +91,14 @@
     sdkConnectPromise: null,
     sdkStartPromise: null,
     sdkReconcilePromise: null,
-    sdkOutputUnsubscribe: null,
     sdkStateUnsubscribe: null,
     sdkInactiveUnsubscribe: null,
     sdkPageExitUnsubscribe: null,
     sdkSpeechStateUnsubscribe: null,
     sdkSpeechErrorUnsubscribe: null,
+    sdkVoiceStateUnsubscribe: null,
+    sdkVoiceTranscriptUnsubscribe: null,
+    sdkVoiceErrorUnsubscribe: null,
     sdkLocaleUnsubscribe: null,
     locale: 'zh-CN',
     sdkPulseForceRequestedSequence: 0,
@@ -119,8 +127,15 @@
     lipSyncStopTimer: null,
     lipSyncRetryDeadline: 0,
     voiceRouteActive: false,
-    voiceRouteStatusNotified: false,
-    lastExternalInputRequestId: '',
+    voiceControlPending: false,
+    voiceControlRequestSequence: 0,
+    voiceHandoffRetryPending: false,
+    voiceHandoffRetryAttempts: 0,
+    voiceHandoffIntentEpoch: null,
+    speechPlaybackActive: false,
+    lastVoiceTranscriptRequestId: '',
+    playerTextQueueGeneration: 0,
+    playerTextChain: Promise.resolve(),
     canvasContextLastHash: '',
     canvasContextLastSentAt: 0,
     canvasContextLastClearAttemptAt: 0,
@@ -892,16 +907,30 @@
       && isCanvasEditablePhase();
   }
 
+  function hasVoiceInputCapability() {
+    return !!state.sdkClient
+      && !state.sdkClient.disposed
+      && state.sdkClient.capabilities.has('voice-input')
+      && state.sdkClient.voice.connected;
+  }
+
   function syncVoiceRouteButton() {
     if (!els.voiceRouteButton) return;
     var active = !!state.voiceRouteActive;
-    els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding;
+    var pending = !!state.voiceControlPending;
+    var available = hasVoiceInputCapability();
+    els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding || pending || !available;
     els.voiceRouteButton.classList.toggle('is-active', active);
     els.voiceRouteButton.setAttribute('aria-pressed', active ? 'true' : 'false');
-    if (state.voiceRouteActive) {
-      els.voiceRouteButton.title = t('drawingGuess.voice.connected', 'Voice is connected to this round.');
+    els.voiceRouteButton.setAttribute('aria-busy', pending ? 'true' : 'false');
+    if (!available) {
+      els.voiceRouteButton.title = t('drawingGuess.voice.unavailable', 'In-game voice is unavailable in this environment.');
+    } else if (pending) {
+      els.voiceRouteButton.title = t('drawingGuess.voice.starting', 'Switching voice input…');
+    } else if (active) {
+      els.voiceRouteButton.title = t('drawingGuess.voice.connected', 'Voice is on for this round. Click to stop.');
     } else {
-      els.voiceRouteButton.title = t('drawingGuess.voice.connectHint', 'Open voice on the main page to let this round take it over.');
+      els.voiceRouteButton.title = t('drawingGuess.voice.connectHint', 'Click to turn on voice for this round.');
     }
     if (els.voiceRouteIcon) {
       els.voiceRouteIcon.src = active ? '/static/icons/mic_icon_on.png' : '/static/icons/mic_icon_off.png';
@@ -1068,6 +1097,8 @@
     clearTimeout(state.aiGuessTimeoutRetryTimer);
     state.aiGuessTimeoutRetryTimer = null;
     state.roundFlowToken += 1;
+    state.playerTextQueueGeneration += 1;
+    state.playerTextChain = Promise.resolve();
     return state.roundFlowToken;
   }
 
@@ -1238,12 +1269,14 @@
       // route belongs to another lifecycle action and must not be reset out
       // from underneath it.
       if (runtimeState === 'ending') return { busy: true };
-      return client.runtime.end(sdkRouteEndPayload({
-        reason: 'drawing_guess_debug_character_switch',
-        completedRoute: false,
-        suppressWindowStateChange: true,
-        suppressRouteEndStatus: true
-      }), { timeoutMs: 12000 });
+      return stopSdkVoiceBestEffort(client).then(function () {
+        return client.runtime.end(sdkRouteEndPayload({
+          reason: 'drawing_guess_debug_character_switch',
+          completedRoute: false,
+          suppressWindowStateChange: true,
+          suppressRouteEndStatus: true
+        }), { timeoutMs: 12000 });
+      });
     }).then(function (response) {
       if (response && response.skipped) return true;
       if (response && response.busy) return false;
@@ -1291,8 +1324,12 @@
       state.routeActive = false;
       state.routeEnding = false;
       state.voiceRouteActive = false;
-      state.voiceRouteStatusNotified = false;
-      state.lastExternalInputRequestId = '';
+      state.voiceControlPending = false;
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      state.voiceControlRequestSequence += 1;
+      state.lastVoiceTranscriptRequestId = '';
       state.canvasContextLastHash = '';
       state.canvasContextLastSentAt = 0;
       state.sessionId = state.sdkClient.runtime.reset({ newSession: true }).id;
@@ -1469,6 +1506,13 @@
     return scheduledEnd > 0 && audioTime > 0 && scheduledEnd - audioTime > 0.05;
   }
 
+  function speechPlaybackHasPendingAudioWork(detail) {
+    return !!(detail && (
+      detail.pendingAudioWork === true
+      || detail.pending_audio_work === true
+    ));
+  }
+
   function armDrawingGuessLipSyncStop(detail) {
     clearTimeout(state.lipSyncStopTimer);
     state.lipSyncStopTimer = null;
@@ -1484,11 +1528,14 @@
   function handleSpeechPlaybackState(playbackState) {
     var detail = (playbackState && playbackState.detail) || playbackState || {};
     if (isSpeechPlaybackAudible(detail)) {
+      state.speechPlaybackActive = true;
       scheduleDrawingGuessLipSyncStart();
       armDrawingGuessLipSyncStop(detail);
       return;
     }
+    state.speechPlaybackActive = !!detail.active || speechPlaybackHasPendingAudioWork(detail);
     stopDrawingGuessLipSync();
+    if (!state.speechPlaybackActive) schedulePendingVoiceHandoffRetry();
   }
 
   function clearNekoVoiceQueue() {
@@ -1799,7 +1846,7 @@
     }
     var dataUrl = captureRouteCanvasSnapshot();
     if (!dataUrl || dataUrl.length > SDK_ROUTE_CANVAS_DATA_MAX_CHARS) {
-      // 当前画布导出失败/超限时不能留着服务端旧快照，否则外部语音的
+      // 当前画布导出失败/超限时不能留着服务端旧快照，否则后续的
       // 视觉猜测会拿到过期画面
       if (state.canvasContextLastHash) {
         var failedCaptureNow = Date.now();
@@ -1834,6 +1881,8 @@
       source: 'drawing_guess',
       gameStarted: state.phase !== 'tutorial',
       game_started: state.phase !== 'tutorial',
+      externalInputTakeover: false,
+      external_input_takeover: false,
       client_round_token: state.roundFlowToken,
       currentState: {
         game: GAME_TYPE,
@@ -1908,8 +1957,12 @@
     stopThinkingEventMessage();
     clearNekoVoiceQueue();
     state.voiceRouteActive = false;
-    state.voiceRouteStatusNotified = false;
-    state.lastExternalInputRequestId = '';
+    state.voiceControlPending = false;
+    state.voiceHandoffRetryPending = false;
+    state.voiceHandoffRetryAttempts = 0;
+    state.voiceHandoffIntentEpoch = null;
+    state.voiceControlRequestSequence += 1;
+    state.lastVoiceTranscriptRequestId = '';
     if (!options.preserveCanvasRouteState) {
       state.canvasContextLastHash = '';
       state.canvasContextLastSentAt = 0;
@@ -1929,9 +1982,9 @@
   function handleSdkRuntimeState(event) {
     var current = String((event && event.payload && event.payload.current) || '');
     if (current === 'running') {
-      // The SDK starts heartbeat/output monitoring before runtime.start()
-      // resolves to this page. Mirror the SDK event synchronously so the first
-      // drain batch cannot be dropped by a stale local guard.
+      // The SDK starts route monitoring before runtime.start() resolves to this
+      // page. Mirror its lifecycle event synchronously so local controls cannot
+      // remain fenced behind the still-pending start Promise.
       state.routeActive = true;
     } else if (['idle', 'ended', 'inactive'].indexOf(current) >= 0) {
       state.routeActive = false;
@@ -1964,6 +2017,221 @@
     syncBrushToolButton();
   }
 
+  function handleSdkVoiceState(voiceState) {
+    var detail = voiceState && typeof voiceState === 'object' ? voiceState : {};
+    if (detail.route_active === false) state.voiceRouteActive = false;
+    if (typeof detail.active === 'boolean') state.voiceRouteActive = detail.active;
+    updateControls();
+  }
+
+  function handleSdkVoiceTranscript(transcript) {
+    if (!state.routeActive || state.routeEnding) return;
+    var text = String((transcript && transcript.text) || '').trim().slice(0, 2000);
+    if (!text) return;
+    var requestId = String((transcript && transcript.requestId) || '').trim();
+    var transcriptKey = requestId || [
+      String((transcript && transcript.source) || 'sdk_voice_input'),
+      String((transcript && transcript.timestamp) || ''),
+      text
+    ].join(':');
+    if (transcriptKey === state.lastVoiceTranscriptRequestId) return;
+    state.lastVoiceTranscriptRequestId = transcriptKey;
+    submitPlayerText(text, {
+      inputMetadata: {
+        input_kind: 'user-voice',
+        source: 'sdk_voice_input',
+        request_id: requestId
+      }
+    });
+  }
+
+  function handleSdkVoiceError(payload) {
+    updateControls();
+    if (!state.routeActive || state.routeEnding) return;
+    var error = payload && payload.error ? payload.error : payload;
+    // Request-correlated failures also resolve/reject the matching voice API
+    // call, where the initiating UI path reports them once. This event handler
+    // is for asynchronous recognizer/bridge failures after that request ended.
+    if (String((error && (error.request_id || error.requestId)) || '').trim()) return;
+    addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
+      reason: sdkErrorReason(error)
+    });
+  }
+
+  function querySdkVoiceRouteState(client) {
+    var observedRequestSequence = state.voiceControlRequestSequence;
+    if (!client || !client.capabilities.has('voice-input') || !isSdkRouteRunning(client)) {
+      state.voiceRouteActive = false;
+      updateControls();
+      return Promise.resolve(false);
+    }
+    return client.voice.query({ timeoutMs: 5000 }).then(function (voiceState) {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
+      handleSdkVoiceState(voiceState);
+      return true;
+    }).catch(function () {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
+      state.voiceRouteActive = false;
+      updateControls();
+      return false;
+    });
+  }
+
+  function isPlaybackHandoffFailure(reason) {
+    return ['speech_playback_active', 'speech_playback_started'].indexOf(String(reason || '')) >= 0;
+  }
+
+  function schedulePendingVoiceHandoffRetry() {
+    if (!state.voiceHandoffRetryPending
+      || state.speechPlaybackActive
+      || state.voiceControlPending) return false;
+    if (state.voiceHandoffRetryAttempts >= 2) {
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      return false;
+    }
+    var client = state.sdkClient;
+    if (!client || !isSdkRouteRunning(client)) {
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      return false;
+    }
+    state.voiceHandoffRetryPending = false;
+    var retryRequestSequence = state.voiceControlRequestSequence;
+    var retrySessionId = String((client.runtime.session && client.runtime.session.id) || '');
+    setTimeout(function () {
+      if (retryRequestSequence !== state.voiceControlRequestSequence
+        || retrySessionId !== String((client.runtime.session && client.runtime.session.id) || '')
+        || !isSdkRouteRunning(client)) return;
+      if (state.speechPlaybackActive) {
+        state.voiceHandoffRetryPending = true;
+        return;
+      }
+      state.voiceHandoffRetryAttempts += 1;
+      handoffOrdinaryVoiceToSdk(client).catch(function () {});
+    }, 0);
+    return true;
+  }
+
+  function handoffOrdinaryVoiceToSdk(client) {
+    if (!client || !client.capabilities.has('voice-input') || !isSdkRouteRunning(client)) {
+      state.voiceRouteActive = false;
+      updateControls();
+      return Promise.resolve(false);
+    }
+    if (state.voiceControlPending) return Promise.resolve(false);
+    var requestSequence = state.voiceControlRequestSequence + 1;
+    state.voiceControlRequestSequence = requestSequence;
+    state.voiceControlPending = true;
+    updateControls();
+    var handoffRequest;
+    try {
+      var handoffOptions = { timeoutMs: 12000 };
+      if (Number.isSafeInteger(state.voiceHandoffIntentEpoch)) {
+        handoffOptions.handoffIntentEpoch = state.voiceHandoffIntentEpoch;
+      }
+      handoffRequest = client.voice.handoff(handoffOptions);
+    } catch (error) {
+      handoffRequest = Promise.reject(error);
+    }
+    return Promise.resolve(handoffRequest).then(function (voiceState) {
+      if (requestSequence !== state.voiceControlRequestSequence) return false;
+      handleSdkVoiceState(voiceState);
+      if (voiceState && voiceState.ok === false) {
+        if (isPlaybackHandoffFailure(voiceState.reason)) {
+          var responseIntentEpoch = Number(voiceState.ordinary_voice_intent_epoch);
+          if (typeof voiceState.ordinary_voice_intent_epoch === 'number'
+            && Number.isSafeInteger(responseIntentEpoch)
+            && responseIntentEpoch >= 0) {
+            state.voiceHandoffIntentEpoch = responseIntentEpoch;
+            state.voiceHandoffRetryPending = true;
+          } else {
+            state.voiceHandoffRetryPending = false;
+          }
+          return false;
+        }
+        state.voiceHandoffRetryPending = false;
+        state.voiceHandoffRetryAttempts = 0;
+        state.voiceHandoffIntentEpoch = null;
+        if (String(voiceState.reason || '') === 'ordinary_voice_handoff_cancelled') return false;
+        if (els.chatMessages) {
+          addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
+            reason: String(voiceState.reason || 'request_failed')
+          });
+        }
+        return false;
+      }
+      if (!voiceState || voiceState.active !== true) {
+        state.voiceHandoffRetryPending = false;
+        state.voiceHandoffRetryAttempts = 0;
+        state.voiceHandoffIntentEpoch = null;
+        return false;
+      }
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      state.voiceRouteActive = true;
+      if (els.chatMessages) {
+        addEventMessage(
+          'drawingGuess.voice.connectedNotice',
+          'Voice is on for this round.'
+        );
+      }
+      return true;
+    }).catch(function (error) {
+      if (requestSequence !== state.voiceControlRequestSequence) return false;
+      if (isPlaybackHandoffFailure(sdkErrorReason(error))) {
+        state.voiceHandoffRetryPending = Number.isSafeInteger(state.voiceHandoffIntentEpoch);
+        return false;
+      }
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      if (sdkErrorReason(error) === 'ordinary_voice_handoff_cancelled') return false;
+      if (els.chatMessages) {
+        addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
+          reason: sdkErrorReason(error)
+        });
+      }
+      return false;
+    }).finally(function () {
+      if (requestSequence !== state.voiceControlRequestSequence) return;
+      state.voiceControlPending = false;
+      updateControls();
+      schedulePendingVoiceHandoffRetry();
+    });
+  }
+
+  function stopSdkVoiceBestEffort(client) {
+    if (!client || !client.capabilities.has('voice-input')) return Promise.resolve(false);
+    if (['running', 'degraded'].indexOf(client.runtime.state) < 0) return Promise.resolve(false);
+    return client.voice.stop({ timeoutMs: 6500 }).then(function (voiceState) {
+      handleSdkVoiceState(voiceState);
+      return true;
+    }).catch(function () {
+      state.voiceRouteActive = false;
+      state.voiceControlPending = false;
+      updateControls();
+      return false;
+    });
+  }
+
+  function handleSdkPageExit() {
+    var client = state.sdkClient;
+    if (client && !client.disposed && client.capabilities.has('voice-input')) {
+      try {
+        // The SDK dispatches page-exit handlers synchronously before it sends
+        // the route-end beacon and disposes the bridge. Posting stop here gives
+        // the main-window microphone owner an immediate, route-bound teardown
+        // request even when no Promise continuation can run during unload.
+        client.voice.stop({ timeoutMs: 6500 }).catch(function () {});
+      } catch (_) { /* page-exit cleanup remains best effort */ }
+    }
+    cleanupRouteResources();
+  }
+
   function connectMiniGameSdk() {
     if (state.sdkClient) return Promise.resolve(state.sdkClient);
     if (state.sdkConnectPromise) return state.sdkConnectPromise;
@@ -1984,7 +2252,7 @@
           version: SDK_GAME_VERSION,
           protocolVersion: '1',
           requiredCapabilities: ['runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory'],
-          optionalCapabilities: ['window-control', 'storage'],
+          optionalCapabilities: ['voice-input', 'window-control', 'storage'],
           contracts: {
             commands: ROUND_COMMAND_CONTRACTS
           }
@@ -2005,25 +2273,27 @@
         client.runtime.configure({
           payload: sdkRuntimePayload,
           heartbeat: { intervalMs: 2500, timeoutMs: 5000 },
-          outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 },
+          outputs: false,
           pageExit: {
             payload: function (context) {
               return sdkRouteEndPayload({ reason: String((context && context.type) || 'page-exit') });
             }
           }
         });
-        state.sdkOutputUnsubscribe = client.events.on('runtime-output', function (event) {
-          handleRouteDrainOutput(event.payload);
-        });
         state.sdkStateUnsubscribe = client.events.on('runtime-state', handleSdkRuntimeState);
         state.sdkInactiveUnsubscribe = client.events.on('runtime-inactive', handleSdkRuntimeInactive);
-        state.sdkPageExitUnsubscribe = client.events.on('page-exit', cleanupRouteResources);
+        state.sdkPageExitUnsubscribe = client.events.on('page-exit', handleSdkPageExit);
         state.sdkSpeechStateUnsubscribe = client.speech.onState(handleSpeechPlaybackState);
         state.sdkSpeechErrorUnsubscribe = client.speech.onError(function (error) {
           client.logger.warn('speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
             reason: String((error && (error.code || error.message)) || 'unknown')
           });
         });
+        if (client.capabilities.has('voice-input')) {
+          state.sdkVoiceStateUnsubscribe = client.voice.onState(handleSdkVoiceState);
+          state.sdkVoiceTranscriptUnsubscribe = client.voice.onTranscript(handleSdkVoiceTranscript);
+          state.sdkVoiceErrorUnsubscribe = client.voice.onError(handleSdkVoiceError);
+        }
         updateControls();
         return client;
       })
@@ -2408,10 +2678,6 @@
     setBadge('');
   }
 
-  function resultLine(res) {
-    return String((res && (res.message || res.line || res.evaluation)) || '').trim();
-  }
-
   function addAiGuessOutcomeMessage(res) {
     if (!res || res.kind !== 'ai_guess') return;
     if (res.correct) {
@@ -2425,97 +2691,6 @@
       return;
     }
     addEventMessage('drawingGuess.messages.aiGuessWrong', 'Not quite.');
-  }
-
-  function applyExternalDrawingResult(res) {
-    if (!res || !res.ok) return;
-    if ((res.kind === 'guess' && res.correct) || res.kind === 'give_up') {
-      stopCountdown();
-      state.aiAnswerLabel = res.answer ? String(res.answer.label || '') : '';
-      addEventMessage('drawingGuess.messages.answerReveal', 'Answer: {{answer}}', {
-        answer: res.answer ? res.answer.label : ''
-      });
-      continueAfterAiDrawingHalf(res, state.roundFlowToken);
-      return;
-    }
-    if (res.kind === 'ai_guess') {
-      var guessLabel = res.guess ? res.guess.label : '';
-      stopThinkingEventMessage();
-      state.pendingAutoGuess = false;
-      state.aiGuessAttempts = Number(res.attempt || state.aiGuessAttempts || 0);
-      state.maxAiGuessAttempts = Number(res.max_attempts || state.maxAiGuessAttempts || 3);
-      addEventMessage('drawingGuess.messages.aiGuessLine', 'She guessed: {{guess}}', { guess: guessLabel });
-      addAiGuessOutcomeMessage(res);
-      if (res.state && res.state.phase === 'summary') {
-        renderSummary(res);
-      } else {
-        var nextPhase = res.state && res.state.phase ? String(res.state.phase) : 'ai_guess_feedback';
-        setPhase(nextPhase);
-        if (nextPhase === 'ai_guess_feedback') {
-          setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
-          addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
-          scheduleNextRandomAiGuess();
-        }
-      }
-      return;
-    }
-    if (res.state && res.state.phase === 'summary' && (res.summary || res.evaluation || res.answer || res.ai_answer)) {
-      renderSummary(res);
-    }
-  }
-
-  function externalInputText(output) {
-    var event = (output && output.event) || {};
-    return String(event.userVoiceText || event.userText || event.textRaw || (output.meta && output.meta.inputText) || '').trim();
-  }
-
-  function routeOutputMatchesCurrentRound(output) {
-    var result = (output && output.result) || {};
-    var eventState = (output && output.event && output.event.currentState) || {};
-    var resultToken = result.state && result.state.client_round_token;
-    var token = state.phase === 'final_summary' && result.kind === 'chat'
-      ? resultToken
-      : eventState.client_round_token;
-    if (token == null) token = resultToken;
-    if (token == null) return true;
-    return String(token) === String(state.activeRoundToken);
-  }
-  function handleRouteDrainOutput(output) {
-    if (!output || !output.type) return;
-    if (output.type === 'game_voice_stt_gate') {
-      state.voiceRouteActive = true;
-      if (!state.voiceRouteStatusNotified) {
-        state.voiceRouteStatusNotified = true;
-        addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
-      }
-      syncVoiceRouteButton();
-      return;
-    }
-    if (output.type === 'game_canvas_context_request') {
-      pushCanvasContextForRoute(true);
-      return;
-    }
-    if (output.type === 'game_external_input') {
-      var inputText = externalInputText(output);
-      var requestId = String(output.request_id || '');
-      // 后端允许无 request_id 的外部输入（按文本去重）；空 id 恒等于初始
-      // 空串会把这类转写全部吞掉，退化用文本作去重键
-      var externalInputKey = requestId || ('text:' + inputText);
-      if (inputText && externalInputKey !== state.lastExternalInputRequestId) {
-        state.lastExternalInputRequestId = externalInputKey;
-        addUserMessage(inputText);
-      }
-      return;
-    }
-    if (output.type !== 'game_llm_result') return;
-    var result = output.result || {};
-    if (state.routeEnding) return;
-    if (state.phase === 'final_summary' && result.kind !== 'chat') return;
-    if (!routeOutputMatchesCurrentRound(output)) return;
-    var line = resultLine(result);
-    if (line) addNekoMessage(line);
-    applyExternalDrawingResult(result);
-    updateControls();
   }
 
   function reconcileFailedSdkStart(client, reason) {
@@ -2601,7 +2776,7 @@
       }
       // A previous ambiguous start/end failure must be reconciled before a new
       // generation is allowed. Otherwise every click can create another
-      // unresolved backend route while the first one still owns main input.
+      // unresolved backend route while the first route is still active.
       return reconcileFailedSdkStart(client, 'retry_before_start').then(function (reconciled) {
         if (!reconciled) throw sdkStartRecoveryBlockedError();
         return client.runtime.start(routePayload(), { timeoutMs: 12000 });
@@ -2619,7 +2794,11 @@
       }
       state.routeActive = true;
       state.voiceRouteActive = false;
-      state.voiceRouteStatusNotified = false;
+      state.voiceControlPending = false;
+      state.voiceHandoffRetryPending = false;
+      state.voiceHandoffRetryAttempts = 0;
+      state.voiceHandoffIntentEpoch = null;
+      state.lastVoiceTranscriptRequestId = '';
       state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
       setStatus('active', 'Active');
@@ -2636,7 +2815,16 @@
           });
         }
         return true;
-      }).catch(function () { return isSdkRouteRunning(client); });
+      }).catch(function () {
+        return isSdkRouteRunning(client);
+      }).then(function (started) {
+        if (!started) return false;
+        // Voice input is optional. If the ordinary voice session was already
+        // open, ask the SDK controller to transfer it in the background. The
+        // game route itself never waits for microphone ownership or permission.
+        handoffOrdinaryVoiceToSdk(client).catch(function () {});
+        return true;
+      });
     }).catch(function (error) {
       var failureReason = sdkErrorReason(error);
       if (error && error.sdkRecoveryBlocked) {
@@ -2669,9 +2857,11 @@
       client.logger.info('runtime', 'sdk_route_ending', '你画我猜正在通过小游戏 SDK 结束', {
         completed: !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary'
       });
-      return client.runtime.end(sdkRouteEndPayload(options), {
-        timeoutMs: 12000,
-        useBeacon: useBeacon === true
+      return stopSdkVoiceBestEffort(client).then(function () {
+        return client.runtime.end(sdkRouteEndPayload(options), {
+          timeoutMs: 12000,
+          useBeacon: useBeacon === true
+        });
       });
     }).then(function (response) {
       var data = sdkResponseData(response);
@@ -2905,7 +3095,7 @@
     stopCountdown();
     resetCanvas();
     // 上一轮画布可能已发布到 route state，立即推 clear（内部只在有过发布时
-    // 才发请求），避免下一次 drain 心跳前的外部语音把旧画布喂给视觉猜测
+    // 才发请求），避免下一次视觉请求拿到上一轮的旧画布
     pushCanvasContextForRoute(true);
     state.roundNumber += 1;
     state.currentRoundSummarySaved = false;
@@ -3027,9 +3217,11 @@
     requestGuessTimeout(flowToken, 0);
   }
 
-  function submitUserGuess(text) {
+  function submitUserGuess(text, inputMetadata) {
     var flowToken = state.roundFlowToken;
-    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload({ text: text }), 10000).then(function (res) {
+    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload(Object.assign({
+      text: text
+    }, inputMetadata || {})), 10000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
@@ -3055,10 +3247,10 @@
     options = options || {};
     var flowToken = state.roundFlowToken;
     state.chatInFlight = true;
-    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload({
+    return executeRoundCommand(ROUND_COMMANDS.INPUT, roundCommandPayload(Object.assign({
       text: text,
       summary_chat_only: !!options.summaryChatOnly
-    }), 20000).then(function (res) {
+    }, options.inputMetadata || {})), 20000).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
@@ -3073,15 +3265,15 @@
     });
   }
 
-  function submitFeedbackInput(text) {
+  function submitFeedbackInput(text, inputMetadata) {
     state.chatInFlight = true;
     var flowToken = state.roundFlowToken;
     var feedbackImage = captureUserCanvasPng();
     if (feedbackImage) state.userPng = feedbackImage;
-    return executeRoundCommand(ROUND_COMMANDS.FEEDBACK, roundCommandPayload({
+    return executeRoundCommand(ROUND_COMMANDS.FEEDBACK, roundCommandPayload(Object.assign({
       text: text,
       image_data_url: feedbackImage || state.userPng
-    }), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
+    }, inputMetadata || {})), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
@@ -4322,25 +4514,68 @@
     });
   }
 
+  function playerTextPhaseAcceptsInput() {
+    return ['user_guessing', 'drawing_pick', 'user_drawing', 'ai_guess_feedback', 'summary', 'final_summary'].indexOf(state.phase) >= 0;
+  }
+
+  function dispatchPlayerText(value, options) {
+    options = options || {};
+    if (!state.routeActive || state.routeEnding || !playerTextPhaseAcceptsInput()) return Promise.resolve(false);
+    addUserMessage(value);
+    var request = null;
+    if (state.phase === 'user_guessing') {
+      request = submitUserGuess(value, options.inputMetadata);
+    } else if (state.phase === 'drawing_pick') {
+      request = submitGameChat(value, { inputMetadata: options.inputMetadata });
+    } else if (state.phase === 'user_drawing') {
+      request = submitGameChat(value, { inputMetadata: options.inputMetadata });
+    } else if (state.phase === 'ai_guess_feedback') {
+      request = submitFeedbackInput(value, options.inputMetadata);
+    } else if (state.phase === 'summary') {
+      request = submitGameChat(value, { inputMetadata: options.inputMetadata });
+    } else if (state.phase === 'final_summary') {
+      request = submitGameChat(value, { summaryChatOnly: true, inputMetadata: options.inputMetadata });
+    }
+    return Promise.resolve(request).then(function () { return true; });
+  }
+
+  function submitPlayerText(value, options) {
+    options = options || {};
+    value = String(value || '').trim();
+    if (!value || !state.routeActive || state.routeEnding || !playerTextPhaseAcceptsInput()) return false;
+    var queueGeneration = state.playerTextQueueGeneration;
+    var queuedRoundToken = state.roundFlowToken;
+    var queuedPhase = state.phase;
+    var queuedOptions = {
+      summaryChatOnly: options.summaryChatOnly === true,
+      inputMetadata: options.inputMetadata && typeof options.inputMetadata === 'object'
+        ? Object.assign({}, options.inputMetadata)
+        : options.inputMetadata
+    };
+    // Typed and SDK voice input share one command queue. SpeechRecognition can
+    // emit several final utterances while a 20-second round command is still
+    // running; serializing here preserves what the player said and prevents
+    // the shared chatInFlight flag from being cleared by the wrong request.
+    state.playerTextChain = Promise.resolve(state.playerTextChain).catch(function () {})
+      .then(function () {
+        if (queueGeneration !== state.playerTextQueueGeneration
+          || queuedRoundToken !== state.roundFlowToken
+          || queuedPhase !== state.phase) return false;
+        return dispatchPlayerText(value, queuedOptions);
+      }).catch(function () {
+        if (queueGeneration === state.playerTextQueueGeneration && state.routeActive && !state.routeEnding) {
+          addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+        }
+        return false;
+      });
+    return true;
+  }
+
   function handleChatSubmit(event) {
     event.preventDefault();
     var value = String(els.chatInput.value || '').trim();
     if (!value) return;
-    els.chatInput.value = '';
-    addUserMessage(value);
-    if (state.phase === 'user_guessing') {
-      submitUserGuess(value);
-    } else if (state.phase === 'drawing_pick') {
-      submitGameChat(value);
-    } else if (state.phase === 'user_drawing') {
-      submitGameChat(value);
-    } else if (state.phase === 'ai_guess_feedback') {
-      submitFeedbackInput(value);
-    } else if (state.phase === 'summary') {
-      submitGameChat(value);
-    } else if (state.phase === 'final_summary') {
-      submitGameChat(value, { summaryChatOnly: true });
-    }
+    if (submitPlayerText(value)) els.chatInput.value = '';
   }
 
   function handleVoiceRouteButton() {
@@ -4348,11 +4583,47 @@
       addEventMessage('drawingGuess.voice.routeNotReady', 'Wait until the game route is ready before using voice.');
       return;
     }
-    if (state.voiceRouteActive) {
-      addEventMessage('drawingGuess.voice.connectedNotice', 'Voice chat is connected to this round.');
+    if (state.voiceControlPending) return;
+    state.voiceHandoffRetryPending = false;
+    state.voiceHandoffRetryAttempts = 0;
+    state.voiceHandoffIntentEpoch = null;
+    var client = state.sdkClient;
+    if (!client || !hasVoiceInputCapability()) {
+      addEventMessage('drawingGuess.voice.unavailable', 'In-game voice is unavailable in this environment.');
       return;
     }
-    addEventMessage('drawingGuess.voice.connectHintNotice', 'Open voice on the main page first; this round will take it over when it becomes active.');
+    var wasActive = state.voiceRouteActive;
+    var requestSequence = state.voiceControlRequestSequence + 1;
+    state.voiceControlRequestSequence = requestSequence;
+    state.voiceControlPending = true;
+    updateControls();
+    client.voice.toggle({ timeoutMs: 12000 }).then(function (voiceState) {
+      if (requestSequence !== state.voiceControlRequestSequence) return;
+      handleSdkVoiceState(voiceState);
+      if (voiceState && voiceState.ok === false) {
+        addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
+          reason: String(voiceState.reason || 'request_failed')
+        });
+        return;
+      }
+      var active = voiceState && typeof voiceState.active === 'boolean'
+        ? voiceState.active
+        : !wasActive;
+      state.voiceRouteActive = active;
+      addEventMessage(
+        active ? 'drawingGuess.voice.connectedNotice' : 'drawingGuess.voice.connectHintNotice',
+        active ? 'Voice is on for this round.' : 'Voice is off for this round.'
+      );
+    }).catch(function (error) {
+      if (requestSequence !== state.voiceControlRequestSequence) return;
+      addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
+        reason: sdkErrorReason(error)
+      });
+    }).finally(function () {
+      if (requestSequence !== state.voiceControlRequestSequence) return;
+      state.voiceControlPending = false;
+      updateControls();
+    });
   }
 
   function finishGame() {

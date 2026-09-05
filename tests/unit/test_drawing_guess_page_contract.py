@@ -76,6 +76,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
         "allowedCapabilities": [
             "runtime",
             "logging",
+            "voice-input",
             "speech-output",
             "avatar-renderer",
             "memory",
@@ -135,20 +136,21 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
         "requiredCapabilities: ['runtime', 'logging', 'speech-output', "
         "'avatar-renderer', 'memory']"
     ) in script
-    assert "optionalCapabilities: ['window-control', 'storage']" in script
+    assert "optionalCapabilities: ['voice-input', 'window-control', 'storage']" in script
     assert "commands: ROUND_COMMAND_CONTRACTS" in script
     assert "window.NekoMiniGame.connect" in script
     assert "client.runtime.configure" in script
     assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
     assert "client.runtime.end(sdkRouteEndPayload(options)" in script
     assert "state.sdkClient.runtime.reset({ newSession: true })" in script
-    assert "client.events.on('runtime-output'" in script
+    assert "client.events.on('runtime-output'" not in script
     assert "client.events.on('runtime-state'" in script
     assert "client.events.on('runtime-inactive'" in script
     assert "client.events.on('page-exit'" in script
     assert "client.logger.enableAfterRuntimeStart()" in script
     assert "heartbeat: { intervalMs: 2500, timeoutMs: 5000 }" in script
-    assert "outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 }" in script
+    assert "outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 }" not in script
+    assert "outputs: false" in script
     assert "SDK_ROUTE_CANVAS_DATA_MAX_CHARS = 200 * 1024" in script
     assert "captureRouteCanvasSnapshot" in script
     assert "function sdkRouteInstanceId()" in script
@@ -170,8 +172,8 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "heartbeatTimer" not in html
     assert "navigator.sendBeacon" not in html
 
-    # Game code declares portable commands and speech capability; endpoint
-    # selection, route identity, audio transport, and playback all stay host-owned.
+    # Game code declares portable commands, speech output, and voice input;
+    # endpoint selection, route identity, and audio transport stay host-owned.
     for command in (
         "round:start",
         "round:ai-draw",
@@ -185,6 +187,13 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "client.commands.execute(command, payload || {}" in script
     assert "client.speech.speak({" in script
     assert "client.speech.onState(handleSpeechPlaybackState)" in script
+    assert "client.voice.onState(handleSdkVoiceState)" in script
+    assert "client.voice.onTranscript(handleSdkVoiceTranscript)" in script
+    assert "client.voice.onError(handleSdkVoiceError)" in script
+    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.stop({ timeoutMs: 6500 })" in script
+    assert "client.events.on('page-exit', handleSdkPageExit)" in script
+    assert "state.playerTextChain = Promise.resolve(state.playerTextChain)" in script
     assert "client.window.close({ timeoutMs: 3000 })" in script
     assert "window.nekoHost" not in script
     assert "try { window.close(); }" in script
@@ -427,7 +436,7 @@ def test_drawing_guess_static_route_contract():
     assert "window.NekoMiniGame.connect" in script
     assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
     assert "client.runtime.end(sdkRouteEndPayload(options)" in script
-    assert "client.events.on('runtime-output'" in script
+    assert "client.events.on('runtime-output'" not in script
     assert "function pushCanvasContextForRoute" in script
     assert "function publishFinalSummaryRouteState" in script
     assert "sdkPulseForceRequestedSequence: 0" in script
@@ -446,7 +455,7 @@ def test_drawing_guess_static_route_contract():
     assert "state.canvasContextLastPayloadKind = 'clear';" in script
     assert "attemptedCanvasKind === 'clear'" in script
     assert "cleanupRouteResources({ preserveCanvasRouteState: true });" in script
-    assert "output.type === 'game_canvas_context_request'" in script
+    assert "game_canvas_context_request" not in script
     command_timeout_patterns = {
         "round start": (
             r"executeRoundCommand\(ROUND_COMMANDS\.START,\s*"
@@ -458,15 +467,18 @@ def test_drawing_guess_static_route_contract():
         ),
         "user input": (
             r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
-            r"roundCommandPayload\(\{\s*text: text\s*\}\),\s*10000\)"
+            r"roundCommandPayload\(Object\.assign\(\{\s*text: text\s*\},\s*"
+            r"inputMetadata \|\| \{\}\)\),\s*10000\)"
         ),
         "round chat": (
             r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
-            r"roundCommandPayload\(\{[^}]*summary_chat_only:[^}]*\}\),\s*20000\)"
+            r"roundCommandPayload\(Object\.assign\(\{[^}]*summary_chat_only:[^}]*\},\s*"
+            r"options\.inputMetadata \|\| \{\}\)\),\s*20000\)"
         ),
         "drawing feedback": (
             r"executeRoundCommand\(ROUND_COMMANDS\.FEEDBACK,\s*"
-            r"roundCommandPayload\(\{[^}]*image_data_url:[^}]*\}\),\s*"
+            r"roundCommandPayload\(Object\.assign\(\{[^}]*image_data_url:[^}]*\},\s*"
+            r"inputMetadata \|\| \{\}\)\),\s*"
             r"AI_GUESS_REQUEST_TIMEOUT_MS\)"
         ),
         "word choice": (
@@ -499,7 +511,19 @@ def test_drawing_guess_static_route_contract():
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
     assert "function handleVoiceRouteButton" in script
-    assert "game_voice_stt_gate" in script
+    assert "function handoffOrdinaryVoiceToSdk(client)" in script
+    assert "var handoffOptions = { timeoutMs: 12000 };" in script
+    assert "handoffOptions.handoffIntentEpoch = state.voiceHandoffIntentEpoch;" in script
+    assert "handoffRequest = client.voice.handoff(handoffOptions);" in script
+    assert "handoffOrdinaryVoiceToSdk(client).catch(function () {});" in script
+    assert "function handleSdkVoiceTranscript" in script
+    assert "function submitPlayerText" in script
+    assert "input_kind: 'user-voice'" in script
+    assert "source: 'sdk_voice_input'" in script
+    assert "game_voice_stt_gate" not in script
+    assert "game_external_input" not in script
+    assert "externalInputTakeover: false" in script
+    assert "external_input_takeover: false" in script
     assert "function speechRecognitionCtor" not in script
     assert "function startInternalVoiceRecognition" not in script
     assert "function stopInternalVoiceRecognition" not in script
@@ -580,7 +604,7 @@ def test_drawing_guess_static_route_contract():
     assert "if (!state.isDrawing || !isCanvasInteractionEnabled()) return;" in script
     assert "state.isDrawing = false;" in script
     assert "if (!isSdkRouteRunning(client)) return false;" in script
-    assert "catch(function () { return isSdkRouteRunning(client); });" in script
+    assert "return isSdkRouteRunning(client);" in script
     assert "els.doneButton.hidden = roundSummaryOpen || finalSummaryOpen;" in script
     assert "els.nextRoundButton.hidden = !roundSummaryOpen;" in script
     assert "els.endButton.hidden = finalSummaryOpen;" in script
@@ -682,11 +706,11 @@ def test_drawing_guess_static_route_contract():
     assert "startCountdown(seconds || ROUND_FALLBACK_SECONDS" in script
     assert "els.canvas.toDataURL('image/png')" in script
     assert "state.phase !== 'user_drawing'" in script
-    assert "submitGameChat(value)" in script
+    assert "submitGameChat(value, { inputMetadata: options.inputMetadata })" in script
     assert "var feedbackImage = captureUserCanvasPng();" in script
     assert "image_data_url: feedbackImage || state.userPng" in script
     assert "summary_chat_only: !!options.summaryChatOnly" in script
-    assert "submitGameChat(value, { summaryChatOnly: true });" in script
+    assert "submitGameChat(value, { summaryChatOnly: true, inputMetadata: options.inputMetadata });" in script
     assert "addUserMessage(value)" in script
     assert "state.phase !== 'summary'" in script
     assert "startThinkingEventMessage('drawingGuess.messages.aiGuessing'" in script
@@ -711,14 +735,11 @@ def test_drawing_guess_static_route_contract():
     assert "state.pendingAutoGuessImage = snapshot || state.userPng || ''" in script
     assert "triggerRandomAiGuess(autoImage)" in script
     assert "flushDeferredAiGuessWork()" in script
-    assert "continueAfterAiDrawingHalf(res, state.roundFlowToken);" in script
     assert "res.correct || res.kind === 'give_up'" in script
-    assert "(res.kind === 'guess' && res.correct) || res.kind === 'give_up'" in script
-    assert "function routeOutputMatchesCurrentRound" in script
-    assert "result.state.client_round_token" in script
-    assert "String(token) === String(state.activeRoundToken)" in script
-    assert "if (state.phase === 'final_summary' && result.kind !== 'chat') return;" in script
-    assert "state.phase === 'final_summary' && result.kind === 'chat'\n      ? resultToken" in script
+    assert "function routeOutputMatchesCurrentRound" not in script
+    assert "function handleRouteDrainOutput" not in script
+    assert "lastVoiceTranscriptRequestId" in script
+    assert "requestSequence !== state.voiceControlRequestSequence" in script
     assert "res.reason === 'session_busy'" in script
     assert "setTimeout(retryWhenReady, 180);" in script
     assert "aiGuessTimeoutRetryTimer: null" in script
@@ -892,7 +913,11 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         "drawingGuess.voice.connectHint",
         "drawingGuess.voice.connectedNotice",
         "drawingGuess.voice.connectHintNotice",
+        "drawingGuess.voice.starting",
+        "drawingGuess.voice.unavailable",
+        "drawingGuess.voice.controlFailed",
         "drawingGuess.voice.routeNotReady",
+        "drawingGuess.voice.buttonLabel",
         "drawingGuess.summary.title",
         "drawingGuess.summary.finalTitle",
         "drawingGuess.summary.roundLabel",

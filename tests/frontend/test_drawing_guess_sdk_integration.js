@@ -28,6 +28,8 @@ async function main() {
   let forgedAvatarMounts = 0;
   let trustedWindowCloseCalls = 0;
   let forgedWindowCloseCalls = 0;
+  let controllerVoiceActive = false;
+  const voiceControlRequests = [];
   const trustedNekoHost = {
     closeWindow() {
       assert(this === trustedNekoHost,
@@ -140,7 +142,7 @@ async function main() {
           publisherId: 'project-neko',
           version: '0.1.0',
           allowedCapabilities: [
-            'runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory',
+            'runtime', 'logging', 'voice-input', 'speech-output', 'avatar-renderer', 'memory',
             'window-control', 'storage',
           ],
           commandRoutes: {
@@ -228,6 +230,12 @@ async function main() {
     },
   });
   const listeners = new Map();
+  class CustomEventMock {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  }
   const windowMock = {
     AbortController,
     console: { log() {}, warn() {}, error() {} },
@@ -239,6 +247,7 @@ async function main() {
     clearTimeout,
     setInterval,
     clearInterval,
+    CustomEvent: CustomEventMock,
     addEventListener(type, handler) {
       if (!listeners.has(type)) listeners.set(type, new Set());
       listeners.get(type).add(handler);
@@ -267,6 +276,28 @@ async function main() {
       schedulePendingAudioMetaStallCheck() {},
     },
   };
+  windowMock.addEventListener('neko-game-voice-control-message', (event) => {
+    const request = event?.detail;
+    if (request?.type !== 'game_voice_control_request') return;
+    voiceControlRequests.push(request);
+    if (request.action === 'start') controllerVoiceActive = true;
+    else if (request.action === 'stop') controllerVoiceActive = false;
+    else if (request.action === 'toggle') controllerVoiceActive = !controllerVoiceActive;
+    windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
+      detail: {
+        type: 'game_voice_control_state',
+        message_id: `voice-state-${voiceControlRequests.length}`,
+        game_type: request.game_type,
+        session_id: request.session_id,
+        sdk_route_instance_id: request.sdk_route_instance_id,
+        request_id: request.request_id,
+        route_active: true,
+        active: controllerVoiceActive,
+        ok: true,
+        reason: request.action === 'query' ? 'queried' : `${request.action}ed`,
+      },
+    }));
+  });
   windowMock.document = {
     currentScript: null,
     documentElement: { lang: 'zh-CN' },
@@ -341,7 +372,7 @@ async function main() {
     requiredCapabilities: [
       'runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory',
     ],
-    optionalCapabilities: ['window-control', 'storage'],
+    optionalCapabilities: ['voice-input', 'window-control', 'storage'],
     contracts: {
       commands: {
         'round:start': {
@@ -365,7 +396,7 @@ async function main() {
   }, { transport, windowImpl: windowMock, documentImpl: windowMock.document });
 
   assert(game.capabilities.granted.join(',')
-    === 'runtime,logging,speech-output,avatar-renderer,memory,window-control,storage',
+    === 'runtime,logging,speech-output,avatar-renderer,memory,voice-input,window-control,storage',
     `unexpected drawing capability grant: ${game.capabilities.granted.join(',')}`);
   assert(trustedAvatarFactoryCalls === 1 && forgedAvatarMounts === 0,
     'the game replaced the bootstrap-owned Avatar provider');
@@ -418,6 +449,8 @@ async function main() {
   'drawing SDK did not configure memory consent before its first runtime start');
   const started = await game.runtime.start({
     lanlan_name: 'SDK Neko',
+    externalInputTakeover: false,
+    external_input_takeover: false,
     game_memory_enabled: false,
     game_memory_archive_enabled: false,
     event: {
@@ -437,11 +470,67 @@ async function main() {
     && startCall.body.sdk_route_instance_id
     && startCall.body.game_memory_enabled === true
     && startCall.body.game_memory_archive_enabled === true
+    && startCall.body.externalInputTakeover === false
+    && startCall.body.external_input_takeover === false
     && startCall.body.i18n_language === 'zh-CN'
     && startCall.body.event.kind === 'forged-memory-policy'
     && !Object.hasOwn(startCall.body.event, 'game_memory_enabled')
     && !Object.hasOwn(startCall.body.event, 'i18n_language'),
   'the integrated host did not inject trusted route identity');
+
+  const voiceStates = [];
+  const voiceTranscripts = [];
+  const voiceErrors = [];
+  const unsubscribeVoiceState = game.voice.onState((voiceState) => voiceStates.push(voiceState));
+  const unsubscribeVoiceTranscript = game.voice.onTranscript((transcript) => voiceTranscripts.push(transcript));
+  const unsubscribeVoiceError = game.voice.onError((error) => voiceErrors.push(error));
+  const voiceStarted = await game.voice.toggle({ timeoutMs: 1000 });
+  assert(voiceStarted.ok === true
+    && voiceStarted.active === true
+    && voiceControlRequests.length === 1
+    && voiceControlRequests[0].game_type === 'drawing_guess'
+    && voiceControlRequests[0].session_id === 'drawing-sdk-session'
+    && voiceControlRequests[0].sdk_route_instance_id === startCall.body.sdk_route_instance_id
+    && voiceStates.at(-1)?.active === true,
+  'drawing voice.toggle did not use the active SDK route identity');
+  windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
+    detail: {
+      type: 'game_voice_transcript',
+      message_id: 'drawing-voice-transcript-message',
+      game_type: 'drawing_guess',
+      session_id: 'drawing-sdk-session',
+      sdk_route_instance_id: startCall.body.sdk_route_instance_id,
+      request_id: 'drawing-voice-transcript-1',
+      source: 'browser_speech_recognition',
+      timestamp: 1234,
+      text: '这是语音输入',
+    },
+  }));
+  assert(voiceTranscripts.length === 1
+    && voiceTranscripts[0].text === '这是语音输入'
+    && voiceTranscripts[0].requestId === 'drawing-voice-transcript-1',
+  'drawing voice transcript was not normalized through the SDK bridge');
+  windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
+    detail: {
+      type: 'game_voice_control_error',
+      message_id: 'drawing-voice-error-message',
+      game_type: 'drawing_guess',
+      session_id: 'drawing-sdk-session',
+      sdk_route_instance_id: startCall.body.sdk_route_instance_id,
+      code: 'not-allowed',
+      reason: 'not-allowed',
+    },
+  }));
+  assert(voiceErrors.length === 1
+    && voiceErrors[0].error.code === 'not-allowed'
+    && voiceErrors[0].source === 'same_document',
+  'drawing voice control errors did not reach voice.onError');
+  const voiceStopped = await game.voice.stop({ timeoutMs: 1000 });
+  assert(voiceStopped.ok === true && voiceStopped.active === false,
+    'drawing voice.stop did not release the active SDK route microphone');
+  unsubscribeVoiceState();
+  unsubscribeVoiceTranscript();
+  unsubscribeVoiceError();
 
   const currentCharacter = await game.avatar.getCurrentCharacter();
   const characterNames = await game.avatar.listCharacters();

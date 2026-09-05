@@ -5282,7 +5282,7 @@
             "quickDraw": "Quando for sua vez de desenhar, escolha uma carta, desenhe na tela e pressione Pronto.",
             "quickGuess": "Quando for sua vez de adivinhar, digite seu palpite no chat; você também pode conversar e pedir dicas.",
             "quickSummary": "Cada rodada guarda miniaturas, e o resumo final permite salvar os desenhos.",
-            "voiceHint": "Se quiser usar voz, ative-a primeiro na página principal; este minijogo assumirá a voz depois de começar."
+            "voiceHint": "Para usar voz, clique no botão do microfone à esquerda do campo de chat."
         },
         "actions": {
             "start": "Começar",
@@ -5323,12 +5323,15 @@
             "requestLock": "Bloqueio de solicitação"
         },
         "voice": {
-            "connected": "A voz está conectada a esta rodada.",
-            "connectHint": "Ative a voz na página principal para esta rodada assumir.",
-            "connectedNotice": "A voz da página principal está conectada a esta rodada.",
-            "connectHintNotice": "Ative primeiro a voz na página principal; esta rodada assumirá quando ela estiver ativa.",
+            "connected": "A voz está ativa nesta rodada. Clique para parar.",
+            "connectHint": "Clique para ativar a voz nesta rodada.",
+            "connectedNotice": "A voz está ativa nesta rodada.",
+            "connectHintNotice": "A voz está desativada nesta rodada.",
+            "starting": "Alternando a entrada de voz…",
+            "unavailable": "A voz dentro do jogo não está disponível neste ambiente.",
+            "controlFailed": "Falha na operação de voz: {{reason}}",
             "routeNotReady": "Aguarde a rota do jogo ficar pronta antes de usar voz.",
-            "buttonLabel": "Chat de voz"
+            "buttonLabel": "Entrada de voz"
         },
         "exitConfirm": {
             "title": "Sair desta página?",
