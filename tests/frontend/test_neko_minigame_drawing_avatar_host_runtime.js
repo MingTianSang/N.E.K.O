@@ -352,6 +352,9 @@ async function main() {
       assert(replacementError?.code === 'model_not_allowed',
         'controller.setModel accepted a model outside its trusted character binding');
     }
+    const initialView = controller.getState().view;
+    assert(initialView.scale === 325.63 && initialView.x === -0.96 && initialView.y === 66.41,
+      `${expectedType} controller did not use the drawing game's configured default view`);
     await controller.setView({ scale: 190, x: 2, y: 28 });
     await controller.setSpeaking(true);
     await controller.setEmotion('happy');

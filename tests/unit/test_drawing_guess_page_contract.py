@@ -393,8 +393,9 @@ def test_drawing_guess_static_route_contract():
     assert "state.avatarController.setView(view)" in script
     assert "state.avatarController.setView(normalizeModelView(state.modelView))" in script
     assert "clampNumber(view.scale, 0.5, 5000" in script
-    assert "scale: 190" in script
-    assert "y: 28" in script
+    assert "scale: 325.63" in script
+    assert "x: -0.96" in script
+    assert "y: 66.41" in script
     assert "function resetModelView" in script
     assert "function loadModelViewSettings" in script
     assert "function pulseModelMood" in script

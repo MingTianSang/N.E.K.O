@@ -52,9 +52,9 @@
 
   function normalizeView(value = {}) {
     return Object.freeze({
-      scale: boundedNumber(value.scale, 0.5, 5000, 190),
-      x: boundedNumber(value.x, -5000, 5000, 0),
-      y: boundedNumber(value.y, -5000, 5000, 28),
+      scale: boundedNumber(value.scale, 0.5, 5000, 325.63),
+      x: boundedNumber(value.x, -5000, 5000, -0.96),
+      y: boundedNumber(value.y, -5000, 5000, 66.41),
     });
   }
 

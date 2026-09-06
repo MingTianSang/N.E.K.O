@@ -185,9 +185,9 @@
     modelKind: 'fallback',
     modelLoadState: 'idle',
     modelView: {
-      scale: 190,
-      x: 0,
-      y: 28
+      scale: 325.63,
+      x: -0.96,
+      y: 66.41
     },
     modelViewSettings: [],
     modelDrag: null,
@@ -354,9 +354,9 @@
   };
 
   var MODEL_VIEW_DEFAULTS = {
-    scale: 190,
-    x: 0,
-    y: 28
+    scale: 325.63,
+    x: -0.96,
+    y: 66.41
   };
 
   var SIDE_SPLIT_DEFAULT_RATIO = 0.64;
