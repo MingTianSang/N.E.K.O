@@ -184,6 +184,32 @@ async function main() {
   assert(sandbox.NekoMiniGameVoiceController.channelName === 'neko_game_voice_control_channel',
     'controller used a channel different from the SDK host');
 
+  let defaultFetchReceiver = null;
+  sandbox.fetch = async function (url) {
+    defaultFetchReceiver = this;
+    assert(url === '/api/game/route/active?game_type=drawing_guess'
+      + '&session_id=drawing-session&sdk_route_instance_id=route-default-fetch',
+    'the default fetch validated the wrong route URL');
+    return { ok: true, async json() { return activeRoute('route-default-fetch'); } };
+  };
+  const defaultFetchController = sandbox.NekoMiniGameVoiceController.create({
+    windowImpl: sandbox,
+    BroadcastChannelImpl: null,
+    RecognitionImpl: RecognitionMock,
+  });
+  const defaultFetchRoute = await defaultFetchController._fetchActiveRoute(
+    {
+      gameType: 'drawing_guess',
+      sessionId: 'drawing-session',
+      routeInstanceId: 'route-default-fetch',
+    },
+  );
+  assert(defaultFetchReceiver === sandbox,
+    'the default window.fetch implementation lost its Window receiver');
+  assert(defaultFetchRoute.sdk_route_instance_id === 'route-default-fetch',
+    'the receiver-bound default fetch did not return the active route');
+  delete sandbox.fetch;
+
   const storage = new StorageMock();
   const delivered = [];
   sandbox.addEventListener('neko-game-voice-control-message', (event) => {

@@ -96,7 +96,13 @@
         constructor(options) {
             options = options || {};
             this.window = options.windowImpl || global;
-            this.fetchImpl = options.fetchImpl || this.window.fetch;
+            const windowFetch = this.window.fetch;
+            // Electron enforces Window.fetch's Web IDL receiver. Calling the
+            // detached native function as this.fetchImpl(...) otherwise fails
+            // with "Illegal invocation" before route validation reaches HTTP.
+            this.fetchImpl = options.fetchImpl || (
+                typeof windowFetch === 'function' ? windowFetch.bind(this.window) : null
+            );
             this.BroadcastChannelImpl = Object.prototype.hasOwnProperty.call(options, 'BroadcastChannelImpl')
                 ? options.BroadcastChannelImpl
                 : this.window.BroadcastChannel;
