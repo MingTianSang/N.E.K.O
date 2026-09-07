@@ -1024,12 +1024,25 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "waitForPageConfigForRestore().then(function ()" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
-    assert "findRestorableDaySnapshot(routeResult.state, scripts, configuredLanlanName)" in restore
+    assert "var restoreLanlanName = String(configuredLanlanName || routeLanlanName || '');" in restore
+    assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded) return false;" not in restore
+    assert "if (!entryLanlanName && !candidate.matchesActiveRoute) return;" in runtime
     assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
     assert "return startIcebreakerRoute(session).then(function (started)" in restore
     assert "activeSession = session;" in restore
     assert "return setChoicePrompt(" in restore
+
+
+def test_icebreaker_language_payload_uses_the_session_character_snapshot():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert "function explicitConversationLocale(session)" in runtime
+    assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
+    assert "function conversationLanguagePayload(session)" in runtime
+    assert "conversationLanguagePayload()" not in runtime
+    assert "conversationLanguagePayload(currentSession)" in runtime
+    assert runtime.count("conversationLanguagePayload(session)") >= 5
 
 
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
@@ -1367,8 +1380,27 @@ def test_icebreaker_start_dedupes_pending_tutorial_end_triggers():
     assert "if (!force && pendingStartDay === dayKey) return Promise.resolve(false);" in start_block
     assert "pendingStartDay = dayKey;" in start_block
     assert "clearPendingStartDay(dayKey);" in start_block
-    assert start_block.index("pendingStartDay = dayKey;") < start_block.index("return Promise.all")
+    assert "var sessionStartQueue = Promise.resolve();" in runtime
+    assert "return enqueueIcebreakerSessionStart(function ()" in start_block
+    assert start_block.index("pendingStartDay = dayKey;") < start_block.index("return enqueueIcebreakerSessionStart")
     assert start_block.index("clearPendingStartDay(dayKey);") > start_block.index("return startIcebreakerRoute(nextSession)")
+
+
+def test_icebreaker_restore_and_tutorial_start_share_one_serial_queue():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    restore_block = runtime.split("function restoreInterruptedSession()", 1)[1].split(
+        "function makeIcebreakerApiError",
+        1,
+    )[0]
+    start_block = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+
+    assert "function enqueueIcebreakerSessionStart(operation)" in runtime
+    assert "sessionStartQueue.then(operation, operation)" in runtime
+    assert "enqueueIcebreakerSessionStart(function ()" in restore_block
+    assert "enqueueIcebreakerSessionStart(function ()" in start_block
 
 
 def test_home_tutorial_reset_also_resets_day1_icebreaker_state():

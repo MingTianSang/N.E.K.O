@@ -25,6 +25,7 @@
     var pendingGuideEndState = null;
     var pendingGuideEndStartPromise = null;
     var restoreSessionPromise = null;
+    var sessionStartQueue = Promise.resolve();
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -133,7 +134,7 @@
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(session),
             session_id: String(session.sessionId || '')
-        }, conversationLanguagePayload(), extraBody || {});
+        }, conversationLanguagePayload(session), extraBody || {});
 
         function parseRouteResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -214,7 +215,7 @@
             session_id: String(session.sessionId || ''),
             reason: reason || 'icebreaker_page_exit',
             postgameProactive: { enabled: false }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(session));
         try {
             var security = window.nekoLocalMutationSecurity;
             if (security && typeof security.peekCachedToken === 'function') {
@@ -292,19 +293,19 @@
         return 'zh-CN';
     }
 
-    function explicitConversationLocale() {
+    function explicitConversationLocale(session) {
         try {
             if (typeof window.getExplicitConversationLanguagePreference === 'function') {
-                var preferred = window.getExplicitConversationLanguagePreference(resolveLanlanName());
+                var preferred = window.getExplicitConversationLanguagePreference(resolveSessionLanlanName(session));
                 return preferred ? normalizeLocale(preferred) : '';
             }
         } catch (_) {}
         return '';
     }
 
-    function conversationLanguagePayload() {
+    function conversationLanguagePayload(session) {
         var payload = {};
-        var explicitLanguage = explicitConversationLocale();
+        var explicitLanguage = explicitConversationLocale(session);
         var renderLanguage = currentLocale();
         if (explicitLanguage) payload.i18n_language = explicitLanguage;
         if (renderLanguage) payload.render_language = renderLanguage;
@@ -397,8 +398,10 @@
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var routeActive = state.icebreaker_active === true;
         var routeSessionId = String(state.session_id || '');
+        var routeLanlanName = String(state.lanlan_name || '');
         var currentLanlanName = String(lanlanName || '');
         var best = null;
+        if (!currentLanlanName) return null;
 
         Object.keys(days).forEach(function (day) {
             var entry = days[day];
@@ -408,6 +411,7 @@
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName && currentLanlanName && entryLanlanName !== currentLanlanName) return;
+            var routeIdentityMatches = !routeLanlanName || routeLanlanName === currentLanlanName;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
@@ -415,8 +419,12 @@
                 nodeId: nodeId,
                 matchesActiveRoute: routeActive
                     && !!routeSessionId
+                    && routeIdentityMatches
                     && String(entry.sessionId || '') === routeSessionId
             };
+            // 旧版本没有写入 lanlanName。只有仍活跃的后端 route 同时证明了角色和
+            // session id 时才能迁移；route 已结束后无法判断归属，必须拒绝跨角色认领。
+            if (!entryLanlanName && !candidate.matchesActiveRoute) return;
             if (
                 !best
                 || (candidate.matchesActiveRoute && !best.matchesActiveRoute)
@@ -450,6 +458,12 @@
         return 'icebreaker-day' + String(day || '') + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     }
 
+    function enqueueIcebreakerSessionStart(operation) {
+        var scheduled = sessionStartQueue.then(operation, operation);
+        sessionStartQueue = scheduled.then(function () {}, function () {});
+        return scheduled;
+    }
+
     function discardUnrestorableRoute(routeState, reason) {
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var lanlanName = String(state.lanlan_name || resolveLanlanName() || '');
@@ -468,60 +482,55 @@
     function restoreInterruptedSession() {
         if (activeSession) return Promise.resolve(true);
         if (restoreSessionPromise) return restoreSessionPromise;
-        restoreSessionPromise = waitForPageConfigForRestore().then(function () {
-            return Promise.all([
-                loadIcebreakerRouteStateForRestore(),
-                loadScripts(),
-                loadLocale(currentLocale())
-            ]);
-        }).then(function (results) {
-            var routeResult = results[0];
-            var scripts = results[1];
-            var localeData = results[2] || {};
-            var configuredLanlanName = resolveLanlanName();
-            var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, configuredLanlanName);
-            if (!snapshot) {
-                return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
-            }
+        restoreSessionPromise = enqueueIcebreakerSessionStart(function () {
+            if (activeSession) return true;
+            return waitForPageConfigForRestore().then(function () {
+                return Promise.all([
+                    loadIcebreakerRouteStateForRestore(),
+                    loadScripts(),
+                    loadLocale(currentLocale())
+                ]);
+            }).then(function (results) {
+                var routeResult = results[0];
+                var scripts = results[1];
+                var localeData = results[2] || {};
+                var configuredLanlanName = resolveLanlanName();
+                var routeLanlanName = String((routeResult.state && routeResult.state.lanlan_name) || '');
+                var restoreLanlanName = String(configuredLanlanName || routeLanlanName || '');
+                var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
+                if (!snapshot) {
+                    return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
+                }
 
-            var lanlanName = String(
-                configuredLanlanName
-                || (routeResult.state && routeResult.state.lanlan_name)
-                || snapshot.entry.lanlanName
-                || ''
-            );
-            if (!lanlanName) {
-                return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_missing_lanlan');
-            }
-
-            // 恢复时换一个 session id 并重新激活 route。浏览器普通 reload 的旧页面可能
-            // 还有迟到的 /route/end；新 id 能让后端把它判为 stale，避免刚恢复就被旧请求关掉。
-            var session = {
-                day: snapshot.day,
-                dayConfig: snapshot.dayConfig,
-                localeData: localeData,
-                nodeId: snapshot.nodeId,
-                lanlanName: lanlanName,
-                sessionId: makeIcebreakerSessionId(snapshot.day)
-            };
-            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
-            return startIcebreakerRoute(session).then(function (started) {
-                if (!started) return false;
-                activeSession = session;
-                markDay(session.day, {
-                    started: true,
-                    completed: false,
-                    lanlanName: session.lanlanName,
-                    sessionId: session.sessionId,
-                    nodeId: session.nodeId,
-                    updatedAt: Date.now()
-                });
-                return setChoicePrompt(
-                    session.dayConfig.nodes[session.nodeId],
-                    session.localeData,
-                    0
-                ).then(function () {
-                    return true;
+                // 恢复时换一个 session id 并重新激活 route。浏览器普通 reload 的旧页面可能
+                // 还有迟到的 /route/end；新 id 能让后端把它判为 stale，避免刚恢复就被旧请求关掉。
+                var session = {
+                    day: snapshot.day,
+                    dayConfig: snapshot.dayConfig,
+                    localeData: localeData,
+                    nodeId: snapshot.nodeId,
+                    lanlanName: restoreLanlanName,
+                    sessionId: makeIcebreakerSessionId(snapshot.day)
+                };
+                broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', restoreLanlanName);
+                return startIcebreakerRoute(session).then(function (started) {
+                    if (!started) return false;
+                    activeSession = session;
+                    markDay(session.day, {
+                        started: true,
+                        completed: false,
+                        lanlanName: session.lanlanName,
+                        sessionId: session.sessionId,
+                        nodeId: session.nodeId,
+                        updatedAt: Date.now()
+                    });
+                    return setChoicePrompt(
+                        session.dayConfig.nodes[session.nodeId],
+                        session.localeData,
+                        0
+                    ).then(function () {
+                        return true;
+                    });
                 });
             });
         }).catch(function (error) {
@@ -700,7 +709,7 @@
                 free_text: extra.freeText === true,
                 request_id: String(extra.requestId || '')
             }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(currentSession));
         function parseContextResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json().then(function (data) {
@@ -972,9 +981,10 @@
     function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        var session = activeSession;
+        var sessionId = session && session.sessionId ? session.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveSessionLanlanName(activeSession),
+            lanlan_name: resolveSessionLanlanName(session),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -986,7 +996,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(session));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -1171,7 +1181,7 @@
             free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId),
             recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId),
             request_id: String(info.requestId || '')
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(session));
         return postIcebreakerJson('/free-text/interpret', body).then(function (data) {
             if (data && data.skipped === 'stale_session') {
                 throw makeIcebreakerApiError('stale_session', data);
@@ -1751,33 +1761,38 @@
         var dayKey = String(day || '');
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
         pendingStartDay = dayKey;
-        return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
-            if (activeSession && !force) return false;
-            var scripts = results[0];
-            var localeData = results[1];
-            var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
-            if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
-            if (!force && isDayCompleted(dayKey)) return false;
-            var nextSession = {
-                day: dayKey,
-                dayConfig: dayConfig,
-                localeData: localeData || {},
-                nodeId: dayConfig.root,
-                // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
-                lanlanName: resolveLanlanName(),
-                sessionId: makeIcebreakerSessionId(dayKey)
-            };
-            return startIcebreakerRoute(nextSession).then(function (started) {
-                if (!started) return false;
-                activeSession = nextSession;
+        return enqueueIcebreakerSessionStart(function () {
+            if (activeSession && !force) {
                 clearPendingGuideEndStateDay(dayKey);
-                return deliverNode(dayConfig.root).then(function (delivered) {
-                    if (delivered) return true;
-                    if (activeSession === nextSession) {
-                        activeSession = null;
-                    }
-                    return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
-                        return false;
+                return true;
+            }
+            return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
+                var scripts = results[0];
+                var localeData = results[1];
+                var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
+                if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
+                if (!force && isDayCompleted(dayKey)) return false;
+                var nextSession = {
+                    day: dayKey,
+                    dayConfig: dayConfig,
+                    localeData: localeData || {},
+                    nodeId: dayConfig.root,
+                    // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
+                    lanlanName: resolveLanlanName(),
+                    sessionId: makeIcebreakerSessionId(dayKey)
+                };
+                return startIcebreakerRoute(nextSession).then(function (started) {
+                    if (!started) return false;
+                    activeSession = nextSession;
+                    clearPendingGuideEndStateDay(dayKey);
+                    return deliverNode(dayConfig.root).then(function (delivered) {
+                        if (delivered) return true;
+                        if (activeSession === nextSession) {
+                            activeSession = null;
+                        }
+                        return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
+                            return false;
+                        });
                     });
                 });
             });
