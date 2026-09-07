@@ -1035,11 +1035,13 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "function waitForTutorialIdle()" in bootstrap
     assert "if (isTutorialBlockingIcebreaker())" in bootstrap
     assert "waitForPageConfigForRestore().then(function ()" in restore
+    assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
+    assert "storageLocation.waitUntilMainUiAllowed()" in runtime
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "var restoreLanlanName = String(configuredLanlanName || routeLanlanName || '');" in restore
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
-    assert "if (!routeResult.loaded) return false;" not in restore
+    assert "if (!routeResult.loaded) return false;" in restore
     assert "if (!entryLanlanName && !candidate.matchesActiveRoute) return;" in runtime
     assert "if (entry.terminalHandoff === true) return;" in runtime
     assert "var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;" in runtime
@@ -1047,9 +1049,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
     assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
     assert "if (routeActive && !matchesActiveRoute) return;" in runtime
-    assert runtime.index("var matchesActiveRoute = routeActive") < runtime.index(
-        "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS"
-    )
+    assert "var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;" in runtime
+    assert "return loadIcebreakerRouteStateForRestore(attemptIndex + 1);" in runtime
     assert "var reuseActiveRouteAsFollower = snapshot.matchesActiveRoute" in restore
     assert "ownsPageExitRouteLifecycle: !reuseActiveRouteAsFollower" in restore
     assert "routeOwnerPageId: reuseActiveRouteAsFollower ? storedOwnerPageId : pageInstanceId" in restore

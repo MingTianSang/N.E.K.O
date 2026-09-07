@@ -11,6 +11,8 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
+    var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;
+    var ROUTE_STATE_RESTORE_RETRY_MS = 300;
     var PAGE_INSTANCE_SESSION_KEY = 'neko.new_user_icebreaker.page_instance.v1';
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
@@ -406,7 +408,8 @@
         return resolveLanlanName() || 'N.E.K.O';
     }
 
-    function loadIcebreakerRouteStateForRestore() {
+    function loadIcebreakerRouteStateForRestore(attempt) {
+        var attemptIndex = Number(attempt || 0);
         var lanlanName = resolveLanlanName();
         var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
         return fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
@@ -418,8 +421,33 @@
             };
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] route restore state failed:', error);
+            if (!pageLifecycleSuspended && attemptIndex + 1 < ROUTE_STATE_RESTORE_MAX_ATTEMPTS) {
+                return new Promise(function (resolve) {
+                    window.setTimeout(resolve, ROUTE_STATE_RESTORE_RETRY_MS);
+                }).then(function () {
+                    return loadIcebreakerRouteStateForRestore(attemptIndex + 1);
+                });
+            }
             return { loaded: false, state: null };
         });
+    }
+
+    function waitForStorageStartupDecisionForRestore() {
+        try {
+            var storageLocation = window.appStorageLocation;
+            if (!storageLocation || typeof storageLocation.waitUntilMainUiAllowed !== 'function') {
+                return Promise.resolve(true);
+            }
+            return Promise.resolve(storageLocation.waitUntilMainUiAllowed()).then(function (decision) {
+                return !(decision && decision.canContinue === false);
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] storage startup wait failed:', error);
+                return false;
+            });
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] storage startup wait threw:', error);
+            return Promise.resolve(false);
+        }
     }
 
     function waitForPageConfigForRestore() {
@@ -469,18 +497,13 @@
             if (entry.terminalHandoff === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName && currentLanlanName && entryLanlanName !== currentLanlanName) return;
+            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             var routeIdentityMatches = !routeLanlanName || routeLanlanName === currentLanlanName;
             var matchesActiveRoute = routeActive
                 && !!routeSessionId
                 && routeIdentityMatches
                 && String(entry.sessionId || '') === routeSessionId;
             if (routeActive && !matchesActiveRoute) return;
-            if (
-                !matchesActiveRoute
-                && (!Number.isFinite(updatedAt)
-                    || updatedAt <= 0
-                    || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS)
-            ) return;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
@@ -631,16 +654,21 @@
         if (restoreSessionPromise) return restoreSessionPromise;
         restoreSessionPromise = enqueueIcebreakerSessionStart(function () {
             if (activeSession) return true;
-            return waitForPageConfigForRestore().then(function () {
-                return Promise.all([
-                    loadIcebreakerRouteStateForRestore(),
-                    loadScripts(),
-                    loadLocale(currentLocale())
-                ]);
+            return waitForStorageStartupDecisionForRestore().then(function (canContinue) {
+                if (!canContinue || pageLifecycleSuspended) return null;
+                return waitForPageConfigForRestore().then(function () {
+                    return Promise.all([
+                        loadIcebreakerRouteStateForRestore(),
+                        loadScripts(),
+                        loadLocale(currentLocale())
+                    ]);
+                });
             }).then(function (results) {
+                if (!results) return false;
                 var routeResult = results[0];
                 var scripts = results[1];
                 var localeData = results[2] || {};
+                if (!routeResult.loaded) return false;
                 var configuredLanlanName = resolveLanlanName();
                 var routeLanlanName = String((routeResult.state && routeResult.state.lanlan_name) || '');
                 var restoreLanlanName = String(configuredLanlanName || routeLanlanName || '');
