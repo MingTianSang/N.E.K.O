@@ -5816,7 +5816,14 @@ def test_managed_restore_waits_for_tutorial_startup_and_retries_route_start(mock
             }
             if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
                 window.__icebreakerRouteStartCount += 1;
-                return jsonResponse({ ok: window.__icebreakerRouteStartCount > 1 });
+                if (window.__icebreakerRouteStartCount === 1) {
+                    return new Promise(function(resolve, reject) {
+                        requestOptions.signal.addEventListener('abort', function() {
+                            reject(new DOMException('aborted', 'AbortError'));
+                        }, { once: true });
+                    });
+                }
+                return jsonResponse({ ok: true });
             }
         """,
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),

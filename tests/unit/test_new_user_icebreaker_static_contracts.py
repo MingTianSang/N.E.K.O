@@ -1061,6 +1061,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "? Promise.resolve(true)" in restore
     assert ": startIcebreakerRouteForRestore(session);" in restore
     assert "var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;" in runtime
+    assert "var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;" in runtime
+    assert "if (controller) controller.abort();" in runtime
     assert "return startIcebreakerRouteForRestore(session, attemptIndex + 1);" in runtime
     assert "return activationPromise.then(function (started)" in restore
     assert restore.index("if (!started) return false;") < restore.index(
@@ -1115,7 +1117,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         "function hasIncompleteStoredSession",
         1,
     )[1].split("function makeIcebreakerSessionId", 1)[0]
-    assert "function findPendingReleaseSnapshot(lanlanName)" in runtime
+    assert "function findPendingReleaseSnapshot(lanlanName, routeState)" in runtime
+    assert "if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) return;" in runtime
     release_cleanup = runtime.split("function completePendingRelease", 1)[1].split(
         "function hasIncompleteStoredSession",
         1,
@@ -1140,7 +1143,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (restored && restored.releaseCleanupCompleted === true)" in deferred_start
     assert "if (String(restored.day || '') === dayKey)" in deferred_start
     assert "return startFromEndStateWhenTutorialIdle(endState);" in deferred_start
-    assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);" in restore
+    assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);" in restore
     assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
     start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
@@ -1488,6 +1491,9 @@ def test_icebreaker_free_text_uses_llm_interpreter_before_static_fallback():
     assert "recordFreeTextTurn(session, {" in runtime
     assert "getFreeTextDerailStreak(session, nodeId)" in runtime
     assert "setFreeTextDerailStreak(session, nodeId, 0)" in runtime
+    assert "freeTextDerailStreaks: streaks" in runtime
+    assert "function hydrateFreeTextDerailState(session, entry)" in runtime
+    assert "hydrateFreeTextDerailState(session, snapshot.entry);" in runtime
     assert "free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId)" in runtime
     assert "recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId)" in runtime
     assert "session.freeTextTurns" not in runtime

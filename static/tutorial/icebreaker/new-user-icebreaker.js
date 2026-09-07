@@ -13,6 +13,7 @@
     var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
     var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;
     var ROUTE_START_RESTORE_RETRY_MS = 300;
+    var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
@@ -156,7 +157,7 @@
         return getLocalMutationHeaders();
     }
 
-    function postIcebreakerRoute(path, session, extraBody) {
+    function postIcebreakerRoute(path, session, extraBody, signal) {
         if (!session || !session.sessionId) return Promise.resolve(false);
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(session),
@@ -171,12 +172,14 @@
         }
 
         function postRouteWithHeaders(headers, allowRetry) {
-            return fetch(ICEBREAKER_API_BASE + path, {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            }).then(function (response) {
+            };
+            if (signal) requestOptions.signal = signal;
+            return fetch(ICEBREAKER_API_BASE + path, requestOptions).then(function (response) {
                 if (allowRetry && response.status === 403) {
                     return response.clone().json().catch(function () {
                         return null;
@@ -201,10 +204,10 @@
         });
     }
 
-    function startIcebreakerRoute(session) {
+    function startIcebreakerRoute(session, signal) {
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
-        });
+        }, signal);
     }
 
     function clearPendingStartDay(dayKey) {
@@ -561,15 +564,18 @@
         return best;
     }
 
-    function findPendingReleaseSnapshot(lanlanName) {
+    function findPendingReleaseSnapshot(lanlanName, routeState) {
         var store = readStore();
         var days = store && store.days && typeof store.days === 'object' ? store.days : {};
         var expectedLanlanName = String(lanlanName || '');
+        var state = routeState && typeof routeState === 'object' ? routeState : {};
+        var activeRouteSessionId = state.icebreaker_active === true ? String(state.session_id || '') : '';
         var best = null;
         Object.keys(days).forEach(function (day) {
             var entry = days[day];
             if (!entry || entry.releasePending !== true || entry.completed === true) return;
             if (String(entry.lanlanName || '') !== expectedLanlanName) return;
+            if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) return;
             if (!best || Number(entry.updatedAt || 0) > Number(best.entry.updatedAt || 0)) {
                 best = { day: day, entry: entry };
             }
@@ -648,7 +654,23 @@
 
     function startIcebreakerRouteForRestore(session, attempt) {
         var attemptIndex = Number(attempt || 0);
-        return startIcebreakerRoute(session).then(function (started) {
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var attemptPromise = startIcebreakerRoute(session, controller ? controller.signal : null);
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                if (controller) controller.abort();
+                resolve(false);
+            }, ROUTE_START_RESTORE_MAX_WAIT_MS);
+            Promise.resolve(attemptPromise).then(function (started) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(started);
+            });
+        }).then(function (started) {
             if (started || attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) return started;
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, ROUTE_START_RESTORE_RETRY_MS);
@@ -688,7 +710,7 @@
                 retryRestoreWhenPageConfigSettles();
                 return false;
             }
-            var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);
+            var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);
             if (pendingRelease) {
                 return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);
             }
@@ -737,6 +759,7 @@
                     broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
                 }
                 activeSession = session;
+                hydrateFreeTextDerailState(session, snapshot.entry);
                 session.pendingChoiceWrites = session.choiceWriteMetas.map(function (storedMeta) {
                     var replayMeta = Object.assign({}, storedMeta, {
                         sessionId: session.sessionId
@@ -1373,6 +1396,25 @@
         if (freeTextState && typeof freeTextState.setDerailStreak === 'function') {
             freeTextState.setDerailStreak(session, nodeId, value);
         }
+        if (!session || !session.day || !nodeId) return;
+        var store = readStore();
+        var entry = store && store.days ? store.days[String(session.day)] : null;
+        var streaks = Object.assign({}, entry && entry.freeTextDerailStreaks || {});
+        streaks[String(nodeId)] = value ? 1 : 0;
+        markDay(session.day, {
+            freeTextDerailStreaks: streaks,
+            updatedAt: Date.now()
+        });
+    }
+
+    function hydrateFreeTextDerailState(session, entry) {
+        if (!freeTextState || typeof freeTextState.setDerailStreak !== 'function') return;
+        var streaks = entry && entry.freeTextDerailStreaks && typeof entry.freeTextDerailStreaks === 'object'
+            ? entry.freeTextDerailStreaks
+            : {};
+        Object.keys(streaks).forEach(function (nodeId) {
+            freeTextState.setDerailStreak(session, nodeId, Number(streaks[nodeId]) > 0 ? 1 : 0);
+        });
     }
 
     function postIcebreakerJson(path, body) {
