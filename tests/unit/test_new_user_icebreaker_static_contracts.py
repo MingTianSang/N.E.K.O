@@ -1064,6 +1064,14 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;" in runtime
     assert "if (controller) controller.abort();" in runtime
     assert "return startIcebreakerRouteForRestore(session, attemptIndex + 1);" in runtime
+    route_start_restore = runtime.split("function startIcebreakerRouteForRestore", 1)[1].split(
+        "function restoreInterruptedSession",
+        1,
+    )[0]
+    assert route_start_restore.index("getLocalMutationHeaders()") < route_start_restore.index(
+        "var controller = typeof AbortController"
+    )
+    assert "preparedHeaders" in runtime
     assert "return activationPromise.then(function (started)" in restore
     assert restore.index("if (!started) return false;") < restore.index(
         "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
@@ -1112,6 +1120,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (routeActive && !candidate.matchesActiveRoute) return;" in snapshot_matcher
     assert "if (entry.releasePending === true) return;" in snapshot_matcher
     assert "entry.releasePending !== true" not in runtime.split(
         "function hasIncompleteStoredSession",
@@ -1145,7 +1154,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (String(restored.day || '') === dayKey)" in deferred_start
     assert "return startFromEndStateWhenTutorialIdle(endState);" in deferred_start
     assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);" in restore
-    assert "if (hasMismatchedPendingRelease) return false;" in restore
+    assert "if (hasMismatchedPendingRelease || routeResult.state.icebreaker_active === true) return false;" in restore
     assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
     start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
@@ -1158,6 +1167,11 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "pendingNodeId: dayConfig.root" in start_for_day
     assert "choiceSeq: 0" in start_for_day
     assert "choiceWriteMetas: []" in start_for_day
+    assert "terminalPending: false" in start_for_day
+    assert "terminalChoiceRecorded: false" in start_for_day
+    assert "terminalMessageDelivered: false" in start_for_day
+    assert "releasePending: false" in start_for_day
+    assert "freeTextDerailStreaks: {}" in start_for_day
     assert "started: false" in start_for_day
 
     append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
@@ -1230,6 +1244,9 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "choiceSeq: session.choiceSeq" in advance
     assert "choiceWriteMetas: session.choiceWriteMetas" in advance
+    assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
+    assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
+    assert "session.choiceWriteMetas = (session.choiceWriteMetas || []).filter" in runtime
     release = runtime.split("if (decision.action === 'release')", 1)[1].split(
         "var replyText = decision.reply",
         1,

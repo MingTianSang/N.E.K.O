@@ -157,7 +157,7 @@
         return getLocalMutationHeaders();
     }
 
-    function postIcebreakerRoute(path, session, extraBody, signal) {
+    function postIcebreakerRoute(path, session, extraBody, signal, preparedHeaders) {
         if (!session || !session.sessionId) return Promise.resolve(false);
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(session),
@@ -196,7 +196,10 @@
             });
         }
 
-        return getLocalMutationHeaders().then(function (headers) {
+        var headersPromise = preparedHeaders
+            ? Promise.resolve(preparedHeaders)
+            : getLocalMutationHeaders();
+        return headersPromise.then(function (headers) {
             return postRouteWithHeaders(headers, true);
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] route lifecycle request failed:', path, error);
@@ -204,10 +207,10 @@
         });
     }
 
-    function startIcebreakerRoute(session, signal) {
+    function startIcebreakerRoute(session, signal, preparedHeaders) {
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
-        }, signal);
+        }, signal, preparedHeaders);
     }
 
     function clearPendingStartDay(dayKey) {
@@ -550,6 +553,7 @@
                     && !!routeSessionId
                     && String(entry.sessionId || '') === routeSessionId
             };
+            if (routeActive && !candidate.matchesActiveRoute) return;
             if (
                 !best
                 || (candidate.matchesActiveRoute && !best.matchesActiveRoute)
@@ -658,21 +662,32 @@
 
     function startIcebreakerRouteForRestore(session, attempt) {
         var attemptIndex = Number(attempt || 0);
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var attemptPromise = startIcebreakerRoute(session, controller ? controller.signal : null);
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                if (controller) controller.abort();
-                resolve(false);
-            }, ROUTE_START_RESTORE_MAX_WAIT_MS);
-            Promise.resolve(attemptPromise).then(function (started) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(started);
+        return withRestoreWaitTimeout(
+            getLocalMutationHeaders(),
+            null,
+            'route start headers'
+        ).then(function (headers) {
+            if (!headers) return false;
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            var attemptPromise = startIcebreakerRoute(
+                session,
+                controller ? controller.signal : null,
+                headers
+            );
+            return new Promise(function (resolve) {
+                var settled = false;
+                var timeoutId = window.setTimeout(function () {
+                    if (settled) return;
+                    settled = true;
+                    if (controller) controller.abort();
+                    resolve(false);
+                }, ROUTE_START_RESTORE_MAX_WAIT_MS);
+                Promise.resolve(attemptPromise).then(function (started) {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timeoutId);
+                    resolve(started);
+                });
             });
         }).then(function (started) {
             if (started || attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) return started;
@@ -723,7 +738,7 @@
             if (!snapshot) {
                 // 本地待释放 session 与后端活动 route 不同，说明活动 route 可能属于较新页面。
                 // 不得因旧快照无法恢复而清掉另一个仍存活会话的 prompt/route。
-                if (hasMismatchedPendingRelease) return false;
+                if (hasMismatchedPendingRelease || routeResult.state.icebreaker_active === true) return false;
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
             }
 
@@ -772,7 +787,7 @@
                     var replayMeta = Object.assign({}, storedMeta, {
                         sessionId: session.sessionId
                     });
-                    return recordChoiceToPool(replayMeta);
+                    return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));
                 });
                 markDay(session.day, {
                     started: true,
@@ -1088,6 +1103,20 @@
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
             return false;
+        });
+    }
+
+    function trackPendingChoiceWrite(session, choiceMeta, writePromise) {
+        return Promise.resolve(writePromise).then(function (result) {
+            if (result !== true || !session) return result;
+            session.choiceWriteMetas = (session.choiceWriteMetas || []).filter(function (storedMeta) {
+                return Number(storedMeta && storedMeta.seq) !== Number(choiceMeta && choiceMeta.seq);
+            });
+            markDay(session.day, {
+                choiceWriteMetas: session.choiceWriteMetas,
+                updatedAt: Date.now()
+            });
+            return result;
         });
     }
 
@@ -1874,9 +1903,9 @@
             completed: isHandoffChoice,
             seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
         };
-        var choiceWritePromise = recordChoiceToPool(Object.assign({}, choiceMeta, {
+        var choiceWritePromise = trackPendingChoiceWrite(session, choiceMeta, recordChoiceToPool(Object.assign({}, choiceMeta, {
             signal: terminalChoiceWriteController ? terminalChoiceWriteController.signal : null
-        }));
+        })));
         (session.choiceWriteMetas || (session.choiceWriteMetas = [])).push(choiceMeta);
         (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
         markDay(session.day, {
@@ -2304,7 +2333,10 @@
                 nodeId: dayConfig.root,
                 // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
                 lanlanName: resolveLanlanName(),
-                sessionId: makeIcebreakerSessionId(dayKey)
+                sessionId: makeIcebreakerSessionId(dayKey),
+                choiceSeq: 0,
+                choiceWriteMetas: [],
+                pendingChoiceWrites: []
             };
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
@@ -2321,6 +2353,14 @@
                     pendingNodeId: dayConfig.root,
                     choiceSeq: 0,
                     choiceWriteMetas: [],
+                    terminalPending: false,
+                    terminalChoiceRecorded: false,
+                    terminalChoice: '',
+                    terminalChoiceSeq: 0,
+                    terminalMessageDelivered: false,
+                    releasePending: false,
+                    releasedByFreeText: false,
+                    freeTextDerailStreaks: {},
                     updatedAt: Date.now()
                 });
                 return deliverNode(dayConfig.root).then(function (delivered) {

@@ -5705,7 +5705,7 @@ def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(m
 
 
 @pytest.mark.frontend
-def test_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
+def test_icebreaker_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5714,6 +5714,7 @@ def test_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
             window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
             window.__icebreakerBridgeEvents = [];
             window.__icebreakerRouteEnds = [];
+            window.__icebreakerRouteStateCount = 0;
             window.nekoElectronIcebreakerBridge = {
                 send: function(message) { window.__icebreakerBridgeEvents.push(message); },
             };
@@ -5737,6 +5738,7 @@ def test_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
         """,
         fetch_js="""
             if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                window.__icebreakerRouteStateCount += 1;
                 return jsonResponse({
                     ok: true,
                     state: { icebreaker_active: true, session_id: 'stale-session', lanlan_name: 'yui' },
@@ -5754,7 +5756,8 @@ def test_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
     )
 
-    mock_page.wait_for_function("() => window.__icebreakerRouteEnds.length === 1")
+    mock_page.wait_for_function("() => window.__icebreakerRouteStateCount === 1")
+    mock_page.wait_for_timeout(200)
     result = mock_page.evaluate(
         """() => ({
             activeSession: window.newUserIcebreaker.getActiveSession(),
@@ -5764,10 +5767,11 @@ def test_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
         })"""
     )
     assert result == {"activeSession": None, "prompts": 0}
+    assert mock_page.evaluate("() => window.__icebreakerRouteEnds.length") == 0
 
 
 @pytest.mark.frontend
-def test_managed_restore_does_not_end_route_for_mismatched_pending_release(mock_page: Page):
+def test_icebreaker_managed_restore_does_not_end_route_for_mismatched_pending_release(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5826,7 +5830,7 @@ def test_managed_restore_does_not_end_route_for_mismatched_pending_release(mock_
 
 
 @pytest.mark.frontend
-def test_managed_restore_waits_for_tutorial_startup_and_retries_route_start(mock_page: Page):
+def test_icebreaker_managed_restore_waits_for_tutorial_startup_and_retries_route_start(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -6069,7 +6073,7 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
                 .days['1'].choiceWriteMetas.map((meta) => meta.choice),
         })"""
     )
-    assert rejected_replacement == {"choiceCount": 1, "choices": ["finish"]}
+    assert rejected_replacement == {"choiceCount": 1, "choices": []}
 
     mock_page.evaluate(
         """() => {
