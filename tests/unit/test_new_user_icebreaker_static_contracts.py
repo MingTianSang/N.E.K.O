@@ -1123,6 +1123,10 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )
     assert "releaseCleanupCompleted: true" in release_cleanup
     assert "day: String(snapshot.day || '')" in release_cleanup
+    assert "dispatchIcebreakerEnded('free_text_release_restore');" in release_cleanup
+    assert release_cleanup.index("releasePending: false") < release_cleanup.index(
+        "dispatchIcebreakerEnded('free_text_release_restore');"
+    )
     deferred_start = runtime.split("function attemptStartFromGuideEndState", 1)[1].split(
         "function synthesizeEndStateFromEvent",
         1,

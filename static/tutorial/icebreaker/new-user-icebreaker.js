@@ -590,6 +590,7 @@
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
+            dispatchIcebreakerEnded('free_text_release_restore');
             return {
                 releaseCleanupCompleted: true,
                 day: String(snapshot.day || '')
