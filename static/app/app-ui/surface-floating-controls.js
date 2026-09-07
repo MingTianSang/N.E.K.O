@@ -21,19 +21,13 @@
         if (I.nekoCatReturnLifecycle) return null;
         options = options && typeof options === 'object' ? options : {};
         let resolveLifecycle;
-        const AbortControllerCtor = window.AbortController;
-        const abortController = typeof AbortControllerCtor === 'function'
-            ? new AbortControllerCtor()
-            : null;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs))
             ? Math.max(1000, Number(options.timeoutMs))
-            : 15000;
+            : null;
         const lifecycle = {
             settled: false,
             cancelled: false,
             abortPublished: false,
-            abortController,
-            signal: abortController ? abortController.signal : null,
             source: options.source || 'return-click',
             timeoutId: null,
             promise: new Promise((resolve) => {
@@ -42,9 +36,11 @@
         };
         lifecycle.resolve = resolveLifecycle;
         I.nekoCatReturnLifecycle = lifecycle;
-        lifecycle.timeoutId = window.setTimeout(() => {
-            I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
-        }, timeoutMs);
+        if (timeoutMs !== null) {
+            lifecycle.timeoutId = window.setTimeout(() => {
+                I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
+            }, timeoutMs);
+        }
         return lifecycle;
     };
 
@@ -64,11 +60,6 @@
     I.abortNekoCatReturnLifecycle = function abortNekoCatReturnLifecycle(lifecycle, reason) {
         if (!lifecycle || lifecycle.settled) return false;
         lifecycle.cancelled = true;
-        if (lifecycle.abortController) {
-            try {
-                lifecycle.abortController.abort();
-            } catch (_) {}
-        }
         I.finishNekoCatReturnLifecycle(lifecycle, false);
         if (!lifecycle.abortPublished) {
             lifecycle.abortPublished = true;
@@ -86,6 +77,9 @@
     I.returnFromGoodbye = function returnFromGoodbye(options = {}) {
         options = options && typeof options === 'object' ? options : {};
         const activeReturnLifecycle = I.nekoCatReturnLifecycle;
+        const visibleReturnContainer = typeof I.getVisibleIdleReturnBallContainer === 'function'
+            ? I.getVisibleIdleReturnBallContainer()
+            : null;
         const goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
             ? window.isNekoGoodbyeModeActive()
             : !!(
@@ -93,11 +87,12 @@
                 || (window.vrmManager && window.vrmManager._goodbyeClicked)
                 || (window.mmdManager && window.mmdManager._goodbyeClicked)
             );
-        if (!goodbyeActive && !activeReturnLifecycle) return Promise.resolve(true);
-
-        const visibleReturnContainer = typeof I.getVisibleIdleReturnBallContainer === 'function'
-            ? I.getVisibleIdleReturnBallContainer()
-            : null;
+        // PNGTuber 在全新启动时没有 Live2D/VRM/MMD manager，离开态由可见的
+        // return-ball 表示。这里以实际 UI 为准，避免把目标固定为 Live2D 误当成
+        // 当前模型也一定是 Live2D。
+        if (!goodbyeActive && !visibleReturnContainer && !activeReturnLifecycle) {
+            return Promise.resolve(true);
+        }
         const visibleTypeMatch = visibleReturnContainer && String(visibleReturnContainer.id || '')
             .match(/^(live2d|vrm|mmd|pngtuber)-return-button-container$/);
         const configuredType = String(window.lanlan_config?.model_type || 'live2d').toLowerCase();
@@ -116,6 +111,7 @@
             let settled = false;
             let timeoutId = null;
             let joinedReturnLifecycle = null;
+            let ownsJoinedReturnLifecycle = false;
             const finish = (restored) => {
                 if (settled) return;
                 settled = true;
@@ -131,7 +127,7 @@
             window.addEventListener('neko:cat-return-abort', handleAbort);
             timeoutId = window.setTimeout(() => {
                 console.warn('[App] 程序化恢复模型超时:', options.source || 'unknown');
-                if (joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
+                if (ownsJoinedReturnLifecycle && joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
                     I.abortNekoCatReturnLifecycle(joinedReturnLifecycle, 'programmatic-return-timeout');
                 }
                 finish(false);
@@ -184,12 +180,15 @@
                 window.dispatchEvent(new CustomEvent(`${activeType}-return-click`, {
                     detail: {
                         source: options.source || 'programmatic-return',
-                        timeoutMs
+                        timeoutMs,
+                        retryViewportRestore: options.retryViewportRestore === true,
+                        restoreCurrentModel: options.restoreCurrentModel !== false
                     }
                 }));
                 // dispatchEvent 会同步进入 canonical handler 并创建 lifecycle。
                 if (!joinedReturnLifecycle && I.nekoCatReturnLifecycle) {
                     joinedReturnLifecycle = I.nekoCatReturnLifecycle;
+                    ownsJoinedReturnLifecycle = true;
                 }
             };
             dispatchReturnWhenReady().catch((error) => {
@@ -1611,7 +1610,7 @@
                 ? event.detail
                 : {};
             const returnLifecycle = I.beginNekoCatReturnLifecycle({
-                source: event && event.type ? event.type : 'return-click',
+                source: returnDetail.source || (event && event.type ? event.type : 'return-click'),
                 timeoutMs: returnDetail.timeoutMs
             });
             if (!returnLifecycle) {
@@ -1631,7 +1630,16 @@
                 window._goodbyeHideTimerId = null;
                 console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
-            const preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+            let preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+            while (
+                !preReturnViewportReady.ready
+                && returnDetail.retryViewportRestore === true
+                && !returnLifecycle.cancelled
+            ) {
+                await new Promise((resume) => window.setTimeout(resume, 50));
+                if (returnLifecycle.cancelled) break;
+                preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+            }
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
                 restoreReturnBallAfterBlockedModelViewport(event);
@@ -1759,26 +1767,35 @@
                 ? window.isMobileWidth()
                 : (window.innerWidth <= 768);
 
-            // 使用 showCurrentModel() 做最终裁决
-            let modelDisplayReady = true;
-            try {
-                modelDisplayReady = await I.showCurrentModel();
-            } catch (error) {
-                console.error('[App] showCurrentModel 失败:', error);
-                I.showLive2d();
-            }
-            if (modelDisplayReady === false) {
-                return;
-            }
-            if (returnLifecycle.cancelled) {
-                returnAbortReason = 'return-lifecycle-cancelled';
-                return;
-            }
+            const restoreCurrentModel = returnDetail.restoreCurrentModel !== false;
+            if (restoreCurrentModel) {
+                // 普通“请她回来”仍恢复当前模型；恢复默认模型会跳过这一步，
+                // 由紧随其后的 handleModelReload 直接加载目标 Live2D，避免先把
+                // 即将被替换的 VRM/MMD/PNGTuber 再加载一遍。
+                let modelDisplayReady = true;
+                try {
+                    modelDisplayReady = await I.showCurrentModel();
+                } catch (error) {
+                    console.error('[App] showCurrentModel 失败:', error);
+                    I.showLive2d();
+                }
+                if (modelDisplayReady === false) {
+                    return;
+                }
+                if (returnLifecycle.cancelled) {
+                    returnAbortReason = 'return-lifecycle-cancelled';
+                    return;
+                }
 
-            await I.settleReturnedModelBounds(returnModelWasMoved);
-            if (returnLifecycle.cancelled) {
-                returnAbortReason = 'return-lifecycle-cancelled';
-                return;
+                await I.settleReturnedModelBounds(returnModelWasMoved);
+                if (returnLifecycle.cancelled) {
+                    returnAbortReason = 'return-lifecycle-cancelled';
+                    return;
+                }
+            } else {
+                // showCurrentModel() normally consumes this one-shot rect.
+                // Skipping the old model must not leak it into a later return.
+                window._nekoModelReturnEnterRect = null;
             }
 
             // 恢复 VRM canvas 的可见性

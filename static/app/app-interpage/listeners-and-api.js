@@ -367,32 +367,29 @@
                 throw new Error('missing_lanlan_name');
             }
 
-            // “恢复默认模型”是一次显式回到模型态的操作。若仍在“请她离开”状态，
-            // 必须先走完整的回来链：Electron 的 return-ball 模式可能已把 Pet 窗口
-            // 缩成 160x160；直接热重载会移除回来控件，却把新模型留在小窗口外。
-            var goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
-                ? window.isNekoGoodbyeModeActive()
-                : !!(
-                    (window.live2dManager && window.live2dManager._goodbyeClicked)
-                    || (window.vrmManager && window.vrmManager._goodbyeClicked)
-                    || (window.mmdManager && window.mmdManager._goodbyeClicked)
-                );
-            if (goodbyeActive) {
-                if (!window.appUi || typeof window.appUi.returnFromGoodbye !== 'function') {
-                    throw new Error('goodbye_return_unavailable');
-                }
+            // “恢复默认模型”的目标固定为内置 Live2D。先退出 goodbye 并恢复
+            // Electron Pet 的完整 viewport，但不要重新显示即将被替换的旧模型；
+            // 后面的 PUT + handleModelReload 会直接加载目标 Live2D。
+            // helper 即使当前不在 goodbye 也会立即成功；无条件调用还能加入一个
+            // 已清除 manager 标志、但尚未完整结束的现有 return lifecycle。
+            if (window.appUi && typeof window.appUi.returnFromGoodbye === 'function') {
                 var returnedFromGoodbye = await window.appUi.returnFromGoodbye({
-                    source: 'reset-to-default-model'
+                    source: 'reset-to-default-model',
+                    retryViewportRestore: true,
+                    restoreCurrentModel: false
                 });
-                var goodbyeStillActive = typeof window.isNekoGoodbyeModeActive === 'function'
-                    ? window.isNekoGoodbyeModeActive()
-                    : !!(
-                        (window.live2dManager && window.live2dManager._goodbyeClicked)
-                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
-                        || (window.mmdManager && window.mmdManager._goodbyeClicked)
-                    );
-                if (!returnedFromGoodbye || goodbyeStillActive) {
+                if (!returnedFromGoodbye) {
                     throw new Error('goodbye_return_failed');
+                }
+            } else {
+                var visibleReturnBall = document.querySelector(
+                    '[id$="-return-button-container"][data-neko-return-visible="true"]'
+                );
+                var goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
+                    ? window.isNekoGoodbyeModeActive()
+                    : false;
+                if (goodbyeActive || visibleReturnBall) {
+                    throw new Error('goodbye_return_unavailable');
                 }
             }
 

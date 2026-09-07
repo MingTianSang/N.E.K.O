@@ -1186,10 +1186,7 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
 
     assert "const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;" in branch
     assert branch.count("consumeModelReturnEnterRect()") == 1
-    load_index = branch.index("await window.loadPNGTuberAvatar(")
-    cancel_guard_index = branch.index("if (isReturnCancelled()) return false;", load_index)
-    enter_rect_index = branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
-    assert load_index < cancel_guard_index < enter_rect_index
+    assert branch.index("await window.loadPNGTuberAvatar(pngtuberConfig);") < branch.index("const modelReturnEnterRect = pngtuberContainer ? consumeModelReturnEnterRect() : null;")
     assert "prepareModelReturnContainer(pngtuberContainer, modelReturnEnterRect, { clearPointerEvents: true });" in branch
     assert "if (modelReturnEnterRect) {" in branch
     assert "playModelReturnEnter(pngtuberContainer, modelReturnEnterRect);" in branch

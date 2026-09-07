@@ -12,14 +12,6 @@ const resetSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/listeners-and-api.js'),
   'utf8',
 );
-const modelDisplaySource = fs.readFileSync(
-  path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
-  'utf8',
-);
-const pngtuberSource = fs.readFileSync(
-  path.resolve(__dirname, '../../static/pngtuber-core.js'),
-  'utf8',
-);
 
 function createDeferred() {
   let resolve;
@@ -228,6 +220,20 @@ test('visible return control wins over a stale configured model type', async () 
   assert.equal(await result, true);
 });
 
+test('a visible PNGTuber return control is sufficient to detect goodbye state', async () => {
+  const harness = createReturnHarness({ modelType: 'pngtuber', visibleReturnType: 'pngtuber' });
+  harness.setGoodbyeActive(false);
+  const result = harness.window.appUi.returnFromGoodbye({
+    source: 'reset-to-default-model',
+    restoreCurrentModel: false,
+  });
+
+  assert.equal(harness.dispatched[0].type, 'pngtuber-return-click');
+  assert.equal(harness.dispatched[0].detail.restoreCurrentModel, false);
+  harness.complete();
+  assert.equal(await result, true);
+});
+
 test('programmatic return waits for an in-flight model-to-cat transition', async () => {
   const harness = createReturnHarness({
     modelType: 'live3d',
@@ -274,19 +280,20 @@ test('the canonical return lifecycle serializes handlers and aborts a blocked vi
 
   assert.ok(handlerStart < lifecycleStart && lifecycleStart < viewportWait);
   assert.match(handlerSource, /if \(!returnLifecycle\) \{[\s\S]*?return;/);
+  assert.match(handlerSource, /while \([\s\S]*?returnDetail\.retryViewportRestore === true[\s\S]*?!returnLifecycle\.cancelled[\s\S]*?\)/);
   assert.match(handlerSource, /returnAbortReason = 'model-viewport-not-ready';/);
   assert.match(handlerSource, /I\.abortNekoCatReturnLifecycle\(returnLifecycle, returnAbortReason\)/);
   assert.match(surfaceSource, /new CustomEvent\('neko:cat-return-abort'/);
 });
 
-test('return model lookup is cancelled with the shared lifecycle', () => {
-  assert.match(modelDisplaySource, /const returnSignal = returnLifecycle && returnLifecycle\.signal/);
-  assert.match(modelDisplaySource, /returnSignal \? \{ signal: returnSignal \} : undefined/);
-  assert.match(modelDisplaySource, /if \(isReturnCancelled\(\)\) \{[\s\S]*?return false;/);
-  assert.match(modelDisplaySource, /await window\.loadPNGTuberAvatar\([\s\S]*?returnSignal \? \{ signal: returnSignal \} : undefined/);
-  assert.match(pngtuberSource, /async function loadPNGTuberAvatar\(config, options = \{\}\)/);
-  assert.match(pngtuberSource, /const isReturnCancelled = \(\) => !!\(returnSignal && returnSignal\.aborted\)/);
-  assert.match(pngtuberSource, /await this\.setupLayeredAdapter\(\{ config: normalizedConfig, isCurrentLoad, signal \}\)/);
+test('default-model return skips restoring the model that is about to be replaced', () => {
+  const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
+  const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
+  const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
+
+  assert.match(handlerSource, /const restoreCurrentModel = returnDetail\.restoreCurrentModel !== false;/);
+  assert.match(handlerSource, /if \(restoreCurrentModel\) \{[\s\S]*?await I\.showCurrentModel\(\);/);
+  assert.match(handlerSource, /else \{[\s\S]*?window\._nekoModelReturnEnterRect = null;/);
 });
 
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {
@@ -297,5 +304,7 @@ test('default-model reset returns from goodbye before persisting or hot-reloadin
   assert.notEqual(returnCall, -1);
   assert.ok(returnCall < persistenceCall, 'the full return path must restore the Pet viewport before persistence');
   assert.ok(persistenceCall < reloadCall, 'the saved default must be visible to the hot reload');
-  assert.match(resetSource, /if \(!returnedFromGoodbye \|\| goodbyeStillActive\)/);
+  assert.match(resetSource, /retryViewportRestore: true/);
+  assert.match(resetSource, /restoreCurrentModel: false/);
+  assert.match(resetSource, /if \(!returnedFromGoodbye\)/);
 });
