@@ -1246,7 +1246,8 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "choiceWriteMetas: session.choiceWriteMetas" in advance
     assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
     assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
-    assert "session.choiceWriteMetas = (session.choiceWriteMetas || []).filter" in runtime
+    assert "String(entry.sessionId || '') !== String(session.sessionId || '')" in runtime
+    assert "var remainingMetas = (Array.isArray(entry.choiceWriteMetas)" in runtime
     release = runtime.split("if (decision.action === 'release')", 1)[1].split(
         "var replyText = decision.reply",
         1,

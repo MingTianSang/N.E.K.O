@@ -1109,11 +1109,15 @@
     function trackPendingChoiceWrite(session, choiceMeta, writePromise) {
         return Promise.resolve(writePromise).then(function (result) {
             if (result !== true || !session) return result;
-            session.choiceWriteMetas = (session.choiceWriteMetas || []).filter(function (storedMeta) {
-                return Number(storedMeta && storedMeta.seq) !== Number(choiceMeta && choiceMeta.seq);
+            var entry = getStoredDayEntry(session.day);
+            if (!entry || String(entry.sessionId || '') !== String(session.sessionId || '')) return result;
+            var remainingMetas = (Array.isArray(entry.choiceWriteMetas) ? entry.choiceWriteMetas : []).filter(function (storedMeta) {
+                return String(storedMeta && storedMeta.sessionId || '') !== String(session.sessionId || '')
+                    || Number(storedMeta && storedMeta.seq) !== Number(choiceMeta && choiceMeta.seq);
             });
+            session.choiceWriteMetas = remainingMetas;
             markDay(session.day, {
-                choiceWriteMetas: session.choiceWriteMetas,
+                choiceWriteMetas: remainingMetas,
                 updatedAt: Date.now()
             });
             return result;
