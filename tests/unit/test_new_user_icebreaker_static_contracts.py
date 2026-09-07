@@ -1044,8 +1044,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "window.setTimeout(function () {" in wait_helper
     assert "}, PAGE_CONFIG_RESTORE_WAIT_MS);" in wait_helper
     assert "resolve(fallbackValue);" in wait_helper
-    assert "withRestoreWaitTimeout(ready, false, 'page config')" in runtime
-    assert "withRestoreWaitTimeout(decisionPromise, false, 'storage startup')" in runtime
+    assert "withRestoreWaitTimeout(ready, true, 'page config')" in runtime
+    assert "return Promise.resolve(decisionPromise).then(function (decision)" in runtime
+    assert "withRestoreWaitTimeout(decisionPromise" not in runtime
 
     snapshot_matcher = runtime.split("function findRestorableDaySnapshot", 1)[1].split(
         "function hasIncompleteStoredSession",

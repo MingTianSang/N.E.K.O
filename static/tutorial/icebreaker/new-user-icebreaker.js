@@ -420,7 +420,7 @@
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
         if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
-        return withRestoreWaitTimeout(ready, false, 'page config').then(function (result) {
+        return withRestoreWaitTimeout(ready, true, 'page config').then(function (result) {
             return result !== false;
         });
     }
@@ -437,9 +437,13 @@
             console.warn('[NewUserIcebreaker] storage startup wait threw:', error);
             return Promise.resolve(false);
         }
-        return withRestoreWaitTimeout(decisionPromise, false, 'storage startup').then(function (decision) {
-            if (decision === false) return false;
+        // This is a user-controlled startup gate. The main UI intentionally remains blocked
+        // while the chooser is open, so timing it out here would discard the one-shot restore.
+        return Promise.resolve(decisionPromise).then(function (decision) {
             return !decision || decision.canContinue !== false;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] storage startup wait failed:', error);
+            return false;
         });
     }
 
