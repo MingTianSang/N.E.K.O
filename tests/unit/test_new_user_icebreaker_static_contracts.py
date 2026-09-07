@@ -1037,13 +1037,31 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "}, PAGE_CONFIG_RESTORE_WAIT_MS);" in runtime
     assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
     assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
+    assert "if (routeActive && !matchesActiveRoute) return;" in runtime
+    assert runtime.index("var matchesActiveRoute = routeActive") < runtime.index(
+        "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS"
+    )
     assert "sessionId: snapshot.matchesActiveRoute" in restore
+    assert "choiceSeq: restoredChoiceSeq(snapshot)" in restore
+    assert "function inferChoiceSeq(dayConfig, nodeId)" in runtime
+    assert "choiceSeq: nextChoiceSeq" in runtime
     assert ": makeIcebreakerSessionId(snapshot.day)" in restore
     assert "snapshot.matchesActiveRoute\n                    ? Promise.resolve(true)" in restore
     assert ": startIcebreakerRoute(session);" in restore
     assert "return routeReady.then(function (started)" in restore
     assert "activeSession = session;" in restore
-    assert "return restoreSessionPresentation(session);" in restore
+    assert "return restoreSessionPresentation(session).then(function (restored)" in restore
+    assert "icebreaker_restore_presentation_failed" in restore
+    assert "if (snapshot.matchesActiveRoute) return false;" in restore
+
+    discard = runtime.split("function discardUnrestorableRoute(routeState, reason)", 1)[1].split(
+        "function localChatHasIcebreakerNodeMessage",
+        1,
+    )[0]
+    assert discard.index("if (state.icebreaker_active === true) return Promise.resolve(false);") < discard.index(
+        "broadcastIcebreakerClearChoicePromptSource"
+    )
+    assert "endIcebreakerRoute(" not in discard
 
 
 def test_icebreaker_cross_day_start_waits_for_the_active_session_to_end():

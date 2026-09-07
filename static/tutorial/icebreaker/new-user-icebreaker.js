@@ -432,18 +432,25 @@
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (entry.terminalHandoff === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
-            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             if (entryLanlanName && currentLanlanName && entryLanlanName !== currentLanlanName) return;
             var routeIdentityMatches = !routeLanlanName || routeLanlanName === currentLanlanName;
+            var matchesActiveRoute = routeActive
+                && !!routeSessionId
+                && routeIdentityMatches
+                && String(entry.sessionId || '') === routeSessionId;
+            if (routeActive && !matchesActiveRoute) return;
+            if (
+                !matchesActiveRoute
+                && (!Number.isFinite(updatedAt)
+                    || updatedAt <= 0
+                    || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS)
+            ) return;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
                 entry: entry,
                 nodeId: nodeId,
-                matchesActiveRoute: routeActive
-                    && !!routeSessionId
-                    && routeIdentityMatches
-                    && String(entry.sessionId || '') === routeSessionId
+                matchesActiveRoute: matchesActiveRoute
             };
             // 旧版本没有写入 lanlanName。只有仍活跃的后端 route 同时证明了角色和
             // session id 时才能迁移；route 已结束后无法判断归属，必须拒绝跨角色认领。
@@ -481,6 +488,35 @@
         return 'icebreaker-day' + String(day || '') + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     }
 
+    function inferChoiceSeq(dayConfig, nodeId) {
+        var root = String((dayConfig && dayConfig.root) || '');
+        var target = String(nodeId || '');
+        var nodes = dayConfig && dayConfig.nodes ? dayConfig.nodes : {};
+        if (!root || !target || !nodes[root]) return 0;
+        var queue = [{ nodeId: root, depth: 0 }];
+        var visited = Object.create(null);
+        while (queue.length) {
+            var current = queue.shift();
+            if (!current || visited[current.nodeId]) continue;
+            visited[current.nodeId] = true;
+            if (current.nodeId === target) return current.depth;
+            var node = nodes[current.nodeId];
+            (Array.isArray(node && node.options) ? node.options : []).forEach(function (option) {
+                var nextNodeId = String((option && option.next) || '');
+                if (nextNodeId && nodes[nextNodeId] && !visited[nextNodeId]) {
+                    queue.push({ nodeId: nextNodeId, depth: current.depth + 1 });
+                }
+            });
+        }
+        return 0;
+    }
+
+    function restoredChoiceSeq(snapshot) {
+        var stored = Number(snapshot && snapshot.entry && snapshot.entry.choiceSeq);
+        if (Number.isFinite(stored) && stored >= 0) return Math.floor(stored);
+        return inferChoiceSeq(snapshot && snapshot.dayConfig, snapshot && snapshot.nodeId);
+    }
+
     function enqueueIcebreakerSessionStart(operation) {
         var scheduled = sessionStartQueue.then(operation, operation);
         sessionStartQueue = scheduled.then(function () {}, function () {});
@@ -510,16 +546,11 @@
     function discardUnrestorableRoute(routeState, reason) {
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var lanlanName = String(state.lanlan_name || resolveLanlanName() || '');
+        // 活跃 route 可能属于同角色的另一个页面。没有可用本地快照时无法证明所有权，
+        // 因此既不能关 route，也不能清掉对方仍可用的选项。
+        if (state.icebreaker_active === true) return Promise.resolve(false);
         broadcastIcebreakerClearChoicePromptSource(SOURCE, reason || 'icebreaker_restore_unavailable', lanlanName);
-        if (state.icebreaker_active !== true || !state.session_id || !lanlanName) {
-            return Promise.resolve(false);
-        }
-        return endIcebreakerRoute({
-            sessionId: String(state.session_id),
-            lanlanName: lanlanName
-        }, reason || 'icebreaker_restore_unavailable').then(function () {
-            return false;
-        });
+        return Promise.resolve(false);
     }
 
     function localChatHasIcebreakerNodeMessage(session) {
@@ -554,9 +585,7 @@
         }
         return questionPromise.then(function (questionReady) {
             if (!questionReady || activeSession !== session) return false;
-            return setChoicePrompt(node, session.localeData, 0).then(function () {
-                return true;
-            });
+            return setChoicePrompt(node, session.localeData, 0);
         });
     }
 
@@ -591,6 +620,7 @@
                     localeData: localeData,
                     nodeId: snapshot.nodeId,
                     lanlanName: restoreLanlanName,
+                    choiceSeq: restoredChoiceSeq(snapshot),
                     sessionId: snapshot.matchesActiveRoute
                         ? String(snapshot.entry.sessionId || '')
                         : makeIcebreakerSessionId(snapshot.day)
@@ -611,9 +641,18 @@
                         lanlanName: session.lanlanName,
                         sessionId: session.sessionId,
                         nodeId: session.nodeId,
+                        choiceSeq: session.choiceSeq,
                         updatedAt: Date.now()
                     });
-                    return restoreSessionPresentation(session);
+                    return restoreSessionPresentation(session).then(function (restored) {
+                        if (restored) return true;
+                        if (!snapshot.matchesActiveRoute) clearChoicePrompt();
+                        if (activeSession === session) activeSession = null;
+                        if (snapshot.matchesActiveRoute) return false;
+                        return endIcebreakerRoute(session, 'icebreaker_restore_presentation_failed').then(function () {
+                            return false;
+                        });
+                    });
                 });
             });
         }).catch(function (error) {
@@ -1328,7 +1367,7 @@
         };
         broadcastIcebreakerChoicePrompt(prompt);
         if (!shouldRenderIcebreakerOnLocalChatHost()) {
-            return Promise.resolve(false);
+            return Promise.resolve(true);
         }
         return waitForChatHost(30000).then(function (host) {
             if (!host || typeof host.setIcebreakerChoicePrompt !== 'function') return false;
@@ -1449,6 +1488,7 @@
                 lanlanName: session.lanlanName,
                 sessionId: session.sessionId,
                 nodeId: nodeId,
+                choiceSeq: Number(session.choiceSeq || 0),
                 updatedAt: Date.now()
             });
             applyAssistantTextEmotion(text);
@@ -1487,6 +1527,7 @@
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
+                choiceSeq: Number(session.choiceSeq || 0),
                 updatedAt: Date.now()
             });
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
@@ -1523,6 +1564,12 @@
     function advanceWithChoice(session, option, choice, label, choiceNodeId) {
         if (!session || activeSession !== session || !option) return Promise.resolve(null);
         var isHandoffChoice = !!option.handoffKey;
+        var nextChoiceSeq = Number(session.choiceSeq || 0) + 1;
+        session.choiceSeq = nextChoiceSeq;
+        markDay(session.day, {
+            choiceSeq: nextChoiceSeq,
+            updatedAt: Date.now()
+        });
         setFreeTextDerailStreak(session, choiceNodeId, 0);
         // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
         // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
@@ -1534,7 +1581,7 @@
             label: label,
             handoff: isHandoffChoice,
             completed: isHandoffChoice,
-            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            seq: nextChoiceSeq
         });
         (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
         if (option.next) {
@@ -1911,6 +1958,7 @@
                         nodeId: dayConfig.root,
                         // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
                         lanlanName: resolveLanlanName(),
+                        choiceSeq: 0,
                         sessionId: makeIcebreakerSessionId(dayKey)
                     };
                     return startIcebreakerRoute(nextSession).then(function (started) {
