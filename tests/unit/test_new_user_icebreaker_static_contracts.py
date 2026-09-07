@@ -1028,10 +1028,37 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded) return false;" not in restore
     assert "if (!entryLanlanName && !candidate.matchesActiveRoute) return;" in runtime
-    assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
-    assert "return startIcebreakerRoute(session).then(function (started)" in restore
+    assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
+    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
+    assert "sessionId: snapshot.matchesActiveRoute" in restore
+    assert ": makeIcebreakerSessionId(snapshot.day)" in restore
+    assert "snapshot.matchesActiveRoute\n                    ? Promise.resolve(true)" in restore
+    assert ": startIcebreakerRoute(session);" in restore
+    assert "return routeReady.then(function (started)" in restore
     assert "activeSession = session;" in restore
-    assert "return setChoicePrompt(" in restore
+    assert "return restoreSessionPresentation(session);" in restore
+
+
+def test_icebreaker_restore_rebuilds_only_missing_local_question_presentation():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    presentation = runtime.split("function restoreSessionPresentation(session)", 1)[1].split(
+        "function restoreInterruptedSession()",
+        1,
+    )[0]
+
+    assert "function localChatHasIcebreakerNodeMessage(session)" in runtime
+    assert "if (!shouldRenderIcebreakerOnLocalChatHost()) return true;" in runtime
+    assert "host.getState()" in runtime
+    assert "if (!localChatHasIcebreakerNodeMessage(session))" in presentation
+    assert "appendRestoredNodeQuestion(session, node)" in presentation
+    restored_question = runtime.split("function appendRestoredNodeQuestion(session, node)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+    assert "broadcastIcebreakerAppendMessage" not in restored_question
+    assert "appendLlmContext" not in restored_question
+    assert "host.appendMessage(message)" in restored_question
+    assert "return setChoicePrompt(node, session.localeData, 0)" in presentation
 
 
 def test_icebreaker_language_payload_uses_the_session_character_snapshot():

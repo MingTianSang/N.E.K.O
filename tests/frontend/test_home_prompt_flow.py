@@ -5712,6 +5712,7 @@ def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(m
     assert advanced["session"]["nodeId"] == "next"
     assert [option["label"] for option in advanced["prompt"]["options"]] == ["Finish A", "Finish B"]
     assert advanced["messages"] == [
+        {"role": "assistant", "text": "Welcome back."},
         {"role": "user", "text": "Continue A"},
         {"role": "assistant", "text": "The next question."},
     ]
@@ -5733,11 +5734,27 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
         setup_js="""
             window.appState = { lanlan_name: '' };
             window.__icebreakerPrompts = [];
+            window.__icebreakerAppends = [];
             window.__icebreakerRouteStarts = [];
             window.reactChatWindowHost = {
                 isMounted: function() { return true; },
                 openWindow: function() {},
-                appendMessage: async function(message) { return message; },
+                appendMessage: async function(message) {
+                    window.__icebreakerAppends.push(message);
+                    return message;
+                },
+                getState: function() {
+                    return {
+                        messages: [{
+                            role: 'assistant',
+                            icebreaker: {
+                                source: 'new_user_icebreaker',
+                                day: '2',
+                                nodeId: 'root',
+                            },
+                        }],
+                    };
+                },
                 setIcebreakerChoicePrompt: function(prompt) {
                     window.__icebreakerPrompts.push(prompt);
                 },
@@ -5753,7 +5770,7 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
                         lanlanName: 'other-character',
                         sessionId: 'other-newer',
                         nodeId: 'root',
-                        updatedAt: 200,
+                        updatedAt: Date.now(),
                     },
                     '2': {
                         started: true,
@@ -5761,7 +5778,7 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
                         lanlanName: 'yui',
                         sessionId: 'route-yui',
                         nodeId: 'root',
-                        updatedAt: 100,
+                        updatedAt: Date.now() - 1000,
                     },
                 },
             }));
@@ -5808,23 +5825,24 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
     )
 
-    mock_page.wait_for_function(
-        "() => window.__icebreakerPrompts.length === 1 && window.__icebreakerRouteStarts.length === 1"
-    )
+    mock_page.wait_for_function("() => window.__icebreakerPrompts.length === 1")
     restored = mock_page.evaluate(
         """() => ({
             session: window.newUserIcebreaker.getActiveSession(),
-            routeStart: window.__icebreakerRouteStarts[0],
+            routeStarts: window.__icebreakerRouteStarts,
+            appends: window.__icebreakerAppends,
         })"""
     )
 
     assert restored["session"]["day"] == "2"
     assert restored["session"]["lanlanName"] == "yui"
-    assert restored["routeStart"]["lanlan_name"] == "yui"
+    assert restored["session"]["sessionId"] == "route-yui"
+    assert restored["routeStarts"] == []
+    assert restored["appends"] == []
 
 
 @pytest.mark.frontend
-def test_icebreaker_restore_rejects_unowned_legacy_snapshot_without_matching_route(mock_page: Page):
+def test_icebreaker_restore_rejects_unowned_or_stale_snapshots_without_matching_route(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5847,6 +5865,14 @@ def test_icebreaker_restore_rejects_unowned_legacy_snapshot_without_matching_rou
                         nodeId: 'root',
                         updatedAt: Date.now(),
                     },
+                    '2': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'stale-yui-session',
+                        nodeId: 'root',
+                        updatedAt: Date.now() - (2 * 60 * 60 * 1000) - 1,
+                    },
                 },
             }));
         """,
@@ -5858,6 +5884,17 @@ def test_icebreaker_restore_rejects_unowned_legacy_snapshot_without_matching_rou
                 return jsonResponse({
                     days: {
                         '1': {
+                            root: 'root',
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [
+                                        { id: 'A', labelKey: 'root.A', handoffKey: 'root.done' },
+                                    ],
+                                },
+                            },
+                        },
+                        '2': {
                             root: 'root',
                             nodes: {
                                 root: {

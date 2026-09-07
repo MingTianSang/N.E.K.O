@@ -10,6 +10,7 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -408,8 +409,10 @@
             var dayConfig = scripts && scripts.days ? scripts.days[day] : null;
             var nodeId = String((entry && entry.nodeId) || '');
             var entryLanlanName = String((entry && entry.lanlanName) || '');
+            var updatedAt = Number((entry && entry.updatedAt) || 0);
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
+            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             if (entryLanlanName && currentLanlanName && entryLanlanName !== currentLanlanName) return;
             var routeIdentityMatches = !routeLanlanName || routeLanlanName === currentLanlanName;
             var candidate = {
@@ -479,6 +482,44 @@
         });
     }
 
+    function localChatHasIcebreakerNodeMessage(session) {
+        if (!shouldRenderIcebreakerOnLocalChatHost()) return true;
+        try {
+            var host = window.reactChatWindowHost;
+            var state = host && typeof host.getState === 'function' ? host.getState() : null;
+            var messages = state && Array.isArray(state.messages) ? state.messages : [];
+            return messages.some(function (message) {
+                var icebreaker = message && message.icebreaker && typeof message.icebreaker === 'object'
+                    ? message.icebreaker
+                    : {};
+                return message
+                    && message.role === 'assistant'
+                    && icebreaker.source === SOURCE
+                    && String(icebreaker.day || '') === String(session.day || '')
+                    && String(icebreaker.nodeId || '') === String(session.nodeId || '');
+            });
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function restoreSessionPresentation(session) {
+        var node = session && session.dayConfig && session.dayConfig.nodes
+            ? session.dayConfig.nodes[session.nodeId]
+            : null;
+        if (!node) return Promise.resolve(false);
+        var questionPromise = Promise.resolve(true);
+        if (!localChatHasIcebreakerNodeMessage(session)) {
+            questionPromise = appendRestoredNodeQuestion(session, node).then(didAppendChatMessage);
+        }
+        return questionPromise.then(function (questionReady) {
+            if (!questionReady || activeSession !== session) return false;
+            return setChoicePrompt(node, session.localeData, 0).then(function () {
+                return true;
+            });
+        });
+    }
+
     function restoreInterruptedSession() {
         if (activeSession) return Promise.resolve(true);
         if (restoreSessionPromise) return restoreSessionPromise;
@@ -510,10 +551,17 @@
                     localeData: localeData,
                     nodeId: snapshot.nodeId,
                     lanlanName: restoreLanlanName,
-                    sessionId: makeIcebreakerSessionId(snapshot.day)
+                    sessionId: snapshot.matchesActiveRoute
+                        ? String(snapshot.entry.sessionId || '')
+                        : makeIcebreakerSessionId(snapshot.day)
                 };
-                broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', restoreLanlanName);
-                return startIcebreakerRoute(session).then(function (started) {
+                if (!snapshot.matchesActiveRoute) {
+                    broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', restoreLanlanName);
+                }
+                var routeReady = snapshot.matchesActiveRoute
+                    ? Promise.resolve(true)
+                    : startIcebreakerRoute(session);
+                return routeReady.then(function (started) {
                     if (!started) return false;
                     activeSession = session;
                     markDay(session.day, {
@@ -524,13 +572,7 @@
                         nodeId: session.nodeId,
                         updatedAt: Date.now()
                     });
-                    return setChoicePrompt(
-                        session.dayConfig.nodes[session.nodeId],
-                        session.localeData,
-                        0
-                    ).then(function () {
-                        return true;
-                    });
+                    return restoreSessionPresentation(session);
                 });
             });
         }).catch(function (error) {
@@ -931,10 +973,10 @@
         return !!message;
     }
 
-    function appendChatMessage(role, text, meta) {
+    function makeIcebreakerChatMessage(role, text, meta) {
         var messageText = String(text || '').trim();
-        if (!messageText) return Promise.resolve(null);
-        var message = {
+        if (!messageText) return null;
+        return {
             id: makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,
             author: role === 'user' ? '你' : resolveAuthor(),
@@ -948,6 +990,38 @@
             actions: undefined,
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
+    }
+
+    function appendRestoredNodeQuestion(session, node) {
+        var message = makeIcebreakerChatMessage('assistant', getText(session.localeData, node.lineKey), {
+            day: session.day,
+            nodeId: session.nodeId,
+            voiceKey: node.voiceKey || '',
+            restored: true
+        });
+        if (!message) return Promise.resolve(null);
+        var chatHost = null;
+        return waitForChatHost(30000).then(function (host) {
+            chatHost = host;
+            if (typeof host.openWindow === 'function') host.openWindow();
+            return host.appendMessage(message);
+        }).then(function (result) {
+            if (!result) return result;
+            return waitForIcebreakerChatHostMounted(chatHost).then(function () {
+                syncIcebreakerAssistantCompactCaption('assistant', message);
+                finalizeIcebreakerAssistantSubtitleTranslation('assistant', message);
+                return result;
+            });
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] restore question failed:', error);
+            return null;
+        });
+    }
+
+    function appendChatMessage(role, text, meta) {
+        var messageText = String(text || '').trim();
+        if (!messageText) return Promise.resolve(null);
+        var message = makeIcebreakerChatMessage(role, messageText, meta);
         broadcastIcebreakerAppendMessage(message);
         return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
