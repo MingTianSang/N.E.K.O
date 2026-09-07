@@ -953,7 +953,7 @@ def test_model_cat_transition_contract_is_present():
         return_handler_start:
         source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_start)
     ]
-    pre_return_guard_start = return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
+    pre_return_guard_start = return_handler_full_block.index("let preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();")
     return_handler_start_block = return_handler_full_block[
         pre_return_guard_start:
         return_handler_full_block.index("const isReturningToPngtuber")
@@ -961,7 +961,7 @@ def test_model_cat_transition_contract_is_present():
     _assert_source_order(
         return_handler_start_block,
         "return handler preserves cat state until viewport can restore",
-        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "let preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
         "if (!preReturnViewportReady.ready) {",
         "restoreReturnBallAfterBlockedModelViewport(event);",
         "return;",
@@ -981,7 +981,7 @@ def test_model_cat_transition_contract_is_present():
         "if (window._goodbyeHideTimerId) {",
         "clearTimeout(window._goodbyeHideTimerId);",
         "window._goodbyeHideTimerId = null;",
-        "const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
+        "let preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();",
     )
     return_handler_after_viewport_guard_block = return_handler_full_block[
         pre_return_guard_start:
@@ -995,7 +995,7 @@ def test_model_cat_transition_contract_is_present():
         "runGoodbyeResetClickIfActive('return-viewport-blocked');",
         "return;",
     )
-    assert return_handler_full_block.index("const preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
+    assert return_handler_full_block.index("let preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel();") < return_handler_full_block.index("window.live2dManager._goodbyeClicked = false;")
     restore_block = source[
         source.index("function restoreReturnBallAfterBlockedModelViewport(event)"):
         source.index("// 请她回来按钮（统一处理函数）")

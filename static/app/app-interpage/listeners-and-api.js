@@ -356,7 +356,45 @@
         _resetToDefaultModelInFlight = true;
 
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        var previousModelConfig = null;
+        var reloadModel = null;
+        var returnWasNeeded = false;
+        var returnedFromGoodbye = false;
         try {
+            previousModelConfig = window.lanlan_config && typeof window.lanlan_config === 'object'
+                ? Object.assign({}, window.lanlan_config)
+                : null;
+            if (previousModelConfig) {
+                var previousModelType = String(previousModelConfig.model_type || 'live2d').toLowerCase();
+                var previousLive3dSubType = String(previousModelConfig.live3d_sub_type || '').toLowerCase();
+                if (previousModelType === 'pngtuber') {
+                    previousModelConfig.pngtuber = previousModelConfig.pngtuber
+                        ? Object.assign({}, previousModelConfig.pngtuber)
+                        : null;
+                    previousModelConfig.model_path = previousModelConfig.pngtuber
+                        ? String(previousModelConfig.pngtuber.idle_image || '')
+                        : '';
+                } else if (previousModelType === 'live3d' && previousLive3dSubType === 'mmd') {
+                    previousModelConfig.model_path = String(window.mmdModel || previousModelConfig.mmd || '');
+                } else if (previousModelType === 'live3d' || previousModelType === 'vrm') {
+                    previousModelConfig.model_path = String(window.vrmModel || previousModelConfig.vrm || '');
+                } else if (previousModelType === 'mmd') {
+                    previousModelConfig.model_path = String(window.mmdModel || previousModelConfig.mmd || '');
+                } else {
+                    previousModelConfig.model_path = String(window.cubism4Model || previousModelConfig.live2d || '');
+                }
+            }
+            reloadModel = typeof I.handleModelReload === 'function'
+                ? I.handleModelReload
+                : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
+            var visibleReturnBallBeforeReset = document.querySelector(
+                '[id$="-return-button-container"][data-neko-return-visible="true"]'
+            );
+            returnWasNeeded = !!(
+                visibleReturnBallBeforeReset
+                || (window.__appUiParts && window.__appUiParts.nekoCatReturnLifecycle)
+                || (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive())
+            );
             // Fail-fast when there is no character context. This happens if the
             // tray IPC fires before `neko:config-injected`, or on a sub-window
             // that never received the injection. Without lanlan_name we cannot
@@ -366,6 +404,9 @@
                 console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
                 throw new Error('missing_lanlan_name');
             }
+            if (!reloadModel) {
+                throw new Error('model_reload_unavailable');
+            }
 
             // “恢复默认模型”的目标固定为内置 Live2D。先退出 goodbye 并恢复
             // Electron Pet 的完整 viewport，但不要重新显示即将被替换的旧模型；
@@ -373,7 +414,7 @@
             // helper 即使当前不在 goodbye 也会立即成功；无条件调用还能加入一个
             // 已清除 manager 标志、但尚未完整结束的现有 return lifecycle。
             if (window.appUi && typeof window.appUi.returnFromGoodbye === 'function') {
-                var returnedFromGoodbye = await window.appUi.returnFromGoodbye({
+                returnedFromGoodbye = await window.appUi.returnFromGoodbye({
                     source: 'reset-to-default-model',
                     retryViewportRestore: true,
                     restoreCurrentModel: false
@@ -418,13 +459,7 @@
             // need them surfaced so the reset doesn't report success after a
             // failed hot-swap.
             var reloadOpts = { suppressToast: true, throwOnError: true };
-            if (typeof I.handleModelReload === 'function') {
-                await I.handleModelReload(lanlanName, reloadOpts);
-            } else if (typeof window.handleModelReload === 'function') {
-                await window.handleModelReload(lanlanName, reloadOpts);
-            } else {
-                console.warn('[Model] handleModelReload 不可用，跳过热切换');
-            }
+            await reloadModel(lanlanName, reloadOpts);
 
             try {
                 if (typeof window.showStatusToast === 'function') {
@@ -438,6 +473,17 @@
             return { success: true };
         } catch (e) {
             console.error('[Model] 恢复默认模型失败:', e);
+            if (returnWasNeeded && returnedFromGoodbye && previousModelConfig && reloadModel) {
+                try {
+                    await reloadModel(lanlanName, {
+                        temporaryConfig: Object.assign({ success: true }, previousModelConfig),
+                        suppressToast: true,
+                        throwOnError: true
+                    });
+                } catch (restoreError) {
+                    console.error('[Model] 默认模型恢复失败后回退旧模型也失败:', restoreError);
+                }
+            }
             try {
                 if (typeof window.showStatusToast === 'function') {
                     window.showStatusToast(

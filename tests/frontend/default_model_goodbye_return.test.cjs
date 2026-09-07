@@ -137,6 +137,9 @@ function createReturnHarness({
       parts.nekoCatReturnLifecycle = null;
       returnLifecycle.resolve(restored === true);
     },
+    activeTimerIds() {
+      return [...timers.keys()];
+    },
     fireTimer(timerId) {
       const callback = timers.get(timerId);
       assert.equal(typeof callback, 'function', `timer ${timerId} is not active`);
@@ -183,6 +186,17 @@ test('a timed-out return lifecycle aborts and releases the canonical handler loc
   assert.equal(harness.dispatched.at(-1).type, 'neko:cat-return-abort');
   assert.equal(harness.dispatched.at(-1).detail.reason, 'return-lifecycle-timeout');
   assert.ok(parts.beginNekoCatReturnLifecycle());
+});
+
+test('a standard return lifecycle has a finite default timeout', async () => {
+  const harness = createReturnHarness();
+  const parts = harness.window.__appUiParts;
+  const lifecycle = parts.beginNekoCatReturnLifecycle({ source: 'live2d-return-click' });
+
+  assert.ok(lifecycle.timeoutId, 'standard returns must not hold the handler lock forever');
+  harness.fireTimer(lifecycle.timeoutId);
+  assert.equal(await lifecycle.promise, false);
+  assert.equal(parts.nekoCatReturnLifecycle, null);
 });
 
 for (const [modelType, subType, expectedEvent] of [
@@ -271,6 +285,27 @@ test('programmatic return joins the active return lifecycle after goodbye flags 
   assert.equal(await result, true);
 });
 
+test('programmatic timeout aborts a joined return lifecycle', async () => {
+  const harness = createReturnHarness();
+  const parts = harness.window.__appUiParts;
+  const lifecycle = parts.beginNekoCatReturnLifecycle({
+    source: 'live2d-return-click',
+    timeoutMs: 5000,
+  });
+  harness.setGoodbyeActive(false);
+  const result = harness.window.appUi.returnFromGoodbye({
+    source: 'reset-to-default-model',
+    timeoutMs: 1000,
+  });
+  const helperTimerId = harness.activeTimerIds().find((timerId) => timerId !== lifecycle.timeoutId);
+
+  harness.fireTimer(helperTimerId);
+  assert.equal(await result, false);
+  assert.equal(await lifecycle.promise, false);
+  assert.equal(parts.nekoCatReturnLifecycle, null);
+  assert.equal(harness.dispatched.at(-1).detail.reason, 'programmatic-return-timeout');
+});
+
 test('the canonical return lifecycle serializes handlers and aborts a blocked viewport', () => {
   const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
   const lifecycleStart = surfaceSource.indexOf('const returnLifecycle = I.beginNekoCatReturnLifecycle({', handlerStart);
@@ -299,7 +334,7 @@ test('default-model return skips restoring the model that is about to be replace
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {
   const returnCall = resetSource.indexOf('await window.appUi.returnFromGoodbye({');
   const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", returnCall);
-  const reloadCall = resetSource.indexOf('await I.handleModelReload(lanlanName, reloadOpts)', persistenceCall);
+  const reloadCall = resetSource.indexOf('await reloadModel(lanlanName, reloadOpts)', persistenceCall);
 
   assert.notEqual(returnCall, -1);
   assert.ok(returnCall < persistenceCall, 'the full return path must restore the Pet viewport before persistence');
@@ -307,4 +342,20 @@ test('default-model reset returns from goodbye before persisting or hot-reloadin
   assert.match(resetSource, /retryViewportRestore: true/);
   assert.match(resetSource, /restoreCurrentModel: false/);
   assert.match(resetSource, /if \(!returnedFromGoodbye\)/);
+});
+
+test('default-model reset restores the previous runtime model after a failed reset', () => {
+  const returnCall = resetSource.indexOf('returnedFromGoodbye = await window.appUi.returnFromGoodbye({');
+  const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", returnCall);
+  const reloadCall = resetSource.indexOf('await reloadModel(lanlanName, reloadOpts)', persistenceCall);
+  const catchBlock = resetSource.indexOf('} catch (e) {', reloadCall);
+  const rollbackCall = resetSource.indexOf('temporaryConfig: Object.assign({ success: true }, previousModelConfig)', catchBlock);
+
+  assert.ok(returnCall < persistenceCall && persistenceCall < reloadCall && reloadCall < catchBlock);
+  assert.ok(catchBlock < rollbackCall, 'failure must reload the previous in-memory model config');
+  assert.match(resetSource, /if \(returnWasNeeded && returnedFromGoodbye && previousModelConfig && reloadModel\)/);
+  assert.match(resetSource, /previousModelConfig\.model_path = String\(window\.vrmModel/);
+  assert.match(resetSource, /previousModelConfig\.model_path = String\(window\.mmdModel/);
+  assert.match(resetSource, /previousModelConfig\.model_path = String\(window\.cubism4Model/);
+  assert.match(resetSource, /throw new Error\('model_reload_unavailable'\)/);
 });
