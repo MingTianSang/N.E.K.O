@@ -5964,6 +5964,19 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
         }"""
     )
 
+    # 模拟窗口在 terminalPending 落盘后、handoff 气泡广播前重建：恢复时只能补发一次原台词。
+    mock_page.evaluate(
+        """() => {
+            const store = JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'));
+            store.days['1'].terminalMessageDelivered = false;
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify(store));
+            window.__icebreakerBridgeEvents = window.__icebreakerBridgeEvents.filter((event) => {
+                return event.action !== 'icebreaker_append_chat_message'
+                    || event.message.blocks[0].text !== 'Done.';
+            });
+        }"""
+    )
+
     mock_page.evaluate(
         """() => {
             const prompt = window.__icebreakerBridgeEvents.filter(

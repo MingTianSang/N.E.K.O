@@ -1188,6 +1188,14 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
+        if (role === 'assistant' && targetSession && meta && meta.handoff === true) {
+            // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
+            // 若发生在后续 /context 等待中则不会重复投递已经广播的气泡。
+            markDay(targetSession.day, {
+                terminalMessageDelivered: true,
+                updatedAt: Date.now()
+            });
+        }
         // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
         // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
         if (role === 'assistant' && targetSession && meta && meta.handoff !== true && meta.nodeId) {
@@ -1638,6 +1646,7 @@
                 terminalChoiceRecorded: false,
                 terminalChoice: '',
                 terminalChoiceSeq: 0,
+                terminalMessageDelivered: false,
                 choiceWriteMetas: [],
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
@@ -1660,6 +1669,23 @@
         return store && store.days && store.days[String(day || '')];
     }
 
+    function ensurePendingHandoffMessage(session, option, entry) {
+        if (entry && entry.terminalMessageDelivered === true) return Promise.resolve(true);
+        var text = getText(session.localeData, option.handoffKey);
+        return appendAssistantChatMessage(text, {
+            day: session.day,
+            nodeId: session.nodeId,
+            voiceKey: option.handoffVoiceKey || '',
+            handoff: true
+        }, session).then(function (message) {
+            if (!didAppendChatMessage(message)) return false;
+            clearChoicePrompt();
+            applyAssistantTextEmotion(text);
+            speakLine(text, option.handoffVoiceKey || '');
+            return true;
+        });
+    }
+
     function retryPendingHandoff(session, option, choice, label, choiceNodeId) {
         if (!option || !option.handoffKey) return null;
         var entry = getStoredDayEntry(session.day);
@@ -1670,39 +1696,40 @@
             return null;
         }
         if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);
-        if (entry.terminalChoiceRecorded === true) {
-            return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId).then(function (completed) {
-                return completed ? finishActiveHandoff(session) : false;
-            });
-        }
+        return ensurePendingHandoffMessage(session, option, entry).then(function (delivered) {
+            if (!delivered) return false;
+            if (entry.terminalChoiceRecorded === true) {
+                return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
+            }
 
-        // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
-        // 已成功项会被去重，失败项得到补写；不再追加用户气泡或 handoff 台词。
-        var retryMetas = (session.choiceWriteMetas || []).slice();
-        if (!retryMetas.some(function (meta) {
-            return meta && meta.handoff === true && String(meta.choice || '') === String(choice || '');
-        })) {
-            retryMetas.push({
-                day: session.day,
-                sessionId: session.sessionId,
-                nodeId: choiceNodeId,
-                choice: choice,
-                label: label,
-                handoff: true,
-                completed: true,
-                seq: Number(entry.terminalChoiceSeq) || (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
+            // 已成功项会被去重，失败项得到补写；已经广播的 handoff 台词由持久化标记去重。
+            var retryMetas = (session.choiceWriteMetas || []).slice();
+            if (!retryMetas.some(function (meta) {
+                return meta && meta.handoff === true && String(meta.choice || '') === String(choice || '');
+            })) {
+                retryMetas.push({
+                    day: session.day,
+                    sessionId: session.sessionId,
+                    nodeId: choiceNodeId,
+                    choice: choice,
+                    label: label,
+                    handoff: true,
+                    completed: true,
+                    seq: Number(entry.terminalChoiceSeq) || (session.choiceSeq = (session.choiceSeq || 0) + 1)
+                });
+            }
+            var retryWrites = retryMetas.map(function (meta) {
+                return recordChoiceToPool(meta);
             });
-        }
-        var retryWrites = retryMetas.map(function (meta) {
-            return recordChoiceToPool(meta);
-        });
-        return waitForTerminalChoiceWrite(Promise.all(retryWrites)).then(function (writeResults) {
-            if (!didAllChoiceWritesSucceed(writeResults)) return false;
-            markDay(session.day, {
-                terminalChoiceRecorded: true,
-                updatedAt: Date.now()
+            return waitForTerminalChoiceWrite(Promise.all(retryWrites)).then(function (writeResults) {
+                if (!didAllChoiceWritesSucceed(writeResults)) return false;
+                markDay(session.day, {
+                    terminalChoiceRecorded: true,
+                    updatedAt: Date.now()
+                });
+                return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
             });
-            return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
         }).then(function (completed) {
             return completed ? finishActiveHandoff(session) : false;
         });
@@ -1725,6 +1752,7 @@
             terminalChoiceRecorded: false,
             terminalChoice: String(option.id || ''),
             terminalChoiceSeq: Number(session.choiceSeq) || 0,
+            terminalMessageDelivered: false,
             lanlanName: session.lanlanName,
             sessionId: sessionId,
             nodeId: nodeId,

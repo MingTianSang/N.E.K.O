@@ -1197,6 +1197,12 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "if (!didAllChoiceWritesSucceed(writeResults)) return false;" in handoff
     assert "terminalChoiceRecorded: true" in handoff
     assert "function retryPendingHandoff" in runtime
+    assert "function ensurePendingHandoffMessage" in runtime
+    assert "terminalMessageDelivered: true" in runtime
+    assert "terminalMessageDelivered: false" in runtime
+    assert runtime.index("broadcastIcebreakerAppendMessage(message);") < runtime.index(
+        "terminalMessageDelivered: true"
+    )
     assert "if (entry.terminalChoiceRecorded === true)" in runtime
     retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
         "function completeWithHandoff",
