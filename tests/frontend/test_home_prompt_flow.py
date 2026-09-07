@@ -6055,6 +6055,129 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
 
 
 @pytest.mark.frontend
+def test_icebreaker_terminal_handoff_retries_after_local_chat_append_failure(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__icebreakerBridgeEvents = [];
+            window.__localChatMessages = [];
+            window.__choiceBodies = [];
+            window.__routeEnds = [];
+            window.__failedFirstHandoffAppend = false;
+            window.nekoElectronIcebreakerBridge = {
+                send: function(message) { window.__icebreakerBridgeEvents.push(message); },
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() { return { 'X-CSRF-Token': 'test-token' }; },
+            };
+            window.reactChatWindowHost = {
+                isMounted: function() { return true; },
+                openWindow: function() {},
+                setIcebreakerChoicePrompt: function() {},
+                clearIcebreakerChoicePrompt: function() {},
+                appendMessage: function(message) {
+                    const text = message.blocks[0].text;
+                    if (text === 'Done.' && !window.__failedFirstHandoffAppend) {
+                        window.__failedFirstHandoffAppend = true;
+                        return false;
+                    }
+                    window.__localChatMessages.push(text);
+                    return true;
+                },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+        """,
+        fetch_js="""
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({ days: { '1': { root: 'root', nodes: { root: {
+                    lineKey: 'root.line',
+                    options: [{ id: 'finish', labelKey: 'root.finish', handoffKey: 'root.done' }],
+                } } } } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Ready?',
+                    'root.finish': 'Finish',
+                    'root.done': 'Done.',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
+                window.__choiceBodies.push(body);
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                window.__routeEnds.push(body);
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.evaluate("() => window.newUserIcebreaker.start(1)")
+    mock_page.wait_for_function(
+        "() => window.__icebreakerBridgeEvents.some((event) => event.action === 'icebreaker_set_choice_prompt')"
+    )
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: { sessionId: prompt.sessionId, choice: 'finish', option: prompt.options[0] },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const day = JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1'];
+            const prompts = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            );
+            return window.__failedFirstHandoffAppend
+                && day.terminalPending === true
+                && day.terminalMessageDelivered === false
+                && prompts.length === 2;
+        }"""
+    )
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: { sessionId: prompt.sessionId, choice: 'finish', option: prompt.options[0] },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+            .days['1'].completed === true"""
+    )
+    result = mock_page.evaluate(
+        """() => ({
+            messages: window.__localChatMessages.slice(),
+            choices: window.__choiceBodies.map((body) => body.choice),
+            routeEndCount: window.__routeEnds.length,
+        })"""
+    )
+    assert result == {
+        "messages": ["Ready?", "Finish", "Done."],
+        "choices": ["finish", "finish"],
+        "routeEndCount": 1,
+    }
+
+
+@pytest.mark.frontend
 def test_interrupted_icebreaker_does_not_restore_without_managed_rebuild_marker(mock_page: Page):
     _bootstrap_page(
         mock_page,

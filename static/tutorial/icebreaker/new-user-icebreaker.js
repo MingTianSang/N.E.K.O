@@ -1211,9 +1211,10 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        if (role === 'assistant' && targetSession && meta && meta.handoff === true) {
+        var isTerminalHandoff = role === 'assistant' && targetSession && meta && meta.handoff === true;
+        if (isTerminalHandoff && !shouldRenderIcebreakerOnLocalChatHost()) {
             // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
-            // 若发生在后续 /context 等待中则不会重复投递已经广播的气泡。
+            // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
             markDay(targetSession.day, {
                 terminalMessageDelivered: true,
                 updatedAt: Date.now()
@@ -1245,6 +1246,12 @@
                 return host.appendMessage(message);
             }).then(function (result) {
                 if (!result) return result;
+                if (isTerminalHandoff) {
+                    markDay(targetSession.day, {
+                        terminalMessageDelivered: true,
+                        updatedAt: Date.now()
+                    });
+                }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
                     finalizeIcebreakerAssistantSubtitleTranslation(role, message);

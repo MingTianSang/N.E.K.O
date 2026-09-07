@@ -1206,6 +1206,14 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert runtime.index("broadcastIcebreakerAppendMessage(message);") < runtime.index(
         "terminalMessageDelivered: true"
     )
+    append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
+        "function speakViaProjectTts",
+        1,
+    )[0]
+    assert "if (isTerminalHandoff && !shouldRenderIcebreakerOnLocalChatHost())" in append_message
+    assert append_message.index("if (!result) return result;") < append_message.index(
+        "if (isTerminalHandoff)"
+    )
     assert "if (entry.terminalChoiceRecorded === true)" in runtime
     retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
         "function completeWithHandoff",
