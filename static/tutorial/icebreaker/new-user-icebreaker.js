@@ -571,7 +571,9 @@
         var routeMatchesRelease = state.icebreaker_active === true
             && String(state.session_id || '') === String(entry.sessionId || '')
             && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
-        broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
+        if (state.icebreaker_active !== true || routeMatchesRelease) {
+            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
+        }
         var cleanupPromise = routeMatchesRelease
             ? endIcebreakerRoute({
                 sessionId: String(entry.sessionId || ''),
@@ -588,7 +590,7 @@
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
-            return false;
+            return true;
         });
     }
 

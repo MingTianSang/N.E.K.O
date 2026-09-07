@@ -1117,6 +1117,11 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "routeMatchesRelease" in release_cleanup
     assert "endIcebreakerRoute({" in release_cleanup
     assert "releasePending: false" in release_cleanup
+    assert "if (state.icebreaker_active !== true || routeMatchesRelease)" in release_cleanup
+    assert release_cleanup.index("if (state.icebreaker_active !== true || routeMatchesRelease)") < release_cleanup.index(
+        "broadcastIcebreakerClearChoicePromptSource"
+    )
+    assert "return true;" in release_cleanup
     assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);" in restore
     assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
