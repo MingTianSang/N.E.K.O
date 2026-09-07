@@ -11,6 +11,7 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
+    var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -31,6 +32,7 @@
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
     var contextAppendPromise = Promise.resolve();
+    var useDirectMutationHeadersForRestore = false;
     var freeTextState = freeTextRuntime && typeof freeTextRuntime.createRuntimeStateStore === 'function'
         ? freeTextRuntime.createRuntimeStateStore()
         : null;
@@ -91,16 +93,7 @@
         return '/api/config/page_config' + suffix;
     }
 
-    function getLocalMutationHeaders() {
-        var headers = { 'Content-Type': 'application/json' };
-        var security = window.nekoLocalMutationSecurity;
-        if (security && typeof security.getMutationHeaders === 'function') {
-            return Promise.resolve(security.getMutationHeaders()).then(function (mutationHeaders) {
-                return Object.assign(headers, mutationHeaders || {});
-            }).catch(function () {
-                return headers;
-            });
-        }
+    function fetchLocalMutationHeadersDirectly(headers) {
         return fetch(getPageConfigUrl(), {
             credentials: 'same-origin',
             cache: 'no-store'
@@ -117,9 +110,22 @@
         });
     }
 
+    function getLocalMutationHeaders() {
+        var headers = { 'Content-Type': 'application/json' };
+        var security = window.nekoLocalMutationSecurity;
+        if (!useDirectMutationHeadersForRestore && security && typeof security.getMutationHeaders === 'function') {
+            return Promise.resolve(security.getMutationHeaders()).then(function (mutationHeaders) {
+                return Object.assign(headers, mutationHeaders || {});
+            }).catch(function () {
+                return headers;
+            });
+        }
+        return fetchLocalMutationHeadersDirectly(headers);
+    }
+
     function refreshLocalMutationHeaders() {
         var security = window.nekoLocalMutationSecurity;
-        if (security && typeof security.refreshToken === 'function') {
+        if (!useDirectMutationHeadersForRestore && security && typeof security.refreshToken === 'function') {
             return Promise.resolve(security.refreshToken()).then(function () {
                 return getLocalMutationHeaders();
             }).catch(function () {
@@ -201,6 +207,9 @@
         return postIcebreakerRoute('/route/end', session, {
             reason: reason || 'icebreaker_complete',
             postgameProactive: { enabled: false }
+        }).then(function (ended) {
+            if (!ended) session.routeEnded = false;
+            return ended;
         });
     }
 
@@ -420,8 +429,10 @@
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
         if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
-        return withRestoreWaitTimeout(ready, true, 'page config').then(function (result) {
-            return result !== false;
+        var timeoutSentinel = {};
+        return withRestoreWaitTimeout(ready, timeoutSentinel, 'page config').then(function (result) {
+            if (result === timeoutSentinel) useDirectMutationHeadersForRestore = true;
+            return true;
         });
     }
 
@@ -856,7 +867,7 @@
         // 与 /context 同款：缓存的 local-mutation token 过期（如后端重启而页面常驻）时，
         // 403 csrf_validation_failed 不当普通失败丢弃，刷新 token 后重试一次，避免静默漏记。
         function postChoiceWithHeaders(headers, allowRetry) {
-            return fetch(ICEBREAKER_API_BASE + '/choice', {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -865,7 +876,9 @@
                 // body 仅 ~200 字节，远低于 keepalive 的 64KB 上限。
                 keepalive: true,
                 body: JSON.stringify(body)
-            }).then(function (response) {
+            };
+            if (info.signal) requestOptions.signal = info.signal;
+            return fetch(ICEBREAKER_API_BASE + '/choice', requestOptions).then(function (response) {
                 if (allowRetry && response.status === 403) {
                     return response.clone().json().catch(function () {
                         return null;
@@ -1412,6 +1425,31 @@
         });
     }
 
+    function waitForTerminalChoiceWrite(writePromise, controller) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                if (controller && typeof controller.abort === 'function') controller.abort();
+                console.warn('[NewUserIcebreaker] choice persistence timed out before handoff');
+                resolve(false);
+            }, TERMINAL_CHOICE_WRITE_MAX_WAIT_MS);
+            Promise.resolve(writePromise).then(function (result) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(result);
+            }).catch(function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] choice persistence failed before handoff:', error);
+                resolve(false);
+            });
+        });
+    }
+
     function completeWithHandoff(option, terminalChoiceWritePromise) {
         var session = activeSession;
         if (!session) return Promise.resolve(false);
@@ -1448,24 +1486,25 @@
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
                 return Promise.resolve(p).catch(function () {});
             });
-            return Promise.all([
-                Promise.resolve(terminalChoiceWritePromise),
-                Promise.all(pendingWrites)
-            ]).then(function (results) {
-                if (results[0] !== true) return false;
-                markDay(day, {
-                    started: true,
-                    completed: true,
-                    completedAt: Date.now(),
-                    terminalPending: false,
-                    lanlanName: session.lanlanName,
-                    sessionId: sessionId,
-                    nodeId: nodeId,
-                    pendingNodeId: '',
-                    updatedAt: Date.now()
-                });
-                return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {
-                    return true;
+            return waitForTerminalChoiceWrite(terminalChoiceWritePromise, session.terminalChoiceWriteController).then(function (recorded) {
+                if (recorded !== true) return false;
+                return waitForTerminalChoiceWrite(Promise.all(pendingWrites)).then(function (allWritesSettled) {
+                    if (allWritesSettled === false) return false;
+                    return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {
+                        if (!routeEnded) return false;
+                        markDay(day, {
+                            started: true,
+                            completed: true,
+                            completedAt: Date.now(),
+                            terminalPending: false,
+                            lanlanName: session.lanlanName,
+                            sessionId: sessionId,
+                            nodeId: nodeId,
+                            pendingNodeId: '',
+                            updatedAt: Date.now()
+                        });
+                        return true;
+                    });
                 });
             });
         }).then(function (completed) {
@@ -1486,6 +1525,10 @@
     function advanceWithChoice(session, option, choice, label, choiceNodeId) {
         if (!session || activeSession !== session || !option) return Promise.resolve(null);
         var isHandoffChoice = !!option.handoffKey;
+        var terminalChoiceWriteController = isHandoffChoice && typeof AbortController === 'function'
+            ? new AbortController()
+            : null;
+        session.terminalChoiceWriteController = terminalChoiceWriteController;
         setFreeTextDerailStreak(session, choiceNodeId, 0);
         // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
         // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
@@ -1497,7 +1540,8 @@
             label: label,
             handoff: isHandoffChoice,
             completed: isHandoffChoice,
-            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1),
+            signal: terminalChoiceWriteController ? terminalChoiceWriteController.signal : null
         });
         (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
         if (option.next) {

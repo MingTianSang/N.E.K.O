@@ -5537,7 +5537,7 @@ def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(m
             window.pageConfigReady = new Promise(function(resolve) {
                 window.__resolveIcebreakerPageConfig = function() {
                     window.appState.lanlan_name = 'yui';
-                    resolve({ success: true, lanlan_name: 'yui' });
+                    resolve(false);
                 };
             });
             window.nekoLocalMutationSecurity = {
@@ -5713,6 +5713,7 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
             window.__NEKO_MULTI_WINDOW__ = true;
             window.__icebreakerBridgeEvents = [];
             window.__icebreakerRouteEnds = [];
+            window.__terminalChoiceCount = 0;
             window.nekoElectronIcebreakerBridge = {
                 send: function(message) {
                     window.__icebreakerBridgeEvents.push(message);
@@ -5758,6 +5759,10 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
             }
             if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
                 window.__terminalChoiceRequest = body;
+                window.__terminalChoiceCount += 1;
+                if (window.__terminalChoiceCount > 1) {
+                    return jsonResponse({ ok: true });
+                }
                 return new Promise(function(resolve) {
                     window.__resolveTerminalChoice = function() {
                         resolve(jsonResponse({ ok: true }));
@@ -5769,7 +5774,7 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
             }
             if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
                 window.__icebreakerRouteEnds.push(body);
-                return jsonResponse({ ok: true });
+                return jsonResponse({ ok: window.__icebreakerRouteEnds.length > 1 });
             }
         """,
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
@@ -5816,7 +5821,34 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
     mock_page.wait_for_function(
         """() => {
             const store = JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'));
-            return store.days['1'].completed === true && window.__icebreakerRouteEnds.length === 1;
+            const prompts = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            );
+            return store.days['1'].completed === false
+                && store.days['1'].terminalPending === true
+                && window.__icebreakerRouteEnds.length === 1
+                && prompts.length === 2;
+        }"""
+    )
+
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: {
+                    sessionId: prompt.sessionId,
+                    choice: 'finish',
+                    option: prompt.options[0],
+                },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const store = JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'));
+            return store.days['1'].completed === true && window.__icebreakerRouteEnds.length === 2;
         }"""
     )
     completed = mock_page.evaluate(
