@@ -591,19 +591,29 @@
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_missing_lanlan');
             }
 
-            // 恢复时换一个 session id 并重新激活 route。浏览器普通 reload 的旧页面可能
-            // 还有迟到的 /route/end；新 id 能让后端把它判为 stale，避免刚恢复就被旧请求关掉。
+            // 后端仍持有同一 route 时复用原 session：窗口重建前已发出的 choice/context
+            // 仍可通过 active-session 校验。旧 route 已结束时才换 id，隔离旧页面迟到的 end。
+            var reuseActiveRoute = snapshot.matchesActiveRoute === true;
             var session = {
                 day: snapshot.day,
                 dayConfig: snapshot.dayConfig,
                 localeData: localeData,
                 nodeId: snapshot.nodeId,
                 lanlanName: lanlanName,
-                sessionId: makeIcebreakerSessionId(snapshot.day)
+                sessionId: reuseActiveRoute
+                    ? String(snapshot.entry.sessionId || '')
+                    : makeIcebreakerSessionId(snapshot.day)
             };
-            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
-            return startIcebreakerRoute(session).then(function (started) {
+            var activationPromise = reuseActiveRoute
+                ? Promise.resolve(true)
+                : startIcebreakerRoute(session);
+            return activationPromise.then(function (started) {
                 if (!started) return false;
+                if (!reuseActiveRoute) {
+                    // 只有新 route 已确认激活后才清旧 prompt。瞬时启动失败时保留重放控件，
+                    // 避免一次性 bootstrap 把用户留在没有选择入口的页面。
+                    broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
+                }
                 activeSession = session;
                 markDay(session.day, {
                     started: true,
@@ -2052,11 +2062,26 @@
                 if (!started) return false;
                 activeSession = nextSession;
                 clearPendingGuideEndStateDay(dayKey);
+                // route 激活成功后立即写入 root 身份；deliverNode 仍在等待 loading/context/host
+                // 时发生 managed rebuild，也能由 bootstrap 识别为未完成会话。
+                markDay(dayKey, {
+                    started: true,
+                    completed: false,
+                    lanlanName: nextSession.lanlanName,
+                    sessionId: nextSession.sessionId,
+                    nodeId: dayConfig.root,
+                    pendingNodeId: '',
+                    updatedAt: Date.now()
+                });
                 return deliverNode(dayConfig.root).then(function (delivered) {
                     if (delivered) return true;
                     if (activeSession === nextSession) {
                         activeSession = null;
                     }
+                    markDay(dayKey, {
+                        started: false,
+                        updatedAt: Date.now()
+                    });
                     return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
                         return false;
                     });

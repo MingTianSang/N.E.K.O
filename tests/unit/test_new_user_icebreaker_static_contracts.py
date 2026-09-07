@@ -1039,8 +1039,16 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded) return false;" not in restore
-    assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
-    assert "return startIcebreakerRoute(session).then(function (started)" in restore
+    assert "var reuseActiveRoute = snapshot.matchesActiveRoute === true;" in restore
+    assert "? String(snapshot.entry.sessionId || '')" in restore
+    assert ": makeIcebreakerSessionId(snapshot.day)" in restore
+    assert "var activationPromise = reuseActiveRoute" in restore
+    assert "? Promise.resolve(true)" in restore
+    assert ": startIcebreakerRoute(session);" in restore
+    assert "return activationPromise.then(function (started)" in restore
+    assert restore.index("if (!started) return false;") < restore.index(
+        "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
+    )
     assert "activeSession = session;" in restore
     assert "var presentationPromise" in restore
     assert ": setChoicePrompt(" in restore
@@ -1079,6 +1087,15 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+
+    start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+    root_snapshot = "markDay(dayKey, {"
+    assert root_snapshot in start_for_day
+    assert start_for_day.index(root_snapshot) < start_for_day.index("return deliverNode(dayConfig.root)")
+    assert "started: false" in start_for_day
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
