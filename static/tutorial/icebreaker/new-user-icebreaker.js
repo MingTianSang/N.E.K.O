@@ -11,6 +11,9 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
+    var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;
+    var ROUTE_START_RESTORE_RETRY_MS = 300;
+    var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
@@ -467,7 +470,14 @@
         if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
         var timeoutSentinel = {};
         return withRestoreWaitTimeout(ready, timeoutSentinel, 'page config').then(function (result) {
-            if (result === timeoutSentinel) useDirectMutationHeadersForRestore = true;
+            if (result === timeoutSentinel) {
+                useDirectMutationHeadersForRestore = true;
+                Promise.resolve(ready).then(function () {
+                    useDirectMutationHeadersForRestore = false;
+                }).catch(function () {});
+            } else {
+                useDirectMutationHeadersForRestore = false;
+            }
             return true;
         });
     }
@@ -521,10 +531,12 @@
             var dayConfig = scripts && scripts.days ? scripts.days[day] : null;
             var nodeId = String((entry && entry.nodeId) || '');
             var entryLanlanName = String((entry && entry.lanlanName) || '');
+            var updatedAt = Number(entry && entry.updatedAt);
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (entry.releasePending === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName !== currentLanlanName) return;
+            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
@@ -634,6 +646,18 @@
         });
     }
 
+    function startIcebreakerRouteForRestore(session, attempt) {
+        var attemptIndex = Number(attempt || 0);
+        return startIcebreakerRoute(session).then(function (started) {
+            if (started || attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) return started;
+            return new Promise(function (resolve) {
+                window.setTimeout(resolve, ROUTE_START_RESTORE_RETRY_MS);
+            }).then(function () {
+                return startIcebreakerRouteForRestore(session, attemptIndex + 1);
+            });
+        });
+    }
+
     function restoreInterruptedSession() {
         if (!isManagedDesktopReload()) return Promise.resolve(false);
         if (activeSession) return Promise.resolve(true);
@@ -704,7 +728,7 @@
             });
             var activationPromise = reuseActiveRoute
                 ? Promise.resolve(true)
-                : startIcebreakerRoute(session);
+                : startIcebreakerRouteForRestore(session);
             return activationPromise.then(function (started) {
                 if (!started) return false;
                 if (!reuseActiveRoute) {
@@ -1506,7 +1530,11 @@
 
     function isTutorialBlockingIcebreaker() {
         try {
-            if (window.isInTutorial || window.isNekoHomeTutorialPending === true) return true;
+            if (
+                window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false
+                || window.isInTutorial
+                || window.isNekoHomeTutorialPending === true
+            ) return true;
         } catch (_) {}
         try {
             var manager = window.universalTutorialManager;
@@ -1641,12 +1669,12 @@
                 || String(entry.nodeId || '') !== String(choiceNodeId || '')) {
             return null;
         }
+        if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);
         if (entry.terminalChoiceRecorded === true) {
             return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId).then(function (completed) {
                 return completed ? finishActiveHandoff(session) : false;
             });
         }
-        if (String(entry.terminalChoice || '') !== String(choice || '')) return null;
 
         // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
         // 已成功项会被去重，失败项得到补写；不再追加用户气泡或 handoff 台词。
@@ -1689,6 +1717,20 @@
         var sessionId = session.sessionId;
         var handoffSpeechPromise = Promise.resolve(false);
         var handoffDelivered = false;
+        markDay(day, {
+            started: true,
+            completed: false,
+            terminalPending: true,
+            terminalPendingAt: Date.now(),
+            terminalChoiceRecorded: false,
+            terminalChoice: String(option.id || ''),
+            terminalChoiceSeq: Number(session.choiceSeq) || 0,
+            lanlanName: session.lanlanName,
+            sessionId: sessionId,
+            nodeId: nodeId,
+            pendingNodeId: '',
+            updatedAt: Date.now()
+        });
         return appendAssistantChatMessage(text, {
             day: day,
             nodeId: nodeId,
@@ -1697,20 +1739,6 @@
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return false;
             handoffDelivered = true;
-            markDay(day, {
-                started: true,
-                completed: false,
-                terminalPending: true,
-                terminalPendingAt: Date.now(),
-                terminalChoiceRecorded: false,
-                terminalChoice: String(option.id || ''),
-                terminalChoiceSeq: Number(session.choiceSeq) || 0,
-                lanlanName: session.lanlanName,
-                sessionId: sessionId,
-                nodeId: nodeId,
-                pendingNodeId: '',
-                updatedAt: Date.now()
-            });
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');

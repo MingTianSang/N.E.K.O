@@ -915,6 +915,7 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
     assert "function hasVisibleTutorialBlocker(selectors)" in runtime
     assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
+    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false" in runtime
     assert "window.isInTutorial" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
@@ -1058,7 +1059,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert ": makeIcebreakerSessionId(snapshot.day)" in restore
     assert "var activationPromise = reuseActiveRoute" in restore
     assert "? Promise.resolve(true)" in restore
-    assert ": startIcebreakerRoute(session);" in restore
+    assert ": startIcebreakerRouteForRestore(session);" in restore
+    assert "var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;" in runtime
+    assert "return startIcebreakerRouteForRestore(session, attemptIndex + 1);" in runtime
     assert "return activationPromise.then(function (started)" in restore
     assert restore.index("if (!started) return false;") < restore.index(
         "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
@@ -1071,6 +1074,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert ": setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
     assert "var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;" in runtime
+    assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
+    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
     wait_helper = runtime.split("function withRestoreWaitTimeout", 1)[1].split(
         "function waitForPageConfigForRestore",
         1,
@@ -1080,7 +1085,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "resolve(fallbackValue);" in wait_helper
     assert "var timeoutSentinel = {};" in runtime
     assert "withRestoreWaitTimeout(ready, timeoutSentinel, 'page config')" in runtime
-    assert "if (result === timeoutSentinel) useDirectMutationHeadersForRestore = true;" in runtime
+    assert "useDirectMutationHeadersForRestore = true;" in runtime
+    assert "useDirectMutationHeadersForRestore = false;" in runtime
     assert "return true;" in runtime.split("function waitForPageConfigForRestore", 1)[1].split(
         "function canRestoreFromManagedRebuild",
         1,
@@ -1172,6 +1178,8 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "terminalPending: true" in handoff
     assert handoff.index("terminalPending: true") < handoff.index(
+        "return appendAssistantChatMessage(text"
+    ) < handoff.index(
         "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
     ) < handoff.index("return completeHandoffRoute(session, day, nodeId, sessionId);")
     assert "terminalPending: false" in runtime
@@ -1194,9 +1202,9 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
         "function completeWithHandoff",
         1,
     )[0]
-    assert retry_handoff.index("if (entry.terminalChoiceRecorded === true)") < retry_handoff.index(
-        "if (String(entry.terminalChoice || '') !== String(choice || '')) return null;"
-    )
+    assert retry_handoff.index(
+        "if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);"
+    ) < retry_handoff.index("if (entry.terminalChoiceRecorded === true)")
     advance = runtime.split("function advanceWithChoice", 1)[1].split(
         "function handleChoice",
         1,
