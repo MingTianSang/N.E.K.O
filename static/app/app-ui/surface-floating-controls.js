@@ -17,8 +17,32 @@
     window.appUi = window.appUi || {};
     const I = window.__appUiParts || (window.__appUiParts = {});
 
+    I.beginNekoCatReturnLifecycle = function beginNekoCatReturnLifecycle() {
+        if (I.nekoCatReturnLifecycle) return null;
+        let resolveLifecycle;
+        const lifecycle = {
+            settled: false,
+            promise: new Promise((resolve) => {
+                resolveLifecycle = resolve;
+            })
+        };
+        lifecycle.resolve = resolveLifecycle;
+        I.nekoCatReturnLifecycle = lifecycle;
+        return lifecycle;
+    };
+
+    I.finishNekoCatReturnLifecycle = function finishNekoCatReturnLifecycle(lifecycle, restored) {
+        if (!lifecycle || lifecycle.settled) return;
+        lifecycle.settled = true;
+        if (I.nekoCatReturnLifecycle === lifecycle) {
+            I.nekoCatReturnLifecycle = null;
+        }
+        lifecycle.resolve(restored === true);
+    };
+
     I.returnFromGoodbye = function returnFromGoodbye(options = {}) {
         options = options && typeof options === 'object' ? options : {};
+        const activeReturnLifecycle = I.nekoCatReturnLifecycle;
         const goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
             ? window.isNekoGoodbyeModeActive()
             : !!(
@@ -26,7 +50,7 @@
                 || (window.vrmManager && window.vrmManager._goodbyeClicked)
                 || (window.mmdManager && window.mmdManager._goodbyeClicked)
             );
-        if (!goodbyeActive) return Promise.resolve(true);
+        if (!goodbyeActive && !activeReturnLifecycle) return Promise.resolve(true);
 
         const visibleReturnContainer = typeof I.getVisibleIdleReturnBallContainer === 'function'
             ? I.getVisibleIdleReturnBallContainer()
@@ -66,7 +90,23 @@
                 finish(false);
             }, timeoutMs);
 
+            const joinActiveReturnLifecycle = () => {
+                const lifecycle = I.nekoCatReturnLifecycle;
+                if (!lifecycle || !lifecycle.promise || typeof lifecycle.promise.then !== 'function') {
+                    return false;
+                }
+                lifecycle.promise.then(
+                    (restored) => finish(restored === true),
+                    () => finish(false)
+                );
+                return true;
+            };
+
             const dispatchReturnWhenReady = async () => {
+                // manager flags 会在完整 return 结束前被清除。若已有标准返回链，
+                // 必须加入其生命周期，不能把“标志已清除”误判成恢复已完成。
+                if (joinActiveReturnLifecycle()) return;
+
                 // goodbye 标志会在 model-to-cat 动画开始时立即置位，但普通 return
                 // handler 会忽略动画尚未结束时的点击。等待同一个 transition token
                 // 释放后再派发，避免一次合法的托盘点击白等 15 秒后失败。
@@ -81,6 +121,9 @@
                     }
                 }
                 if (settled) return;
+
+                // 等待离开动画期间，用户也可能先触发标准返回链。
+                if (joinActiveReturnLifecycle()) return;
 
                 // 若另一条“请她回来”链已经在执行，只等待上面安装好的 terminal
                 // event，不能再次派发造成两条恢复流程并发。
@@ -1511,6 +1554,14 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            const returnLifecycle = I.beginNekoCatReturnLifecycle();
+            if (!returnLifecycle) {
+                console.log('[App] 请她回来流程已在执行，忽略重复事件');
+                return;
+            }
+            let returnTerminalPublished = false;
+            let returnAbortReason = 'return-incomplete';
+            try {
             const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
             if (hadPendingGoodbyeReset) {
                 clearTimeout(window._goodbyeResetClickTimerId);
@@ -1528,15 +1579,7 @@
                 if (hadPendingGoodbyeReset) {
                     runGoodbyeResetClickIfActive('return-viewport-blocked');
                 }
-                // 这次恢复尝试已经结束；程序化恢复可能正在加入同一条
-                // cat-to-model 链，必须收到明确的终止信号，不能只能等超时。
-                window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
-                    detail: {
-                        source: event && event.type ? event.type : 'return-click',
-                        reason: 'model-viewport-not-ready',
-                        timestamp: Date.now()
-                    }
-                }));
+                returnAbortReason = 'model-viewport-not-ready';
                 return;
             }
             let hadCatCycle = false;
@@ -1568,8 +1611,6 @@
                     timestamp: Date.now()
                 }
             }));
-            let returnTerminalPublished = false;
-            try {
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -2054,11 +2095,12 @@
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
             } finally {
+                I.finishNekoCatReturnLifecycle(returnLifecycle, returnTerminalPublished);
                 if (!returnTerminalPublished) {
                     window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
                         detail: {
                             source: event && event.type ? event.type : 'return-click',
-                            reason: 'return-incomplete',
+                            reason: returnAbortReason,
                             timestamp: Date.now()
                         }
                     }));

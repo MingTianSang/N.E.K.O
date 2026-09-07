@@ -26,6 +26,7 @@ function createReturnHarness({
   subType = '',
   visibleReturnType = '',
   transitionDirection = '',
+  returnInProgress = false,
 } = {}) {
   const listeners = new Map();
   const dispatched = [];
@@ -39,6 +40,13 @@ function createReturnHarness({
     });
   }
   const transition = transitionDirection ? createDeferred() : null;
+  const returnLifecycle = returnInProgress ? createDeferred() : null;
+  if (returnLifecycle) {
+    parts.nekoCatReturnLifecycle = {
+      settled: false,
+      promise: returnLifecycle.promise,
+    };
+  }
   if (transition) {
     parts.nekoModelCatTransitionActive = {
       direction: transitionDirection,
@@ -119,6 +127,11 @@ function createReturnHarness({
       parts.nekoModelCatTransitionActive = null;
       transition.resolve({ completed: true, direction: transitionDirection });
     },
+    completeReturnLifecycle(restored) {
+      assert.ok(returnLifecycle, 'the harness has no active return lifecycle');
+      parts.nekoCatReturnLifecycle = null;
+      returnLifecycle.resolve(restored === true);
+    },
   };
 }
 
@@ -127,6 +140,22 @@ test('programmatic goodbye return is a no-op when the model is already present',
   harness.setGoodbyeActive(false);
   assert.equal(await harness.window.appUi.returnFromGoodbye(), true);
   assert.equal(harness.dispatched.length, 0);
+});
+
+test('canonical return lifecycle admits only one handler until it settles', async () => {
+  const harness = createReturnHarness();
+  const parts = harness.window.__appUiParts;
+  const first = parts.beginNekoCatReturnLifecycle();
+
+  assert.ok(first);
+  assert.equal(parts.beginNekoCatReturnLifecycle(), null);
+  parts.finishNekoCatReturnLifecycle(first, false);
+  assert.equal(await first.promise, false);
+
+  const next = parts.beginNekoCatReturnLifecycle();
+  assert.ok(next);
+  parts.finishNekoCatReturnLifecycle(next, true);
+  assert.equal(await next.promise, true);
 });
 
 for (const [modelType, subType, expectedEvent] of [
@@ -190,15 +219,28 @@ test('programmatic return joins an existing cat-to-model transition without redi
   assert.equal(await result, true);
 });
 
-test('blocked viewport aborts joined programmatic returns instead of leaving them to time out', () => {
-  const guardStart = surfaceSource.indexOf('if (!preReturnViewportReady.ready) {');
-  const guardEnd = surfaceSource.indexOf('let hadCatCycle = false;', guardStart);
-  const blockedViewportGuard = surfaceSource.slice(guardStart, guardEnd);
+test('programmatic return joins the active return lifecycle after goodbye flags are cleared', async () => {
+  const harness = createReturnHarness({ returnInProgress: true });
+  harness.setGoodbyeActive(false);
+  const result = harness.window.appUi.returnFromGoodbye({ source: 'reset-to-default-model' });
+  await Promise.resolve();
 
-  assert.notEqual(guardStart, -1);
-  assert.notEqual(guardEnd, -1);
-  assert.match(blockedViewportGuard, /new CustomEvent\('neko:cat-return-abort'/);
-  assert.match(blockedViewportGuard, /reason:\s*'model-viewport-not-ready'/);
+  assert.equal(harness.dispatched.length, 0);
+  harness.completeReturnLifecycle(true);
+  assert.equal(await result, true);
+});
+
+test('the canonical return lifecycle serializes handlers and aborts a blocked viewport', () => {
+  const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
+  const lifecycleStart = surfaceSource.indexOf('const returnLifecycle = I.beginNekoCatReturnLifecycle();', handlerStart);
+  const viewportWait = surfaceSource.indexOf('await I.ensureModelViewportReadyBeforeShowCurrentModel()', handlerStart);
+  const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
+  const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
+
+  assert.ok(handlerStart < lifecycleStart && lifecycleStart < viewportWait);
+  assert.match(handlerSource, /if \(!returnLifecycle\) \{[\s\S]*?return;/);
+  assert.match(handlerSource, /returnAbortReason = 'model-viewport-not-ready';/);
+  assert.match(handlerSource, /new CustomEvent\('neko:cat-return-abort'/);
 });
 
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {

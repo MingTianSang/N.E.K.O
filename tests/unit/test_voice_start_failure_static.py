@@ -1085,9 +1085,9 @@ def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
     brace = source.index("{", start)
     handler = source[start : _balanced_js_block_end(source, brace) + 1]
 
-    commit_index = handler.index("new CustomEvent('neko:cat-return-commit'")
-    guard_index = handler.index("let returnTerminalPublished = false;", commit_index)
+    guard_index = handler.index("let returnTerminalPublished = false;")
     try_index = handler.index("try {", guard_index)
+    commit_index = handler.index("new CustomEvent('neko:cat-return-commit'", try_index)
     failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
     finally_index = handler.index("} finally {", failed_model_return)
     abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
@@ -1102,7 +1102,7 @@ def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
     finally_brace = handler.index("{", finally_index)
     finally_end = _balanced_js_block_end(handler, finally_brace)
 
-    assert commit_index < guard_index < try_index < failed_model_return < finally_index < abort_index
+    assert guard_index < try_index < commit_index < failed_model_return < finally_index < abort_index
     assert try_index < complete_index < published_index < finally_index
     assert finally_brace < abort_index <= finally_end
 
