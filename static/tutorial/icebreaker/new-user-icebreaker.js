@@ -549,6 +549,49 @@
         return best;
     }
 
+    function findPendingReleaseSnapshot(lanlanName) {
+        var store = readStore();
+        var days = store && store.days && typeof store.days === 'object' ? store.days : {};
+        var expectedLanlanName = String(lanlanName || '');
+        var best = null;
+        Object.keys(days).forEach(function (day) {
+            var entry = days[day];
+            if (!entry || entry.releasePending !== true || entry.completed === true) return;
+            if (String(entry.lanlanName || '') !== expectedLanlanName) return;
+            if (!best || Number(entry.updatedAt || 0) > Number(best.entry.updatedAt || 0)) {
+                best = { day: day, entry: entry };
+            }
+        });
+        return best;
+    }
+
+    function completePendingRelease(routeState, snapshot, lanlanName) {
+        var state = routeState && typeof routeState === 'object' ? routeState : {};
+        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
+        var routeMatchesRelease = state.icebreaker_active === true
+            && String(state.session_id || '') === String(entry.sessionId || '')
+            && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
+        broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
+        var cleanupPromise = routeMatchesRelease
+            ? endIcebreakerRoute({
+                sessionId: String(entry.sessionId || ''),
+                lanlanName: String(lanlanName || '')
+            }, 'icebreaker_free_text_release_restore')
+            : Promise.resolve(true);
+        return cleanupPromise.then(function (cleaned) {
+            if (!cleaned) return false;
+            markDay(snapshot.day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                releasePending: false,
+                releasedByFreeText: true,
+                updatedAt: Date.now()
+            });
+            return false;
+        });
+    }
+
     function hasIncompleteStoredSession(lanlanName) {
         var store = readStore();
         var days = store && store.days && typeof store.days === 'object' ? store.days : {};
@@ -559,7 +602,6 @@
                 entry
                 && entry.started === true
                 && entry.completed !== true
-                && entry.releasePending !== true
                 && entry.sessionId
                 && entry.nodeId
                 && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
@@ -615,6 +657,10 @@
             if (!restoreLanlanName) {
                 retryRestoreWhenPageConfigSettles();
                 return false;
+            }
+            var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);
+            if (pendingRelease) {
+                return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);
             }
             var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
             if (!snapshot) {

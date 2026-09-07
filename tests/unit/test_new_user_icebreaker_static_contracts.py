@@ -1105,10 +1105,20 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
     assert "if (entry.releasePending === true) return;" in snapshot_matcher
-    assert "entry.releasePending !== true" in runtime.split(
+    assert "entry.releasePending !== true" not in runtime.split(
         "function hasIncompleteStoredSession",
         1,
     )[1].split("function makeIcebreakerSessionId", 1)[0]
+    assert "function findPendingReleaseSnapshot(lanlanName)" in runtime
+    release_cleanup = runtime.split("function completePendingRelease", 1)[1].split(
+        "function hasIncompleteStoredSession",
+        1,
+    )[0]
+    assert "routeMatchesRelease" in release_cleanup
+    assert "endIcebreakerRoute({" in release_cleanup
+    assert "releasePending: false" in release_cleanup
+    assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);" in restore
+    assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
     start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
         "function startFromEndState(endState)",
