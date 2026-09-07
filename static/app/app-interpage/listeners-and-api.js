@@ -363,6 +363,21 @@
         var returnedFromGoodbye = false;
         var defaultModelPersisted = false;
         try {
+            reloadModel = typeof I.handleModelReload === 'function'
+                ? I.handleModelReload
+                : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
+            // Fail-fast when there is no character context. This happens if the
+            // tray IPC fires before `neko:config-injected`, or on a sub-window
+            // that never received the injection. Without lanlan_name we cannot
+            // PUT the persistence change, and handleModelReload('') would
+            // simply re-fetch the unchanged config — masking a no-op as success.
+            if (!lanlanName) {
+                console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
+                throw new Error('missing_lanlan_name');
+            }
+            if (!reloadModel) {
+                throw new Error('model_reload_unavailable');
+            }
             previousModelConfig = window.lanlan_config && typeof window.lanlan_config === 'object'
                 ? Object.assign({}, window.lanlan_config)
                 : null;
@@ -399,11 +414,36 @@
                 } else {
                     previousModelPersistencePayload.model_type = 'live2d';
                     previousModelPersistencePayload.live2d = previousModelConfig.model_path;
+                    // page_config does not expose the saved idle motion. Read the
+                    // authoritative character record before changing it so a
+                    // failed reset can restore both the Live2D binding and motion.
+                    var charactersResp = await fetch('/api/characters');
+                    if (!charactersResp.ok) {
+                        throw new Error('previous_model_config_unavailable');
+                    }
+                    var charactersData = await charactersResp.json();
+                    var previousCharacterData = charactersData
+                        && charactersData['猫娘']
+                        && charactersData['猫娘'][lanlanName];
+                    var previousReservedLive2D = previousCharacterData
+                        && previousCharacterData._reserved
+                        && previousCharacterData._reserved.avatar
+                        && previousCharacterData._reserved.avatar.live2d;
+                    var previousAvatarLive2D = previousCharacterData
+                        && previousCharacterData.avatar
+                        && previousCharacterData.avatar.live2d;
+                    var hasOwn = Object.prototype.hasOwnProperty;
+                    if (previousReservedLive2D && hasOwn.call(previousReservedLive2D, 'idle_animation')) {
+                        previousModelPersistencePayload.live2d_idle_animation = previousReservedLive2D.idle_animation;
+                    } else if (previousCharacterData && hasOwn.call(previousCharacterData, 'live2d_idle_animation')) {
+                        previousModelPersistencePayload.live2d_idle_animation = previousCharacterData.live2d_idle_animation;
+                    } else if (previousAvatarLive2D && hasOwn.call(previousAvatarLive2D, 'idle_animation')) {
+                        previousModelPersistencePayload.live2d_idle_animation = previousAvatarLive2D.idle_animation;
+                    } else {
+                        previousModelPersistencePayload.live2d_idle_animation = null;
+                    }
                 }
             }
-            reloadModel = typeof I.handleModelReload === 'function'
-                ? I.handleModelReload
-                : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
             var visibleReturnBallBeforeReset = document.querySelector(
                 '[id$="-return-button-container"][data-neko-return-visible="true"]'
             );
@@ -412,19 +452,6 @@
                 || (window.__appUiParts && window.__appUiParts.nekoCatReturnLifecycle)
                 || (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive())
             );
-            // Fail-fast when there is no character context. This happens if the
-            // tray IPC fires before `neko:config-injected`, or on a sub-window
-            // that never received the injection. Without lanlan_name we cannot
-            // PUT the persistence change, and handleModelReload('') would
-            // simply re-fetch the unchanged config — masking a no-op as success.
-            if (!lanlanName) {
-                console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
-                throw new Error('missing_lanlan_name');
-            }
-            if (!reloadModel) {
-                throw new Error('model_reload_unavailable');
-            }
-
             // “恢复默认模型”的目标固定为内置 Live2D。先退出 goodbye 并恢复
             // Electron Pet 的完整 viewport，但不要重新显示即将被替换的旧模型；
             // 后面的 PUT + handleModelReload 会直接加载目标 Live2D。

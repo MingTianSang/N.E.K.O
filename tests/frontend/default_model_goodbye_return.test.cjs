@@ -360,6 +360,11 @@ test('default-model reset restores the previous runtime model after a failed res
   assert.match(resetSource, /defaultModelPersisted = true/);
   assert.match(resetSource, /if \(defaultModelPersisted && previousModelPersistencePayload\)/);
   assert.match(resetSource, /body: JSON\.stringify\(previousModelPersistencePayload\)/);
+  assert.match(resetSource, /var charactersResp = await fetch\('\/api\/characters'\)/);
+  assert.match(resetSource, /hasOwn\.call\(previousReservedLive2D, 'idle_animation'\)/);
+  assert.match(resetSource, /previousModelPersistencePayload\.live2d_idle_animation = previousReservedLive2D\.idle_animation/);
+  assert.match(resetSource, /previousModelPersistencePayload\.live2d_idle_animation = previousCharacterData\.live2d_idle_animation/);
+  assert.match(resetSource, /previousModelPersistencePayload\.live2d_idle_animation = previousAvatarLive2D\.idle_animation/);
   assert.ok(
     resetSource.indexOf('body: JSON.stringify(previousModelPersistencePayload)') < rollbackCall,
     'persistent binding must be rolled back before the previous runtime model is restored',
