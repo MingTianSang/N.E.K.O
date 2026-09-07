@@ -16,6 +16,10 @@ const modelDisplaySource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
   'utf8',
 );
+const pngtuberSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/pngtuber-core.js'),
+  'utf8',
+);
 
 function createDeferred() {
   let resolve;
@@ -279,6 +283,10 @@ test('return model lookup is cancelled with the shared lifecycle', () => {
   assert.match(modelDisplaySource, /const returnSignal = returnLifecycle && returnLifecycle\.signal/);
   assert.match(modelDisplaySource, /returnSignal \? \{ signal: returnSignal \} : undefined/);
   assert.match(modelDisplaySource, /if \(isReturnCancelled\(\)\) \{[\s\S]*?return false;/);
+  assert.match(modelDisplaySource, /await window\.loadPNGTuberAvatar\([\s\S]*?returnSignal \? \{ signal: returnSignal \} : undefined/);
+  assert.match(pngtuberSource, /async function loadPNGTuberAvatar\(config, options = \{\}\)/);
+  assert.match(pngtuberSource, /const isReturnCancelled = \(\) => !!\(returnSignal && returnSignal\.aborted\)/);
+  assert.match(pngtuberSource, /await this\.setupLayeredAdapter\(\{ config: normalizedConfig, isCurrentLoad, signal \}\)/);
 });
 
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {

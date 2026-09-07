@@ -1072,8 +1072,12 @@
                 I.pendingPngtuberReturnConfig = null;
 
                 if (window.loadPNGTuberAvatar) {
-                    await window.loadPNGTuberAvatar(pngtuberConfig);
+                    await window.loadPNGTuberAvatar(
+                        pngtuberConfig,
+                        returnSignal ? { signal: returnSignal } : undefined
+                    );
                 }
+                if (isReturnCancelled()) return false;
                 if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
                     window.pngtuberManager.show();
                 } else if (pngtuberContainer) {

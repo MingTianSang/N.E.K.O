@@ -878,6 +878,7 @@
 
         async setupLayeredAdapter(options = {}) {
             const config = options.config || this.config;
+            const signal = options.signal || null;
             const isCurrentLoad = typeof options.isCurrentLoad === 'function'
                 ? options.isCurrentLoad
                 : () => true;
@@ -906,7 +907,10 @@
             this.layeredAssetActionActive = false;
             if (config.adapter !== 'layered_canvas_v1' || !config.layered_metadata) return false;
             try {
-                const response = await fetch(config.layered_metadata, { cache: 'no-cache' });
+                const response = await fetch(config.layered_metadata, {
+                    cache: 'no-cache',
+                    ...(signal ? { signal } : {})
+                });
                 if (!isCurrentLoad()) return false;
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
@@ -3626,12 +3630,14 @@
 
         async load(config, options = {}) {
             const loadToken = Number(options.loadToken) || 0;
+            const signal = options.signal || null;
             if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
             if (loadToken) this._latestLifecycleLoadToken = loadToken;
             const loadGeneration = ++this._loadGeneration;
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+                && !(signal && signal.aborted)
             );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
@@ -3641,7 +3647,7 @@
             window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
                 detail: { loadToken }
             }));
-            await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad, signal });
             if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
@@ -4793,19 +4799,27 @@
             });
     }
 
-    async function loadPNGTuberAvatar(config) {
+    async function loadPNGTuberAvatar(config, options = {}) {
         const loadToken = ++pngtuberLoadSequence;
+        const returnSignal = options && options.signal ? options.signal : null;
+        const isReturnCancelled = () => !!(returnSignal && returnSignal.aborted);
         window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
             detail: { loadToken }
         }));
         try {
+            if (isReturnCancelled()) return window.pngtuberManager || null;
             await hideOtherAvatarRuntimesForPNGTuber();
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
+            if (isReturnCancelled()) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
             }
-            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
+            const loaded = await window.pngtuberManager.load(config || {}, {
+                loadToken,
+                signal: returnSignal
+            });
             if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            if (isReturnCancelled()) return window.pngtuberManager;
             if (document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
                 && window._modelManagerCurrentAvatarType !== 'pngtuber') {
@@ -4814,9 +4828,11 @@
             }
             await hideOtherAvatarRuntimesForPNGTuber();
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            if (isReturnCancelled()) return window.pngtuberManager;
             window.pngtuberManager.show();
             await hideOtherAvatarRuntimesForPNGTuber();
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            if (isReturnCancelled()) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
             }));
