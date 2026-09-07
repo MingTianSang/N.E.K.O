@@ -1104,6 +1104,11 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (entry.releasePending === true) return;" in snapshot_matcher
+    assert "entry.releasePending !== true" in runtime.split(
+        "function hasIncompleteStoredSession",
+        1,
+    )[1].split("function makeIcebreakerSessionId", 1)[0]
 
     start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
         "function startFromEndState(endState)",
@@ -1171,6 +1176,13 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "choiceSeq: session.choiceSeq" in advance
     assert "choiceWriteMetas: session.choiceWriteMetas" in advance
+    release = runtime.split("if (decision.action === 'release')", 1)[1].split(
+        "var replyText = decision.reply",
+        1,
+    )[0]
+    assert "releasePending: true" in release
+    assert release.index("releasePending: true") < release.index("var releaseAppend")
+    assert "releasePending: false" in release
 
 
 def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():

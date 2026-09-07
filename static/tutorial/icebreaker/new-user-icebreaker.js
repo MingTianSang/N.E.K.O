@@ -522,6 +522,7 @@
             var nodeId = String((entry && entry.nodeId) || '');
             var entryLanlanName = String((entry && entry.lanlanName) || '');
             if (!entry || entry.started !== true || entry.completed === true) return;
+            if (entry.releasePending === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName !== currentLanlanName) return;
             var candidate = {
@@ -558,6 +559,7 @@
                 entry
                 && entry.started === true
                 && entry.completed !== true
+                && entry.releasePending !== true
                 && entry.sessionId
                 && entry.nodeId
                 && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
@@ -1877,6 +1879,18 @@
         if (decision.action === 'release') {
             var releaseText = decision.reply || getText(localeData, fallback.releaseKey);
             var releaseVoiceKey = fallback.releaseVoiceKey || '';
+            // 用户已明确退出后，先持久化不可恢复状态，再等待消息、语音与 route/end；
+            // managed rebuild 发生在任一 await 中都不会重新绑定旧选项。
+            markDay(day, {
+                started: true,
+                completed: false,
+                releasePending: true,
+                lanlanName: session.lanlanName,
+                sessionId: sessionId,
+                nodeId: nodeId,
+                pendingNodeId: '',
+                updatedAt: Date.now()
+            });
             recordFreeTextTurn(session, {
                 userText: info.userText,
                 action: 'release',
@@ -1915,6 +1929,7 @@
                     completedAt: Date.now(),
                     sessionId: sessionId,
                     nodeId: nodeId,
+                    releasePending: false,
                     releasedByFreeText: true
                 });
                 if (activeSession === session) {
