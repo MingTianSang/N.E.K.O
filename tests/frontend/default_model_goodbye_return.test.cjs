@@ -13,7 +13,20 @@ const resetSource = fs.readFileSync(
   'utf8',
 );
 
-function createReturnHarness({ modelType = 'live2d', subType = '', visibleReturnType = '' } = {}) {
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function createReturnHarness({
+  modelType = 'live2d',
+  subType = '',
+  visibleReturnType = '',
+  transitionDirection = '',
+} = {}) {
   const listeners = new Map();
   const dispatched = [];
   let goodbyeActive = true;
@@ -24,6 +37,19 @@ function createReturnHarness({ modelType = 'live2d', subType = '', visibleReturn
     parts.getVisibleIdleReturnBallContainer = () => ({
       id: `${visibleReturnType}-return-button-container`,
     });
+  }
+  const transition = transitionDirection ? createDeferred() : null;
+  if (transition) {
+    parts.nekoModelCatTransitionActive = {
+      direction: transitionDirection,
+      promise: transition.promise,
+    };
+    parts.isNekoModelCatTransitionActive = (direction = '') => {
+      const active = parts.nekoModelCatTransitionActive;
+      return !!(active && (!direction || active.direction === direction));
+    };
+  } else {
+    parts.isNekoModelCatTransitionActive = () => false;
   }
 
   const window = {
@@ -88,6 +114,11 @@ function createReturnHarness({ modelType = 'live2d', subType = '', visibleReturn
     abort() {
       window.dispatchEvent(new CustomEvent('neko:cat-return-abort'));
     },
+    completeTransition() {
+      assert.ok(transition, 'the harness has no active transition');
+      parts.nekoModelCatTransitionActive = null;
+      transition.resolve({ completed: true, direction: transitionDirection });
+    },
   };
 }
 
@@ -129,6 +160,32 @@ test('visible return control wins over a stale configured model type', async () 
   const harness = createReturnHarness({ modelType: 'vrm', visibleReturnType: 'mmd' });
   const result = harness.window.appUi.returnFromGoodbye({ source: 'reset-to-default-model' });
   assert.equal(harness.dispatched[0].type, 'mmd-return-click');
+  harness.complete();
+  assert.equal(await result, true);
+});
+
+test('programmatic return waits for an in-flight model-to-cat transition', async () => {
+  const harness = createReturnHarness({
+    modelType: 'live3d',
+    subType: 'mmd',
+    transitionDirection: 'model-to-cat',
+  });
+  const result = harness.window.appUi.returnFromGoodbye({ source: 'reset-to-default-model' });
+
+  assert.equal(harness.dispatched.length, 0, 'return must not be dropped into the active transition');
+  harness.completeTransition();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.dispatched[0].type, 'mmd-return-click');
+
+  harness.complete();
+  assert.equal(await result, true);
+});
+
+test('programmatic return joins an existing cat-to-model transition without redispatching', async () => {
+  const harness = createReturnHarness({ transitionDirection: 'cat-to-model' });
+  const result = harness.window.appUi.returnFromGoodbye({ source: 'reset-to-default-model' });
+  await Promise.resolve();
+  assert.equal(harness.dispatched.length, 0);
   harness.complete();
   assert.equal(await result, true);
 });

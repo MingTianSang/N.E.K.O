@@ -66,7 +66,26 @@
                 finish(false);
             }, timeoutMs);
 
-            try {
+            const dispatchReturnWhenReady = async () => {
+                // goodbye 标志会在 model-to-cat 动画开始时立即置位，但普通 return
+                // handler 会忽略动画尚未结束时的点击。等待同一个 transition token
+                // 释放后再派发，避免一次合法的托盘点击白等 15 秒后失败。
+                while (!settled && I.isNekoModelCatTransitionActive('model-to-cat')) {
+                    const transition = I.nekoModelCatTransitionActive;
+                    if (transition && transition.promise && typeof transition.promise.then === 'function') {
+                        try {
+                            await transition.promise;
+                        } catch (_) { /* 继续按当前 transition 状态裁决 */ }
+                    } else {
+                        await new Promise((resume) => window.setTimeout(resume, 16));
+                    }
+                }
+                if (settled) return;
+
+                // 若另一条“请她回来”链已经在执行，只等待上面安装好的 terminal
+                // event，不能再次派发造成两条恢复流程并发。
+                if (I.isNekoModelCatTransitionActive('cat-to-model')) return;
+
                 // 复用唯一的“请她回来”事件链。它会先恢复 Electron Pet 的完整
                 // viewport，再清理猫咪/呼吸球、资源暂停和三个模型管理器的离开标志。
                 // 直接清标志后热重载会把 return-ball 清掉，却仍留下 160x160 的 Pet
@@ -76,10 +95,11 @@
                         source: options.source || 'programmatic-return'
                     }
                 }));
-            } catch (error) {
+            };
+            dispatchReturnWhenReady().catch((error) => {
                 console.error('[App] 程序化恢复模型失败:', error);
                 finish(false);
-            }
+            });
         });
     };
 
