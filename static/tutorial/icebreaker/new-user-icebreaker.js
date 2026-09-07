@@ -590,7 +590,10 @@
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
-            return true;
+            return {
+                releaseCleanupCompleted: true,
+                day: String(snapshot.day || '')
+            };
         });
     }
 
@@ -2270,6 +2273,13 @@
             ? restoreInterruptedSession()
             : Promise.resolve(false);
         pendingGuideEndStartPromise = restoreBeforeStartPromise.then(function (restored) {
+            if (restored && restored.releaseCleanupCompleted === true) {
+                if (String(restored.day || '') === dayKey) {
+                    clearPendingGuideEndStateDay(dayKey);
+                    return true;
+                }
+                return startFromEndStateWhenTutorialIdle(endState);
+            }
             if (restored) {
                 if (activeSession && String(activeSession.day || '') === dayKey) {
                     clearPendingGuideEndStateDay(dayKey);

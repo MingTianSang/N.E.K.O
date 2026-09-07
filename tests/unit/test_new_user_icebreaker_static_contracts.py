@@ -1121,7 +1121,15 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert release_cleanup.index("if (state.icebreaker_active !== true || routeMatchesRelease)") < release_cleanup.index(
         "broadcastIcebreakerClearChoicePromptSource"
     )
-    assert "return true;" in release_cleanup
+    assert "releaseCleanupCompleted: true" in release_cleanup
+    assert "day: String(snapshot.day || '')" in release_cleanup
+    deferred_start = runtime.split("function attemptStartFromGuideEndState", 1)[1].split(
+        "function synthesizeEndStateFromEvent",
+        1,
+    )[0]
+    assert "if (restored && restored.releaseCleanupCompleted === true)" in deferred_start
+    assert "if (String(restored.day || '') === dayKey)" in deferred_start
+    assert "return startFromEndStateWhenTutorialIdle(endState);" in deferred_start
     assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName);" in restore
     assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
