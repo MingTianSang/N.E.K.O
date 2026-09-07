@@ -1008,6 +1008,30 @@ def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
     assert "startFromEndStateWhenTutorialIdle" not in body
 
 
+def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_its_prompt():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    bootstrap = runtime.split("function bootstrapFromRecentEndState()", 1)[1].split(
+        "window.addEventListener('neko:avatar-floating-guide-complete'",
+        1,
+    )[0]
+    restore = runtime.split("function restoreInterruptedSession()", 1)[1].split(
+        "function makeIcebreakerApiError",
+        1,
+    )[0]
+
+    assert "if (!hasIncompleteStoredSession()) return false;" in bootstrap
+    assert "return restoreInterruptedSession();" in bootstrap
+    assert "waitForPageConfigForRestore().then(function ()" in restore
+    assert "loadIcebreakerRouteStateForRestore()" in restore
+    assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
+    assert "findRestorableDaySnapshot(routeResult.state, scripts, configuredLanlanName)" in restore
+    assert "if (!routeResult.loaded) return false;" not in restore
+    assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
+    assert "return startIcebreakerRoute(session).then(function (started)" in restore
+    assert "activeSession = session;" in restore
+    assert "return setChoicePrompt(" in restore
+
+
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     match = re.search(
@@ -1101,7 +1125,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "action: 'icebreaker_append_chat_message'" in runtime
     assert "action: 'icebreaker_set_choice_prompt'" in runtime
     assert "action: 'icebreaker_clear_choice_prompt'" in runtime
-    assert "lanlan_name: resolveLanlanName()" in runtime
+    assert "lanlan_name: resolveSessionLanlanName(activeSession)" in runtime
 
     assert "handleIcebreakerBridgeData" in interpage
     assert "function isIcebreakerBridgeForCurrentLanlan(data)" in interpage
