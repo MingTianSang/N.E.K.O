@@ -1528,6 +1528,15 @@
                 if (hadPendingGoodbyeReset) {
                     runGoodbyeResetClickIfActive('return-viewport-blocked');
                 }
+                // 这次恢复尝试已经结束；程序化恢复可能正在加入同一条
+                // cat-to-model 链，必须收到明确的终止信号，不能只能等超时。
+                window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
+                    detail: {
+                        source: event && event.type ? event.type : 'return-click',
+                        reason: 'model-viewport-not-ready',
+                        timestamp: Date.now()
+                    }
+                }));
                 return;
             }
             let hadCatCycle = false;

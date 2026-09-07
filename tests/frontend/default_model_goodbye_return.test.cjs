@@ -190,6 +190,17 @@ test('programmatic return joins an existing cat-to-model transition without redi
   assert.equal(await result, true);
 });
 
+test('blocked viewport aborts joined programmatic returns instead of leaving them to time out', () => {
+  const guardStart = surfaceSource.indexOf('if (!preReturnViewportReady.ready) {');
+  const guardEnd = surfaceSource.indexOf('let hadCatCycle = false;', guardStart);
+  const blockedViewportGuard = surfaceSource.slice(guardStart, guardEnd);
+
+  assert.notEqual(guardStart, -1);
+  assert.notEqual(guardEnd, -1);
+  assert.match(blockedViewportGuard, /new CustomEvent\('neko:cat-return-abort'/);
+  assert.match(blockedViewportGuard, /reason:\s*'model-viewport-not-ready'/);
+});
+
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {
   const returnCall = resetSource.indexOf('await window.appUi.returnFromGoodbye({');
   const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", returnCall);
