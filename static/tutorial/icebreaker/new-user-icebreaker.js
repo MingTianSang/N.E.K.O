@@ -10,6 +10,7 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -392,11 +393,35 @@
         });
     }
 
+    function withRestoreWaitTimeout(promise, fallbackValue, label) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                console.warn('[NewUserIcebreaker] ' + label + ' wait timed out');
+                resolve(fallbackValue);
+            }, PAGE_CONFIG_RESTORE_WAIT_MS);
+            Promise.resolve(promise).then(function (value) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(value);
+            }, function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] ' + label + ' wait failed:', error);
+                resolve(fallbackValue);
+            });
+        });
+    }
+
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
-        if (!ready || typeof ready.then !== 'function') return Promise.resolve();
-        return Promise.resolve(ready).catch(function (error) {
-            console.warn('[NewUserIcebreaker] page config wait failed:', error);
+        if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
+        return withRestoreWaitTimeout(ready, false, 'page config').then(function (result) {
+            return result !== false;
         });
     }
 
@@ -405,11 +430,16 @@
         if (!storageLocation || typeof storageLocation.waitUntilMainUiAllowed !== 'function') {
             return Promise.resolve(true);
         }
-        return Promise.resolve(storageLocation.waitUntilMainUiAllowed()).then(function (decision) {
+        var decisionPromise;
+        try {
+            decisionPromise = storageLocation.waitUntilMainUiAllowed();
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] storage startup wait threw:', error);
+            return Promise.resolve(false);
+        }
+        return withRestoreWaitTimeout(decisionPromise, false, 'storage startup').then(function (decision) {
+            if (decision === false) return false;
             return !decision || decision.canContinue !== false;
-        }).catch(function (error) {
-            console.warn('[NewUserIcebreaker] storage startup wait failed:', error);
-            return false;
         });
     }
 
@@ -496,8 +526,8 @@
         if (restoreSessionPromise) return restoreSessionPromise;
         restoreSessionPromise = waitForStorageStartupDecisionForRestore().then(function (canContinue) {
             if (!canContinue || activeSession) return null;
-            return waitForPageConfigForRestore().then(function () {
-                if (activeSession) return null;
+            return waitForPageConfigForRestore().then(function (configReady) {
+                if (!configReady || activeSession) return null;
                 return Promise.all([
                     loadIcebreakerRouteStateForRestore(),
                     loadScripts(),
@@ -1376,7 +1406,7 @@
         });
     }
 
-    function completeWithHandoff(option) {
+    function completeWithHandoff(option, terminalChoiceWritePromise) {
         var session = activeSession;
         if (!session) return Promise.resolve(false);
         var text = getText(session.localeData, option.handoffKey);
@@ -1395,12 +1425,14 @@
             handoffDelivered = true;
             markDay(day, {
                 started: true,
-                completed: true,
-                completedAt: Date.now(),
+                completed: false,
+                terminalPending: true,
+                terminalPendingAt: Date.now(),
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
-                pendingNodeId: ''
+                pendingNodeId: '',
+                updatedAt: Date.now()
             });
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
@@ -1410,13 +1442,30 @@
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
                 return Promise.resolve(p).catch(function () {});
             });
-            return Promise.all(pendingWrites).then(function () {
-                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            return Promise.all([
+                Promise.resolve(terminalChoiceWritePromise),
+                Promise.all(pendingWrites)
+            ]).then(function (results) {
+                if (results[0] !== true) return false;
+                markDay(day, {
+                    started: true,
+                    completed: true,
+                    completedAt: Date.now(),
+                    terminalPending: false,
+                    lanlanName: session.lanlanName,
+                    sessionId: sessionId,
+                    nodeId: nodeId,
+                    pendingNodeId: '',
+                    updatedAt: Date.now()
+                });
+                return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {
+                    return true;
+                });
             });
-        }).then(function () {
+        }).then(function (completed) {
             if (!handoffDelivered) return false;
             return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
-                return true;
+                return completed;
             });
         }).then(function (completed) {
             if (!completed) return false;
@@ -1467,7 +1516,7 @@
             });
         }
         if (option.handoffKey) {
-            return completeWithHandoff(option);
+            return completeWithHandoff(option, choiceWritePromise);
         }
         return Promise.resolve(false);
     }
@@ -1970,10 +2019,12 @@
         // started-but-incomplete 的破冰节点。旧 route 可能已被 pagehide 提前结束，
         // 因此它只用于优先匹配节点，不能作为是否恢复的硬前提。
         if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;
+        var restoreIdleDeadline = getEndStateTriggerDeadline({ endedAt: Date.now() });
         return new Promise(function (resolve) {
             window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
         }).then(function waitForTutorialIdle() {
             if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();
+            if (Date.now() >= restoreIdleDeadline) return false;
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(waitForTutorialIdle);

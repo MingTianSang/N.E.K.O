@@ -681,10 +681,10 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
         1,
     )[0]
     deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
-        "function completeWithHandoff(option)",
+        "function completeWithHandoff(option, terminalChoiceWritePromise)",
         1,
     )[0]
-    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
+    handoff_block = runtime.split("function completeWithHandoff(option, terminalChoiceWritePromise)", 1)[1].split(
         "function advanceWithChoice(session, option, choice, label, choiceNodeId)",
         1,
     )[0]
@@ -779,7 +779,7 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "return advanceWithChoice(session, option, choice, label, choiceNodeId);" in handle_choice_block
     assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
     assert "return deliverNode(option.next).then(function (delivered)" in advance_choice_block
-    assert "return completeWithHandoff(option);" in advance_choice_block
+    assert "return completeWithHandoff(option, choiceWritePromise);" in advance_choice_block
     assert "return Promise.resolve(false);" in advance_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
@@ -788,7 +788,7 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
 def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
-        "function completeWithHandoff(option)",
+        "function completeWithHandoff(option, terminalChoiceWritePromise)",
         1,
     )[0]
 
@@ -820,7 +820,7 @@ def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
 
 def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
+    handoff_block = runtime.split("function completeWithHandoff(option, terminalChoiceWritePromise)", 1)[1].split(
         "function handleChoice(detail)",
         1,
     )[0]
@@ -833,25 +833,30 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
+    assert "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "dispatchIcebreakerEnded('handoff');"
     )
+    assert handoff_block.index("terminalPending: true") < handoff_block.index(
+        "Promise.resolve(terminalChoiceWritePromise)"
+    ) < handoff_block.index("completed: true")
     assert handoff_block.index("completed: true") < handoff_block.index(
         "return Promise.resolve(handoffSpeechPromise)"
     )
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
-    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+    assert handoff_block.index(
+        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function () {"
+    ) < handoff_block.index(
         "activeSession = null;"
     )
 
@@ -1019,7 +1024,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
     assert "if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();" in bootstrap
     assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
-    assert "return waitForPageConfigForRestore().then(function ()" in restore
+    assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
+    assert "if (!configReady || activeSession) return null;" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
@@ -1030,6 +1036,16 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "var presentationPromise" in restore
     assert ": setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
+    assert "var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;" in runtime
+    wait_helper = runtime.split("function withRestoreWaitTimeout", 1)[1].split(
+        "function waitForPageConfigForRestore",
+        1,
+    )[0]
+    assert "window.setTimeout(function () {" in wait_helper
+    assert "}, PAGE_CONFIG_RESTORE_WAIT_MS);" in wait_helper
+    assert "resolve(fallbackValue);" in wait_helper
+    assert "withRestoreWaitTimeout(ready, false, 'page config')" in runtime
+    assert "withRestoreWaitTimeout(decisionPromise, false, 'storage startup')" in runtime
 
     snapshot_matcher = runtime.split("function findRestorableDaySnapshot", 1)[1].split(
         "function hasIncompleteStoredSession",
@@ -1046,10 +1062,29 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
     assert "pendingNodeId: option.next" in runtime
     assert "snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]" in runtime
-    assert "completed: true" in runtime.split("function completeWithHandoff", 1)[1].split(
+    handoff = runtime.split("function completeWithHandoff", 1)[1].split(
         "function advanceWithChoice",
         1,
     )[0]
+    assert "terminalPending: true" in handoff
+    assert handoff.index("terminalPending: true") < handoff.index(
+        "Promise.resolve(terminalChoiceWritePromise)"
+    ) < handoff.index("completed: true")
+    assert "terminalPending: false" in handoff
+
+
+def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    bootstrap = runtime.split("function bootstrapFromRecentEndState()", 1)[1].split(
+        "window.addEventListener('neko:avatar-floating-guide-complete'",
+        1,
+    )[0]
+
+    assert "var restoreIdleDeadline = getEndStateTriggerDeadline({ endedAt: Date.now() });" in bootstrap
+    assert "if (Date.now() >= restoreIdleDeadline) return false;" in bootstrap
+    assert bootstrap.index("if (Date.now() >= restoreIdleDeadline) return false;") < bootstrap.rindex(
+        "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);"
+    )
 
 
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
