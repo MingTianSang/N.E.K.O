@@ -10,6 +10,7 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
@@ -388,8 +389,26 @@
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
         if (!ready || typeof ready.then !== 'function') return Promise.resolve();
-        return Promise.resolve(ready).catch(function (error) {
-            console.warn('[NewUserIcebreaker] page config wait failed:', error);
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                console.warn('[NewUserIcebreaker] page config wait timed out; continuing with route identity');
+                resolve();
+            }, PAGE_CONFIG_RESTORE_WAIT_MS);
+            Promise.resolve(ready).then(function () {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve();
+            }, function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] page config wait failed:', error);
+                resolve();
+            });
         });
     }
 
@@ -411,6 +430,7 @@
             var entryLanlanName = String((entry && entry.lanlanName) || '');
             var updatedAt = Number((entry && entry.updatedAt) || 0);
             if (!entry || entry.started !== true || entry.completed === true) return;
+            if (entry.terminalHandoff === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             if (entryLanlanName && currentLanlanName && entryLanlanName !== currentLanlanName) return;
@@ -465,6 +485,26 @@
         var scheduled = sessionStartQueue.then(operation, operation);
         sessionStartQueue = scheduled.then(function () {}, function () {});
         return scheduled;
+    }
+
+    function waitForActiveSessionRelease(session) {
+        if (!session || activeSession !== session) return Promise.resolve();
+        return new Promise(function (resolve) {
+            var intervalId = null;
+            var settled = false;
+            function finish() {
+                if (settled) return;
+                settled = true;
+                if (intervalId !== null) window.clearInterval(intervalId);
+                window.removeEventListener('neko:new-user-icebreaker-ended', finish);
+                resolve();
+            }
+            window.addEventListener('neko:new-user-icebreaker-ended', finish);
+            intervalId = window.setInterval(function () {
+                if (activeSession !== session) finish();
+            }, 100);
+            if (activeSession !== session) finish();
+        });
     }
 
     function discardUnrestorableRoute(routeState, reason) {
@@ -567,6 +607,7 @@
                     markDay(session.day, {
                         started: true,
                         completed: false,
+                        terminalHandoff: false,
                         lanlanName: session.lanlanName,
                         sessionId: session.sessionId,
                         nodeId: session.nodeId,
@@ -1404,6 +1445,7 @@
             markDay(session.day, {
                 started: true,
                 completed: false,
+                terminalHandoff: false,
                 lanlanName: session.lanlanName,
                 sessionId: session.sessionId,
                 nodeId: nodeId,
@@ -1435,6 +1477,18 @@
             if (!didAppendChatMessage(message)) return false;
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
+            // 终局台词已经展示后即不可再恢复该节点的选项。完成态仍在 route 关闭、
+            // TTS 播放结束后落盘；这个中间态只负责封住重载期间重复选择的窗口。
+            markDay(day, {
+                started: true,
+                completed: false,
+                terminalHandoff: true,
+                terminalHandoffAt: Date.now(),
+                lanlanName: session.lanlanName,
+                sessionId: sessionId,
+                nodeId: nodeId,
+                updatedAt: Date.now()
+            });
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
@@ -1836,40 +1890,46 @@
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
         pendingStartDay = dayKey;
         return enqueueIcebreakerSessionStart(function () {
-            if (activeSession && !force) {
-                clearPendingGuideEndStateDay(dayKey);
-                return true;
-            }
-            return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
-                var scripts = results[0];
-                var localeData = results[1];
-                var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
-                if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
-                if (!force && isDayCompleted(dayKey)) return false;
-                var nextSession = {
-                    day: dayKey,
-                    dayConfig: dayConfig,
-                    localeData: localeData || {},
-                    nodeId: dayConfig.root,
-                    // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
-                    lanlanName: resolveLanlanName(),
-                    sessionId: makeIcebreakerSessionId(dayKey)
-                };
-                return startIcebreakerRoute(nextSession).then(function (started) {
-                    if (!started) return false;
-                    activeSession = nextSession;
-                    clearPendingGuideEndStateDay(dayKey);
-                    return deliverNode(dayConfig.root).then(function (delivered) {
-                        if (delivered) return true;
-                        if (activeSession === nextSession) {
-                            activeSession = null;
-                        }
-                        return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
-                            return false;
+            function startWhenAvailable() {
+                if (activeSession && !force) {
+                    if (String(activeSession.day || '') === dayKey) {
+                        clearPendingGuideEndStateDay(dayKey);
+                        return true;
+                    }
+                    return waitForActiveSessionRelease(activeSession).then(startWhenAvailable);
+                }
+                return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
+                    var scripts = results[0];
+                    var localeData = results[1];
+                    var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
+                    if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
+                    if (!force && isDayCompleted(dayKey)) return false;
+                    var nextSession = {
+                        day: dayKey,
+                        dayConfig: dayConfig,
+                        localeData: localeData || {},
+                        nodeId: dayConfig.root,
+                        // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
+                        lanlanName: resolveLanlanName(),
+                        sessionId: makeIcebreakerSessionId(dayKey)
+                    };
+                    return startIcebreakerRoute(nextSession).then(function (started) {
+                        if (!started) return false;
+                        activeSession = nextSession;
+                        clearPendingGuideEndStateDay(dayKey);
+                        return deliverNode(dayConfig.root).then(function (delivered) {
+                            if (delivered) return true;
+                            if (activeSession === nextSession) {
+                                activeSession = null;
+                            }
+                            return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
+                                return false;
+                            });
                         });
                     });
                 });
-            });
+            }
+            return startWhenAvailable();
         }).then(function (result) {
             clearPendingStartDay(dayKey);
             return result;
@@ -1911,7 +1971,10 @@
     function attemptStartFromGuideEndState(endState, pendingDay) {
         if (!endState) return Promise.resolve(false);
         var dayKey = String(pendingDay || endState.day || '');
-        if (activeSession) return Promise.resolve(true);
+        if (activeSession && String(activeSession.day || '') === dayKey) {
+            clearPendingGuideEndStateDay(dayKey);
+            return Promise.resolve(true);
+        }
         if (!pendingGuideEndState) return Promise.resolve(true);
         if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
         if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;

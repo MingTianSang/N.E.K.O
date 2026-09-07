@@ -5935,6 +5935,124 @@ def test_icebreaker_restore_rejects_unowned_or_stale_snapshots_without_matching_
 
 
 @pytest.mark.frontend
+def test_icebreaker_cross_day_start_waits_for_restored_session_to_end(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__icebreakerPrompts = [];
+            window.__icebreakerMessages = [];
+            window.__icebreakerRouteStarts = [];
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            window.reactChatWindowHost = {
+                isMounted: function() { return true; },
+                openWindow: function() {},
+                appendMessage: async function(message) {
+                    window.__icebreakerMessages.push(message);
+                    return message;
+                },
+                setIcebreakerChoicePrompt: function(prompt) {
+                    window.__icebreakerPrompts.push(prompt);
+                },
+                clearIcebreakerChoicePrompt: function() { return true; },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+        """,
+        fetch_js="""
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                const node = {
+                    lineKey: 'root.line',
+                    options: [
+                        { id: 'A', labelKey: 'root.A', handoffKey: 'root.done' },
+                    ],
+                };
+                return jsonResponse({
+                    days: {
+                        '1': { root: 'root', nodes: { root: node } },
+                        '2': { root: 'root', nodes: { root: node } },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Question.',
+                    'root.A': 'Finish.',
+                    'root.done': 'Done.',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__icebreakerRouteStarts.push(body);
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    assert mock_page.evaluate("() => window.newUserIcebreaker.start(1)") is True
+    mock_page.wait_for_function("() => window.__icebreakerPrompts.length === 1")
+    day1 = mock_page.evaluate("() => window.newUserIcebreaker.getActiveSession()")
+
+    mock_page.evaluate(
+        """() => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: { page: 'home', day: 2, reason: 'complete' },
+            }));
+        }"""
+    )
+    mock_page.wait_for_timeout(650)
+    waiting = mock_page.evaluate(
+        """() => ({
+            routeStarts: window.__icebreakerRouteStarts.length,
+            activeDay: window.newUserIcebreaker.getActiveSession()?.day,
+        })"""
+    )
+    assert waiting == {"routeStarts": 1, "activeDay": "1"}
+
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerPrompts[0];
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: {
+                    sessionId: prompt.sessionId,
+                    choice: 'A',
+                    option: prompt.options[0],
+                },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const session = window.newUserIcebreaker.getActiveSession();
+            return window.__icebreakerRouteStarts.length === 2 && session && session.day === '2';
+        }""",
+        timeout=5000,
+    )
+    day2 = mock_page.evaluate("() => window.newUserIcebreaker.getActiveSession()")
+
+    assert day2["sessionId"] != day1["sessionId"]
+    assert [body["source"] for body in mock_page.evaluate("() => window.__icebreakerRouteStarts")] == [
+        "new_user_icebreaker",
+        "new_user_icebreaker",
+    ]
+
+
+@pytest.mark.frontend
 def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page):
     _bootstrap_page(
         mock_page,

@@ -831,6 +831,7 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
+    assert "terminalHandoff: true" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
@@ -839,6 +840,9 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("terminalHandoff: true") < handoff_block.index(
+        "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
@@ -1028,6 +1032,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded) return false;" not in restore
     assert "if (!entryLanlanName && !candidate.matchesActiveRoute) return;" in runtime
+    assert "if (entry.terminalHandoff === true) return;" in runtime
+    assert "var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;" in runtime
+    assert "}, PAGE_CONFIG_RESTORE_WAIT_MS);" in runtime
     assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
     assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
     assert "sessionId: snapshot.matchesActiveRoute" in restore
@@ -1037,6 +1044,28 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "return routeReady.then(function (started)" in restore
     assert "activeSession = session;" in restore
     assert "return restoreSessionPresentation(session);" in restore
+
+
+def test_icebreaker_cross_day_start_waits_for_the_active_session_to_end():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    wait_block = runtime.split("function waitForActiveSessionRelease(session)", 1)[1].split(
+        "function discardUnrestorableRoute",
+        1,
+    )[0]
+    start_block = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+    attempt_block = runtime.split("function attemptStartFromGuideEndState(endState, pendingDay)", 1)[1].split(
+        "function synthesizeEndStateFromEvent",
+        1,
+    )[0]
+
+    assert "window.addEventListener('neko:new-user-icebreaker-ended', finish);" in wait_block
+    assert "if (activeSession !== session) finish();" in wait_block
+    assert "return waitForActiveSessionRelease(activeSession).then(startWhenAvailable);" in start_block
+    assert "activeSession && String(activeSession.day || '') === dayKey" in attempt_block
+    assert "if (activeSession) return Promise.resolve(true);" not in attempt_block
 
 
 def test_icebreaker_restore_rebuilds_only_missing_local_question_presentation():
