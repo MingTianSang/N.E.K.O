@@ -490,9 +490,10 @@
         return best;
     }
 
-    function hasIncompleteStoredSession() {
+    function hasIncompleteStoredSession(lanlanName) {
         var store = readStore();
         var days = store && store.days && typeof store.days === 'object' ? store.days : {};
+        var expectedLanlanName = String(lanlanName || '');
         return Object.keys(days).some(function (day) {
             var entry = days[day];
             return !!(
@@ -501,6 +502,7 @@
                 && entry.completed !== true
                 && entry.sessionId
                 && entry.nodeId
+                && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
             );
         });
     }
@@ -1950,12 +1952,15 @@
         if (!pendingGuideEndState) return Promise.resolve(true);
         if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
         if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;
-        var restoreBeforeStartPromise = isManagedDesktopReload() && hasIncompleteStoredSession()
+        var restoreBeforeStartPromise = isManagedDesktopReload()
+            && hasIncompleteStoredSession(resolveLanlanName())
             ? restoreInterruptedSession()
             : Promise.resolve(false);
         pendingGuideEndStartPromise = restoreBeforeStartPromise.then(function (restored) {
             if (restored) {
-                clearPendingGuideEndStateDay(dayKey);
+                if (activeSession && String(activeSession.day || '') === dayKey) {
+                    clearPendingGuideEndStateDay(dayKey);
+                }
                 return true;
             }
             return startFromEndStateWhenTutorialIdle(endState);
@@ -2031,7 +2036,7 @@
         // 不从「教程已经结束」的历史启动新破冰；只恢复本地明确保存为
         // started-but-incomplete 的破冰节点。旧 route 可能已被 pagehide 提前结束，
         // 因此它只用于优先匹配节点，不能作为是否恢复的硬前提。
-        if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;
+        if (!isManagedDesktopReload() || !hasIncompleteStoredSession(resolveLanlanName())) return false;
         var restoreIdleDeadline = getEndStateTriggerDeadline({ endedAt: Date.now() });
         return new Promise(function (resolve) {
             window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
@@ -2048,6 +2053,10 @@
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
     window.addEventListener('neko:day1-systray-intro-closed', function () {
         if (!pendingGuideEndState) return;
+        attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
+    });
+    window.addEventListener('neko:new-user-icebreaker-ended', function () {
+        if (!pendingGuideEndState || activeSession) return;
         attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
     });
     window.addEventListener('pagehide', function () {

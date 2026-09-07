@@ -1021,7 +1021,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         1,
     )[0]
 
-    assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
+    assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession(resolveLanlanName())) return false;" in bootstrap
     assert "if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();" in bootstrap
     assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
@@ -1091,13 +1091,22 @@ def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():
         "function synthesizeEndStateFromEvent",
         1,
     )[0]
-    assert "isManagedDesktopReload() && hasIncompleteStoredSession()" in deferred_start
+    assert "isManagedDesktopReload()" in deferred_start
+    assert "&& hasIncompleteStoredSession(resolveLanlanName())" in deferred_start
     assert "? restoreInterruptedSession()" in deferred_start
     assert "if (restored) {" in deferred_start
-    assert "clearPendingGuideEndStateDay(dayKey);" in deferred_start
+    assert "if (activeSession && String(activeSession.day || '') === dayKey)" in deferred_start
     assert deferred_start.index("? restoreInterruptedSession()") < deferred_start.index(
         "return startFromEndStateWhenTutorialIdle(endState);"
     )
+    incomplete_matcher = runtime.split("function hasIncompleteStoredSession(lanlanName)", 1)[1].split(
+        "function makeIcebreakerSessionId",
+        1,
+    )[0]
+    assert "var expectedLanlanName = String(lanlanName || '');" in incomplete_matcher
+    assert "String(entry.lanlanName || '') === expectedLanlanName" in incomplete_matcher
+    assert "window.addEventListener('neko:new-user-icebreaker-ended'" in runtime
+    assert "if (!pendingGuideEndState || activeSession) return;" in runtime
 
 
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
