@@ -24,7 +24,7 @@
         let resolveLifecycle;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs))
             ? Math.max(1000, Number(options.timeoutMs))
-            : NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS;
+            : null;
         const lifecycle = {
             settled: false,
             cancelled: false,
@@ -37,9 +37,11 @@
         };
         lifecycle.resolve = resolveLifecycle;
         I.nekoCatReturnLifecycle = lifecycle;
-        lifecycle.timeoutId = window.setTimeout(() => {
-            I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
-        }, timeoutMs);
+        if (timeoutMs !== null) {
+            lifecycle.timeoutId = window.setTimeout(() => {
+                I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
+            }, timeoutMs);
+        }
         return lifecycle;
     };
 

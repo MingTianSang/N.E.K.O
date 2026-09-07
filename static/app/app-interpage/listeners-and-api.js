@@ -357,9 +357,11 @@
 
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var previousModelConfig = null;
+        var previousModelPersistencePayload = null;
         var reloadModel = null;
         var returnWasNeeded = false;
         var returnedFromGoodbye = false;
+        var defaultModelPersisted = false;
         try {
             previousModelConfig = window.lanlan_config && typeof window.lanlan_config === 'object'
                 ? Object.assign({}, window.lanlan_config)
@@ -382,6 +384,21 @@
                     previousModelConfig.model_path = String(window.mmdModel || previousModelConfig.mmd || '');
                 } else {
                     previousModelConfig.model_path = String(window.cubism4Model || previousModelConfig.live2d || '');
+                }
+                previousModelPersistencePayload = { model_type: previousModelType };
+                if (previousModelType === 'pngtuber') {
+                    previousModelPersistencePayload.pngtuber = previousModelConfig.pngtuber;
+                } else if (previousModelType === 'live3d' && previousLive3dSubType === 'mmd') {
+                    previousModelPersistencePayload.mmd = previousModelConfig.model_path;
+                } else if (previousModelType === 'live3d' || previousModelType === 'vrm') {
+                    previousModelPersistencePayload.model_type = 'live3d';
+                    previousModelPersistencePayload.vrm = previousModelConfig.model_path;
+                } else if (previousModelType === 'mmd') {
+                    previousModelPersistencePayload.model_type = 'live3d';
+                    previousModelPersistencePayload.mmd = previousModelConfig.model_path;
+                } else {
+                    previousModelPersistencePayload.model_type = 'live2d';
+                    previousModelPersistencePayload.live2d = previousModelConfig.model_path;
                 }
             }
             reloadModel = typeof I.handleModelReload === 'function'
@@ -450,6 +467,7 @@
                 try { errText = await putResp.text(); } catch (_) {}
                 throw new Error('HTTP ' + putResp.status + (errText ? (': ' + errText) : ''));
             }
+            defaultModelPersisted = true;
 
             // Trigger the live model swap. handleModelReload re-fetches the
             // page_config, so it will pick up the freshly-saved default Live2D
@@ -473,6 +491,22 @@
             return { success: true };
         } catch (e) {
             console.error('[Model] 恢复默认模型失败:', e);
+            if (defaultModelPersisted && previousModelPersistencePayload) {
+                try {
+                    var rollbackResp = await fetch(putUrl, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(previousModelPersistencePayload)
+                    });
+                    if (!rollbackResp.ok) {
+                        var rollbackErrText = '';
+                        try { rollbackErrText = await rollbackResp.text(); } catch (_) {}
+                        throw new Error('HTTP ' + rollbackResp.status + (rollbackErrText ? (': ' + rollbackErrText) : ''));
+                    }
+                } catch (persistenceRestoreError) {
+                    console.error('[Model] 默认模型恢复失败后回滚持久化配置也失败:', persistenceRestoreError);
+                }
+            }
             if (returnWasNeeded && returnedFromGoodbye && previousModelConfig && reloadModel) {
                 try {
                     await reloadModel(lanlanName, {

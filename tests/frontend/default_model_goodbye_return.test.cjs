@@ -188,15 +188,14 @@ test('a timed-out return lifecycle aborts and releases the canonical handler loc
   assert.ok(parts.beginNekoCatReturnLifecycle());
 });
 
-test('a standard return lifecycle has a finite default timeout', async () => {
+test('a standard user return remains untimed unless a caller supplies a deadline', () => {
   const harness = createReturnHarness();
   const parts = harness.window.__appUiParts;
   const lifecycle = parts.beginNekoCatReturnLifecycle({ source: 'live2d-return-click' });
 
-  assert.ok(lifecycle.timeoutId, 'standard returns must not hold the handler lock forever');
-  harness.fireTimer(lifecycle.timeoutId);
-  assert.equal(await lifecycle.promise, false);
-  assert.equal(parts.nekoCatReturnLifecycle, null);
+  assert.equal(lifecycle.timeoutId, null);
+  assert.deepEqual(harness.activeTimerIds(), []);
+  parts.finishNekoCatReturnLifecycle(lifecycle, true);
 });
 
 for (const [modelType, subType, expectedEvent] of [
@@ -358,4 +357,11 @@ test('default-model reset restores the previous runtime model after a failed res
   assert.match(resetSource, /previousModelConfig\.model_path = String\(window\.mmdModel/);
   assert.match(resetSource, /previousModelConfig\.model_path = String\(window\.cubism4Model/);
   assert.match(resetSource, /throw new Error\('model_reload_unavailable'\)/);
+  assert.match(resetSource, /defaultModelPersisted = true/);
+  assert.match(resetSource, /if \(defaultModelPersisted && previousModelPersistencePayload\)/);
+  assert.match(resetSource, /body: JSON\.stringify\(previousModelPersistencePayload\)/);
+  assert.ok(
+    resetSource.indexOf('body: JSON.stringify(previousModelPersistencePayload)') < rollbackCall,
+    'persistent binding must be rolled back before the previous runtime model is restored',
+  );
 });
