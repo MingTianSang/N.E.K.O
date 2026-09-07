@@ -11,6 +11,7 @@
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
     var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
+    var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
@@ -94,19 +95,35 @@
     }
 
     function fetchLocalMutationHeadersDirectly(headers) {
-        return fetch(getPageConfigUrl(), {
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var requestOptions = {
             credentials: 'same-origin',
             cache: 'no-store'
-        }).then(function (response) {
-            if (!response.ok) return headers;
-            return response.json();
-        }).then(function (config) {
-            if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
-                headers['X-CSRF-Token'] = config.autostart_csrf_token;
+        };
+        if (controller) requestOptions.signal = controller.signal;
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (controller) controller.abort();
+                finish(headers);
+            }, DIRECT_MUTATION_HEADERS_MAX_WAIT_MS);
+            function finish(result) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(result || headers);
             }
-            return headers;
-        }).catch(function () {
-            return headers;
+            fetch(getPageConfigUrl(), requestOptions).then(function (response) {
+                if (!response.ok) return null;
+                return response.json();
+            }).then(function (config) {
+                if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                    headers['X-CSRF-Token'] = config.autostart_csrf_token;
+                }
+                finish(headers);
+            }).catch(function () {
+                finish(headers);
+            });
         });
     }
 
@@ -1450,6 +1467,92 @@
         });
     }
 
+    function didAllChoiceWritesSucceed(results) {
+        return Array.isArray(results) && results.every(function (result) {
+            return result === true;
+        });
+    }
+
+    function completeHandoffRoute(session, day, nodeId, sessionId) {
+        return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {
+            if (!routeEnded) return false;
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                terminalPending: false,
+                terminalChoiceRecorded: false,
+                terminalChoice: '',
+                terminalChoiceSeq: 0,
+                lanlanName: session.lanlanName,
+                sessionId: sessionId,
+                nodeId: nodeId,
+                pendingNodeId: '',
+                updatedAt: Date.now()
+            });
+            return true;
+        });
+    }
+
+    function finishActiveHandoff(session) {
+        if (activeSession === session) activeSession = null;
+        dispatchIcebreakerEnded('handoff');
+        return true;
+    }
+
+    function getStoredDayEntry(day) {
+        var store = readStore();
+        return store && store.days && store.days[String(day || '')];
+    }
+
+    function retryPendingHandoff(session, option, choice, label, choiceNodeId) {
+        if (!option || !option.handoffKey) return null;
+        var entry = getStoredDayEntry(session.day);
+        if (!entry
+                || entry.terminalPending !== true
+                || String(entry.sessionId || '') !== String(session.sessionId || '')
+                || String(entry.nodeId || '') !== String(choiceNodeId || '')
+                || String(entry.terminalChoice || '') !== String(choice || '')) {
+            return null;
+        }
+        if (entry.terminalChoiceRecorded === true) {
+            return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId).then(function (completed) {
+                return completed ? finishActiveHandoff(session) : false;
+            });
+        }
+
+        // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
+        // 已成功项会被去重，失败项得到补写；不再追加用户气泡或 handoff 台词。
+        var retryMetas = (session.choiceWriteMetas || []).slice();
+        if (!retryMetas.some(function (meta) {
+            return meta && meta.handoff === true && String(meta.choice || '') === String(choice || '');
+        })) {
+            retryMetas.push({
+                day: session.day,
+                sessionId: session.sessionId,
+                nodeId: choiceNodeId,
+                choice: choice,
+                label: label,
+                handoff: true,
+                completed: true,
+                seq: Number(entry.terminalChoiceSeq) || (session.choiceSeq = (session.choiceSeq || 0) + 1)
+            });
+        }
+        var retryWrites = retryMetas.map(function (meta) {
+            return recordChoiceToPool(meta);
+        });
+        return waitForTerminalChoiceWrite(Promise.all(retryWrites)).then(function (writeResults) {
+            if (!didAllChoiceWritesSucceed(writeResults)) return false;
+            markDay(session.day, {
+                terminalChoiceRecorded: true,
+                updatedAt: Date.now()
+            });
+            return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
+        }).then(function (completed) {
+            return completed ? finishActiveHandoff(session) : false;
+        });
+    }
+
     function completeWithHandoff(option, terminalChoiceWritePromise) {
         var session = activeSession;
         if (!session) return Promise.resolve(false);
@@ -1472,6 +1575,9 @@
                 completed: false,
                 terminalPending: true,
                 terminalPendingAt: Date.now(),
+                terminalChoiceRecorded: false,
+                terminalChoice: String(option.id || ''),
+                terminalChoiceSeq: Number(session.choiceSeq) || 0,
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
@@ -1488,23 +1594,13 @@
             });
             return waitForTerminalChoiceWrite(terminalChoiceWritePromise, session.terminalChoiceWriteController).then(function (recorded) {
                 if (recorded !== true) return false;
-                return waitForTerminalChoiceWrite(Promise.all(pendingWrites)).then(function (allWritesSettled) {
-                    if (allWritesSettled === false) return false;
-                    return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {
-                        if (!routeEnded) return false;
-                        markDay(day, {
-                            started: true,
-                            completed: true,
-                            completedAt: Date.now(),
-                            terminalPending: false,
-                            lanlanName: session.lanlanName,
-                            sessionId: sessionId,
-                            nodeId: nodeId,
-                            pendingNodeId: '',
-                            updatedAt: Date.now()
-                        });
-                        return true;
+                return waitForTerminalChoiceWrite(Promise.all(pendingWrites)).then(function (writeResults) {
+                    if (!didAllChoiceWritesSucceed(writeResults)) return false;
+                    markDay(day, {
+                        terminalChoiceRecorded: true,
+                        updatedAt: Date.now()
                     });
+                    return completeHandoffRoute(session, day, nodeId, sessionId);
                 });
             });
         }).then(function (completed) {
@@ -1514,11 +1610,7 @@
             });
         }).then(function (completed) {
             if (!completed) return false;
-            if (activeSession === session) {
-                activeSession = null;
-            }
-            dispatchIcebreakerEnded('handoff');
-            return true;
+            return finishActiveHandoff(session);
         });
     }
 
@@ -1532,7 +1624,7 @@
         setFreeTextDerailStreak(session, choiceNodeId, 0);
         // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
         // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
-        var choiceWritePromise = recordChoiceToPool({
+        var choiceMeta = {
             day: session.day,
             sessionId: session.sessionId,
             nodeId: choiceNodeId,
@@ -1540,9 +1632,12 @@
             label: label,
             handoff: isHandoffChoice,
             completed: isHandoffChoice,
-            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1),
+            seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+        };
+        var choiceWritePromise = recordChoiceToPool(Object.assign({}, choiceMeta, {
             signal: terminalChoiceWriteController ? terminalChoiceWriteController.signal : null
-        });
+        }));
+        (session.choiceWriteMetas || (session.choiceWriteMetas = [])).push(choiceMeta);
         (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
         if (option.next) {
             markDay(session.day, {
@@ -1589,6 +1684,22 @@
         // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
         // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
         var choiceNodeId = session.nodeId;
+        var pendingHandoffRetry = retryPendingHandoff(session, option, choice, label, choiceNodeId);
+        if (pendingHandoffRetry) {
+            pendingHandoffRetry.then(function (result) {
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    if (result === false) setChoicePrompt(node, session.localeData);
+                }
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] terminal handoff retry failed:', error);
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    setChoicePrompt(node, session.localeData);
+                }
+            });
+            return;
+        }
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,

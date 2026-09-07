@@ -833,32 +833,40 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {" in handoff_block
-    assert "if (!routeEnded) return false;" in handoff_block
+    assert "return completeHandoffRoute(session, day, nodeId, sessionId);" in handoff_block
+    route_completion = runtime.split("function completeHandoffRoute", 1)[1].split(
+        "function finishActiveHandoff",
+        1,
+    )[0]
+    assert "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {" in route_completion
+    assert "if (!routeEnded) return false;" in route_completion
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {"
+        "return completeHandoffRoute(session, day, nodeId, sessionId);"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {"
+        "return completeHandoffRoute(session, day, nodeId, sessionId);"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
-        "dispatchIcebreakerEnded('handoff');"
+        "return finishActiveHandoff(session);"
     )
     assert handoff_block.index("terminalPending: true") < handoff_block.index(
         "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
-    ) < handoff_block.index("completed: true")
-    assert handoff_block.index("completed: true") < handoff_block.index(
-        "return Promise.resolve(handoffSpeechPromise)"
+    ) < handoff_block.index("terminalChoiceRecorded: true") < handoff_block.index(
+        "return completeHandoffRoute(session, day, nodeId, sessionId);"
     )
-    assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
-    assert "if (activeSession === session) {" in handoff_block
+    assert "completed: true" in route_completion
+    assert "return finishActiveHandoff(session);" in handoff_block
+    assert "dispatchIcebreakerEnded('handoff');" in runtime.split(
+        "function finishActiveHandoff",
+        1,
+    )[1].split("function getStoredDayEntry", 1)[0]
     assert handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {"
+        "return completeHandoffRoute(session, day, nodeId, sessionId);"
     ) < handoff_block.index(
-        "activeSession = null;"
+        "return finishActiveHandoff(session);"
     )
 
 
@@ -1054,6 +1062,14 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!useDirectMutationHeadersForRestore && security" in runtime
     assert "return fetchLocalMutationHeadersDirectly(headers);" in runtime
+    direct_headers = runtime.split("function fetchLocalMutationHeadersDirectly", 1)[1].split(
+        "function getLocalMutationHeaders",
+        1,
+    )[0]
+    assert "var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;" in runtime
+    assert "}, DIRECT_MUTATION_HEADERS_MAX_WAIT_MS);" in direct_headers
+    assert "controller.abort();" in direct_headers
+    assert "finish(headers);" in direct_headers
     assert "return Promise.resolve(decisionPromise).then(function (decision)" in runtime
     assert "withRestoreWaitTimeout(decisionPromise" not in runtime
 
@@ -1079,8 +1095,8 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "terminalPending: true" in handoff
     assert handoff.index("terminalPending: true") < handoff.index(
         "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
-    ) < handoff.index("completed: true")
-    assert "terminalPending: false" in handoff
+    ) < handoff.index("return completeHandoffRoute(session, day, nodeId, sessionId);")
+    assert "terminalPending: false" in runtime
     assert "var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;" in runtime
     terminal_wait = runtime.split("function waitForTerminalChoiceWrite", 1)[1].split(
         "function completeWithHandoff",
@@ -1090,6 +1106,12 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "controller.abort();" in terminal_wait
     assert "resolve(false);" in terminal_wait
     assert "if (!ended) session.routeEnded = false;" in runtime
+    assert "function didAllChoiceWritesSucceed(results)" in runtime
+    assert "return result === true;" in runtime
+    assert "if (!didAllChoiceWritesSucceed(writeResults)) return false;" in handoff
+    assert "terminalChoiceRecorded: true" in handoff
+    assert "function retryPendingHandoff" in runtime
+    assert "if (entry.terminalChoiceRecorded === true)" in runtime
 
 
 def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():

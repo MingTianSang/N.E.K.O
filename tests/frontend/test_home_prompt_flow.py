@@ -5852,10 +5852,25 @@ def test_icebreaker_terminal_choice_stays_recoverable_until_pool_write_settles(m
         }"""
     )
     completed = mock_page.evaluate(
-        """() => JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1']"""
+        """() => ({
+            day: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1'],
+            choiceCount: window.__terminalChoiceCount,
+            messages: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_append_chat_message'
+            ).map((event) => ({
+                role: event.message.role,
+                text: event.message.blocks[0].text,
+            })),
+        })"""
     )
-    assert completed["terminalPending"] is False
-    assert completed["completed"] is True
+    assert completed["day"]["terminalPending"] is False
+    assert completed["day"]["completed"] is True
+    assert completed["choiceCount"] == 1
+    assert completed["messages"] == [
+        {"role": "assistant", "text": "Ready?"},
+        {"role": "user", "text": "Finish"},
+        {"role": "assistant", "text": "Done."},
+    ]
 
 
 @pytest.mark.frontend
