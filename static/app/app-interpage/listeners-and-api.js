@@ -367,6 +367,35 @@
                 throw new Error('missing_lanlan_name');
             }
 
+            // “恢复默认模型”是一次显式回到模型态的操作。若仍在“请她离开”状态，
+            // 必须先走完整的回来链：Electron 的 return-ball 模式可能已把 Pet 窗口
+            // 缩成 160x160；直接热重载会移除回来控件，却把新模型留在小窗口外。
+            var goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
+                ? window.isNekoGoodbyeModeActive()
+                : !!(
+                    (window.live2dManager && window.live2dManager._goodbyeClicked)
+                    || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                    || (window.mmdManager && window.mmdManager._goodbyeClicked)
+                );
+            if (goodbyeActive) {
+                if (!window.appUi || typeof window.appUi.returnFromGoodbye !== 'function') {
+                    throw new Error('goodbye_return_unavailable');
+                }
+                var returnedFromGoodbye = await window.appUi.returnFromGoodbye({
+                    source: 'reset-to-default-model'
+                });
+                var goodbyeStillActive = typeof window.isNekoGoodbyeModeActive === 'function'
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!(
+                        (window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked)
+                    );
+                if (!returnedFromGoodbye || goodbyeStillActive) {
+                    throw new Error('goodbye_return_failed');
+                }
+            }
+
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
             var putResp = await fetch(putUrl, {

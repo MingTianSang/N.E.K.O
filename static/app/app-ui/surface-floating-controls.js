@@ -16,6 +16,73 @@
 
     window.appUi = window.appUi || {};
     const I = window.__appUiParts || (window.__appUiParts = {});
+
+    I.returnFromGoodbye = function returnFromGoodbye(options = {}) {
+        options = options && typeof options === 'object' ? options : {};
+        const goodbyeActive = typeof window.isNekoGoodbyeModeActive === 'function'
+            ? window.isNekoGoodbyeModeActive()
+            : !!(
+                (window.live2dManager && window.live2dManager._goodbyeClicked)
+                || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            );
+        if (!goodbyeActive) return Promise.resolve(true);
+
+        const visibleReturnContainer = typeof I.getVisibleIdleReturnBallContainer === 'function'
+            ? I.getVisibleIdleReturnBallContainer()
+            : null;
+        const visibleTypeMatch = visibleReturnContainer && String(visibleReturnContainer.id || '')
+            .match(/^(live2d|vrm|mmd|pngtuber)-return-button-container$/);
+        const configuredType = String(window.lanlan_config?.model_type || 'live2d').toLowerCase();
+        const live3dSubType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+        const configuredActiveType = configuredType === 'live3d'
+            ? (live3dSubType === 'mmd' ? 'mmd' : 'vrm')
+            : (['live2d', 'vrm', 'mmd', 'pngtuber'].includes(configuredType) ? configuredType : 'live2d');
+        // 可见的回来控件比配置更权威：配置可能正被其它模型切换请求更新，
+        // 而 restore viewport 的失败兜底必须重新显示实际那一个控件。
+        const activeType = visibleTypeMatch ? visibleTypeMatch[1] : configuredActiveType;
+        const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+            ? Math.max(1000, Number(options.timeoutMs))
+            : 15000;
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = null;
+            const finish = (restored) => {
+                if (settled) return;
+                settled = true;
+                if (timeoutId !== null) window.clearTimeout(timeoutId);
+                window.removeEventListener('neko:cat-return-complete', handleComplete);
+                window.removeEventListener('neko:cat-return-abort', handleAbort);
+                resolve(restored);
+            };
+            const handleComplete = () => finish(true);
+            const handleAbort = () => finish(false);
+
+            window.addEventListener('neko:cat-return-complete', handleComplete);
+            window.addEventListener('neko:cat-return-abort', handleAbort);
+            timeoutId = window.setTimeout(() => {
+                console.warn('[App] 程序化恢复模型超时:', options.source || 'unknown');
+                finish(false);
+            }, timeoutMs);
+
+            try {
+                // 复用唯一的“请她回来”事件链。它会先恢复 Electron Pet 的完整
+                // viewport，再清理猫咪/呼吸球、资源暂停和三个模型管理器的离开标志。
+                // 直接清标志后热重载会把 return-ball 清掉，却仍留下 160x160 的 Pet
+                // carrier，正是托盘恢复默认模型后整个模型消失的根因。
+                window.dispatchEvent(new CustomEvent(`${activeType}-return-click`, {
+                    detail: {
+                        source: options.source || 'programmatic-return'
+                    }
+                }));
+            } catch (error) {
+                console.error('[App] 程序化恢复模型失败:', error);
+                finish(false);
+            }
+        });
+    };
+
     function initFloatingButtonListeners() {
         // DOM refs from orchestrator
         const micButton = I.S.dom.micButton;
@@ -1978,6 +2045,7 @@
     }
 
     I.mod.initFloatingButtonListeners = initFloatingButtonListeners;
+    I.mod.returnFromGoodbye = I.returnFromGoodbye;
 
     // ================================================================
     //  5. ensureHiddenElements & final UI init  (app.js lines 11354-11420)
