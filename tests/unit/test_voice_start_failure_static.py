@@ -1090,7 +1090,10 @@ def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
     commit_index = handler.index("new CustomEvent('neko:cat-return-commit'", try_index)
     failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
     finally_index = handler.index("} finally {", failed_model_return)
-    abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
+    abort_index = handler.index(
+        "abortNekoCatReturnLifecycle(returnLifecycle, returnAbortReason)",
+        finally_index,
+    )
     complete_index = handler.index(
         "new CustomEvent('neko:cat-return-complete'",
         try_index,

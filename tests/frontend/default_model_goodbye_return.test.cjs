@@ -12,6 +12,10 @@ const resetSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/listeners-and-api.js'),
   'utf8',
 );
+const modelDisplaySource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
+  'utf8',
+);
 
 function createDeferred() {
   let resolve;
@@ -32,6 +36,7 @@ function createReturnHarness({
   const dispatched = [];
   let goodbyeActive = true;
   let nextTimerId = 1;
+  const timers = new Map();
 
   const parts = { mod: {} };
   if (visibleReturnType) {
@@ -82,11 +87,15 @@ function createReturnHarness({
       for (const listener of [...(listeners.get(event.type) || [])]) listener(event);
       return true;
     },
-    setTimeout() {
+    setTimeout(callback) {
+      const timerId = nextTimerId;
       nextTimerId += 1;
-      return nextTimerId;
+      timers.set(timerId, callback);
+      return timerId;
     },
-    clearTimeout() {},
+    clearTimeout(timerId) {
+      timers.delete(timerId);
+    },
   };
 
   class CustomEvent {
@@ -132,6 +141,12 @@ function createReturnHarness({
       parts.nekoCatReturnLifecycle = null;
       returnLifecycle.resolve(restored === true);
     },
+    fireTimer(timerId) {
+      const callback = timers.get(timerId);
+      assert.equal(typeof callback, 'function', `timer ${timerId} is not active`);
+      timers.delete(timerId);
+      callback();
+    },
   };
 }
 
@@ -156,6 +171,22 @@ test('canonical return lifecycle admits only one handler until it settles', asyn
   assert.ok(next);
   parts.finishNekoCatReturnLifecycle(next, true);
   assert.equal(await next.promise, true);
+});
+
+test('a timed-out return lifecycle aborts and releases the canonical handler lock', async () => {
+  const harness = createReturnHarness();
+  const parts = harness.window.__appUiParts;
+  const lifecycle = parts.beginNekoCatReturnLifecycle({
+    source: 'live2d-return-click',
+    timeoutMs: 1000,
+  });
+
+  harness.fireTimer(lifecycle.timeoutId);
+  assert.equal(await lifecycle.promise, false);
+  assert.equal(parts.nekoCatReturnLifecycle, null);
+  assert.equal(harness.dispatched.at(-1).type, 'neko:cat-return-abort');
+  assert.equal(harness.dispatched.at(-1).detail.reason, 'return-lifecycle-timeout');
+  assert.ok(parts.beginNekoCatReturnLifecycle());
 });
 
 for (const [modelType, subType, expectedEvent] of [
@@ -232,7 +263,7 @@ test('programmatic return joins the active return lifecycle after goodbye flags 
 
 test('the canonical return lifecycle serializes handlers and aborts a blocked viewport', () => {
   const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
-  const lifecycleStart = surfaceSource.indexOf('const returnLifecycle = I.beginNekoCatReturnLifecycle();', handlerStart);
+  const lifecycleStart = surfaceSource.indexOf('const returnLifecycle = I.beginNekoCatReturnLifecycle({', handlerStart);
   const viewportWait = surfaceSource.indexOf('await I.ensureModelViewportReadyBeforeShowCurrentModel()', handlerStart);
   const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
   const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
@@ -240,7 +271,14 @@ test('the canonical return lifecycle serializes handlers and aborts a blocked vi
   assert.ok(handlerStart < lifecycleStart && lifecycleStart < viewportWait);
   assert.match(handlerSource, /if \(!returnLifecycle\) \{[\s\S]*?return;/);
   assert.match(handlerSource, /returnAbortReason = 'model-viewport-not-ready';/);
-  assert.match(handlerSource, /new CustomEvent\('neko:cat-return-abort'/);
+  assert.match(handlerSource, /I\.abortNekoCatReturnLifecycle\(returnLifecycle, returnAbortReason\)/);
+  assert.match(surfaceSource, /new CustomEvent\('neko:cat-return-abort'/);
+});
+
+test('return model lookup is cancelled with the shared lifecycle', () => {
+  assert.match(modelDisplaySource, /const returnSignal = returnLifecycle && returnLifecycle\.signal/);
+  assert.match(modelDisplaySource, /returnSignal \? \{ signal: returnSignal \} : undefined/);
+  assert.match(modelDisplaySource, /if \(isReturnCancelled\(\)\) \{[\s\S]*?return false;/);
 });
 
 test('default-model reset returns from goodbye before persisting or hot-reloading', () => {
