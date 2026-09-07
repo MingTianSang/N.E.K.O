@@ -156,6 +156,11 @@ async function main() {
               maxRequestBytes: 65536,
               maxTimeoutMs: 90000,
             },
+            'round:ai-draw-review': {
+              path: 'ai-draw/review',
+              maxRequestBytes: 2097152,
+              maxTimeoutMs: 90000,
+            },
             'round:input': {
               path: 'input',
               maxRequestBytes: 65536,
@@ -391,6 +396,23 @@ async function main() {
             additionalProperties: true,
           },
         },
+        'round:ai-draw-review': {
+          request: {
+            type: 'object',
+            properties: {
+              client_round_token: { type: 'integer', minimum: 0 },
+              image_data_url: { type: 'string', maxLength: 1800000 },
+            },
+            required: ['client_round_token', 'image_data_url'],
+            additionalProperties: false,
+          },
+          response: {
+            type: 'object',
+            properties: { ok: { type: 'boolean' } },
+            required: ['ok'],
+            additionalProperties: true,
+          },
+        },
       },
     },
   }, { transport, windowImpl: windowMock, documentImpl: windowMock.document });
@@ -592,6 +614,24 @@ async function main() {
     && !Object.hasOwn(commandCall.body.event, 'game_memory_enabled')
     && !Object.hasOwn(commandCall.body.event, 'i18n_language'),
   'the host did not overwrite forged command identity, memory policy, or locale');
+
+  const reviewImage = 'data:image/jpeg;base64,YWktZHJhd2luZw==';
+  const reviewResult = await game.commands.execute('round:ai-draw-review', {
+    client_round_token: 1,
+    image_data_url: reviewImage,
+  }, { timeoutMs: 90000 });
+  assert(reviewResult.ok === true && reviewResult.data.ok === true,
+    'the drawing review command did not complete through the SDK');
+  const reviewCall = calls.find((call) => call.url.endsWith('/ai-draw/review'));
+  assert(reviewCall?.url === '/api/game/drawing_guess/ai-draw/review'
+    && reviewCall.body.image_data_url === reviewImage
+    && reviewCall.body.client_round_token === 1
+    && reviewCall.body.game_type === 'drawing_guess'
+    && reviewCall.body.session_id === 'drawing-sdk-session'
+    && reviewCall.body.lanlan_name === 'SDK Neko'
+    && reviewCall.body.sdk_route_instance_id === startCall.body.sdk_route_instance_id
+    && reviewCall.body.i18n_language === 'zh-CN',
+  'the drawing review image did not use its declared SDK route and trusted identity');
 
   const speechStates = [];
   const unsubscribeSpeech = game.speech.onState((playbackState) => {

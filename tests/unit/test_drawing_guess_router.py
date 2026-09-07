@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from config.prompts import prompts_drawing_guess as drawing_guess_prompts
+from config.prompts.prompts_sys import VISION_WATERMARK
 from main_routers.game_router import drawing_guess as dgr
 from main_routers import game_router
 from utils.game_route_state import _game_route_states, _route_state_key
@@ -55,6 +56,79 @@ def _put_sdk_drawing_route(
     return state
 
 
+def _sample_drawing_plan(*, accent: str = "#f4cf45") -> dict:
+    return {
+        "version": 1,
+        "width": 800,
+        "height": 600,
+        "background": "#fffdfa",
+        "elements": [
+            {
+                "type": "ellipse",
+                "cx": 400,
+                "cy": 310,
+                "rx": 190,
+                "ry": 125,
+                "fill": accent,
+                "stroke": "#2f3b45",
+                "stroke_width": 10,
+            },
+            {
+                "type": "polyline",
+                "points": [[270, 310], [345, 365], [455, 365], [530, 310]],
+                "fill": "none",
+                "stroke": "#2f3b45",
+                "stroke_width": 8,
+                "line_cap": "round",
+                "line_join": "round",
+            },
+        ],
+    }
+
+
+async def _begin_pending_plan_review(
+    monkeypatch,
+    *,
+    session_id: str,
+    generation: str | None = None,
+    round_token: int = 1,
+) -> tuple[dict, dict, dict]:
+    if generation:
+        _put_sdk_drawing_route(session_id, generation)
+    identity = {
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "client_round_token": round_token,
+    }
+    if generation:
+        identity["sdk_route_instance_id"] = generation
+    started = await dgr.drawing_guess_round_start(_FakeRequest(identity))
+    assert started["ok"] is True
+    session = dgr._drawing_guess_sessions[f"YUI:{session_id}"]
+    session["ai_word_id"] = "banana"
+    drawing, reason = dgr._validated_drawing_from_plan(
+        _sample_drawing_plan(),
+        word=dgr._WORD_BY_ID["banana"],
+        source="model_plan",
+        sanitizer={"attempt": 1},
+    )
+    assert reason == "ok" and drawing is not None
+
+    async def fake_generate(*_args, **_kwargs):
+        return drawing
+
+    async def fake_persona_line(**_kwargs):
+        return "Try to guess my drawing.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_model_drawing", fake_generate)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    draw_result = await dgr.drawing_guess_ai_draw(_FakeRequest(identity))
+    assert draw_result["ok"] is True
+    assert draw_result["review_pending"] is True
+    assert draw_result["drawing"]["review_pending"] is True
+    return identity, session, draw_result
+
+
 @pytest.mark.unit
 def test_drawing_guess_word_bank_has_60_easy_words_with_all_locales():
     assert len(dgr.WORDS) == 60
@@ -72,6 +146,8 @@ def test_drawing_guess_system_prompts_are_owned_by_prompt_module():
     prompt_source = Path(drawing_guess_prompts.__file__).read_text(encoding="utf-8")
     markers = (
         "You are drawing as the current character for a companion mini-game.",
+        "You are a strict visual recognizability reviewer for a drawing-guess mini-game.",
+        "The plan must use version 1, width 800, height 600",
         "Temporary mini-game premise:",
         "You classify one user message inside a companion drawing-guess game.",
         "Temporary mini-game task:",
@@ -80,6 +156,13 @@ def test_drawing_guess_system_prompts_are_owned_by_prompt_module():
     for marker in markers:
         assert marker not in router_source
         assert marker in prompt_source
+
+
+@pytest.mark.unit
+def test_drawing_guess_review_prompt_keeps_free_endpoint_watermark():
+    review_prompt = drawing_guess_prompts.build_drawing_guess_drawing_review_system_prompt()
+
+    assert review_prompt.startswith(VISION_WATERMARK)
 
 
 @pytest.mark.unit
@@ -532,6 +615,228 @@ def test_model_svg_repair_does_not_bypass_disallowed_tags():
 
     assert svg is None
     assert reason == "disallowed_svg_tag:script"
+
+
+@pytest.mark.unit
+def test_drawing_plan_sanitizer_and_serializer_accept_bounded_geometry():
+    plan, reason = dgr._sanitize_drawing_plan(_sample_drawing_plan())
+
+    assert reason == "ok"
+    assert plan is not None
+    assert plan["version"] == 1
+    assert plan["width"] == 800
+    assert plan["height"] == 600
+    assert len(plan["elements"]) == 2
+    assert plan["elements"][0]["line_cap"] == "round"
+    assert plan["elements"][1]["points"][0] == [270, 310]
+
+    svg = dgr._drawing_plan_to_svg(plan)
+    assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"')
+    assert '<rect width="800" height="600" fill="#fffdfa"/>' in svg
+    assert '<ellipse cx="400" cy="310" rx="190" ry="125"' in svg
+    assert 'points="270,310 345,365 455,365 530,310"' in svg
+    assert "<text" not in svg.lower()
+    assert "<script" not in svg.lower()
+    assert "url(" not in svg.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "wrap",
+    (
+        lambda payload: f"Here is the requested plan:\n{payload}\nDone.",
+        lambda payload: f"Result follows.\n```json\n{payload}\n```\nNo explanation needed.",
+        lambda payload: f"Discard this malformed example {{not json}}.\n{payload}",
+    ),
+)
+def test_drawing_plan_parser_extracts_complete_json_from_model_prose(wrap):
+    expected = _sample_drawing_plan()
+    payload = json.dumps({"plan": expected})
+
+    parsed = dgr._parse_model_drawing_plan_payload(wrap(payload))
+
+    assert parsed == expected
+    drawing, reason = dgr._validated_drawing_from_plan(
+        parsed,
+        word=dgr._WORD_BY_ID["banana"],
+        source="model_plan",
+        sanitizer={"attempt": 1},
+    )
+    assert reason == "ok"
+    assert drawing is not None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "wrap",
+    (
+        lambda payload: payload,
+        lambda payload: f"```json\n{payload}\n```",
+        lambda payload: f"Here is the replacement plan:\n{payload}",
+    ),
+)
+def test_drawing_plan_parser_accepts_complete_direct_plan_payload(wrap):
+    expected = _sample_drawing_plan()
+
+    assert dgr._parse_model_drawing_plan_payload(wrap(json.dumps(expected))) == expected
+
+
+@pytest.mark.unit
+def test_drawing_plan_parser_rejects_unrelated_or_incomplete_objects():
+    incomplete_plan = _sample_drawing_plan()
+    incomplete_plan.pop("background")
+
+    assert dgr._parse_model_drawing_plan_payload(json.dumps({"svg": "<svg/>"})) is None
+    assert dgr._parse_model_drawing_plan_payload(json.dumps(incomplete_plan)) is None
+
+
+@pytest.mark.unit
+def test_drawing_plan_parser_does_not_accept_truncated_json():
+    payload = json.dumps({"plan": _sample_drawing_plan()})[:-1]
+
+    assert dgr._parse_model_drawing_plan_payload(payload) is None
+
+
+@pytest.mark.unit
+def test_drawing_plan_accepts_complex_curves_and_more_than_old_element_limit():
+    raw_plan = _sample_drawing_plan()
+    raw_plan["elements"] = [
+        {
+            "type": "path",
+            "d": "M 150 320 C 210 90 590 90 650 320 Q 400 540 150 320 Z",
+            "fill": "#f4cf45",
+            "stroke": "#2f3b45",
+            "stroke_width": 8,
+        },
+        *[
+            {
+                "type": "circle",
+                "cx": 200 + index % 20 * 20,
+                "cy": 200 + index // 20 * 20,
+                "r": 4,
+                "fill": "#ffffff",
+                "stroke": "none",
+                "stroke_width": 1,
+            }
+            for index in range(80)
+        ],
+    ]
+
+    plan, reason = dgr._sanitize_drawing_plan(raw_plan)
+
+    assert reason == "ok"
+    assert plan is not None
+    assert len(plan["elements"]) == 81
+    assert plan["elements"][0]["d"] == "M 150 320 C 210 90 590 90 650 320 Q 400 540 150 320 Z"
+    assert '<path d="M 150 320 C 210 90 590 90 650 320 Q 400 540 150 320 Z"' in dgr._drawing_plan_to_svg(plan)
+
+
+@pytest.mark.unit
+def test_drawing_plan_sanitizer_accepts_declared_transparent_paint():
+    raw_plan = _sample_drawing_plan()
+    raw_plan["elements"][0]["fill"] = "transparent"
+
+    plan, reason = dgr._sanitize_drawing_plan(raw_plan)
+
+    assert reason == "ok"
+    assert plan is not None
+    assert plan["elements"][0]["fill"] == "transparent"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mutate", "expected_reason"),
+    (
+        (
+            lambda plan: plan["elements"][0].update({"text": "banana"}),
+            "drawing_plan_extra_element_fields:0",
+        ),
+        (
+            lambda plan: plan["elements"][0].update({"fill": "url(https://example.test/a)"}),
+            "drawing_plan_invalid_color:elements[0].fill",
+        ),
+        (
+            lambda plan: plan["elements"][0].update({"cx": 790}),
+            "drawing_plan_number_out_of_range:elements[0].cx",
+        ),
+        (
+            lambda plan: plan["elements"][1].update({"points": [[20, 20]] * 257}),
+            "drawing_plan_invalid_points:1",
+        ),
+        (
+            lambda plan: plan["elements"].__setitem__(0, {
+                "type": "path", "d": "M 20 20 L 40 40<script>",
+                "fill": "none", "stroke": "#000", "stroke_width": 4,
+            }),
+            "drawing_plan_invalid_path:elements[0].d",
+        ),
+        (
+            lambda plan: plan["elements"][0].update({"stroke_width": float("nan")}),
+            "drawing_plan_number_out_of_range:elements[0].stroke_width",
+        ),
+    ),
+)
+def test_drawing_plan_sanitizer_rejects_unbounded_or_semantic_payloads(mutate, expected_reason):
+    raw_plan = _sample_drawing_plan()
+    mutate(raw_plan)
+
+    plan, reason = dgr._sanitize_drawing_plan(raw_plan)
+
+    assert plan is None
+    assert reason == expected_reason
+
+
+@pytest.mark.unit
+def test_validated_drawing_plan_keeps_plan_and_safe_svg_compatibility():
+    drawing, reason = dgr._validated_drawing_from_plan(
+        _sample_drawing_plan(),
+        word=dgr._WORD_BY_ID["banana"],
+        source="model_plan",
+        sanitizer={"attempt": 1},
+    )
+
+    assert reason == "ok"
+    assert drawing is not None
+    assert drawing["source"] == "model_plan"
+    assert drawing["sanitizer"] == {"ok": True, "attempt": 1}
+    assert drawing["plan"]["elements"][0]["type"] == "ellipse"
+    assert '<svg xmlns="http://www.w3.org/2000/svg"' in drawing["svg"]
+    assert "<text" not in drawing["svg"].lower()
+
+
+@pytest.mark.unit
+def test_drawing_plan_prompt_requests_richer_art_without_old_complexity_cap():
+    prompt = drawing_guess_prompts.build_drawing_guess_plan_system_prompt(
+        lanlan_name="Lanlan", master_name="Player", lanlan_prompt="cute painter",
+    )
+
+    assert "do not deliberately simplify it into a minimal icon" in prompt
+    assert "layered shapes, smooth curves, secondary objects, scenery" in prompt
+    assert "path geometry" in prompt
+    assert "no more than 70 elements" not in prompt
+    assert '"elements":[...]' not in prompt
+    assert '"elements":[{"type":"circle"' in prompt
+    assert any(
+        "never use ellipses or placeholder values" in rule
+        for rule in drawing_guess_prompts.DRAWING_GUESS_PLAN_RETRY_RULES
+    )
+
+
+@pytest.mark.unit
+def test_drawing_plan_revision_prompt_explicitly_requests_wrapped_complete_plan():
+    _, user_prompt = dgr._build_drawing_guess_plan_revision_prompts(
+        word=dgr._WORD_BY_ID["banana"],
+        locale="en",
+        lanlan_name="Lanlan",
+        master_name="Player",
+        lanlan_prompt="cute painter",
+        original_plan=_sample_drawing_plan(),
+        review={"guess_id": "apple", "confidence": 0.6, "issues": ["shape is ambiguous"]},
+    )
+    payload = json.loads(user_prompt)
+
+    assert "top-level plan field" in payload["revision_rules"][0]
+    assert "bare plan object" in payload["revision_rules"][0]
 
 
 @pytest.mark.unit
@@ -1378,13 +1683,13 @@ async def test_generate_model_drawing_retries_after_rejected_svg(monkeypatch):
     })
     prompts = []
 
-    async def fake_call_drawing_guess_svg_model(**kwargs):
+    async def fake_call_drawing_guess_plan_model(**kwargs):
         prompts.append(kwargs["user_prompt"])
         if len(prompts) == 1:
             return '<svg viewBox="0 0 240 180"><script>alert(1)</script><circle cx="90" cy="90" r="35" fill="#f4cf45"/></svg>'
         return '<svg viewBox="0 0 240 180"><circle cx="90" cy="90" r="35" fill="#f4cf45"/></svg>'
 
-    monkeypatch.setattr(dgr, "_call_drawing_guess_svg_model", fake_call_drawing_guess_svg_model)
+    monkeypatch.setattr(dgr, "_call_drawing_guess_plan_model", fake_call_drawing_guess_plan_model)
 
     drawing = await dgr._generate_model_drawing(dgr._WORD_BY_ID["banana"], "en", "YUI")
 
@@ -1394,6 +1699,98 @@ async def test_generate_model_drawing_retries_after_rejected_svg(monkeypatch):
     assert len(prompts) == 2
     assert "previous_rejection_reason" not in prompts[0]
     assert "disallowed_svg_tag:script" in prompts[1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_model_drawing_retries_invalid_plan_then_returns_plan_and_svg(monkeypatch):
+    from main_routers import game_router
+
+    monkeypatch.setattr(game_router, "_get_character_info", lambda lanlan_name: {
+        "lanlan_name": lanlan_name,
+        "master_name": "player",
+        "lanlan_prompt": "A playful companion who draws simple cute shapes.",
+        "model": "test-model",
+        "base_url": "",
+        "api_key": "",
+        "provider_type": "openai",
+    })
+    prompts = []
+
+    async def fake_call_drawing_guess_plan_model(**kwargs):
+        prompts.append(kwargs["user_prompt"])
+        plan = _sample_drawing_plan()
+        if len(prompts) == 1:
+            plan["elements"][0]["text"] = "banana"
+        return json.dumps({"plan": plan})
+
+    monkeypatch.setattr(
+        dgr,
+        "_call_drawing_guess_plan_model",
+        fake_call_drawing_guess_plan_model,
+    )
+
+    drawing = await dgr._generate_model_drawing(
+        dgr._WORD_BY_ID["banana"],
+        "en",
+        "YUI",
+    )
+
+    assert drawing is not None
+    assert drawing["source"] == "model_plan"
+    assert drawing["sanitizer"] == {"ok": True, "attempt": 2}
+    assert drawing["plan"]["width"] == 800
+    assert '<svg xmlns="http://www.w3.org/2000/svg"' in drawing["svg"]
+    assert len(prompts) == 2
+    assert "previous_rejection_reason" not in prompts[0]
+    assert "drawing_plan_extra_element_fields:0" in prompts[1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_model_drawing_revision_retries_and_accepts_direct_plan(monkeypatch):
+    monkeypatch.setattr(game_router, "_get_character_info", lambda lanlan_name: {
+        "lanlan_name": lanlan_name,
+        "master_name": "player",
+        "lanlan_prompt": "A playful companion who draws detailed shapes.",
+        "model": "test-model",
+        "base_url": "",
+        "api_key": "",
+        "provider_type": "openai",
+    })
+    calls = []
+
+    async def fake_call_drawing_guess_plan_model(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "I changed the confusing shapes as requested."
+        return json.dumps(_sample_drawing_plan(accent="#f0b429"))
+
+    monkeypatch.setattr(
+        dgr,
+        "_call_drawing_guess_plan_model",
+        fake_call_drawing_guess_plan_model,
+    )
+
+    drawing = await dgr._generate_model_drawing_revision(
+        word=dgr._WORD_BY_ID["banana"],
+        locale="en",
+        lanlan_name="YUI",
+        original_plan=_sample_drawing_plan(),
+        review={"guess_id": "apple", "confidence": 0.6, "issues": ["shape is ambiguous"]},
+    )
+
+    assert drawing is not None
+    assert drawing["source"] == "model_plan_revision"
+    assert drawing["sanitizer"] == {"ok": True, "attempt": 2, "revision": 1}
+    assert drawing["plan"]["elements"][0]["fill"] == "#f0b429"
+    assert len(calls) == 2
+    assert {call["call_type"] for call in calls} == {"drawing_guess_drawing_revision"}
+    retry_payload = json.loads(calls[1]["user_prompt"])
+    assert retry_payload["task"] == "retry_revise_the_drawing_plan_after_visual_review"
+    assert retry_payload["attempt"] == 2
+    assert retry_payload["previous_rejection_reason"] == "model_payload_unparseable"
+    assert retry_payload["original_plan"] == _sample_drawing_plan()
 
 
 @pytest.mark.unit
@@ -1430,6 +1827,280 @@ async def test_ai_draw_uses_sanitized_model_svg_when_available(monkeypatch):
     assert drawing["drawing"]["source"] == "model_svg"
     assert drawing["drawing"]["caption"] == "curved yellow snack"
     assert "<script" not in drawing["drawing"]["svg"].lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_accepts_and_caches_first_visual_result(monkeypatch):
+    identity, session, draw_result = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-plan-review-accepted",
+        round_token=17,
+    )
+    review_calls = 0
+
+    async def fake_review(**kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        assert kwargs["session"] is session
+        assert kwargs["image_data_url"] == "data:image/jpeg;base64,YWJj"
+        return {
+            "available": True,
+            "accepted": True,
+            "guess_id": "banana",
+            "confidence": 0.91,
+            "issues": [],
+            "source": "vision_model",
+        }
+
+    async def fail_revision(**_kwargs):
+        raise AssertionError("an accepted drawing must not request a revision")
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", fake_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fail_revision)
+    request_payload = {**identity, "image_data_url": "data:image/jpeg;base64,YWJj"}
+
+    first = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+    repeated = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+
+    assert first == repeated
+    assert review_calls == 1
+    assert first["ok"] is True
+    assert first["kind"] == "ai_drawing_review"
+    assert first["phase"] == "user_guessing"
+    assert first["review_pending"] is False
+    assert first["review"] == {
+        "status": "accepted",
+        "accepted": True,
+        "corrected": False,
+        "unavailable": False,
+        "reason": "recognized",
+        "confidence": 0.91,
+    }
+    assert first["drawing"]["plan"] == draw_result["drawing"]["plan"]
+    assert first["drawing"]["review_pending"] is False
+    assert session[dgr._AI_DRAWING_REVIEW_KEY]["pending"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_applies_at_most_one_corrected_plan(monkeypatch):
+    identity, session, _draw_result = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-plan-review-revised",
+        round_token=18,
+    )
+    review_calls = 0
+    revision_calls = 0
+
+    async def fake_review(**_kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        return {
+            "available": True,
+            "accepted": False,
+            "guess_id": "apple",
+            "confidence": 0.78,
+            "issues": ["The silhouette looks round rather than curved."],
+            "source": "vision_model",
+        }
+
+    async def fake_revision(**kwargs):
+        nonlocal revision_calls
+        revision_calls += 1
+        assert kwargs["word"].id == "banana"
+        expected_original, expected_reason = dgr._sanitize_drawing_plan(_sample_drawing_plan())
+        assert expected_reason == "ok"
+        assert kwargs["original_plan"] == expected_original
+        assert kwargs["review"]["guess_id"] == "apple"
+        drawing, reason = dgr._validated_drawing_from_plan(
+            _sample_drawing_plan(accent="#f0b429"),
+            word=dgr._WORD_BY_ID["banana"],
+            source="model_plan_revision",
+            sanitizer={"attempt": 1, "revision": 1},
+        )
+        assert reason == "ok" and drawing is not None
+        return drawing
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", fake_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fake_revision)
+    request_payload = {**identity, "image_data_url": "data:image/jpeg;base64,YWJj"}
+
+    first = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+    repeated = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+
+    assert first == repeated
+    assert review_calls == 1
+    assert revision_calls == 1
+    assert first["review"] == {
+        "status": "revised",
+        "accepted": False,
+        "corrected": True,
+        "unavailable": False,
+        "reason": "not_recognized",
+        "confidence": 0.78,
+    }
+    assert first["drawing"]["source"] == "model_plan_revision"
+    assert first["drawing"]["plan"]["elements"][0]["fill"] == "#f0b429"
+    assert first["drawing"]["review_pending"] is False
+    assert session[dgr._AI_DRAWING_REVIEW_KEY]["revision_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_continues_while_user_chats(monkeypatch):
+    identity, session, _draw_result = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-plan-review-background-chat",
+        round_token=181,
+    )
+    review_started = asyncio.Event()
+    release_review = asyncio.Event()
+
+    async def delayed_review(**_kwargs):
+        review_started.set()
+        await release_review.wait()
+        return {
+            "available": True,
+            "accepted": False,
+            "guess_id": "apple",
+            "confidence": 0.78,
+            "issues": ["The silhouette looks round rather than curved."],
+            "source": "vision_model",
+        }
+
+    async def fake_revision(**_kwargs):
+        drawing, reason = dgr._validated_drawing_from_plan(
+            _sample_drawing_plan(accent="#f0b429"),
+            word=dgr._WORD_BY_ID["banana"],
+            source="model_plan_revision",
+            sanitizer={"attempt": 1, "revision": 1},
+        )
+        assert reason == "ok" and drawing is not None
+        return drawing
+
+    async def fake_chat_intent(**_kwargs):
+        return {"intent": "chat", "guess_text": "", "confidence": 0.95}
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", delayed_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fake_revision)
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", fake_chat_intent)
+    review_task = asyncio.create_task(dgr.drawing_guess_ai_draw_review(_FakeRequest({
+        **identity,
+        "image_data_url": "data:image/jpeg;base64,YWJj",
+    })))
+    await review_started.wait()
+
+    chat_result = await asyncio.wait_for(dgr.drawing_guess_input(_FakeRequest({
+        **identity,
+        "text": "That looks cute.",
+    })), timeout=1.0)
+
+    assert chat_result["ok"] is True
+    assert chat_result["kind"] == "chat"
+    assert session[dgr._AI_DRAWING_REVIEW_KEY]["pending"] is True
+    assert not review_task.done()
+
+    release_review.set()
+    review_result = await review_task
+
+    assert review_result["review"]["status"] == "revised"
+    assert review_result["drawing"]["plan"]["elements"][0]["fill"] == "#f0b429"
+    assert session["phase"] == "user_guessing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_does_not_replace_drawing_after_correct_guess(monkeypatch):
+    identity, session, draw_result = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-plan-review-background-correct",
+        round_token=182,
+    )
+    review_started = asyncio.Event()
+    release_review = asyncio.Event()
+
+    async def delayed_review(**_kwargs):
+        review_started.set()
+        await release_review.wait()
+        return {
+            "available": True,
+            "accepted": False,
+            "guess_id": "apple",
+            "confidence": 0.78,
+            "issues": ["wrong silhouette"],
+            "source": "vision_model",
+        }
+
+    async def fail_revision(**_kwargs):
+        raise AssertionError("a completed guessing phase must not request a revision")
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", delayed_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fail_revision)
+    review_task = asyncio.create_task(dgr.drawing_guess_ai_draw_review(_FakeRequest({
+        **identity,
+        "image_data_url": "data:image/jpeg;base64,YWJj",
+    })))
+    await review_started.wait()
+
+    guess_result = await asyncio.wait_for(dgr.drawing_guess_input(_FakeRequest({
+        **identity,
+        "text": "banana",
+    })), timeout=1.0)
+
+    assert guess_result["ok"] is True
+    assert guess_result["kind"] == "guess"
+    assert guess_result["correct"] is True
+    assert session["phase"] == "word_picking"
+
+    release_review.set()
+    review_result = await review_task
+
+    assert review_result["review"]["status"] == "draft_adopted"
+    assert review_result["drawing"]["plan"] == draw_result["drawing"]["plan"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_unavailable_adopts_and_caches_original_plan(monkeypatch):
+    identity, _session, draw_result = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-plan-review-unavailable",
+        round_token=19,
+    )
+    review_calls = 0
+
+    async def fake_review(**_kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        return {
+            "available": False,
+            "accepted": False,
+            "reason": "no_vision_model",
+            "source": "unavailable",
+        }
+
+    async def fail_revision(**_kwargs):
+        raise AssertionError("an unavailable reviewer must not trigger correction")
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", fake_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fail_revision)
+    request_payload = {**identity, "image_data_url": "data:image/jpeg;base64,YWJj"}
+
+    first = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+    repeated = await dgr.drawing_guess_ai_draw_review(_FakeRequest(request_payload))
+
+    assert first == repeated
+    assert review_calls == 1
+    assert first["review"] == {
+        "status": "unavailable",
+        "accepted": False,
+        "corrected": False,
+        "unavailable": True,
+        "reason": "no_vision_model",
+    }
+    assert first["drawing"]["plan"] == draw_result["drawing"]["plan"]
+    assert first["drawing"]["review_pending"] is False
 
 
 @pytest.mark.unit
@@ -2502,6 +3173,107 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(monkeypatch):
+    class _FakeConfigManager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "vision"
+            return {
+                "model": "test-vision-model",
+                "base_url": "https://vision.example.test/v1",
+                "api_key": "test-key",
+                "provider_type": "openai",
+            }
+
+    async def fake_prepare_image(_value):
+        return "data:image/jpeg;base64,YWJj"
+
+    calls = []
+
+    class _FakeVisionLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def ainvoke(self, messages):
+            calls.append({"messages": messages, "mode": "invoke"})
+            return type("_Result", (), {
+                "content": json.dumps({
+                    "guess_id": "banana",
+                    "confidence": 0.82,
+                    "issues": [],
+                })
+            })()
+
+    async def fake_create_chat_llm_async(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return _FakeVisionLLM()
+
+    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
+
+    import utils.config_manager as config_manager
+    import utils.llm_client as llm_client
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _FakeConfigManager())
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+
+    result = await dgr._review_ai_drawing(
+        session={
+            "session_id": "dg-ai-review",
+            "round_id": "round-7",
+            "ai_word_id": "banana",
+        },
+        locale="en",
+        lanlan_name="YUI",
+        image_data_url="data:image/png;base64,ignored",
+    )
+
+    assert result == {
+        "available": True,
+        "accepted": True,
+        "guess_id": "banana",
+        "confidence": 0.82,
+        "issues": [],
+        "source": "vision_model",
+    }
+    assert calls[0]["kwargs"]["model"] == "test-vision-model"
+    assert calls[0]["kwargs"]["provider_type"] == "openai"
+    messages = calls[1]["messages"]
+    assert messages[0].content.startswith(VISION_WATERMARK)
+    assert messages[1].content[0]["image_url"]["url"] == "data:image/jpeg;base64,YWJj"
+    review_payload = json.loads(messages[1].content[1]["text"])
+    assert review_payload["task"] == "identify_the_single_canvas_drawing_for_quality_review"
+    assert len(review_payload["candidates"]) == dgr.VISION_GUESS_MAX_CANDIDATES
+    assert "answer_id" not in review_payload
+    assert "answer_label" not in review_payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_drawing_review_invalid_image_is_unavailable_without_model_call(monkeypatch):
+    async def fake_prepare_image(_value):
+        return None
+
+    monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
+
+    result = await dgr._review_ai_drawing(
+        session={"session_id": "dg-ai-review-invalid", "ai_word_id": "banana"},
+        locale="en",
+        lanlan_name="YUI",
+        image_data_url="not-an-image",
+    )
+
+    assert result == {
+        "available": False,
+        "accepted": False,
+        "reason": "invalid_image",
+        "source": "unavailable",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
     class _FakeConfigManager:
         def get_model_api_config(self, model_type):
@@ -2881,6 +3653,7 @@ async def test_sdk_round_start_rejects_missing_and_stale_window_generation():
     ("handler_name", "extra"),
     (
         ("drawing_guess_ai_draw", {}),
+        ("drawing_guess_ai_draw_review", {"image_data_url": "data:image/jpeg;base64,YQ=="}),
         ("drawing_guess_input", {"text": "cat"}),
         ("drawing_guess_choose_word", {"word_id": "cat"}),
         ("drawing_guess_timeout", {}),
@@ -2976,6 +3749,63 @@ async def test_delayed_ai_draw_cannot_land_after_same_session_sdk_supersede(monk
 
     dgr._sync_active_route_state(session_a, "en")
     assert route_b["last_state"]["client_round_token"] == "round-B"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delayed_ai_drawing_review_cannot_land_after_sdk_route_supersede(monkeypatch):
+    identity_a, session_a, _drawing = await _begin_pending_plan_review(
+        monkeypatch,
+        session_id="dg-sdk-delayed-review",
+        generation="route-A",
+        round_token=31,
+    )
+    route_a = _game_route_states[_route_state_key("YUI", "drawing_guess")]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_review(**_kwargs):
+        entered.set()
+        await release.wait()
+        return {
+            "available": True,
+            "accepted": False,
+            "guess_id": "apple",
+            "confidence": 0.8,
+            "issues": ["wrong silhouette"],
+            "source": "vision_model",
+        }
+
+    async def fail_revision(**_kwargs):
+        raise AssertionError("a stale review must stop before the correction model call")
+
+    monkeypatch.setattr(dgr, "_review_ai_drawing", delayed_review)
+    monkeypatch.setattr(dgr, "_generate_model_drawing_revision", fail_revision)
+    pending = asyncio.create_task(dgr.drawing_guess_ai_draw_review(_FakeRequest({
+        **identity_a,
+        "image_data_url": "data:image/jpeg;base64,YWJj",
+    })))
+    await entered.wait()
+
+    route_a["game_route_active"] = False
+    route_b = _put_sdk_drawing_route("dg-sdk-delayed-review", "route-B")
+    started_b = await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-sdk-delayed-review",
+        "sdk_route_instance_id": "route-B",
+        "client_round_token": 32,
+    }))
+    assert started_b["ok"] is True
+    session_b = dgr._drawing_guess_sessions["YUI:dg-sdk-delayed-review"]
+
+    release.set()
+    stale_result = await pending
+
+    assert stale_result == {"ok": False, "reason": "route_instance_id_mismatch"}
+    assert session_a[dgr._AI_DRAWING_REVIEW_KEY]["pending"] is True
+    assert session_b["phase"] == "ai_drawing"
+    assert dgr._AI_DRAWING_REVIEW_KEY not in session_b
+    assert route_b["last_state"]["client_round_token"] == 32
 
 
 @pytest.mark.unit

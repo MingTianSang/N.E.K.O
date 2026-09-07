@@ -94,6 +94,11 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
                 "maxRequestBytes": 65536,
                 "maxTimeoutMs": 90000,
             },
+            "round:ai-draw-review": {
+                "path": "ai-draw/review",
+                "maxRequestBytes": 2097152,
+                "maxTimeoutMs": 90000,
+            },
             "round:input": {
                 "path": "input",
                 "maxRequestBytes": 65536,
@@ -177,6 +182,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     for command in (
         "round:start",
         "round:ai-draw",
+        "round:ai-draw-review",
         "round:input",
         "round:feedback",
         "round:choose-word",
@@ -466,6 +472,11 @@ def test_drawing_guess_static_route_contract():
             r"executeRoundCommand\(ROUND_COMMANDS\.AI_DRAW,\s*"
             r"roundCommandPayload\(\),\s*AI_DRAW_REQUEST_TIMEOUT_MS\)"
         ),
+        "AI drawing review": (
+            r"executeRoundCommand\(ROUND_COMMANDS\.AI_DRAW_REVIEW,\s*"
+            r"roundCommandPayload\(\{[^}]*image_data_url:[^}]*\}\),\s*"
+            r"AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS\)"
+        ),
         "user input": (
             r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
             r"roundCommandPayload\(Object\.assign\(\{\s*text: text\s*\},\s*"
@@ -639,6 +650,8 @@ def test_drawing_guess_static_route_contract():
     assert "function requestEyeDropperColor" in script
     assert "new window.EyeDropper().open()" in script
     assert "function hexToRgba" in script
+    assert "function canvasDisplayPixelBounds" in script
+    assert "canvasDisplayPixelBounds(els.canvas, els.canvasStage)" in script
     assert "function floodFillCanvas" in script
     assert "state.brushMode === 'brush' && state.brushToolKind === 'bucket'" in script
     assert "function setBrushToolKind" in script
@@ -685,6 +698,9 @@ def test_drawing_guess_static_route_contract():
     assert "function leaveDrawingGuessPage" in script
     assert "var ROUND_FALLBACK_SECONDS = 5 * 60;" in script
     assert "var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;" in script
+    assert "var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;" in script
+    assert "var AI_DRAW_REVIEW_WIDTH = 384;" in script
+    assert "var AI_DRAW_REVIEW_HEIGHT = 288;" in script
     assert "var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;" in script
     assert "var AI_GUESS_MIN_DELAY_MS = 10000;" in script
     assert "var AI_GUESS_MAX_DELAY_MS = 60000;" in script
@@ -831,6 +847,16 @@ def test_drawing_guess_static_route_contract():
     assert "drawingGuess.summary.score" not in script
     assert "drawingGuess.summary.outcome." not in script
     assert "animateAiDrawing" in script
+    assert "function normalizeAiDrawingPlan(value)" in script
+    assert "function renderAiDrawingPlanToCanvas(value, canvas, elementLimit)" in script
+    assert "function captureAiDrawingReviewImage(value)" in script
+    assert "review.toDataURL('image/jpeg', 0.78)" in script
+    assert "function aiDrawingPlanToSvg(value)" in script
+    assert "function showAiDrawingPlan(value)" in script
+    assert "function prepareAiDrawing(drawing, flowToken)" in script
+    assert "function reviewAiDrawingInBackground(drawing, flowToken)" in script
+    assert "reviewAiDrawingInBackground(res.drawing, flowToken);" in script
+    assert "if (!state.aiDrawingPlan || !showAiDrawingPlan(state.aiDrawingPlan))" in script
     assert "state.aiSvg = serializeAiDrawingSvg(els.aiDrawing) || state.aiSvg" in script
     assert "function screenRectToSvgBounds" in script
     assert "function measureSvgContentMetrics" in script
@@ -839,6 +865,49 @@ def test_drawing_guess_static_route_contract():
     assert "transform 180ms" not in script
     assert "prefers-reduced-motion: reduce" in script
     assert "navigator.sendBeacon" not in script
+
+
+@pytest.mark.unit
+def test_ai_drawing_keeps_compact_loading_badge_during_animation():
+    script = _script()
+    plan_display = script.split("function showAiDrawingPlan(value)", 1)[1].split(
+        "function aiDrawingPlanFromResponse", 1,
+    )[0]
+    svg_display = script.split("function showAiDrawing(svgMarkup)", 1)[1].split(
+        "function normalizeAiDrawingSvg", 1,
+    )[0]
+
+    assert "setBadge('');" not in plan_display
+    assert "setBadge('');" not in svg_display
+
+
+@pytest.mark.unit
+def test_ai_drawing_plan_is_visible_while_visual_review_runs():
+    script = _script()
+    round_flow = script.split("function startRound(options)", 1)[1].split(
+        "function prepareUserDrawing", 1,
+    )[0]
+
+    draft_display = round_flow.index("draftVisible = showAiDrawingPlan(draftPlan)")
+    guessing_phase = round_flow.index("setPhase('user_guessing')")
+    visual_review = round_flow.index("reviewAiDrawingInBackground(res.drawing, flowToken)")
+    assert draft_display < guessing_phase < visual_review
+    assert "startCountdown(res.guess_seconds || ROUND_FALLBACK_SECONDS" in round_flow
+
+
+@pytest.mark.unit
+def test_ai_and_user_canvases_fill_the_same_stage_bounds():
+    html = _html()
+    ai_container = html.split(".dg-ai-drawing {", 1)[1].split("}", 1)[0]
+    ai_svg = html.split(".dg-ai-drawing svg {", 1)[1].split("}", 1)[0]
+    ai_canvas = html.split(".dg-ai-drawing canvas {", 1)[1].split("}", 1)[0]
+
+    assert "padding: 0;" in ai_container
+    assert "width: 100%;" in ai_svg and "height: 100%;" in ai_svg
+    assert "width: 100%;" in ai_canvas and "height: 100%;" in ai_canvas
+    assert "object-fit: fill;" in ai_canvas
+    assert "width: 80%;" not in ai_svg + ai_canvas
+    assert "height: 80%;" not in ai_svg + ai_canvas
 
 
 @pytest.mark.unit
@@ -952,5 +1021,5 @@ def test_drawing_guess_i18n_keys_exist_in_all_static_locales():
         assert "???" not in drawing_guess["exitConfirm"]["message"]
         assert "???" not in drawing_guess["exitConfirm"]["reopen"]
         assert "???" not in drawing_guess["summary"]["finalTitle"]
-        assert "memorySaved" not in drawing_guess["tutorial"]
-        assert "savedShort" not in drawing_guess["memory"]
+    assert "memorySaved" not in drawing_guess["tutorial"]
+    assert "savedShort" not in drawing_guess["memory"]

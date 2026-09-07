@@ -7,6 +7,7 @@
   var ROUND_COMMANDS = Object.freeze({
     START: 'round:start',
     AI_DRAW: 'round:ai-draw',
+    AI_DRAW_REVIEW: 'round:ai-draw-review',
     INPUT: 'round:input',
     FEEDBACK: 'round:feedback',
     CHOOSE_WORD: 'round:choose-word',
@@ -39,6 +40,9 @@
       debug_start_phase: { type: 'string', enum: ['word_picking'] }
     }),
     'round:ai-draw': roundCommandRequestSchema(),
+    'round:ai-draw-review': roundCommandRequestSchema({
+      image_data_url: { type: 'string', maxLength: 1800000 }
+    }, ['image_data_url']),
     'round:input': roundCommandRequestSchema({
       text: { type: 'string', maxLength: 2000 },
       summary_chat_only: { type: 'boolean' },
@@ -66,6 +70,16 @@
   });
   var ROUND_FALLBACK_SECONDS = 5 * 60;
   var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;
+  var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;
+  var AI_DRAW_PLAN_WIDTH = 800;
+  var AI_DRAW_PLAN_HEIGHT = 600;
+  var AI_DRAW_REVIEW_WIDTH = 384;
+  var AI_DRAW_REVIEW_HEIGHT = 288;
+  var AI_DRAW_PLAN_MAX_ELEMENTS = 240;
+  var AI_DRAW_PLAN_MAX_POINTS_PER_ELEMENT = 256;
+  var AI_DRAW_PLAN_MAX_TOTAL_POINTS = 4096;
+  var AI_DRAW_PLAN_MAX_PATH_CHARS = 6000;
+  var AI_DRAW_PLAN_MAX_PATH_COMMANDS = 512;
   var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
   var AI_GUESS_TIMEOUT_MAX_RETRIES = 2;
   var AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50;
@@ -169,6 +183,8 @@
     phase: 'tutorial',
     memoryConsent: 'none',
     aiSvg: '',
+    aiDrawingPlan: null,
+    aiDrawingAnimationToken: 0,
     aiAnswerLabel: '',
     userPng: '',
     userDrawAnswer: null,
@@ -1871,7 +1887,8 @@
 
   function sdkRouteInstanceId() {
     var client = state.sdkClient;
-    return String((client && client.runtime && client.runtime.session.routeInstanceId) || '').trim();
+    return String((client && client.runtime && client.runtime.session
+      && client.runtime.session.routeInstanceId) || '').trim();
   }
 
   function routePayload(extra) {
@@ -2403,6 +2420,7 @@
   }
 
   function hideAllStageViews() {
+    state.aiDrawingAnimationToken += 1;
     clearAiDrawingPlaceholderHint(false);
     hideSizePreview();
     if (els.canvasStage) els.canvasStage.classList.remove('is-user-canvas');
@@ -2473,6 +2491,526 @@
         }, 560);
       }, 180);
     }, DRAW_PICK_DURATION_MS);
+  }
+
+  function aiDrawingPlanNumber(value, minimum, maximum) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    if (value < minimum || value > maximum) return null;
+    return value;
+  }
+
+  function aiDrawingPlanNumberText(value) {
+    return String(Number(Number(value).toFixed(2)));
+  }
+
+  function aiDrawingPlanColor(value, fallback, allowNone) {
+    var color = String(value == null ? '' : value).trim().toLowerCase();
+    if (allowNone && (color === 'none' || color === 'transparent')) return 'none';
+    if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(color)) return color;
+    return fallback;
+  }
+
+  function isAiDrawingPlanColor(value) {
+    if (typeof value !== 'string') return false;
+    var color = String(value == null ? '' : value).trim().toLowerCase();
+    return color === 'none'
+      || color === 'transparent'
+      || /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(color);
+  }
+
+  function aiDrawingPlanHasPaint(value) {
+    return String(value || '').toLowerCase() !== 'none';
+  }
+
+  function normalizeAiDrawingPlanPoints(value, maximum, width, height, margin) {
+    if (!Array.isArray(value) || value.length > maximum) return [];
+    var points = [];
+    for (var index = 0; index < value.length; index += 1) {
+      var pair = value[index];
+      if (!Array.isArray(pair) || pair.length !== 2) return [];
+      var x = aiDrawingPlanNumber(pair[0], margin, width - margin);
+      var y = aiDrawingPlanNumber(pair[1], margin, height - margin);
+      if (x == null || y == null) return [];
+      points.push([x, y]);
+    }
+    return points;
+  }
+
+  function normalizeAiDrawingPlanPath(value, width, height) {
+    if (typeof value !== 'string') return '';
+    var path = value.trim();
+    if (!path || path.length > AI_DRAW_PLAN_MAX_PATH_CHARS || !/^[MLHVCSQTAZ0-9,.\-+\s]+$/.test(path)) return '';
+    var tokens = path.match(/[MLHVCSQTAZ]|[-+]?(?:\d+(?:\.\d+)?|\.\d+)/g) || [];
+    if (!tokens.length || tokens[0] !== 'M' || tokens.join('') !== path.replace(/[\s,]+/g, '')) return '';
+    var arities = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+    var index = 0;
+    var commandCount = 0;
+    var hasVisibleSegment = false;
+    var segments = [];
+    while (index < tokens.length) {
+      var command = tokens[index];
+      if (!Object.prototype.hasOwnProperty.call(arities, command)) return '';
+      var arity = arities[command];
+      var values = tokens.slice(index + 1, index + 1 + arity);
+      if (values.length !== arity || values.some(function (token) {
+        return Object.prototype.hasOwnProperty.call(arities, token);
+      })) return '';
+      index += arity + 1;
+      commandCount += 1;
+      if (commandCount > AI_DRAW_PLAN_MAX_PATH_COMMANDS) return '';
+      if (command !== 'M' && command !== 'Z') hasVisibleSegment = true;
+
+      var normalizedValues = [];
+      for (var valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+        var rawNumber = Number(values[valueIndex]);
+        var normalized = null;
+        if (['M', 'L', 'T', 'C', 'S', 'Q'].indexOf(command) >= 0) {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, valueIndex % 2 === 0 ? width : height);
+        } else if (command === 'H') {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, width);
+        } else if (command === 'V') {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, height);
+        } else if (command === 'A' && (valueIndex === 0 || valueIndex === 1)) {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, valueIndex === 0 ? width : height);
+        } else if (command === 'A' && valueIndex === 2) {
+          normalized = aiDrawingPlanNumber(rawNumber, -360, 360);
+        } else if (command === 'A' && (valueIndex === 3 || valueIndex === 4)) {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, 1);
+          if (normalized !== 0 && normalized !== 1) return '';
+        } else {
+          normalized = aiDrawingPlanNumber(rawNumber, 0, valueIndex === 5 ? width : height);
+        }
+        if (normalized == null) return '';
+        normalizedValues.push(aiDrawingPlanNumberText(normalized));
+      }
+      segments.push(command + (normalizedValues.length ? ' ' + normalizedValues.join(' ') : ''));
+    }
+    return hasVisibleSegment ? segments.join(' ') : '';
+  }
+
+  function normalizeAiDrawingPlanElement(value, width, height, remainingPoints) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (typeof value.type !== 'string') return null;
+    var type = String(value.type || '').trim().toLowerCase();
+    if (['line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse', 'path'].indexOf(type) < 0) return null;
+    var geometryKeys = {
+      line: ['x1', 'y1', 'x2', 'y2'],
+      polyline: ['points'],
+      polygon: ['points'],
+      rect: ['x', 'y', 'width', 'height', 'rx', 'ry'],
+      circle: ['cx', 'cy', 'r'],
+      ellipse: ['cx', 'cy', 'rx', 'ry'],
+      path: ['d']
+    }[type];
+    var allowedKeys = ['type', 'stroke', 'fill', 'stroke_width', 'line_cap', 'line_join'].concat(geometryKeys);
+    if (Object.keys(value).some(function (key) { return allowedKeys.indexOf(key) < 0; })) return null;
+    if (value.stroke != null && !isAiDrawingPlanColor(value.stroke)) return null;
+    if (value.fill != null && !isAiDrawingPlanColor(value.fill)) return null;
+    if (value.line_cap != null && typeof value.line_cap !== 'string') return null;
+    if (value.line_join != null && typeof value.line_join !== 'string') return null;
+    var stroke = aiDrawingPlanColor(value.stroke == null ? '#2f3b45' : value.stroke, '', true);
+    var fill = aiDrawingPlanColor(value.fill == null ? 'none' : value.fill, '', true);
+    if ((type === 'line' || type === 'polyline')
+      && (aiDrawingPlanHasPaint(fill) || !aiDrawingPlanHasPaint(stroke))) return null;
+    if (!aiDrawingPlanHasPaint(stroke) && !aiDrawingPlanHasPaint(fill)) return null;
+    var strokeWidth = aiDrawingPlanNumber(value.stroke_width == null ? 4 : value.stroke_width, 0.5, 32);
+    if (strokeWidth == null) return null;
+    var rawLineCap = String(value.line_cap == null ? 'round' : value.line_cap).trim().toLowerCase();
+    var rawLineJoin = String(value.line_join == null ? 'round' : value.line_join).trim().toLowerCase();
+    if (['butt', 'round', 'square'].indexOf(rawLineCap) < 0) return null;
+    if (['bevel', 'round', 'miter'].indexOf(rawLineJoin) < 0) return null;
+    var margin = aiDrawingPlanHasPaint(stroke) ? strokeWidth / 2 : 0;
+    var normalized = {
+      type: type,
+      stroke: stroke,
+      fill: fill,
+      stroke_width: strokeWidth,
+      line_cap: rawLineCap,
+      line_join: rawLineJoin,
+      point_count: 0
+    };
+
+    if (type === 'path') {
+      normalized.d = normalizeAiDrawingPlanPath(value.d, width, height);
+      return normalized.d ? normalized : null;
+    }
+
+    if (type === 'line') {
+      normalized.x1 = aiDrawingPlanNumber(value.x1, margin, width - margin);
+      normalized.y1 = aiDrawingPlanNumber(value.y1, margin, height - margin);
+      normalized.x2 = aiDrawingPlanNumber(value.x2, margin, width - margin);
+      normalized.y2 = aiDrawingPlanNumber(value.y2, margin, height - margin);
+      if ([normalized.x1, normalized.y1, normalized.x2, normalized.y2].some(function (item) { return item == null; })) return null;
+      return normalized;
+    }
+
+    if (type === 'polyline' || type === 'polygon') {
+      var minimumPoints = type === 'polygon' ? 3 : 2;
+      normalized.points = normalizeAiDrawingPlanPoints(
+        value.points,
+        AI_DRAW_PLAN_MAX_POINTS_PER_ELEMENT,
+        width,
+        height,
+        margin
+      );
+      normalized.point_count = normalized.points.length;
+      return normalized.points.length >= minimumPoints && normalized.point_count <= remainingPoints ? normalized : null;
+    }
+
+    if (type === 'rect') {
+      normalized.x = aiDrawingPlanNumber(value.x, margin, width - margin);
+      normalized.y = aiDrawingPlanNumber(value.y, margin, height - margin);
+      if (normalized.x == null || normalized.y == null) return null;
+      normalized.width = aiDrawingPlanNumber(value.width, 0.5, width);
+      normalized.height = aiDrawingPlanNumber(value.height, 0.5, height);
+      if (normalized.width == null || normalized.height == null) return null;
+      if (normalized.x + normalized.width + margin > width || normalized.y + normalized.height + margin > height) return null;
+      if (value.rx != null && typeof value.rx !== 'number') return null;
+      if (value.ry != null && typeof value.ry !== 'number') return null;
+      normalized.rx = aiDrawingPlanNumber(value.rx == null ? 0 : value.rx, 0, normalized.width / 2);
+      normalized.ry = aiDrawingPlanNumber(value.ry == null ? 0 : value.ry, 0, normalized.height / 2);
+      if (normalized.rx == null || normalized.ry == null) return null;
+      return normalized;
+    }
+
+    if (type === 'circle') {
+      normalized.r = aiDrawingPlanNumber(value.r, 0.5, Math.min(width, height) / 2);
+      if (normalized.r == null) return null;
+      normalized.cx = aiDrawingPlanNumber(value.cx, normalized.r + margin, width - normalized.r - margin);
+      normalized.cy = aiDrawingPlanNumber(value.cy, normalized.r + margin, height - normalized.r - margin);
+      return normalized.cx != null && normalized.cy != null ? normalized : null;
+    }
+    normalized.rx = aiDrawingPlanNumber(value.rx, 0.5, width / 2);
+    normalized.ry = aiDrawingPlanNumber(value.ry, 0.5, height / 2);
+    if (normalized.rx == null || normalized.ry == null) return null;
+    normalized.cx = aiDrawingPlanNumber(value.cx, normalized.rx + margin, width - normalized.rx - margin);
+    normalized.cy = aiDrawingPlanNumber(value.cy, normalized.ry + margin, height - normalized.ry - margin);
+    return normalized.cx != null && normalized.cy != null ? normalized : null;
+  }
+
+  function normalizeAiDrawingPlan(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    var topLevelKeys = Object.keys(value).sort().join(',');
+    if (topLevelKeys !== 'background,elements,height,version,width') return null;
+    var version = value.version;
+    var width = value.width;
+    var height = value.height;
+    if (version !== 1 || width !== AI_DRAW_PLAN_WIDTH || height !== AI_DRAW_PLAN_HEIGHT) return null;
+    if (String(value.background || '').trim().toLowerCase() !== '#fffdfa') return null;
+    if (!Array.isArray(value.elements) || !value.elements.length || value.elements.length > AI_DRAW_PLAN_MAX_ELEMENTS) return null;
+    var totalPoints = 0;
+    var elements = [];
+    for (var index = 0; index < value.elements.length; index += 1) {
+      var normalized = normalizeAiDrawingPlanElement(
+        value.elements[index],
+        width,
+        height,
+        AI_DRAW_PLAN_MAX_TOTAL_POINTS - totalPoints
+      );
+      if (!normalized) return null;
+      totalPoints += normalized.point_count;
+      delete normalized.point_count;
+      elements.push(normalized);
+    }
+    return {
+      version: 1,
+      width: width,
+      height: height,
+      background: '#fffdfa',
+      elements: elements
+    };
+  }
+
+  function paintAiDrawingPlanBackground(context, plan) {
+    context.save();
+    if (typeof context.setTransform === 'function') context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, plan.width, plan.height);
+    context.fillStyle = plan.background;
+    context.fillRect(0, 0, plan.width, plan.height);
+    context.restore();
+  }
+
+  function traceAiDrawingPlanRect(context, element) {
+    var radiusX = Math.max(0, Math.min(element.rx || 0, element.width / 2));
+    var radiusY = Math.max(0, Math.min(element.ry || 0, element.height / 2));
+    if (!radiusX || !radiusY) {
+      context.rect(element.x, element.y, element.width, element.height);
+      return;
+    }
+    context.moveTo(element.x + radiusX, element.y);
+    context.lineTo(element.x + element.width - radiusX, element.y);
+    context.quadraticCurveTo(element.x + element.width, element.y, element.x + element.width, element.y + radiusY);
+    context.lineTo(element.x + element.width, element.y + element.height - radiusY);
+    context.quadraticCurveTo(element.x + element.width, element.y + element.height, element.x + element.width - radiusX, element.y + element.height);
+    context.lineTo(element.x + radiusX, element.y + element.height);
+    context.quadraticCurveTo(element.x, element.y + element.height, element.x, element.y + element.height - radiusY);
+    context.lineTo(element.x, element.y + radiusY);
+    context.quadraticCurveTo(element.x, element.y, element.x + radiusX, element.y);
+    context.closePath();
+  }
+
+  function paintAiDrawingPlanElement(context, element) {
+    context.save();
+    context.beginPath();
+    context.lineWidth = element.stroke_width;
+    context.lineCap = element.line_cap;
+    context.lineJoin = element.line_join;
+    context.strokeStyle = aiDrawingPlanHasPaint(element.stroke) ? element.stroke : 'rgba(0,0,0,0)';
+    context.fillStyle = aiDrawingPlanHasPaint(element.fill) ? element.fill : 'rgba(0,0,0,0)';
+    var path = null;
+    if (element.type === 'path') {
+      if (typeof window.Path2D !== 'function') {
+        context.restore();
+        return false;
+      }
+      try {
+        path = new window.Path2D(element.d);
+      } catch (_) {
+        context.restore();
+        return false;
+      }
+    } else if (element.type === 'line') {
+      context.moveTo(element.x1, element.y1);
+      context.lineTo(element.x2, element.y2);
+    } else if (element.type === 'polyline' || element.type === 'polygon') {
+      context.moveTo(element.points[0][0], element.points[0][1]);
+      element.points.slice(1).forEach(function (point) {
+        context.lineTo(point[0], point[1]);
+      });
+      if (element.type === 'polygon') context.closePath();
+    } else if (element.type === 'rect') {
+      traceAiDrawingPlanRect(context, element);
+    } else if (element.type === 'circle') {
+      context.arc(element.cx, element.cy, element.r, 0, Math.PI * 2);
+    } else if (element.type === 'ellipse') {
+      context.ellipse(element.cx, element.cy, element.rx, element.ry, 0, 0, Math.PI * 2);
+    }
+    if (aiDrawingPlanHasPaint(element.fill)) {
+      if (path) context.fill(path);
+      else context.fill();
+    }
+    if (aiDrawingPlanHasPaint(element.stroke)) {
+      if (path) context.stroke(path);
+      else context.stroke();
+    }
+    context.restore();
+    return true;
+  }
+
+  function renderAiDrawingPlanToCanvas(value, canvas, elementLimit) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan || !canvas || typeof canvas.getContext !== 'function') return false;
+    var context = canvas.getContext('2d');
+    if (!context) return false;
+    canvas.width = plan.width;
+    canvas.height = plan.height;
+    paintAiDrawingPlanBackground(context, plan);
+    var limit = elementLimit == null
+      ? plan.elements.length
+      : Math.max(0, Math.min(plan.elements.length, Number(elementLimit) || 0));
+    for (var index = 0; index < limit; index += 1) {
+      if (!paintAiDrawingPlanElement(context, plan.elements[index])) return false;
+    }
+    return true;
+  }
+
+  function aiDrawingPlanToSvg(value) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan || !document.createElementNS) return '';
+    try {
+      var namespace = 'http://www.w3.org/2000/svg';
+      var svg = document.createElementNS(namespace, 'svg');
+      svg.setAttribute('viewBox', '0 0 ' + plan.width + ' ' + plan.height);
+      var background = document.createElementNS(namespace, 'rect');
+      background.setAttribute('x', '0');
+      background.setAttribute('y', '0');
+      background.setAttribute('width', String(plan.width));
+      background.setAttribute('height', String(plan.height));
+      background.setAttribute('fill', plan.background);
+      svg.appendChild(background);
+      plan.elements.forEach(function (element) {
+        var node = document.createElementNS(namespace, element.type);
+        if (element.type === 'path') {
+          node.setAttribute('d', element.d);
+        } else if (element.type === 'line') {
+          ['x1', 'y1', 'x2', 'y2'].forEach(function (key) {
+            node.setAttribute(key, aiDrawingPlanNumberText(element[key]));
+          });
+        } else if (element.type === 'polyline' || element.type === 'polygon') {
+          node.setAttribute('points', element.points.map(function (point) {
+            return aiDrawingPlanNumberText(point[0]) + ',' + aiDrawingPlanNumberText(point[1]);
+          }).join(' '));
+        } else if (element.type === 'rect') {
+          ['x', 'y', 'width', 'height'].forEach(function (key) {
+            node.setAttribute(key, aiDrawingPlanNumberText(element[key]));
+          });
+          if (element.rx) node.setAttribute('rx', aiDrawingPlanNumberText(element.rx));
+          if (element.ry) node.setAttribute('ry', aiDrawingPlanNumberText(element.ry));
+        } else if (element.type === 'circle') {
+          ['cx', 'cy', 'r'].forEach(function (key) {
+            node.setAttribute(key, aiDrawingPlanNumberText(element[key]));
+          });
+        } else if (element.type === 'ellipse') {
+          ['cx', 'cy', 'rx', 'ry'].forEach(function (key) {
+            node.setAttribute(key, aiDrawingPlanNumberText(element[key]));
+          });
+        }
+        node.setAttribute('fill', element.fill || 'none');
+        node.setAttribute('stroke', element.stroke || 'none');
+        node.setAttribute('stroke-width', aiDrawingPlanNumberText(element.stroke_width));
+        node.setAttribute('stroke-linecap', element.line_cap);
+        node.setAttribute('stroke-linejoin', element.line_join);
+        svg.appendChild(node);
+      });
+      try {
+        return new XMLSerializer().serializeToString(svg);
+      } catch (_) {
+        return svg.outerHTML || '';
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function captureAiDrawingReviewImage(value) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan) return '';
+    try {
+      var source = document.createElement('canvas');
+      if (!renderAiDrawingPlanToCanvas(plan, source)) return '';
+      var review = document.createElement('canvas');
+      review.width = AI_DRAW_REVIEW_WIDTH;
+      review.height = AI_DRAW_REVIEW_HEIGHT;
+      var context = review.getContext('2d');
+      if (!context) return '';
+      context.fillStyle = plan.background;
+      context.fillRect(0, 0, review.width, review.height);
+      context.drawImage(source, 0, 0, review.width, review.height);
+      var dataUrl = review.toDataURL('image/jpeg', 0.78);
+      return dataUrl.length <= 1800000 ? dataUrl : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function animateAiDrawingPlan(canvas, value) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan || !canvas || typeof canvas.getContext !== 'function') return;
+    var context = canvas.getContext('2d');
+    if (!context) return;
+    var reduceMotion = false;
+    try {
+      reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {}
+    if (reduceMotion) {
+      renderAiDrawingPlanToCanvas(plan, canvas);
+      return;
+    }
+    canvas.width = plan.width;
+    canvas.height = plan.height;
+    paintAiDrawingPlanBackground(context, plan);
+    var animationToken = ++state.aiDrawingAnimationToken;
+    var startedAt = null;
+    var rendered = 0;
+    function frame(timestamp) {
+      if (animationToken !== state.aiDrawingAnimationToken) return;
+      var now = Number.isFinite(timestamp) ? timestamp : Date.now();
+      if (startedAt == null) startedAt = now;
+      var target = Math.min(plan.elements.length, Math.max(1, Math.floor((now - startedAt) / 45) + 1));
+      while (rendered < target) {
+        paintAiDrawingPlanElement(context, plan.elements[rendered]);
+        rendered += 1;
+      }
+      if (rendered < plan.elements.length) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function showAiDrawingPlan(value) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan) return false;
+    try {
+      hideAllStageViews();
+      els.aiDrawing.innerHTML = '';
+      var canvas = document.createElement('canvas');
+      canvas.className = 'dg-ai-plan-canvas';
+      canvas.width = plan.width;
+      canvas.height = plan.height;
+      canvas.setAttribute('aria-hidden', 'true');
+      if (!renderAiDrawingPlanToCanvas(plan, canvas, 0)) return false;
+      els.aiDrawing.appendChild(canvas);
+      state.aiDrawingPlan = plan;
+      state.aiSvg = aiDrawingPlanToSvg(plan) || state.aiSvg;
+      els.aiDrawing.style.visibility = '';
+      els.aiDrawing.classList.remove('dg-hidden');
+      animateAiDrawingPlan(canvas, plan);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function aiDrawingPlanFromResponse(response) {
+    if (!response || typeof response !== 'object') return null;
+    var drawing = response.drawing && typeof response.drawing === 'object' ? response.drawing : {};
+    return normalizeAiDrawingPlan(
+      drawing.plan || drawing.drawing_plan || response.plan || response.drawing_plan || response.corrected_plan
+    );
+  }
+
+  function aiDrawingPlanSignature(value) {
+    var plan = normalizeAiDrawingPlan(value);
+    if (!plan) return '';
+    try {
+      return JSON.stringify(plan);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function prepareAiDrawing(drawing, flowToken) {
+    drawing = drawing && typeof drawing === 'object' ? drawing : {};
+    var originalPlan = normalizeAiDrawingPlan(drawing.plan || drawing.drawing_plan);
+    var prepared = {
+      plan: originalPlan,
+      svg: originalPlan ? aiDrawingPlanToSvg(originalPlan) : String(drawing.svg || '')
+    };
+    if (!originalPlan) return Promise.resolve(prepared);
+    var reviewImage = captureAiDrawingReviewImage(originalPlan);
+    if (!reviewImage) return Promise.resolve(prepared);
+    return executeRoundCommand(ROUND_COMMANDS.AI_DRAW_REVIEW, roundCommandPayload({
+      image_data_url: reviewImage
+    }), AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS).then(function (response) {
+      ensureCurrentRoundFlow(flowToken);
+      if (!response || response.ok === false || response.handled === false || response.skipped === true) return prepared;
+      var reviewedPlan = aiDrawingPlanFromResponse(response);
+      if (!reviewedPlan) return prepared;
+      return {
+        plan: reviewedPlan,
+        svg: aiDrawingPlanToSvg(reviewedPlan) || prepared.svg
+      };
+    }).catch(function (error) {
+      if (!isCurrentRoundFlow(flowToken) || (error && error.staleRoundFlow)) throw staleRoundFlowError();
+      return prepared;
+    });
+  }
+
+  function reviewAiDrawingInBackground(drawing, flowToken) {
+    prepareAiDrawing(drawing, flowToken).then(function (prepared) {
+      if (!isCurrentRoundFlow(flowToken) || state.phase !== 'user_guessing') return;
+      prepared = prepared || {};
+      var reviewedPlan = normalizeAiDrawingPlan(prepared.plan);
+      var reviewedSignature = aiDrawingPlanSignature(reviewedPlan);
+      var visibleSignature = aiDrawingPlanSignature(state.aiDrawingPlan);
+      if (reviewedSignature && reviewedSignature === visibleSignature) return;
+      state.aiDrawingPlan = reviewedPlan;
+      state.aiSvg = prepared.svg || (reviewedPlan ? aiDrawingPlanToSvg(reviewedPlan) : state.aiSvg);
+      if (!state.aiDrawingPlan || !showAiDrawingPlan(state.aiDrawingPlan)) {
+        showAiDrawing(state.aiSvg);
+      }
+    }).catch(function (error) {
+      if (error && error.staleRoundFlow) return;
+    });
   }
 
   function showAiDrawing(svgMarkup) {
@@ -3100,6 +3638,7 @@
     state.roundNumber += 1;
     state.currentRoundSummarySaved = false;
     state.aiSvg = '';
+    state.aiDrawingPlan = null;
     state.aiAnswerLabel = '';
     state.userPng = '';
     state.userDrawAnswer = null;
@@ -3145,12 +3684,25 @@
         if (res.skipped && res.reason === 'not_ai_drawing') {
           return;
         }
-        state.aiSvg = (res.drawing && res.drawing.svg) || '';
-        showAiDrawing(state.aiSvg);
+        var responseDrawing = res.drawing && typeof res.drawing === 'object' ? res.drawing : {};
+        var draftPlan = aiDrawingPlanFromResponse(res);
+        var draftVisible = false;
+        if (draftPlan) {
+          state.aiDrawingPlan = draftPlan;
+          state.aiSvg = aiDrawingPlanToSvg(draftPlan) || String(responseDrawing.svg || '');
+          draftVisible = showAiDrawingPlan(draftPlan);
+        } else {
+          state.aiDrawingPlan = null;
+          state.aiSvg = String(responseDrawing.svg || '');
+        }
+        if (!draftVisible) {
+          showAiDrawing(state.aiSvg);
+        }
         setPhase('user_guessing');
         setChatPlaceholder('drawingGuess.input.guessPlaceholder', 'Type your guess or ask for a hint');
         addNekoMessage(res.message || t('drawingGuess.messages.aiDrawingReady', 'She finished drawing. Try to guess it.'));
         startCountdown(res.guess_seconds || ROUND_FALLBACK_SECONDS, handleGuessTimeout);
+        reviewAiDrawingInBackground(res.drawing, flowToken);
       })
       .catch(function (err) {
         if (err && err.staleRoundFlow) return;
@@ -4099,9 +4651,126 @@
     data[index + 3] = color.a;
   }
 
+  function canvasDisplayPixelBounds(canvas, displayArea) {
+    var width = Math.max(1, Math.floor(Number(canvas && canvas.width) || 1));
+    var height = Math.max(1, Math.floor(Number(canvas && canvas.height) || 1));
+    var fullBounds = { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1 };
+    if (!canvas || typeof canvas.getBoundingClientRect !== 'function'
+        || !displayArea || typeof displayArea.getBoundingClientRect !== 'function') {
+      return fullBounds;
+    }
+    var canvasRect = canvas.getBoundingClientRect();
+    var displayRect = displayArea.getBoundingClientRect();
+    if (!canvasRect || !displayRect) return fullBounds;
+    var canvasWidth = Number(canvasRect && canvasRect.width) || 0;
+    var canvasHeight = Number(canvasRect && canvasRect.height) || 0;
+    if (canvasWidth <= 0 || canvasHeight <= 0) return fullBounds;
+    var canvasLeft = Number(canvasRect.left) || 0;
+    var canvasTop = Number(canvasRect.top) || 0;
+    var canvasRight = Number.isFinite(Number(canvasRect.right)) ? Number(canvasRect.right) : canvasLeft + canvasWidth;
+    var canvasBottom = Number.isFinite(Number(canvasRect.bottom)) ? Number(canvasRect.bottom) : canvasTop + canvasHeight;
+    var displayLeft = Number(displayRect && displayRect.left) || 0;
+    var displayTop = Number(displayRect && displayRect.top) || 0;
+    var displayRight = Number.isFinite(Number(displayRect && displayRect.right))
+      ? Number(displayRect.right)
+      : displayLeft + (Number(displayRect && displayRect.width) || 0);
+    var displayBottom = Number.isFinite(Number(displayRect && displayRect.bottom))
+      ? Number(displayRect.bottom)
+      : displayTop + (Number(displayRect && displayRect.height) || 0);
+    var visibleLeft = Math.max(canvasLeft, displayLeft);
+    var visibleTop = Math.max(canvasTop, displayTop);
+    var visibleRight = Math.min(canvasRight, displayRight);
+    var visibleBottom = Math.min(canvasBottom, displayBottom);
+    if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return fullBounds;
+    return {
+      minX: Math.max(0, Math.min(width - 1, Math.floor((visibleLeft - canvasLeft) * width / canvasWidth))),
+      minY: Math.max(0, Math.min(height - 1, Math.floor((visibleTop - canvasTop) * height / canvasHeight))),
+      maxX: Math.max(0, Math.min(width - 1, Math.ceil((visibleRight - canvasLeft) * width / canvasWidth) - 1)),
+      maxY: Math.max(0, Math.min(height - 1, Math.ceil((visibleBottom - canvasTop) * height / canvasHeight) - 1))
+    };
+  }
+
+  function floodFillPixelBuffer(data, width, height, startX, startY, fill, displayBounds) {
+    width = Math.max(0, Math.floor(Number(width) || 0));
+    height = Math.max(0, Math.floor(Number(height) || 0));
+    if (!data || width < 1 || height < 1 || data.length < width * height * 4) return false;
+    displayBounds = displayBounds && typeof displayBounds === 'object' ? displayBounds : {};
+    var boundaryMinX = Math.max(0, Math.min(width - 1, Math.floor(Number(displayBounds.minX) || 0)));
+    var boundaryMinY = Math.max(0, Math.min(height - 1, Math.floor(Number(displayBounds.minY) || 0)));
+    var boundaryMaxX = Math.max(boundaryMinX, Math.min(
+      width - 1,
+      Number.isFinite(Number(displayBounds.maxX)) ? Math.floor(Number(displayBounds.maxX)) : width - 1
+    ));
+    var boundaryMaxY = Math.max(boundaryMinY, Math.min(
+      height - 1,
+      Number.isFinite(Number(displayBounds.maxY)) ? Math.floor(Number(displayBounds.maxY)) : height - 1
+    ));
+    var edgeIsBoundary = boundaryMaxX - boundaryMinX > 1 && boundaryMaxY - boundaryMinY > 1;
+    var minX = edgeIsBoundary ? boundaryMinX + 1 : boundaryMinX;
+    var minY = edgeIsBoundary ? boundaryMinY + 1 : boundaryMinY;
+    var maxX = edgeIsBoundary ? boundaryMaxX - 1 : boundaryMaxX;
+    var maxY = edgeIsBoundary ? boundaryMaxY - 1 : boundaryMaxY;
+    var x = Math.max(minX, Math.min(maxX, Math.floor(Number(startX) || 0)));
+    var y = Math.max(minY, Math.min(maxY, Math.floor(Number(startY) || 0)));
+    var startPixel = y * width + x;
+    var startIndex = startPixel * 4;
+    var target = {
+      r: data[startIndex],
+      g: data[startIndex + 1],
+      b: data[startIndex + 2],
+      a: data[startIndex + 3]
+    };
+    if (pixelMatches(data, startIndex, fill)) return false;
+
+    var visited = new Uint8Array(width * height);
+    var stack = [startPixel];
+    var filledAny = false;
+    visited[startPixel] = 1;
+    function queue(pixel) {
+      if (visited[pixel]) return;
+      visited[pixel] = 1;
+      stack.push(pixel);
+    }
+    while (stack.length) {
+      var pixel = stack.pop();
+      var px = pixel % width;
+      var py = Math.floor(pixel / width);
+      var index = pixel * 4;
+      if (!pixelMatches(data, index, target)) continue;
+      setPixel(data, index, fill);
+      visited[pixel] = 2;
+      filledAny = true;
+      if (px > minX) queue(pixel - 1);
+      if (px < maxX) queue(pixel + 1);
+      if (py > minY) queue(pixel - width);
+      if (py < maxY) queue(pixel + width);
+    }
+    if (!filledAny || !edgeIsBoundary) return filledAny;
+
+    // The outermost display pixels are a hard boundary during traversal. Once
+    // the enclosed region is known, project its color onto the adjacent edge
+    // without allowing that edge row/column to connect otherwise separate areas.
+    function projectToEdge(edgePixel, innerPixel) {
+      if (visited[innerPixel] !== 2) return;
+      var edgeIndex = edgePixel * 4;
+      if (pixelMatches(data, edgeIndex, target)) setPixel(data, edgeIndex, fill);
+    }
+    for (var edgeX = boundaryMinX + 1; edgeX < boundaryMaxX; edgeX += 1) {
+      projectToEdge(boundaryMinY * width + edgeX, (boundaryMinY + 1) * width + edgeX);
+      projectToEdge(boundaryMaxY * width + edgeX, (boundaryMaxY - 1) * width + edgeX);
+    }
+    for (var edgeY = boundaryMinY + 1; edgeY < boundaryMaxY; edgeY += 1) {
+      projectToEdge(edgeY * width + boundaryMinX, edgeY * width + boundaryMinX + 1);
+      projectToEdge(edgeY * width + boundaryMaxX, edgeY * width + boundaryMaxX - 1);
+    }
+    projectToEdge(boundaryMinY * width + boundaryMinX, (boundaryMinY + 1) * width + boundaryMinX + 1);
+    projectToEdge(boundaryMinY * width + boundaryMaxX, (boundaryMinY + 1) * width + boundaryMaxX - 1);
+    projectToEdge(boundaryMaxY * width + boundaryMinX, (boundaryMaxY - 1) * width + boundaryMinX + 1);
+    projectToEdge(boundaryMaxY * width + boundaryMaxX, (boundaryMaxY - 1) * width + boundaryMaxX - 1);
+    return true;
+  }
+
   function floodFillCanvas(point) {
-    var x = Math.max(0, Math.min(els.canvas.width - 1, Math.floor(point.x)));
-    var y = Math.max(0, Math.min(els.canvas.height - 1, Math.floor(point.y)));
     var image;
     try {
       image = els.ctx.getImageData(0, 0, els.canvas.width, els.canvas.height);
@@ -4111,29 +4780,9 @@
     var data = image.data;
     var width = image.width;
     var height = image.height;
-    var startPixel = y * width + x;
-    var startIndex = startPixel * 4;
-    var target = {
-      r: data[startIndex],
-      g: data[startIndex + 1],
-      b: data[startIndex + 2],
-      a: data[startIndex + 3]
-    };
     var fill = hexToRgba(currentBrushColor());
-    if (pixelMatches(data, startIndex, fill)) return false;
-    var stack = [startPixel];
-    while (stack.length) {
-      var pixel = stack.pop();
-      var px = pixel % width;
-      var py = Math.floor(pixel / width);
-      var index = pixel * 4;
-      if (!pixelMatches(data, index, target)) continue;
-      setPixel(data, index, fill);
-      if (px > 0) stack.push(pixel - 1);
-      if (px < width - 1) stack.push(pixel + 1);
-      if (py > 0) stack.push(pixel - width);
-      if (py < height - 1) stack.push(pixel + width);
-    }
+    var displayBounds = canvasDisplayPixelBounds(els.canvas, els.canvasStage);
+    if (!floodFillPixelBuffer(data, width, height, point.x, point.y, fill, displayBounds)) return false;
     els.ctx.putImageData(image, 0, 0);
     return true;
   }

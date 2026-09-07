@@ -24,7 +24,7 @@
   <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/sdk/neko-minigame-drawing-avatar-host.js?v={{ static_asset_version }}"></script>
   <script id="neko-minigame-host-launch" type="application/json">
-    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","voice-input","speech-output","avatar-renderer","memory","window-control","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":330000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":330000}}}}}
+    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","voice-input","speech-output","avatar-renderer","memory","window-control","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:ai-draw-review":{"path":"ai-draw/review","maxRequestBytes":2097152,"maxTimeoutMs":90000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":330000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":330000}}}}}
   </script>
   <script>
     (function () {
@@ -1001,19 +1001,28 @@
       inset: 0;
       display: grid;
       place-items: center;
-      padding: clamp(18px, 3vw, 36px);
-      background: rgba(255, 255, 255, 0.86);
+      padding: 0;
+      background: #fffdfa;
       overflow: hidden;
     }
 
     .dg-ai-drawing svg {
-      width: 80%;
-      height: 80%;
+      width: 100%;
+      height: 100%;
       max-width: none;
       max-height: none;
       display: block;
       transform-box: fill-box;
       transform-origin: center center;
+    }
+
+    .dg-ai-drawing canvas {
+      width: 100%;
+      height: 100%;
+      max-width: none;
+      max-height: none;
+      display: block;
+      object-fit: fill;
     }
 
     .dg-user-canvas {

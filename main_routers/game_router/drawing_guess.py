@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import json
+import math
 import random
 import re
 import time
@@ -31,11 +32,14 @@ from config.prompts.prompts_drawing_guess import (
     DRAWING_GUESS_CONTEXT_BEGIN,
     DRAWING_GUESS_CONTEXT_END,
     DRAWING_GUESS_GAME_LINE_EXTRA_RULES,
+    DRAWING_GUESS_PLAN_RETRY_RULES,
     DRAWING_GUESS_SVG_RETRY_RULES,
     DRAWING_GUESS_WORD_DATA,
     build_drawing_guess_character_profile_section,
     build_drawing_guess_character_system_prompt,
+    build_drawing_guess_drawing_review_system_prompt,
     build_drawing_guess_input_intent_system_prompt,
+    build_drawing_guess_plan_system_prompt,
     build_drawing_guess_svg_system_prompt,
     build_drawing_guess_vision_system_prompt,
     get_drawing_guess_event_roles,
@@ -62,13 +66,13 @@ WORD_DEDUP_POOL_SIZE = 30
 WORD_DEDUP_ROLLOVER_REMAINING = 6
 SESSION_TTL_SECONDS = 60 * 60
 SESSION_CLEANUP_INTERVAL_SECONDS = 5 * 60
-MODEL_SVG_TIMEOUT_SECONDS = 18.0
-MODEL_SVG_MAX_ATTEMPTS = 2
-MODEL_SVG_MAX_BYTES = 24_000
-MODEL_SVG_MAX_ELEMENTS = 160
+DRAWING_PLAN_MODEL_TIMEOUT_SECONDS = 30.0
+DRAWING_PLAN_MODEL_MAX_ATTEMPTS = 2
+MODEL_SVG_MAX_BYTES = 96_000
+MODEL_SVG_MAX_ELEMENTS = 320
 MODEL_SVG_MAX_DEPTH = 8
-MODEL_SVG_MAX_PATHS = 80
-MODEL_SVG_MAX_ATTR_LENGTH = 800
+MODEL_SVG_MAX_PATHS = 160
+MODEL_SVG_MAX_ATTR_LENGTH = 6_000
 MODEL_SVG_MAX_CAPTION_CHARS = 300
 GAME_CHAT_TIMEOUT_SECONDS = 16.0
 GAME_EVENT_LINE_TIMEOUT_SECONDS = 6.0
@@ -82,7 +86,40 @@ MEMORY_SUMMARY_MAX_CHARS = 260
 MEMORY_SUMMARY_TIMEOUT_SECONDS = 8.0
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
 VISION_GUESS_MAX_CANDIDATES = 60
+DRAWING_PLAN_VERSION = 1
+DRAWING_PLAN_WIDTH = 800
+DRAWING_PLAN_HEIGHT = 600
+DRAWING_PLAN_BACKGROUND = "#fffdfa"
+DRAWING_PLAN_MAX_BYTES = 64_000
+DRAWING_PLAN_MAX_ELEMENTS = 240
+DRAWING_PLAN_MAX_POINTS_PER_ELEMENT = 256
+DRAWING_PLAN_MAX_TOTAL_POINTS = 4_096
+DRAWING_PLAN_MAX_PATH_CHARS = 6_000
+DRAWING_PLAN_MAX_PATH_COMMANDS = 512
+DRAWING_PLAN_MAX_STROKE_WIDTH = 32.0
+DRAWING_REVIEW_TIMEOUT_SECONDS = 24.0
+DRAWING_REVIEW_MAX_COMPLETION_TOKENS = 260
+DRAWING_REVIEW_MIN_CONFIDENCE = 0.55
+MAX_AI_DRAWING_REVISIONS = 1
 _SESSION_LOCK_KEY = "_request_lock"
+_AI_DRAWING_REVIEW_KEY = "_ai_drawing_review"
+
+_DRAWING_PLAN_ELEMENT_TYPES = {"line", "polyline", "polygon", "rect", "circle", "ellipse", "path"}
+_DRAWING_PLAN_TOP_LEVEL_KEYS = frozenset({"version", "width", "height", "background", "elements"})
+_DRAWING_PLAN_COMMON_KEYS = {"type", "stroke", "fill", "stroke_width", "line_cap", "line_join"}
+_DRAWING_PLAN_GEOMETRY_KEYS = {
+    "line": {"x1", "y1", "x2", "y2"},
+    "polyline": {"points"},
+    "polygon": {"points"},
+    "rect": {"x", "y", "width", "height", "rx", "ry"},
+    "circle": {"cx", "cy", "r"},
+    "ellipse": {"cx", "cy", "rx", "ry"},
+    "path": {"d"},
+}
+_DRAWING_PLAN_SAFE_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_DRAWING_PLAN_SAFE_PATH_RE = re.compile(r"^[MLHVCSQTAZ0-9,.\-+\s]+$")
+_DRAWING_PLAN_PATH_TOKEN_RE = re.compile(r"[MLHVCSQTAZ]|[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
+_DRAWING_PLAN_PATH_ARITY = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "T": 2, "A": 7, "Z": 0}
 
 _SVG_ALLOWED_TAGS = {"svg", "g", "path", "line", "polyline", "polygon", "rect", "circle", "ellipse"}
 _SVG_DRAWING_TAGS = _SVG_ALLOWED_TAGS - {"svg", "g"}
@@ -1198,6 +1235,13 @@ def _public_word_cycle_state(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
+    drawing_review = session.get(_AI_DRAWING_REVIEW_KEY)
+    public_drawing_review = None
+    if isinstance(drawing_review, dict) and drawing_review.get("round_id") == session.get("round_id"):
+        public_drawing_review = {
+            "pending": bool(drawing_review.get("pending")),
+            "status": str(drawing_review.get("status") or "pending"),
+        }
     return {
         "round_id": session.get("round_id"),
         "client_round_token": session.get("client_round_token"),
@@ -1210,6 +1254,7 @@ def _public_round_state(session: dict[str, Any], locale: str) -> dict[str, Any]:
             "max_ai_guess_attempts": MAX_AI_GUESS_ATTEMPTS,
         },
         "ai_guess_attempts": int(session.get("ai_guess_attempts") or 0),
+        "ai_drawing_review": public_drawing_review,
         "word_cycle": _public_word_cycle_state(session),
         "user_draw_answer": (
             _word_public(_WORD_BY_ID[str(session["user_word_id"])], locale)
@@ -1584,6 +1629,58 @@ def _parse_json_object_payload(raw: Any) -> dict[str, Any] | None:
     except Exception:
         parsed = None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _iter_balanced_json_object_candidates(raw: Any) -> Iterable[str]:
+    """Yield complete JSON-looking objects embedded in model prose.
+
+    The normal strict parse remains the first choice. This scanner only isolates
+    balanced object candidates; every candidate still goes through the existing
+    JSON parser and drawing-plan sanitizer before it can be rendered.
+    """
+    text = _strip_json_fence(str(raw or ""))
+    candidate_count = 0
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        candidate_count += 1
+        if candidate_count > 32:
+            return
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            current = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:index + 1]
+                    break
+                if depth < 0:
+                    break
+
+
+def _drawing_plan_object_from_payload(parsed: Any) -> dict[str, Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+    wrapped_plan = parsed.get("plan")
+    if isinstance(wrapped_plan, dict):
+        return wrapped_plan
+    if set(parsed) == _DRAWING_PLAN_TOP_LEVEL_KEYS:
+        return parsed
+    return None
 
 
 def _extract_svg_fragment(text: str) -> str:
@@ -1966,6 +2063,559 @@ def _sanitize_model_svg(raw_svg: Any, word: DrawingGuessWord) -> tuple[str | Non
     return _serialize_svg_element(cleaned_root), success_reason
 
 
+def _parse_model_drawing_plan_payload(raw: Any) -> dict[str, Any] | None:
+    parsed = _parse_json_object_payload(raw)
+    plan = _drawing_plan_object_from_payload(parsed)
+    if plan is not None:
+        return plan
+    cleaned = _strip_json_fence(str(raw or "")).strip()
+    if cleaned.startswith("{"):
+        # Do not recover a nested plan from a malformed or truncated root
+        # object. Candidate scanning is reserved for complete JSON in prose.
+        return None
+    for candidate in _iter_balanced_json_object_candidates(raw):
+        parsed = _parse_json_object_payload(candidate)
+        plan = _drawing_plan_object_from_payload(parsed)
+        if plan is not None:
+            return plan
+    return None
+
+
+def _normalize_drawing_plan_number(
+    value: Any,
+    *,
+    field: str,
+    minimum: float,
+    maximum: float,
+) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"drawing_plan_invalid_number:{field}")
+    number = float(value)
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        raise ValueError(f"drawing_plan_number_out_of_range:{field}")
+    rounded = round(number, 3)
+    if rounded == 0:
+        rounded = 0.0
+    if float(rounded).is_integer():
+        return int(rounded)
+    return rounded
+
+
+def _normalize_drawing_plan_color(value: Any, *, field: str) -> str:
+    color = str(value or "").strip()
+    lowered = color.lower()
+    if lowered in {"none", "transparent"}:
+        return lowered
+    if not color or len(color) > 7 or not _DRAWING_PLAN_SAFE_HEX_RE.fullmatch(color):
+        raise ValueError(f"drawing_plan_invalid_color:{field}")
+    return lowered
+
+
+def _drawing_plan_visible_color(value: str) -> bool:
+    return value not in {"none", "transparent"}
+
+
+def _drawing_plan_coordinate(
+    value: Any,
+    *,
+    field: str,
+    axis_limit: int,
+    margin: float,
+) -> int | float:
+    return _normalize_drawing_plan_number(
+        value,
+        field=field,
+        minimum=margin,
+        maximum=float(axis_limit) - margin,
+    )
+
+
+def _normalize_drawing_plan_path(value: Any, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"drawing_plan_invalid_path:{field}")
+    path = value.strip()
+    if (
+        not path
+        or len(path) > DRAWING_PLAN_MAX_PATH_CHARS
+        or _DRAWING_PLAN_SAFE_PATH_RE.fullmatch(path) is None
+    ):
+        raise ValueError(f"drawing_plan_invalid_path:{field}")
+    tokens = _DRAWING_PLAN_PATH_TOKEN_RE.findall(path)
+    if "".join(tokens) != re.sub(r"[\s,]+", "", path):
+        raise ValueError(f"drawing_plan_invalid_path:{field}")
+    if not tokens or tokens[0] != "M":
+        raise ValueError(f"drawing_plan_invalid_path:{field}")
+
+    index = 0
+    command_count = 0
+    has_visible_segment = False
+    normalized_segments: list[str] = []
+    while index < len(tokens):
+        command = tokens[index]
+        if command not in _DRAWING_PLAN_PATH_ARITY:
+            raise ValueError(f"drawing_plan_invalid_path:{field}")
+        arity = _DRAWING_PLAN_PATH_ARITY[command]
+        values = tokens[index + 1:index + 1 + arity]
+        if len(values) != arity or any(token in _DRAWING_PLAN_PATH_ARITY for token in values):
+            raise ValueError(f"drawing_plan_invalid_path:{field}")
+        index += arity + 1
+        command_count += 1
+        if command_count > DRAWING_PLAN_MAX_PATH_COMMANDS:
+            raise ValueError(f"drawing_plan_path_too_complex:{field}")
+        if command not in {"M", "Z"}:
+            has_visible_segment = True
+
+        normalized_values: list[int | float] = []
+        for value_index, raw_number in enumerate(values):
+            number_field = f"{field}:{command}:{command_count}:{value_index}"
+            if command in {"M", "L", "T", "C", "S", "Q"}:
+                maximum = DRAWING_PLAN_WIDTH if value_index % 2 == 0 else DRAWING_PLAN_HEIGHT
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=maximum,
+                )
+            elif command == "H":
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=DRAWING_PLAN_WIDTH,
+                )
+            elif command == "V":
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=DRAWING_PLAN_HEIGHT,
+                )
+            elif command == "A" and value_index in {0, 1}:
+                maximum = DRAWING_PLAN_WIDTH if value_index == 0 else DRAWING_PLAN_HEIGHT
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=maximum,
+                )
+            elif command == "A" and value_index == 2:
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=-360.0, maximum=360.0,
+                )
+            elif command == "A" and value_index in {3, 4}:
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=1.0,
+                )
+                if normalized not in {0, 1}:
+                    raise ValueError(f"drawing_plan_invalid_path:{field}")
+            else:
+                maximum = DRAWING_PLAN_WIDTH if value_index == 5 else DRAWING_PLAN_HEIGHT
+                normalized = _normalize_drawing_plan_number(
+                    float(raw_number), field=number_field, minimum=0.0, maximum=maximum,
+                )
+            normalized_values.append(normalized)
+        serialized = " ".join(_drawing_plan_svg_number(number) for number in normalized_values)
+        normalized_segments.append(f"{command}{(' ' + serialized) if serialized else ''}")
+
+    if not has_visible_segment:
+        raise ValueError(f"drawing_plan_invalid_path:{field}")
+    return " ".join(normalized_segments)
+
+
+def _sanitize_drawing_plan(raw_plan: Any) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(raw_plan, dict):
+        return None, "drawing_plan_not_object"
+    try:
+        encoded = json.dumps(raw_plan, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        return None, "drawing_plan_not_serializable"
+    if len(encoded) > DRAWING_PLAN_MAX_BYTES:
+        return None, "drawing_plan_too_large"
+
+    if set(raw_plan) != _DRAWING_PLAN_TOP_LEVEL_KEYS:
+        return None, "drawing_plan_invalid_top_level_fields"
+    if isinstance(raw_plan.get("version"), bool) or raw_plan.get("version") != DRAWING_PLAN_VERSION:
+        return None, "drawing_plan_invalid_version"
+    if isinstance(raw_plan.get("width"), bool) or raw_plan.get("width") != DRAWING_PLAN_WIDTH:
+        return None, "drawing_plan_invalid_width"
+    if isinstance(raw_plan.get("height"), bool) or raw_plan.get("height") != DRAWING_PLAN_HEIGHT:
+        return None, "drawing_plan_invalid_height"
+    if str(raw_plan.get("background") or "").strip().lower() != DRAWING_PLAN_BACKGROUND:
+        return None, "drawing_plan_invalid_background"
+
+    elements = raw_plan.get("elements")
+    if not isinstance(elements, list) or not elements:
+        return None, "drawing_plan_without_elements"
+    if len(elements) > DRAWING_PLAN_MAX_ELEMENTS:
+        return None, "drawing_plan_too_many_elements"
+
+    sanitized_elements: list[dict[str, Any]] = []
+    total_points = 0
+    try:
+        for index, raw_element in enumerate(elements):
+            if not isinstance(raw_element, dict):
+                raise ValueError(f"drawing_plan_element_not_object:{index}")
+            element_type = str(raw_element.get("type") or "").strip().lower()
+            if element_type not in _DRAWING_PLAN_ELEMENT_TYPES:
+                raise ValueError(f"drawing_plan_invalid_element_type:{index}")
+            geometry_keys = _DRAWING_PLAN_GEOMETRY_KEYS[element_type]
+            allowed_keys = _DRAWING_PLAN_COMMON_KEYS | geometry_keys
+            if not set(raw_element).issubset(allowed_keys):
+                raise ValueError(f"drawing_plan_extra_element_fields:{index}")
+
+            stroke = _normalize_drawing_plan_color(
+                raw_element.get("stroke", "#2f3b45"),
+                field=f"elements[{index}].stroke",
+            )
+            fill = _normalize_drawing_plan_color(
+                raw_element.get("fill", "none"),
+                field=f"elements[{index}].fill",
+            )
+            if element_type in {"line", "polyline"} and _drawing_plan_visible_color(fill):
+                raise ValueError(f"drawing_plan_open_shape_fill_disallowed:{index}")
+            if element_type in {"line", "polyline"} and not _drawing_plan_visible_color(stroke):
+                raise ValueError(f"drawing_plan_open_shape_without_stroke:{index}")
+            if not _drawing_plan_visible_color(stroke) and not _drawing_plan_visible_color(fill):
+                raise ValueError(f"drawing_plan_invisible_element:{index}")
+
+            stroke_width = _normalize_drawing_plan_number(
+                raw_element.get("stroke_width", 4),
+                field=f"elements[{index}].stroke_width",
+                minimum=0.5,
+                maximum=DRAWING_PLAN_MAX_STROKE_WIDTH,
+            )
+            line_cap = str(raw_element.get("line_cap", "round") or "").strip().lower()
+            line_join = str(raw_element.get("line_join", "round") or "").strip().lower()
+            if line_cap not in {"butt", "round", "square"}:
+                raise ValueError(f"drawing_plan_invalid_line_cap:{index}")
+            if line_join not in {"miter", "round", "bevel"}:
+                raise ValueError(f"drawing_plan_invalid_line_join:{index}")
+            margin = float(stroke_width) / 2.0 if _drawing_plan_visible_color(stroke) else 0.0
+
+            element: dict[str, Any] = {"type": element_type}
+            if element_type == "path":
+                if "d" not in raw_element:
+                    raise ValueError(f"drawing_plan_missing_geometry:{index}:d")
+                element["d"] = _normalize_drawing_plan_path(
+                    raw_element["d"], field=f"elements[{index}].d",
+                )
+            elif element_type == "line":
+                for field, axis_limit in (
+                    ("x1", DRAWING_PLAN_WIDTH), ("y1", DRAWING_PLAN_HEIGHT),
+                    ("x2", DRAWING_PLAN_WIDTH), ("y2", DRAWING_PLAN_HEIGHT),
+                ):
+                    if field not in raw_element:
+                        raise ValueError(f"drawing_plan_missing_geometry:{index}:{field}")
+                    element[field] = _drawing_plan_coordinate(
+                        raw_element[field], field=f"elements[{index}].{field}",
+                        axis_limit=axis_limit, margin=margin,
+                    )
+            elif element_type in {"polyline", "polygon"}:
+                points = raw_element.get("points")
+                minimum_points = 2 if element_type == "polyline" else 3
+                if not isinstance(points, list) or not minimum_points <= len(points) <= DRAWING_PLAN_MAX_POINTS_PER_ELEMENT:
+                    raise ValueError(f"drawing_plan_invalid_points:{index}")
+                total_points += len(points)
+                if total_points > DRAWING_PLAN_MAX_TOTAL_POINTS:
+                    raise ValueError("drawing_plan_too_many_points")
+                normalized_points: list[list[int | float]] = []
+                for point_index, point in enumerate(points):
+                    if not isinstance(point, list) or len(point) != 2:
+                        raise ValueError(f"drawing_plan_invalid_point:{index}:{point_index}")
+                    normalized_points.append([
+                        _drawing_plan_coordinate(
+                            point[0], field=f"elements[{index}].points[{point_index}].x",
+                            axis_limit=DRAWING_PLAN_WIDTH, margin=margin,
+                        ),
+                        _drawing_plan_coordinate(
+                            point[1], field=f"elements[{index}].points[{point_index}].y",
+                            axis_limit=DRAWING_PLAN_HEIGHT, margin=margin,
+                        ),
+                    ])
+                element["points"] = normalized_points
+            elif element_type == "rect":
+                for field in ("x", "y", "width", "height"):
+                    if field not in raw_element:
+                        raise ValueError(f"drawing_plan_missing_geometry:{index}:{field}")
+                x = _normalize_drawing_plan_number(
+                    raw_element["x"], field=f"elements[{index}].x",
+                    minimum=margin, maximum=DRAWING_PLAN_WIDTH - margin,
+                )
+                y = _normalize_drawing_plan_number(
+                    raw_element["y"], field=f"elements[{index}].y",
+                    minimum=margin, maximum=DRAWING_PLAN_HEIGHT - margin,
+                )
+                width = _normalize_drawing_plan_number(
+                    raw_element["width"], field=f"elements[{index}].width",
+                    minimum=0.5, maximum=DRAWING_PLAN_WIDTH,
+                )
+                height = _normalize_drawing_plan_number(
+                    raw_element["height"], field=f"elements[{index}].height",
+                    minimum=0.5, maximum=DRAWING_PLAN_HEIGHT,
+                )
+                if float(x) + float(width) + margin > DRAWING_PLAN_WIDTH:
+                    raise ValueError(f"drawing_plan_geometry_out_of_bounds:{index}:width")
+                if float(y) + float(height) + margin > DRAWING_PLAN_HEIGHT:
+                    raise ValueError(f"drawing_plan_geometry_out_of_bounds:{index}:height")
+                element.update({"x": x, "y": y, "width": width, "height": height})
+                for radius_field, maximum in (("rx", float(width) / 2.0), ("ry", float(height) / 2.0)):
+                    if radius_field in raw_element:
+                        element[radius_field] = _normalize_drawing_plan_number(
+                            raw_element[radius_field],
+                            field=f"elements[{index}].{radius_field}",
+                            minimum=0.0,
+                            maximum=maximum,
+                        )
+            elif element_type == "circle":
+                for field in ("cx", "cy", "r"):
+                    if field not in raw_element:
+                        raise ValueError(f"drawing_plan_missing_geometry:{index}:{field}")
+                radius = _normalize_drawing_plan_number(
+                    raw_element["r"], field=f"elements[{index}].r",
+                    minimum=0.5, maximum=min(DRAWING_PLAN_WIDTH, DRAWING_PLAN_HEIGHT) / 2.0,
+                )
+                cx = _normalize_drawing_plan_number(
+                    raw_element["cx"], field=f"elements[{index}].cx",
+                    minimum=float(radius) + margin,
+                    maximum=DRAWING_PLAN_WIDTH - float(radius) - margin,
+                )
+                cy = _normalize_drawing_plan_number(
+                    raw_element["cy"], field=f"elements[{index}].cy",
+                    minimum=float(radius) + margin,
+                    maximum=DRAWING_PLAN_HEIGHT - float(radius) - margin,
+                )
+                element.update({"cx": cx, "cy": cy, "r": radius})
+            elif element_type == "ellipse":
+                for field in ("cx", "cy", "rx", "ry"):
+                    if field not in raw_element:
+                        raise ValueError(f"drawing_plan_missing_geometry:{index}:{field}")
+                radius_x = _normalize_drawing_plan_number(
+                    raw_element["rx"], field=f"elements[{index}].rx",
+                    minimum=0.5, maximum=DRAWING_PLAN_WIDTH / 2.0,
+                )
+                radius_y = _normalize_drawing_plan_number(
+                    raw_element["ry"], field=f"elements[{index}].ry",
+                    minimum=0.5, maximum=DRAWING_PLAN_HEIGHT / 2.0,
+                )
+                cx = _normalize_drawing_plan_number(
+                    raw_element["cx"], field=f"elements[{index}].cx",
+                    minimum=float(radius_x) + margin,
+                    maximum=DRAWING_PLAN_WIDTH - float(radius_x) - margin,
+                )
+                cy = _normalize_drawing_plan_number(
+                    raw_element["cy"], field=f"elements[{index}].cy",
+                    minimum=float(radius_y) + margin,
+                    maximum=DRAWING_PLAN_HEIGHT - float(radius_y) - margin,
+                )
+                element.update({"cx": cx, "cy": cy, "rx": radius_x, "ry": radius_y})
+
+            element.update({
+                "stroke": stroke,
+                "fill": fill,
+                "stroke_width": stroke_width,
+                "line_cap": line_cap,
+                "line_join": line_join,
+            })
+            sanitized_elements.append(element)
+    except ValueError as exc:
+        return None, str(exc)
+
+    return {
+        "version": DRAWING_PLAN_VERSION,
+        "width": DRAWING_PLAN_WIDTH,
+        "height": DRAWING_PLAN_HEIGHT,
+        "background": DRAWING_PLAN_BACKGROUND,
+        "elements": sanitized_elements,
+    }, "ok"
+
+
+def _drawing_plan_svg_number(value: Any) -> str:
+    number = float(value)
+    if number == 0:
+        return "0"
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def _drawing_plan_to_svg(plan: dict[str, Any]) -> str:
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" role="img" aria-hidden="true">',
+        f'<rect width="800" height="600" fill={quoteattr(str(plan["background"]))}/>',
+    ]
+    geometry_order = {
+        "line": ("x1", "y1", "x2", "y2"),
+        "rect": ("x", "y", "width", "height", "rx", "ry"),
+        "circle": ("cx", "cy", "r"),
+        "ellipse": ("cx", "cy", "rx", "ry"),
+    }
+    for element in plan["elements"]:
+        element_type = str(element["type"])
+        attrs: list[tuple[str, str]] = []
+        if element_type == "path":
+            attrs.append(("d", str(element["d"])))
+        elif element_type in {"polyline", "polygon"}:
+            points = " ".join(
+                f'{_drawing_plan_svg_number(point[0])},{_drawing_plan_svg_number(point[1])}'
+                for point in element["points"]
+            )
+            attrs.append(("points", points))
+        else:
+            for field in geometry_order[element_type]:
+                if field in element:
+                    attrs.append((field, _drawing_plan_svg_number(element[field])))
+        attrs.extend((
+            ("fill", str(element["fill"])),
+            ("stroke", str(element["stroke"])),
+            ("stroke-width", _drawing_plan_svg_number(element["stroke_width"])),
+            ("stroke-linecap", str(element["line_cap"])),
+            ("stroke-linejoin", str(element["line_join"])),
+        ))
+        serialized_attrs = "".join(f" {name}={quoteattr(value)}" for name, value in attrs)
+        parts.append(f"<{element_type}{serialized_attrs}/>")
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _validated_drawing_from_plan(
+    raw_plan: Any,
+    *,
+    word: DrawingGuessWord,
+    source: str,
+    sanitizer: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    plan, reason = _sanitize_drawing_plan(raw_plan)
+    if plan is None:
+        return None, reason
+    svg, svg_reason = _sanitize_model_svg(_drawing_plan_to_svg(plan), word)
+    if svg is None:
+        return None, f"drawing_plan_svg_{svg_reason}"
+    sanitizer_payload = {"ok": True, **dict(sanitizer or {})}
+    if svg_reason != "ok":
+        sanitizer_payload["svg_repair"] = svg_reason
+    return {
+        "plan": plan,
+        "svg": svg,
+        "caption": "",
+        "source": source,
+        "sanitizer": sanitizer_payload,
+    }, "ok"
+
+
+def _build_drawing_guess_plan_prompts(
+    *,
+    word: DrawingGuessWord,
+    locale: str,
+    lanlan_name: str,
+    master_name: str,
+    lanlan_prompt: str,
+) -> tuple[str, str]:
+    system_prompt = build_drawing_guess_plan_system_prompt(
+        lanlan_name=lanlan_name,
+        master_name=master_name,
+        lanlan_prompt=lanlan_prompt,
+    )
+    user_prompt = json.dumps(
+        {
+            "task": "draw_the_answer_as_a_safe_drawing_plan",
+            "locale": locale,
+            "answer_id": word.id,
+            "answer_label": _word_label(word, locale),
+            "category": word.category,
+            "forbidden_words": sorted({str(term) for term in _word_aliases(word) if str(term or "").strip()}),
+            "canvas": {
+                "version": DRAWING_PLAN_VERSION,
+                "width": DRAWING_PLAN_WIDTH,
+                "height": DRAWING_PLAN_HEIGHT,
+                "background": DRAWING_PLAN_BACKGROUND,
+            },
+        },
+        ensure_ascii=False,
+    )
+    return system_prompt, user_prompt
+
+
+def _build_drawing_guess_plan_retry_prompt(
+    *,
+    original_user_prompt: str,
+    rejection_reason: str,
+    attempt: int,
+) -> str:
+    try:
+        payload = json.loads(original_user_prompt)
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update({
+        "task": "retry_draw_the_answer_as_a_safe_drawing_plan",
+        "attempt": attempt,
+        "previous_rejection_reason": _truncate_text(rejection_reason, 180),
+        "retry_rules": list(DRAWING_GUESS_PLAN_RETRY_RULES),
+    })
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_drawing_guess_plan_revision_retry_prompt(
+    *,
+    original_user_prompt: str,
+    rejection_reason: str,
+    attempt: int,
+) -> str:
+    try:
+        payload = json.loads(original_user_prompt)
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update({
+        "task": "retry_revise_the_drawing_plan_after_visual_review",
+        "attempt": attempt,
+        "previous_rejection_reason": _truncate_text(rejection_reason, 180),
+        "retry_rules": [
+            "Return strict JSON only with exactly one top-level plan field.",
+            "The plan field must contain the complete replacement plan, not a patch.",
+            *DRAWING_GUESS_PLAN_RETRY_RULES,
+        ],
+    })
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _build_drawing_guess_plan_revision_prompts(
+    *,
+    word: DrawingGuessWord,
+    locale: str,
+    lanlan_name: str,
+    master_name: str,
+    lanlan_prompt: str,
+    original_plan: dict[str, Any],
+    review: dict[str, Any],
+) -> tuple[str, str]:
+    system_prompt = build_drawing_guess_plan_system_prompt(
+        lanlan_name=lanlan_name,
+        master_name=master_name,
+        lanlan_prompt=lanlan_prompt,
+    )
+    issues = [
+        _truncate_text(issue, 140)
+        for issue in (review.get("issues") or [])[:3]
+        if str(issue or "").strip()
+    ]
+    user_prompt = json.dumps(
+        {
+            "task": "revise_the_drawing_plan_once_after_visual_review",
+            "locale": locale,
+            "answer_id": word.id,
+            "answer_label": _word_label(word, locale),
+            "category": word.category,
+            "forbidden_words": sorted({str(term) for term in _word_aliases(word) if str(term or "").strip()}),
+            "original_plan": original_plan,
+            "visual_review": {
+                "most_similar_candidate_id": str(review.get("guess_id") or "")[:64],
+                "confidence": float(review.get("confidence") or 0.0),
+                "issues": issues,
+            },
+            "revision_rules": [
+                "Return the complete replacement inside exactly one top-level plan field; do not return a patch or a bare plan object.",
+                "Make the intended answer more recognizable by clarifying confusing regions and adding distinguishing context or detail.",
+                "Revise any shapes that caused visual confusion without flattening the whole drawing into a minimal icon.",
+                *DRAWING_GUESS_PLAN_RETRY_RULES,
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return system_prompt, user_prompt
+
+
 def _build_drawing_guess_svg_prompts(
     *,
     word: DrawingGuessWord,
@@ -2017,13 +2667,15 @@ def _build_drawing_guess_svg_retry_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
-async def _call_drawing_guess_svg_model(
+async def _call_drawing_guess_plan_model(
     *,
     model: str,
     base_url: str,
     api_key: str,
     system_prompt: str,
     user_prompt: str,
+    provider_type: str | None = None,
+    call_type: str = "drawing_guess_drawing_plan",
 ) -> str | None:
     from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
     from utils.token_tracker import set_call_type
@@ -2031,13 +2683,14 @@ async def _call_drawing_guess_svg_model(
     if not str(model or "").strip():
         return None
 
-    set_call_type("drawing_guess_svg")
+    set_call_type(call_type)
     llm = await create_chat_llm_async(
         model,
         base_url or None,
         api_key or None,
-        max_completion_tokens=1800,
-        timeout=MODEL_SVG_TIMEOUT_SECONDS,
+        max_completion_tokens=4000,
+        timeout=DRAWING_PLAN_MODEL_TIMEOUT_SECONDS,
+        provider_type=provider_type,
     )
     async with llm:
         result = await asyncio.wait_for(
@@ -2045,7 +2698,7 @@ async def _call_drawing_guess_svg_model(
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ]),
-            timeout=MODEL_SVG_TIMEOUT_SECONDS + 2.0,
+            timeout=DRAWING_PLAN_MODEL_TIMEOUT_SECONDS + 2.0,
         )
     return str(getattr(result, "content", "") or "").strip()
 
@@ -2058,7 +2711,7 @@ async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_na
         model = str(char_info.get("model") or "")
         if not model.strip():
             return None
-        system_prompt, user_prompt = _build_drawing_guess_svg_prompts(
+        system_prompt, user_prompt = _build_drawing_guess_plan_prompts(
             word=word,
             locale=locale,
             lanlan_name=str(char_info.get("lanlan_name") or lanlan_name or ""),
@@ -2067,56 +2720,143 @@ async def _generate_model_drawing(word: DrawingGuessWord, locale: str, lanlan_na
         )
         prompt_for_attempt = user_prompt
         last_reason = "not_attempted"
-        for attempt in range(1, MODEL_SVG_MAX_ATTEMPTS + 1):
-            raw = await _call_drawing_guess_svg_model(
+        for attempt in range(1, DRAWING_PLAN_MODEL_MAX_ATTEMPTS + 1):
+            raw = await _call_drawing_guess_plan_model(
                 model=model,
                 base_url=str(char_info.get("base_url") or ""),
                 api_key=str(char_info.get("api_key") or ""),
                 system_prompt=system_prompt,
                 user_prompt=prompt_for_attempt,
+                provider_type=str(char_info.get("provider_type") or "") or None,
             )
             if not raw:
                 last_reason = "empty_model_response"
             else:
-                parsed = _parse_model_svg_payload(raw)
-                if not parsed:
-                    last_reason = "model_payload_unparseable"
+                raw_plan = _parse_model_drawing_plan_payload(raw)
+                if raw_plan is not None:
+                    drawing, last_reason = _validated_drawing_from_plan(
+                        raw_plan,
+                        word=word,
+                        source="model_plan",
+                        sanitizer={"attempt": attempt},
+                    )
+                    if drawing is not None:
+                        return drawing
                 else:
+                    parsed = _parse_model_svg_payload(raw)
+                    if not parsed:
+                        last_reason = "model_payload_unparseable"
+                        parsed = None
+                if raw_plan is None and parsed:
                     sanitized_svg, reason = _sanitize_model_svg(parsed.get("svg"), word)
                     if sanitized_svg:
+                        caption = str(parsed.get("caption") or "")[:MODEL_SVG_MAX_CAPTION_CHARS]
+                        if _is_svg_text_leak(caption, word):
+                            caption = ""
                         sanitizer_payload: dict[str, Any] = {"ok": True, "attempt": attempt}
                         if reason != "ok":
                             sanitizer_payload["repair"] = reason
                         return {
                             "svg": sanitized_svg,
-                            "caption": str(parsed.get("caption") or "")[:MODEL_SVG_MAX_CAPTION_CHARS],
+                            "caption": caption,
                             "source": "model_svg",
                             "sanitizer": sanitizer_payload,
                         }
                     last_reason = reason
             logger.info(
-                "drawing_guess model SVG rejected: lanlan=%s attempt=%s reason=%s",
+                "drawing_guess model drawing plan rejected: lanlan=%s attempt=%s reason=%s",
                 lanlan_name,
                 attempt,
                 last_reason,
             )
-            if attempt < MODEL_SVG_MAX_ATTEMPTS:
-                prompt_for_attempt = _build_drawing_guess_svg_retry_prompt(
+            if attempt < DRAWING_PLAN_MODEL_MAX_ATTEMPTS:
+                prompt_for_attempt = _build_drawing_guess_plan_retry_prompt(
                     original_user_prompt=user_prompt,
                     rejection_reason=last_reason,
                     attempt=attempt + 1,
                 )
         return None
     except asyncio.TimeoutError:
-        logger.info("drawing_guess model SVG timed out: lanlan=%s", lanlan_name)
+        logger.info("drawing_guess model drawing plan timed out: lanlan=%s", lanlan_name)
         return None
     except Exception as exc:
         logger.info(
-            "drawing_guess model SVG unavailable: lanlan=%s err=%s",
+            "drawing_guess model drawing plan unavailable: lanlan=%s err=%s",
             lanlan_name,
             type(exc).__name__,
         )
         return None
+
+
+async def _generate_model_drawing_revision(
+    *,
+    word: DrawingGuessWord,
+    locale: str,
+    lanlan_name: str,
+    original_plan: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        from . import _get_character_info
+
+        char_info = _get_character_info(lanlan_name)
+        model = str(char_info.get("model") or "")
+        if not model.strip():
+            return None
+        system_prompt, user_prompt = _build_drawing_guess_plan_revision_prompts(
+            word=word,
+            locale=locale,
+            lanlan_name=str(char_info.get("lanlan_name") or lanlan_name or ""),
+            master_name=str(char_info.get("master_name") or "player"),
+            lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
+            original_plan=original_plan,
+            review=review,
+        )
+        prompt_for_attempt = user_prompt
+        for attempt in range(1, DRAWING_PLAN_MODEL_MAX_ATTEMPTS + 1):
+            raw = await _call_drawing_guess_plan_model(
+                model=model,
+                base_url=str(char_info.get("base_url") or ""),
+                api_key=str(char_info.get("api_key") or ""),
+                system_prompt=system_prompt,
+                user_prompt=prompt_for_attempt,
+                provider_type=str(char_info.get("provider_type") or "") or None,
+                call_type="drawing_guess_drawing_revision",
+            )
+            raw_plan = _parse_model_drawing_plan_payload(raw)
+            if raw_plan is None:
+                rejection_reason = "model_payload_unparseable"
+            else:
+                drawing, rejection_reason = _validated_drawing_from_plan(
+                    raw_plan,
+                    word=word,
+                    source="model_plan_revision",
+                    sanitizer={"attempt": attempt, "revision": 1},
+                )
+                if drawing is not None:
+                    return drawing
+            logger.info(
+                "drawing_guess drawing revision rejected: lanlan=%s attempt=%s reason=%s",
+                lanlan_name,
+                attempt,
+                rejection_reason,
+            )
+            if attempt < DRAWING_PLAN_MODEL_MAX_ATTEMPTS:
+                prompt_for_attempt = _build_drawing_guess_plan_revision_retry_prompt(
+                    original_user_prompt=user_prompt,
+                    rejection_reason=rejection_reason,
+                    attempt=attempt + 1,
+                )
+        return None
+    except asyncio.TimeoutError:
+        logger.info("drawing_guess drawing revision timed out: lanlan=%s", lanlan_name)
+    except Exception as exc:
+        logger.info(
+            "drawing_guess drawing revision unavailable: lanlan=%s err=%s",
+            lanlan_name,
+            type(exc).__name__,
+        )
+    return None
 
 
 def _sanitize_persona_line(value: Any, *, max_chars: int = 220) -> str:
@@ -2852,6 +3592,7 @@ async def _generate_vision_guess(
             max_retries=0,
             max_completion_tokens=420,
             timeout=VISION_GUESS_TIMEOUT_SECONDS,
+            provider_type=str(api_config.get("provider_type") or "") or None,
         )
         async with llm:
             result = await asyncio.wait_for(
@@ -2906,6 +3647,164 @@ async def _generate_vision_guess(
             type(exc).__name__,
         )
     return None
+
+
+def _ai_drawing_review_candidates(locale: str, round_id: Any) -> list[dict[str, str]]:
+    candidates = _vision_guess_candidates(locale)
+    if not candidates:
+        return []
+    offset = sum(ord(char) for char in str(round_id or "")) % len(candidates)
+    return candidates[offset:] + candidates[:offset]
+
+
+def _build_ai_drawing_review_messages(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    data_url: str,
+) -> list[Any]:
+    from utils.llm_client import HumanMessage, SystemMessage
+
+    user_payload = json.dumps(
+        {
+            "task": "identify_the_single_canvas_drawing_for_quality_review",
+            "locale": locale,
+            "candidates": _ai_drawing_review_candidates(locale, session.get("round_id")),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return [
+        SystemMessage(content=build_drawing_guess_drawing_review_system_prompt()),
+        HumanMessage(content=[
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": user_payload},
+        ]),
+    ]
+
+
+def _parse_ai_drawing_review_payload(
+    raw: Any,
+    *,
+    locale: str,
+    answer: DrawingGuessWord,
+) -> dict[str, Any] | None:
+    parsed = _parse_vision_guess_payload(raw, locale)
+    if not parsed:
+        return None
+    guessed_word = _resolve_vision_guess_word(parsed, locale)
+    if guessed_word is None:
+        return None
+    try:
+        confidence = max(0.0, min(1.0, float(parsed.get("confidence"))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    raw_issues = parsed.get("issues")
+    issues = (
+        [_truncate_text(issue, 140) for issue in raw_issues[:3] if str(issue or "").strip()]
+        if isinstance(raw_issues, list)
+        else []
+    )
+    return {
+        "available": True,
+        "accepted": guessed_word.id == answer.id and confidence >= DRAWING_REVIEW_MIN_CONFIDENCE,
+        "guess_id": guessed_word.id,
+        "confidence": confidence,
+        "issues": issues,
+        "source": "vision_model",
+    }
+
+
+async def _review_ai_drawing(
+    *,
+    session: dict[str, Any],
+    locale: str,
+    lanlan_name: str,
+    image_data_url: str,
+) -> dict[str, Any]:
+    data_url = await _prepare_vision_image_data_url(image_data_url)
+    if not data_url:
+        return {
+            "available": False,
+            "accepted": False,
+            "reason": "invalid_image",
+            "source": "unavailable",
+        }
+    model = ""
+    provider_type = ""
+    try:
+        from utils.config_manager import get_config_manager
+
+        api_config = get_config_manager().get_model_api_config("vision") or {}
+        model = str(api_config.get("model") or "")
+        provider_type = str(api_config.get("provider_type") or "")
+        if not model.strip():
+            return {
+                "available": False,
+                "accepted": False,
+                "reason": "no_vision_model",
+                "source": "unavailable",
+            }
+
+        from utils.llm_client import create_chat_llm_async
+        from utils.token_tracker import set_call_type
+
+        messages = _build_ai_drawing_review_messages(
+            session=session,
+            locale=locale,
+            data_url=data_url,
+        )
+        set_call_type("drawing_guess_drawing_review")
+        llm = await create_chat_llm_async(
+            model=model,
+            base_url=str(api_config.get("base_url") or "") or None,
+            api_key=str(api_config.get("api_key") or "") or None,
+            max_retries=0,
+            max_completion_tokens=DRAWING_REVIEW_MAX_COMPLETION_TOKENS,
+            timeout=DRAWING_REVIEW_TIMEOUT_SECONDS,
+            provider_type=provider_type or None,
+        )
+        async with llm:
+            result = await asyncio.wait_for(
+                llm.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET  # one compressed drawing plus a fixed, bounded word bank.
+                timeout=DRAWING_REVIEW_TIMEOUT_SECONDS + 3.0,
+            )
+        answer_id = str(session.get("ai_word_id") or "")
+        answer = _WORD_BY_ID.get(answer_id)
+        if answer is None:
+            return {
+                "available": False,
+                "accepted": False,
+                "reason": "answer_unavailable",
+                "source": "unavailable",
+            }
+        parsed = _parse_ai_drawing_review_payload(
+            getattr(result, "content", ""),
+            locale=locale,
+            answer=answer,
+        )
+        if parsed is None:
+            return {
+                "available": False,
+                "accepted": False,
+                "reason": "model_payload_unparseable",
+                "source": "unavailable",
+            }
+        return parsed
+    except asyncio.TimeoutError:
+        return {
+            "available": False,
+            "accepted": False,
+            "reason": "timeout",
+            "source": "unavailable",
+        }
+    except Exception:
+        return {
+            "available": False,
+            "accepted": False,
+            "reason": "model_unavailable",
+            "source": "unavailable",
+        }
 
 
 def _fallback_svg(word_id: str) -> str:
@@ -2978,6 +3877,90 @@ def _wrong_word(answer: DrawingGuessWord) -> DrawingGuessWord:
     same_category = [word for word in WORDS if word.category == answer.category and word.id != answer.id]
     pool = same_category or [word for word in WORDS if word.id != answer.id]
     return random.choice(pool)
+
+
+def _drawing_with_review_pending(drawing: dict[str, Any], pending: bool) -> dict[str, Any]:
+    public_drawing = dict(drawing)
+    public_drawing["review_pending"] = bool(pending)
+    return public_drawing
+
+
+def _cache_ai_drawing_review_result(
+    session: dict[str, Any],
+    *,
+    drawing: dict[str, Any],
+    status: str,
+    accepted: bool,
+    corrected: bool,
+    unavailable: bool,
+    reason: str,
+    confidence: float | None = None,
+) -> dict[str, Any] | None:
+    record = session.get(_AI_DRAWING_REVIEW_KEY)
+    if not isinstance(record, dict) or record.get("round_id") != session.get("round_id"):
+        return None
+    public_review: dict[str, Any] = {
+        "status": str(status),
+        "accepted": bool(accepted),
+        "corrected": bool(corrected),
+        "unavailable": bool(unavailable),
+        "reason": str(reason),
+    }
+    if confidence is not None:
+        public_review["confidence"] = round(max(0.0, min(1.0, float(confidence))), 3)
+    result = {
+        "drawing": _drawing_with_review_pending(drawing, False),
+        "review": public_review,
+    }
+    record["pending"] = False
+    record["status"] = str(status)
+    record["result"] = result
+    return result
+
+
+def _adopt_pending_ai_drawing_review(session: dict[str, Any], *, reason: str) -> bool:
+    record = session.get(_AI_DRAWING_REVIEW_KEY)
+    if (
+        not isinstance(record, dict)
+        or record.get("round_id") != session.get("round_id")
+        or not record.get("pending")
+    ):
+        return False
+    drawing = record.get("drawing")
+    if not isinstance(drawing, dict):
+        record["pending"] = False
+        record["status"] = "unavailable"
+        return False
+    _cache_ai_drawing_review_result(
+        session,
+        drawing=drawing,
+        status="draft_adopted",
+        accepted=False,
+        corrected=False,
+        unavailable=True,
+        reason=reason,
+    )
+    return True
+
+
+def _ai_drawing_review_response(
+    session: dict[str, Any],
+    locale: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    record = session.get(_AI_DRAWING_REVIEW_KEY)
+    return {
+        "ok": True,
+        "kind": "ai_drawing_review",
+        "phase": session.get("phase"),
+        "review_pending": False,
+        "drawing": result.get("drawing"),
+        "review": result.get("review"),
+        "guess_seconds": ROUND_GUESS_SECONDS,
+        "message": str(record.get("message") or "") if isinstance(record, dict) else "",
+        "message_source": str(record.get("message_source") or "") if isinstance(record, dict) else "",
+        "state": _public_round_state(session, locale),
+    }
 
 
 @router.post("/round/start")
@@ -3107,17 +4090,193 @@ async def _drawing_guess_ai_draw_locked(data: dict[str, Any], session: dict[str,
     identity_error = _drawing_guess_session_identity_error(data, session)
     if identity_error:
         return {"ok": False, "reason": identity_error}
+    review_pending = isinstance(drawing.get("plan"), dict)
+    drawing = _drawing_with_review_pending(drawing, review_pending)
     session["phase"] = "user_guessing"
+    if review_pending:
+        session[_AI_DRAWING_REVIEW_KEY] = {
+            "round_id": session.get("round_id"),
+            "pending": True,
+            "status": "pending",
+            "drawing": drawing,
+            "message": line,
+            "message_source": line_source,
+            "result": None,
+        }
+    else:
+        session.pop(_AI_DRAWING_REVIEW_KEY, None)
     _append_game_chat(session, "assistant", line, kind="game_line")
+    _sync_active_route_state(session, locale)
     return {
         "ok": True,
         "phase": session["phase"],
         "drawing": drawing,
+        "review_pending": review_pending,
         "guess_seconds": ROUND_GUESS_SECONDS,
         "message": line,
         "message_source": line_source,
         "state": _public_round_state(session, locale),
     }
+
+
+@router.post("/ai-draw/review")
+async def drawing_guess_ai_draw_review(request: Request):
+    data = await _payload(request)
+    session, error = _require_session(data)
+    if error:
+        return {"ok": False, "reason": error}
+    locale = _normalize_locale(data.get("i18n_language") or session.get("locale"))
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    if identity_error:
+        return {"ok": False, "reason": identity_error}
+    result = await _drawing_guess_ai_draw_review_in_background(data, session, locale)
+    identity_error = _drawing_guess_session_identity_error(data, session)
+    return {"ok": False, "reason": identity_error} if identity_error else result
+
+
+async def _drawing_guess_ai_draw_review_in_background(
+    data: dict[str, Any],
+    session: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
+    record = session.get(_AI_DRAWING_REVIEW_KEY)
+    if not isinstance(record, dict) or record.get("round_id") != session.get("round_id"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_pending_ai_drawing_review",
+            "phase": session.get("phase"),
+            "review_pending": False,
+            "state": _public_round_state(session, locale),
+        }
+    cached_result = record.get("result")
+    if isinstance(cached_result, dict):
+        return _ai_drawing_review_response(session, locale, cached_result)
+    if not record.get("pending"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "ai_drawing_review_not_pending",
+            "phase": session.get("phase"),
+            "review_pending": False,
+            "state": _public_round_state(session, locale),
+        }
+    if record.get("processing"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "ai_drawing_review_in_progress",
+            "phase": session.get("phase"),
+            "review_pending": True,
+            "state": _public_round_state(session, locale),
+        }
+
+    drawing = record.get("drawing")
+    original_plan = drawing.get("plan") if isinstance(drawing, dict) else None
+    if not isinstance(drawing, dict) or not isinstance(original_plan, dict):
+        _adopt_pending_ai_drawing_review(session, reason="drawing_plan_unavailable")
+        cached_result = record.get("result")
+        if isinstance(cached_result, dict):
+            return _ai_drawing_review_response(session, locale, cached_result)
+        return {"ok": False, "reason": "drawing_plan_unavailable"}
+    if session.get("phase") != "user_guessing":
+        _adopt_pending_ai_drawing_review(session, reason="round_already_advanced")
+        cached_result = record.get("result")
+        if isinstance(cached_result, dict):
+            return _ai_drawing_review_response(session, locale, cached_result)
+        return {"ok": False, "reason": "round_already_advanced"}
+
+    lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
+    record["processing"] = True
+    try:
+        review = await _review_ai_drawing(
+            session=session,
+            locale=locale,
+            lanlan_name=lanlan_name,
+            image_data_url=str(data.get("image_data_url") or ""),
+        )
+        identity_error = _drawing_guess_session_identity_error(data, session)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
+        if session.get(_AI_DRAWING_REVIEW_KEY) is not record or not record.get("pending"):
+            cached_result = record.get("result")
+            if isinstance(cached_result, dict):
+                return _ai_drawing_review_response(session, locale, cached_result)
+            return {"ok": False, "reason": "stale_drawing_review"}
+        if session.get("phase") != "user_guessing":
+            _adopt_pending_ai_drawing_review(session, reason="round_advanced_during_review")
+            cached_result = record.get("result")
+            if isinstance(cached_result, dict):
+                return _ai_drawing_review_response(session, locale, cached_result)
+            return {"ok": False, "reason": "round_already_advanced"}
+
+        final_drawing = drawing
+        status = "accepted"
+        accepted = bool(review.get("available") and review.get("accepted"))
+        corrected = False
+        unavailable = not bool(review.get("available"))
+        reason = "recognized" if accepted else str(review.get("reason") or "not_recognized")
+        confidence = review.get("confidence") if review.get("available") else None
+
+        if review.get("available") and not accepted:
+            revision_count = int(record.get("revision_count") or 0)
+            if revision_count < MAX_AI_DRAWING_REVISIONS:
+                record["revision_count"] = revision_count + 1
+                answer = _WORD_BY_ID.get(str(session.get("ai_word_id") or ""))
+                revised_drawing = None
+                if answer is not None:
+                    revised_drawing = await _generate_model_drawing_revision(
+                        word=answer,
+                        locale=locale,
+                        lanlan_name=lanlan_name,
+                        original_plan=original_plan,
+                        review=review,
+                    )
+                identity_error = _drawing_guess_session_identity_error(data, session)
+                if identity_error:
+                    return {"ok": False, "reason": identity_error}
+                if session.get(_AI_DRAWING_REVIEW_KEY) is not record or not record.get("pending"):
+                    cached_result = record.get("result")
+                    if isinstance(cached_result, dict):
+                        return _ai_drawing_review_response(session, locale, cached_result)
+                    return {"ok": False, "reason": "stale_drawing_review"}
+                if session.get("phase") != "user_guessing":
+                    _adopt_pending_ai_drawing_review(session, reason="round_advanced_during_revision")
+                    cached_result = record.get("result")
+                    if isinstance(cached_result, dict):
+                        return _ai_drawing_review_response(session, locale, cached_result)
+                    return {"ok": False, "reason": "round_already_advanced"}
+                if isinstance(revised_drawing, dict):
+                    final_drawing = revised_drawing
+                    status = "revised"
+                    corrected = True
+                    reason = "not_recognized"
+                else:
+                    status = "revision_unavailable"
+                    reason = "revision_unavailable"
+            else:
+                status = "revision_limit_reached"
+                reason = "revision_limit_reached"
+        elif unavailable:
+            status = "unavailable"
+
+        cached_result = _cache_ai_drawing_review_result(
+            session,
+            drawing=final_drawing,
+            status=status,
+            accepted=accepted,
+            corrected=corrected,
+            unavailable=unavailable,
+            reason=reason,
+            confidence=confidence,
+        )
+        if cached_result is None:
+            return {"ok": False, "reason": "stale_drawing_review"}
+        _sync_active_route_state(session, locale)
+        return _ai_drawing_review_response(session, locale, cached_result)
+    finally:
+        if session.get(_AI_DRAWING_REVIEW_KEY) is record:
+            record["processing"] = False
 
 
 async def _handle_drawing_guess_input_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -3172,6 +4331,7 @@ async def _handle_drawing_guess_input_payload_locked(
         }
 
     if session.get("phase") != "user_guessing":
+        _adopt_pending_ai_drawing_review(session, reason="round_input_after_phase_advanced")
         phase = str(session.get("phase") or "")
         lanlan_name = str(session.get("lanlan_name") or data.get("lanlan_name") or "")
         feedback_intent: dict[str, Any] | None = None
@@ -3277,6 +4437,7 @@ async def _handle_drawing_guess_input_payload_locked(
         guessed_public = _word_public(guessed_word, locale)
         if guessed_word is not None and guessed_word.id == word.id:
             session["user_score"] = 1
+            _adopt_pending_ai_drawing_review(session, reason="user_guessed_before_revision_ready")
             session["phase"] = "word_picking"
             line, line_source = await _generate_persona_game_line(
                 session=session,
@@ -3342,6 +4503,7 @@ async def _handle_drawing_guess_input_payload_locked(
     if direct_answer_request:
         _append_game_chat(session, "user", text, kind="direct_answer_request")
         answer_label = _word_public(word, locale)["label"]
+        _adopt_pending_ai_drawing_review(session, reason="user_gave_up_before_revision_ready")
         session["phase"] = "word_picking"
         line, line_source = await _generate_persona_game_line(
             session=session,
@@ -3557,6 +4719,8 @@ async def _handle_drawing_guess_timeout_payload(
     locale: str,
 ) -> dict[str, Any]:
     phase = session.get("phase")
+    if phase == "user_guessing":
+        _adopt_pending_ai_drawing_review(session, reason="round_timeout_received")
     if phase == "word_picking":
         cached = session.get("user_guess_timeout_result")
         if isinstance(cached, dict):
