@@ -1118,7 +1118,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         1,
     )[1].split("function makeIcebreakerSessionId", 1)[0]
     assert "function findPendingReleaseSnapshot(lanlanName, routeState)" in runtime
-    assert "if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) return;" in runtime
+    assert "foundMismatchedActiveRelease = true;" in runtime
+    assert "{ mismatchedActiveRoute: true }" in runtime
     release_cleanup = runtime.split("function completePendingRelease", 1)[1].split(
         "function hasIncompleteStoredSession",
         1,
@@ -1144,6 +1145,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (String(restored.day || '') === dayKey)" in deferred_start
     assert "return startFromEndStateWhenTutorialIdle(endState);" in deferred_start
     assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);" in restore
+    assert "if (hasMismatchedPendingRelease) return false;" in restore
     assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
 
     start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(

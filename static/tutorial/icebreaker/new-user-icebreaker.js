@@ -571,16 +571,20 @@
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var activeRouteSessionId = state.icebreaker_active === true ? String(state.session_id || '') : '';
         var best = null;
+        var foundMismatchedActiveRelease = false;
         Object.keys(days).forEach(function (day) {
             var entry = days[day];
             if (!entry || entry.releasePending !== true || entry.completed === true) return;
             if (String(entry.lanlanName || '') !== expectedLanlanName) return;
-            if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) return;
+            if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) {
+                foundMismatchedActiveRelease = true;
+                return;
+            }
             if (!best || Number(entry.updatedAt || 0) > Number(best.entry.updatedAt || 0)) {
                 best = { day: day, entry: entry };
             }
         });
-        return best;
+        return best || (foundMismatchedActiveRelease ? { mismatchedActiveRoute: true } : null);
     }
 
     function completePendingRelease(routeState, snapshot, lanlanName) {
@@ -711,11 +715,15 @@
                 return false;
             }
             var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);
-            if (pendingRelease) {
+            var hasMismatchedPendingRelease = pendingRelease && pendingRelease.mismatchedActiveRoute === true;
+            if (pendingRelease && !hasMismatchedPendingRelease) {
                 return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);
             }
             var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
             if (!snapshot) {
+                // 本地待释放 session 与后端活动 route 不同，说明活动 route 可能属于较新页面。
+                // 不得因旧快照无法恢复而清掉另一个仍存活会话的 prompt/route。
+                if (hasMismatchedPendingRelease) return false;
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
             }
 
