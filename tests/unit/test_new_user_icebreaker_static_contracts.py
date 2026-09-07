@@ -529,7 +529,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
         "function speakViaProjectTts",
         1,
     )[0]
-    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function () {"
+    context_then = "return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {"
     assert context_then in append_message_block
     assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
     assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
@@ -542,7 +542,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
 
 def test_icebreaker_context_append_requires_successful_json_payload():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    append_context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
+    append_context_block = runtime.split("function appendLlmContext(role, text, meta, session)", 1)[1].split(
         "function getIcebreakerMessageText(message)",
         1,
     )[0]
@@ -662,7 +662,7 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
+    assert "return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {" in append_message_block
     standalone_branch = append_message_block.split("if (!shouldRenderIcebreakerOnLocalChatHost()) {", 1)[1].split(
         "var chatHost = null;",
         1,
@@ -1046,6 +1046,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
     assert "if (!configReady || activeSession) return null;" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
+    assert "var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;" in runtime
+    assert "}, ROUTE_STATE_RESTORE_MAX_WAIT_MS);" in runtime
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded) return false;" in restore
@@ -1141,6 +1143,10 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         "broadcastIcebreakerClearChoicePromptSource"
     )
     assert "releaseCleanupCompleted: true" in release_cleanup
+    assert "ensurePendingReleaseMessage(snapshot, lanlanName)" in release_cleanup
+    assert release_cleanup.index("ensurePendingReleaseMessage(snapshot, lanlanName)") < release_cleanup.index(
+        "broadcastIcebreakerClearChoicePromptSource"
+    )
     assert "day: String(snapshot.day || '')" in release_cleanup
     assert "dispatchIcebreakerEnded('free_text_release_restore');" in release_cleanup
     assert release_cleanup.index("releasePending: false") < release_cleanup.index(
@@ -1181,7 +1187,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "author: role === 'user' ? '你' : resolveAuthor(targetSession)" in append_message
     assert append_message.index("broadcastIcebreakerAppendMessage(message);") < append_message.index(
         "pendingNodeId: ''"
-    ) < append_message.index("return appendLlmContext(role, messageText, meta || {})")
+    ) < append_message.index("return appendLlmContext(role, messageText, meta || {}, targetSession)")
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
@@ -1215,20 +1221,21 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "return result === true;" in runtime
     assert "if (!didAllChoiceWritesSucceed(writeResults)) return false;" in handoff
     assert "terminalChoiceRecorded: true" in handoff
+    assert "settlementPatch.terminalChoiceRecorded = true" in runtime
     assert "function retryPendingHandoff" in runtime
     assert "function ensurePendingHandoffMessage" in runtime
-    assert "terminalMessageDelivered: true" in runtime
+    assert "patch.terminalMessageDelivered = true" in runtime
     assert "terminalMessageDelivered: false" in runtime
-    assert runtime.index("broadcastIcebreakerAppendMessage(message);") < runtime.index(
-        "terminalMessageDelivered: true"
-    )
     append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "if (isTerminalHandoff && !shouldRenderIcebreakerOnLocalChatHost())" in append_message
+    assert append_message.index("broadcastIcebreakerAppendMessage(message);") < append_message.index(
+        "markPendingAssistantMessageDelivered(targetSession, meta);"
+    )
+    assert "if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost())" in append_message
     assert append_message.index("if (!result) return result;") < append_message.index(
-        "if (isTerminalHandoff)"
+        "if (isPendingAssistantMessage)"
     )
     assert "if (entry.terminalChoiceRecorded === true)" in runtime
     retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
@@ -1244,6 +1251,9 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "choiceSeq: session.choiceSeq" in advance
     assert "choiceWriteMetas: session.choiceWriteMetas" in advance
+    assert "pendingUserChoice: null" in advance
+    assert "function resumePendingUserChoice(session, pendingChoice)" in runtime
+    assert "pendingUserChoice: restoredPendingUserChoice" in runtime
     assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
     assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
     assert "String(entry.sessionId || '') !== String(session.sessionId || '')" in runtime

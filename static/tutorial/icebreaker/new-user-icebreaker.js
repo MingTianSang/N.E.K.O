@@ -14,6 +14,7 @@
     var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;
     var ROUTE_START_RESTORE_RETRY_MS = 300;
     var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;
+    var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
@@ -86,8 +87,9 @@
         return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
-    function fetchJson(url) {
-        return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
+    function fetchJson(url, options) {
+        var requestOptions = Object.assign({ credentials: 'same-origin', cache: 'no-store' }, options || {});
+        return fetch(url, requestOptions).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         });
@@ -434,16 +436,35 @@
     function loadIcebreakerRouteStateForRestore() {
         var lanlanName = resolveLanlanName();
         var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
-        return fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
-            return {
-                loaded: !!(data && data.ok === true),
-                state: data && data.ok === true && data.state && typeof data.state === 'object'
-                    ? data.state
-                    : null
-            };
-        }).catch(function (error) {
-            console.warn('[NewUserIcebreaker] route restore state failed:', error);
-            return { loaded: false, state: null };
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var requestPromise = fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix, {
+            signal: controller ? controller.signal : undefined
+        });
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                if (controller) controller.abort();
+                resolve({ loaded: false, state: null });
+            }, ROUTE_STATE_RESTORE_MAX_WAIT_MS);
+            requestPromise.then(function (data) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve({
+                    loaded: !!(data && data.ok === true),
+                    state: data && data.ok === true && data.state && typeof data.state === 'object'
+                        ? data.state
+                        : null
+                });
+            }).catch(function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] route restore state failed:', error);
+                resolve({ loaded: false, state: null });
+            });
         });
     }
 
@@ -591,28 +612,56 @@
         return best || (foundMismatchedActiveRelease ? { mismatchedActiveRoute: true } : null);
     }
 
+    function ensurePendingReleaseMessage(snapshot, lanlanName) {
+        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
+        var releaseText = String(entry.releaseText || '');
+        if (!releaseText || entry.releaseMessageDelivered === true) return Promise.resolve(true);
+        var releaseSession = {
+            day: String(snapshot.day || ''),
+            sessionId: String(entry.sessionId || ''),
+            lanlanName: String(lanlanName || entry.lanlanName || ''),
+            nodeId: String(entry.nodeId || '')
+        };
+        return appendChatMessage('assistant', releaseText, {
+            day: releaseSession.day,
+            nodeId: releaseSession.nodeId,
+            voiceKey: String(entry.releaseVoiceKey || ''),
+            fallback: 'release',
+            freeText: true,
+            requestId: String(entry.releaseRequestId || '')
+        }, releaseSession).then(function (message) {
+            return didAppendChatMessage(message);
+        });
+    }
+
     function completePendingRelease(routeState, snapshot, lanlanName) {
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var entry = snapshot && snapshot.entry ? snapshot.entry : {};
         var routeMatchesRelease = state.icebreaker_active === true
             && String(state.session_id || '') === String(entry.sessionId || '')
             && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
-        if (state.icebreaker_active !== true || routeMatchesRelease) {
-            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
-        }
-        var cleanupPromise = routeMatchesRelease
-            ? endIcebreakerRoute({
-                sessionId: String(entry.sessionId || ''),
-                lanlanName: String(lanlanName || '')
-            }, 'icebreaker_free_text_release_restore')
-            : Promise.resolve(true);
-        return cleanupPromise.then(function (cleaned) {
+        return ensurePendingReleaseMessage(snapshot, lanlanName).then(function (messageDelivered) {
+            if (!messageDelivered) return false;
+            if (state.icebreaker_active !== true || routeMatchesRelease) {
+                broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
+            }
+            return routeMatchesRelease
+                ? endIcebreakerRoute({
+                    sessionId: String(entry.sessionId || ''),
+                    lanlanName: String(lanlanName || '')
+                }, 'icebreaker_free_text_release_restore')
+                : true;
+        }).then(function (cleaned) {
             if (!cleaned) return false;
             markDay(snapshot.day, {
                 started: true,
                 completed: true,
                 completedAt: Date.now(),
                 releasePending: false,
+                releaseText: '',
+                releaseVoiceKey: '',
+                releaseRequestId: '',
+                releaseMessageDelivered: false,
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
@@ -699,6 +748,34 @@
         });
     }
 
+    function resumePendingUserChoice(session, pendingChoice) {
+        var pending = pendingChoice && typeof pendingChoice === 'object' ? pendingChoice : {};
+        var nodeId = String(pending.nodeId || session.nodeId || '');
+        var choice = String(pending.choice || '');
+        var label = String(pending.label || '');
+        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
+        var option = node && Array.isArray(node.options) ? node.options.find(function (candidate) {
+            return String(candidate.id || '') === choice;
+        }) : null;
+        if (!option) return Promise.resolve(false);
+        var meta = {
+            day: session.day,
+            nodeId: nodeId,
+            choice: choice,
+            requestId: String(pending.requestId || ''),
+            messageId: String(pending.messageId || ''),
+            pendingUserChoice: true
+        };
+        var resumePromise = pending.messageDelivered === true
+            ? appendLlmContext('user', label, meta, session)
+            : appendChatMessage('user', label, meta, session);
+        return Promise.resolve(resumePromise).then(function (result) {
+            if (pending.messageDelivered !== true && !didAppendChatMessage(result)) return false;
+            if (activeSession !== session) return false;
+            return advanceWithChoice(session, option, choice, label, nodeId);
+        });
+    }
+
     function restoreInterruptedSession() {
         if (!isManagedDesktopReload()) return Promise.resolve(false);
         if (activeSession) return Promise.resolve(true);
@@ -771,6 +848,10 @@
                 : []).map(function (storedMeta) {
                 return Object.assign({}, storedMeta, { sessionId: session.sessionId });
             });
+            var restoredPendingUserChoice = snapshot.entry.pendingUserChoice
+                && typeof snapshot.entry.pendingUserChoice === 'object'
+                ? Object.assign({}, snapshot.entry.pendingUserChoice, { sessionId: session.sessionId })
+                : null;
             var activationPromise = reuseActiveRoute
                 ? Promise.resolve(true)
                 : startIcebreakerRouteForRestore(session);
@@ -797,9 +878,12 @@
                     nodeId: session.nodeId,
                     choiceSeq: session.choiceSeq,
                     choiceWriteMetas: session.choiceWriteMetas,
+                    pendingUserChoice: restoredPendingUserChoice,
                     updatedAt: Date.now()
                 });
-                var presentationPromise = snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
+                var presentationPromise = restoredPendingUserChoice
+                    ? resumePendingUserChoice(session, restoredPendingUserChoice)
+                    : snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
                     ? deliverNode(snapshot.pendingNodeId)
                     : setChoicePrompt(
                         session.dayConfig.nodes[session.nodeId],
@@ -967,11 +1051,11 @@
         });
     }
 
-    function appendLlmContext(role, text, meta) {
+    function appendLlmContext(role, text, meta, session) {
         var cleanRole = String(role || '').trim();
         var cleanText = String(text || '').trim();
         if ((cleanRole !== 'assistant' && cleanRole !== 'user') || !cleanText) return Promise.resolve(false);
-        var currentSession = activeSession || {};
+        var currentSession = session || activeSession || {};
         var extra = meta && typeof meta === 'object' ? meta : {};
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(currentSession),
@@ -1116,10 +1200,18 @@
                     || Number(storedMeta && storedMeta.seq) !== Number(choiceMeta && choiceMeta.seq);
             });
             session.choiceWriteMetas = remainingMetas;
-            markDay(session.day, {
+            var settlementPatch = {
                 choiceWriteMetas: remainingMetas,
                 updatedAt: Date.now()
-            });
+            };
+            if (
+                choiceMeta && choiceMeta.handoff === true
+                && entry.terminalPending === true
+                && String(entry.terminalChoice || '') === String(choiceMeta.choice || '')
+            ) {
+                settlementPatch.terminalChoiceRecorded = true;
+            }
+            markDay(session.day, settlementPatch);
             return result;
         });
     }
@@ -1233,12 +1325,36 @@
         return !!message;
     }
 
+    function markPendingAssistantMessageDelivered(session, meta) {
+        if (!session || !meta) return;
+        var patch = { updatedAt: Date.now() };
+        if (meta.handoff === true) {
+            patch.terminalMessageDelivered = true;
+        } else if (meta.freeText === true && meta.fallback === 'release') {
+            patch.releaseMessageDelivered = true;
+        } else {
+            return;
+        }
+        markDay(session.day, patch);
+    }
+
+    function markPendingUserChoiceDelivered(session, meta) {
+        if (!session || !meta || meta.pendingUserChoice !== true) return;
+        var entry = getStoredDayEntry(session.day);
+        var pending = entry && entry.pendingUserChoice;
+        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
+        markDay(session.day, {
+            pendingUserChoice: Object.assign({}, pending, { messageDelivered: true }),
+            updatedAt: Date.now()
+        });
+    }
+
     function appendChatMessage(role, text, meta, session) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
         var targetSession = session || activeSession;
         var message = {
-            id: makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
+            id: String(meta && meta.messageId || '') || makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,
             author: role === 'user' ? '你' : resolveAuthor(targetSession),
             time: '',
@@ -1252,14 +1368,17 @@
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
-        var isTerminalHandoff = role === 'assistant' && targetSession && meta && meta.handoff === true;
-        if (isTerminalHandoff && !shouldRenderIcebreakerOnLocalChatHost()) {
+        var isPendingAssistantMessage = role === 'assistant' && targetSession && meta && (
+            meta.handoff === true || (meta.freeText === true && meta.fallback === 'release')
+        );
+        var isPendingUserChoice = role === 'user' && targetSession && meta && meta.pendingUserChoice === true;
+        if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
             // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
             // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
-            markDay(targetSession.day, {
-                terminalMessageDelivered: true,
-                updatedAt: Date.now()
-            });
+            markPendingAssistantMessageDelivered(targetSession, meta);
+        }
+        if (isPendingUserChoice && !shouldRenderIcebreakerOnLocalChatHost()) {
+            markPendingUserChoiceDelivered(targetSession, meta);
         }
         // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
         // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
@@ -1270,7 +1389,7 @@
                 updatedAt: Date.now()
             });
         }
-        return appendLlmContext(role, messageText, meta || {}).then(function () {
+        return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
                 // In desktop multi-window mode the standalone /chat page renders the
                 // bubble/caption, but the pet page remains the subtitle translation
@@ -1287,11 +1406,11 @@
                 return host.appendMessage(message);
             }).then(function (result) {
                 if (!result) return result;
-                if (isTerminalHandoff) {
-                    markDay(targetSession.day, {
-                        terminalMessageDelivered: true,
-                        updatedAt: Date.now()
-                    });
+                if (isPendingAssistantMessage) {
+                    markPendingAssistantMessageDelivered(targetSession, meta);
+                }
+                if (isPendingUserChoice) {
+                    markPendingUserChoiceDelivered(targetSession, meta);
                 }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
@@ -1915,6 +2034,7 @@
         markDay(session.day, {
             choiceSeq: session.choiceSeq,
             choiceWriteMetas: session.choiceWriteMetas,
+            pendingUserChoice: null,
             updatedAt: Date.now()
         });
         if (option.next) {
@@ -1978,10 +2098,27 @@
             });
             return;
         }
+        var choiceContextRequestId = makeMessageId('icebreaker-choice-context');
+        var choiceMessageId = makeMessageId('icebreaker-user');
+        markDay(session.day, {
+            pendingUserChoice: {
+                sessionId: session.sessionId,
+                nodeId: choiceNodeId,
+                choice: choice,
+                label: label,
+                requestId: choiceContextRequestId,
+                messageId: choiceMessageId,
+                messageDelivered: false
+            },
+            updatedAt: Date.now()
+        });
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
-            choice: choice
+            choice: choice,
+            requestId: choiceContextRequestId,
+            messageId: choiceMessageId,
+            pendingUserChoice: true
         }).then(function (message) {
             if (!message) {
                 if (activeSession === session) {
@@ -2083,6 +2220,10 @@
                 started: true,
                 completed: false,
                 releasePending: true,
+                releaseText: releaseText,
+                releaseVoiceKey: releaseVoiceKey,
+                releaseRequestId: String(info.requestId || ''),
+                releaseMessageDelivered: false,
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
@@ -2128,6 +2269,10 @@
                     sessionId: sessionId,
                     nodeId: nodeId,
                     releasePending: false,
+                    releaseText: '',
+                    releaseVoiceKey: '',
+                    releaseRequestId: '',
+                    releaseMessageDelivered: false,
                     releasedByFreeText: true
                 });
                 if (activeSession === session) {
@@ -2357,6 +2502,7 @@
                     pendingNodeId: dayConfig.root,
                     choiceSeq: 0,
                     choiceWriteMetas: [],
+                    pendingUserChoice: null,
                     terminalPending: false,
                     terminalChoiceRecorded: false,
                     terminalChoice: '',

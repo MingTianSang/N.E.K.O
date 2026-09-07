@@ -6235,7 +6235,7 @@ def test_icebreaker_terminal_handoff_retries_after_local_chat_append_failure(moc
     )
     assert result == {
         "messages": ["Ready?", "Finish", "Done."],
-        "choices": ["finish", "finish"],
+        "choices": ["finish"],
         "routeEndCount": 1,
     }
 
