@@ -525,7 +525,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
     assert "contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {" in runtime
     assert "return contextAppendPromise;" in runtime
 
-    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
@@ -650,7 +650,7 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setTranslateEnabled(true" not in start_block
 
     sync_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function appendChatMessage(role, text, meta, session)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
@@ -658,7 +658,7 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setTranslateEnabled(true" not in sync_block
     assert "bridge.finalizeTurnWithTranslation(line)" in sync_block
 
-    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
@@ -686,7 +686,7 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     loading_runtime = ICEBREAKER_ASSISTANT_LOADING_PATH.read_text(encoding="utf-8")
     assistant_append_block = runtime.split("function appendAssistantChatMessage(text, meta, session)", 1)[1].split(
-        "function appendChatMessage(role, text, meta)",
+        "function appendChatMessage(role, text, meta, session)",
         1,
     )[0]
     deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
@@ -712,7 +712,7 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
     assert "dispatchThinking(true, source);" in loading_runtime
     assert "dispatchThinking(false, source);" in loading_runtime
     assert "assistantLoading.showAssistantFakeLoading({" in runtime
-    assert "return appendChatMessage('assistant', text, meta);" in assistant_append_block
+    assert "return appendChatMessage('assistant', text, meta, targetSession);" in assistant_append_block
     assert "}).then(function (message) {" in assistant_append_block
     assert "if (targetSession && activeSession !== targetSession) return null;" in assistant_append_block
     assert "return message;" in assistant_append_block
@@ -1047,7 +1047,12 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
-    assert "if (!routeResult.loaded) return false;" not in restore
+    assert "if (!routeResult.loaded) return false;" in restore
+    assert restore.index("if (!routeResult.loaded) return false;") < restore.index(
+        "var reuseActiveRoute = snapshot.matchesActiveRoute === true;"
+    )
+    assert "retryRestoreWhenPageConfigSettles();" in restore
+    assert "function retryRestoreWhenPageConfigSettles()" in runtime
     assert "var reuseActiveRoute = snapshot.matchesActiveRoute === true;" in restore
     assert "? String(snapshot.entry.sessionId || '')" in restore
     assert ": makeIcebreakerSessionId(snapshot.day)" in restore
@@ -1059,6 +1064,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
     )
     assert "activeSession = session;" in restore
+    assert "choiceSeq: Number(snapshot.entry.choiceSeq) || 0" in restore
+    assert "session.choiceWriteMetas = (Array.isArray(snapshot.entry.choiceWriteMetas)" in restore
+    assert "session.pendingChoiceWrites = session.choiceWriteMetas.map" in restore
     assert "var presentationPromise" in restore
     assert ": setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
@@ -1104,7 +1112,19 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     root_snapshot = "markDay(dayKey, {"
     assert root_snapshot in start_for_day
     assert start_for_day.index(root_snapshot) < start_for_day.index("return deliverNode(dayConfig.root)")
+    assert "pendingNodeId: dayConfig.root" in start_for_day
+    assert "choiceSeq: 0" in start_for_day
+    assert "choiceWriteMetas: []" in start_for_day
     assert "started: false" in start_for_day
+
+    append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
+        "function speakViaProjectTts",
+        1,
+    )[0]
+    assert "author: role === 'user' ? '你' : resolveAuthor(targetSession)" in append_message
+    assert append_message.index("broadcastIcebreakerAppendMessage(message);") < append_message.index(
+        "pendingNodeId: ''"
+    ) < append_message.index("return appendLlmContext(role, messageText, meta || {})")
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
@@ -1138,6 +1158,19 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "terminalChoiceRecorded: true" in handoff
     assert "function retryPendingHandoff" in runtime
     assert "if (entry.terminalChoiceRecorded === true)" in runtime
+    retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
+        "function completeWithHandoff",
+        1,
+    )[0]
+    assert retry_handoff.index("if (entry.terminalChoiceRecorded === true)") < retry_handoff.index(
+        "if (String(entry.terminalChoice || '') !== String(choice || '')) return null;"
+    )
+    advance = runtime.split("function advanceWithChoice", 1)[1].split(
+        "function handleChoice",
+        1,
+    )[0]
+    assert "choiceSeq: session.choiceSeq" in advance
+    assert "choiceWriteMetas: session.choiceWriteMetas" in advance
 
 
 def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():

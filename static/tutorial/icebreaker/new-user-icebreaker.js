@@ -34,6 +34,7 @@
     var icebreakerBridgeTimestampSeq = 0;
     var contextAppendPromise = Promise.resolve();
     var useDirectMutationHeadersForRestore = false;
+    var pageConfigRestoreRetryAttached = false;
     var freeTextState = freeTextRuntime && typeof freeTextRuntime.createRuntimeStateStore === 'function'
         ? freeTextRuntime.createRuntimeStateStore()
         : null;
@@ -417,8 +418,8 @@
         }
     }
 
-    function resolveAuthor() {
-        return resolveLanlanName() || 'N.E.K.O';
+    function resolveAuthor(session) {
+        return resolveSessionLanlanName(session) || 'N.E.K.O';
     }
 
     function loadIcebreakerRouteStateForRestore() {
@@ -469,6 +470,17 @@
             if (result === timeoutSentinel) useDirectMutationHeadersForRestore = true;
             return true;
         });
+    }
+
+    function retryRestoreWhenPageConfigSettles() {
+        var ready = window.pageConfigReady;
+        if (pageConfigRestoreRetryAttached || !ready || typeof ready.then !== 'function') return;
+        pageConfigRestoreRetryAttached = true;
+        Promise.resolve(ready).then(function () {
+            window.setTimeout(function () {
+                restoreInterruptedSession();
+            }, 0);
+        }).catch(function () {});
     }
 
     function waitForStorageStartupDecisionForRestore() {
@@ -591,10 +603,17 @@
             var routeResult = results[0];
             var scripts = results[1];
             var localeData = results[2] || {};
+            // route 是否仍活跃未知时不能用新 session 覆盖它；保留重放 prompt，等待下一次
+            // 明确信号/页面重建，而不是把旧 renderer 的在途写入变成 stale。
+            if (!routeResult.loaded) return false;
             var configuredLanlanName = resolveLanlanName();
             var restoreLanlanName = String(
                 configuredLanlanName || (routeResult.state && routeResult.state.lanlan_name) || ''
             );
+            if (!restoreLanlanName) {
+                retryRestoreWhenPageConfigSettles();
+                return false;
+            }
             var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
             if (!snapshot) {
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
@@ -618,10 +637,17 @@
                 localeData: localeData,
                 nodeId: snapshot.nodeId,
                 lanlanName: lanlanName,
+                choiceSeq: Number(snapshot.entry.choiceSeq) || 0,
+                choiceWriteMetas: [],
                 sessionId: reuseActiveRoute
                     ? String(snapshot.entry.sessionId || '')
                     : makeIcebreakerSessionId(snapshot.day)
             };
+            session.choiceWriteMetas = (Array.isArray(snapshot.entry.choiceWriteMetas)
+                ? snapshot.entry.choiceWriteMetas
+                : []).map(function (storedMeta) {
+                return Object.assign({}, storedMeta, { sessionId: session.sessionId });
+            });
             var activationPromise = reuseActiveRoute
                 ? Promise.resolve(true)
                 : startIcebreakerRoute(session);
@@ -633,12 +659,20 @@
                     broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
                 }
                 activeSession = session;
+                session.pendingChoiceWrites = session.choiceWriteMetas.map(function (storedMeta) {
+                    var replayMeta = Object.assign({}, storedMeta, {
+                        sessionId: session.sessionId
+                    });
+                    return recordChoiceToPool(replayMeta);
+                });
                 markDay(session.day, {
                     started: true,
                     completed: false,
                     lanlanName: session.lanlanName,
                     sessionId: session.sessionId,
                     nodeId: session.nodeId,
+                    choiceSeq: session.choiceSeq,
+                    choiceWriteMetas: session.choiceWriteMetas,
                     updatedAt: Date.now()
                 });
                 var presentationPromise = snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
@@ -1046,7 +1080,7 @@
         var targetSession = session || activeSession;
         return showIcebreakerAssistantFakeLoading(targetSession).then(function () {
             if (targetSession && activeSession !== targetSession) return null;
-            return appendChatMessage('assistant', text, meta);
+            return appendChatMessage('assistant', text, meta, targetSession);
         }).then(function (message) {
             if (targetSession && activeSession !== targetSession) return null;
             return message;
@@ -1057,24 +1091,34 @@
         return !!message;
     }
 
-    function appendChatMessage(role, text, meta) {
+    function appendChatMessage(role, text, meta, session) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
+        var targetSession = session || activeSession;
         var message = {
             id: makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,
-            author: role === 'user' ? '你' : resolveAuthor(),
+            author: role === 'user' ? '你' : resolveAuthor(targetSession),
             time: '',
             createdAt: Date.now(),
             blocks: [{ type: 'text', text: messageText }],
             status: 'sent',
             sortKey: nextIcebreakerSortKey(),
-            avatarLabel: role === 'assistant' ? resolveAuthor() : undefined,
+            avatarLabel: role === 'assistant' ? resolveAuthor(targetSession) : undefined,
             avatarUrl: role === 'assistant' ? resolveAssistantAvatarUrl() : undefined,
             actions: undefined,
             icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
         broadcastIcebreakerAppendMessage(message);
+        // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
+        // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
+        if (role === 'assistant' && targetSession && meta && meta.handoff !== true && meta.nodeId) {
+            markDay(targetSession.day, {
+                nodeId: String(meta.nodeId),
+                pendingNodeId: '',
+                updatedAt: Date.now()
+            });
+        }
         return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
                 // In desktop multi-window mode the standalone /chat page renders the
@@ -1512,6 +1556,7 @@
                 terminalChoiceRecorded: false,
                 terminalChoice: '',
                 terminalChoiceSeq: 0,
+                choiceWriteMetas: [],
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
@@ -1539,8 +1584,7 @@
         if (!entry
                 || entry.terminalPending !== true
                 || String(entry.sessionId || '') !== String(session.sessionId || '')
-                || String(entry.nodeId || '') !== String(choiceNodeId || '')
-                || String(entry.terminalChoice || '') !== String(choice || '')) {
+                || String(entry.nodeId || '') !== String(choiceNodeId || '')) {
             return null;
         }
         if (entry.terminalChoiceRecorded === true) {
@@ -1548,6 +1592,7 @@
                 return completed ? finishActiveHandoff(session) : false;
             });
         }
+        if (String(entry.terminalChoice || '') !== String(choice || '')) return null;
 
         // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
         // 已成功项会被去重，失败项得到补写；不再追加用户气泡或 handoff 台词。
@@ -1667,6 +1712,11 @@
         }));
         (session.choiceWriteMetas || (session.choiceWriteMetas = [])).push(choiceMeta);
         (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
+        markDay(session.day, {
+            choiceSeq: session.choiceSeq,
+            choiceWriteMetas: session.choiceWriteMetas,
+            updatedAt: Date.now()
+        });
         if (option.next) {
             markDay(session.day, {
                 started: true,
@@ -2088,7 +2138,9 @@
                     lanlanName: nextSession.lanlanName,
                     sessionId: nextSession.sessionId,
                     nodeId: dayConfig.root,
-                    pendingNodeId: '',
+                    pendingNodeId: dayConfig.root,
+                    choiceSeq: 0,
+                    choiceWriteMetas: [],
                     updatedAt: Date.now()
                 });
                 return deliverNode(dayConfig.root).then(function (delivered) {
