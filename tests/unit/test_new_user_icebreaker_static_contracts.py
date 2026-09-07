@@ -1256,6 +1256,19 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "pendingUserChoice: null" in advance
     assert "function resumePendingUserChoice(session, pendingChoice)" in runtime
     assert "pendingUserChoice: restoredPendingUserChoice" in runtime
+    pending_choice_resume = runtime.split("function resumePendingUserChoice", 1)[1].split(
+        "function restoreInterruptedSession",
+        1,
+    )[0]
+    assert "var PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS = 3000;" in runtime
+    assert "signal: controller ? controller.signal : null" in pending_choice_resume
+    assert "if (controller) controller.abort();" in pending_choice_resume
+    assert "}, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);" in pending_choice_resume
+    assert "if (pending.messageDelivered === true && result !== true) return false;" in pending_choice_resume
+    assert "if (extra.signal) requestOptions.signal = extra.signal;" in runtime
+    assert "if (restoredPendingUserChoice && activeSession === session)" in runtime
+    assert "function retryPendingUserChoice(session, choice, choiceNodeId)" in runtime
+    assert "return resumePendingUserChoice(session, pending);" in runtime
     assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
     assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
     assert "String(entry.sessionId || '') !== String(session.sessionId || '')" in runtime

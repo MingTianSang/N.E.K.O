@@ -5705,6 +5705,183 @@ def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(m
 
 
 @pytest.mark.frontend
+def test_interrupted_icebreaker_choice_context_timeout_keeps_same_choice_retryable(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerBridgeEvents = [];
+            window.__choiceContextBodies = [];
+            window.__choiceContextAborts = 0;
+            window.__routeEndCount = 0;
+            window.nekoElectronIcebreakerBridge = {
+                send: function(message) { window.__icebreakerBridgeEvents.push(message); },
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() { return { 'X-CSRF-Token': 'test-token' }; },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'interrupted-session',
+                        nodeId: 'root',
+                        pendingUserChoice: {
+                            sessionId: 'interrupted-session',
+                            nodeId: 'root',
+                            choice: 'A',
+                            label: 'Continue A',
+                            requestId: 'stable-context-request',
+                            messageId: 'stable-user-message',
+                            messageDelivered: true,
+                        },
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        icebreaker_active: true,
+                        session_id: 'interrupted-session',
+                        lanlan_name: 'yui',
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({ days: { '1': { root: 'root', nodes: {
+                    root: {
+                        options: [
+                            { id: 'A', labelKey: 'root.A', next: 'next' },
+                            { id: 'B', labelKey: 'root.B', next: 'next' },
+                        ],
+                    },
+                    next: {
+                        lineKey: 'next.line',
+                        options: [{ id: 'finish', labelKey: 'next.finish', handoffKey: 'next.done' }],
+                    },
+                } } } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.A': 'Continue A',
+                    'root.B': 'Continue B',
+                    'next.line': 'The next question.',
+                    'next.finish': 'Finish',
+                    'next.done': 'Done.',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                window.__choiceContextBodies.push(body);
+                if (window.__choiceContextBodies.length === 1) {
+                    return new Promise(function(resolve, reject) {
+                        requestOptions.signal.addEventListener('abort', function() {
+                            window.__choiceContextAborts += 1;
+                            reject(new DOMException('aborted', 'AbortError'));
+                        }, { once: true });
+                    });
+                }
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                window.__routeEndCount += 1;
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_function(
+        """() => window.__choiceContextAborts === 1
+            && window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).length === 1""",
+        timeout=6000,
+    )
+    timed_out = mock_page.evaluate(
+        """() => ({
+            activeSession: window.newUserIcebreaker.getActiveSession(),
+            pending: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+                .days['1'].pendingUserChoice,
+            routeEndCount: window.__routeEndCount,
+        })"""
+    )
+    assert timed_out["activeSession"]["sessionId"] == "interrupted-session"
+    assert timed_out["pending"]["requestId"] == "stable-context-request"
+    assert timed_out["routeEndCount"] == 0
+
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: { sessionId: prompt.sessionId, choice: 'B', option: prompt.options[1] },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => window.__icebreakerBridgeEvents.filter(
+            (event) => event.action === 'icebreaker_set_choice_prompt'
+        ).length === 2"""
+    )
+    assert mock_page.evaluate("() => window.__choiceContextBodies.length") == 1
+
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: { sessionId: prompt.sessionId, choice: 'A', option: prompt.options[0] },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const session = window.newUserIcebreaker.getActiveSession();
+            return session && session.nodeId === 'next'
+                && window.__icebreakerBridgeEvents.filter(
+                    (event) => event.action === 'icebreaker_set_choice_prompt'
+                ).length === 3;
+        }"""
+    )
+    retried = mock_page.evaluate(
+        """() => ({
+            requestIds: window.__choiceContextBodies
+                .filter((item) => item.role === 'user')
+                .map((item) => item.request_id),
+            pending: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+                .days['1'].pendingUserChoice,
+            userMessages: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_append_chat_message'
+                    && event.message.role === 'user'
+            ).length,
+        })"""
+    )
+    assert retried == {
+        "requestIds": ["stable-context-request", "stable-context-request"],
+        "pending": None,
+        "userMessages": 0,
+    }
+
+
+@pytest.mark.frontend
 def test_icebreaker_managed_restore_rejects_stale_interrupted_snapshot(mock_page: Page):
     _bootstrap_page(
         mock_page,

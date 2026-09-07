@@ -20,6 +20,7 @@
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
+    var PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS = 3000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -770,18 +771,40 @@
             return String(candidate.id || '') === choice;
         }) : null;
         if (!option) return Promise.resolve(false);
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
         var meta = {
             day: session.day,
             nodeId: nodeId,
             choice: choice,
             requestId: String(pending.requestId || ''),
             messageId: String(pending.messageId || ''),
-            pendingUserChoice: true
+            pendingUserChoice: true,
+            signal: controller ? controller.signal : null
         };
         var resumePromise = pending.messageDelivered === true
             ? appendLlmContext('user', label, meta, session)
             : appendChatMessage('user', label, meta, session);
-        return Promise.resolve(resumePromise).then(function (result) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                if (controller) controller.abort();
+                resolve(false);
+            }, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);
+            Promise.resolve(resumePromise).then(function (result) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(result);
+            }).catch(function () {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(false);
+            });
+        }).then(function (result) {
+            if (pending.messageDelivered === true && result !== true) return false;
             if (pending.messageDelivered !== true && !didAppendChatMessage(result)) return false;
             if (activeSession !== session) return false;
             return advanceWithChoice(session, option, choice, label, nodeId);
@@ -904,6 +927,16 @@
                     );
                 return presentationPromise.then(function (presented) {
                     if (presented) return true;
+                    if (restoredPendingUserChoice && activeSession === session) {
+                        session.choiceInFlight = false;
+                        return setChoicePrompt(
+                            session.dayConfig.nodes[session.nodeId],
+                            session.localeData,
+                            0
+                        ).then(function () {
+                            return false;
+                        });
+                    }
                     clearChoicePrompt();
                     if (activeSession === session) activeSession = null;
                     return endIcebreakerRoute(session, 'icebreaker_restore_presentation_failed').then(function () {
@@ -1096,12 +1129,14 @@
         }
 
         function postContextWithHeaders(headers, allowRetry) {
-            return fetch(ICEBREAKER_API_BASE + '/context', {
+            var requestOptions = {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            }).then(function (response) {
+            };
+            if (extra.signal) requestOptions.signal = extra.signal;
+            return fetch(ICEBREAKER_API_BASE + '/context', requestOptions).then(function (response) {
                 if (allowRetry && response.status === 403) {
                     return response.clone().json().catch(function () {
                         return null;
@@ -1956,6 +1991,18 @@
         });
     }
 
+    function retryPendingUserChoice(session, choice, choiceNodeId) {
+        var entry = getStoredDayEntry(session.day);
+        var pending = entry && entry.pendingUserChoice;
+        if (!pending
+                || String(pending.sessionId || '') !== String(session.sessionId || '')
+                || String(pending.nodeId || '') !== String(choiceNodeId || '')) {
+            return null;
+        }
+        if (String(pending.choice || '') !== String(choice || '')) return Promise.resolve(false);
+        return resumePendingUserChoice(session, pending);
+    }
+
     function completeWithHandoff(option, terminalChoiceWritePromise) {
         var session = activeSession;
         if (!session) return Promise.resolve(false);
@@ -2094,6 +2141,22 @@
         // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
         // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
         var choiceNodeId = session.nodeId;
+        var pendingUserChoiceRetry = retryPendingUserChoice(session, choice, choiceNodeId);
+        if (pendingUserChoiceRetry) {
+            pendingUserChoiceRetry.then(function (result) {
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    if (result === false) setChoicePrompt(node, session.localeData);
+                }
+            }).catch(function (error) {
+                console.warn('[NewUserIcebreaker] pending user choice retry failed:', error);
+                if (activeSession === session) {
+                    session.choiceInFlight = false;
+                    setChoicePrompt(node, session.localeData);
+                }
+            });
+            return;
+        }
         var pendingHandoffRetry = retryPendingHandoff(session, option, choice, label, choiceNodeId);
         if (pendingHandoffRetry) {
             pendingHandoffRetry.then(function (result) {
