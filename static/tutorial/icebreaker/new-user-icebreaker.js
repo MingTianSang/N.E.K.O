@@ -15,6 +15,8 @@
     var ROUTE_START_RESTORE_RETRY_MS = 300;
     var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;
     var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;
+    var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;
+    var ROUTE_STATE_RESTORE_RETRY_MS = 300;
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
@@ -433,7 +435,8 @@
         return resolveSessionLanlanName(session) || 'N.E.K.O';
     }
 
-    function loadIcebreakerRouteStateForRestore() {
+    function loadIcebreakerRouteStateForRestore(attempt) {
+        var attemptIndex = Number(attempt || 0);
         var lanlanName = resolveLanlanName();
         var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -442,11 +445,20 @@
         });
         return new Promise(function (resolve) {
             var settled = false;
+            function retryOrResolveUnavailable() {
+                if (attemptIndex + 1 >= ROUTE_STATE_RESTORE_MAX_ATTEMPTS) {
+                    resolve({ loaded: false, state: null });
+                    return;
+                }
+                window.setTimeout(function () {
+                    loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);
+                }, ROUTE_STATE_RESTORE_RETRY_MS);
+            }
             var timeoutId = window.setTimeout(function () {
                 if (settled) return;
                 settled = true;
                 if (controller) controller.abort();
-                resolve({ loaded: false, state: null });
+                retryOrResolveUnavailable();
             }, ROUTE_STATE_RESTORE_MAX_WAIT_MS);
             requestPromise.then(function (data) {
                 if (settled) return;
@@ -463,7 +475,7 @@
                 settled = true;
                 window.clearTimeout(timeoutId);
                 console.warn('[NewUserIcebreaker] route restore state failed:', error);
-                resolve({ loaded: false, state: null });
+                retryOrResolveUnavailable();
             });
         });
     }

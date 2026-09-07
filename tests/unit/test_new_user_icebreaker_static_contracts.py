@@ -1047,6 +1047,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (!configReady || activeSession) return null;" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;" in runtime
+    assert "var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;" in runtime
+    assert "loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);" in runtime
     assert "}, ROUTE_STATE_RESTORE_MAX_WAIT_MS);" in runtime
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
