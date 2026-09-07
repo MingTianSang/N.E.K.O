@@ -1946,7 +1946,16 @@
         if (!pendingGuideEndState) return Promise.resolve(true);
         if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
         if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;
-        pendingGuideEndStartPromise = startFromEndStateWhenTutorialIdle(endState).then(function (started) {
+        var restoreBeforeStartPromise = isManagedDesktopReload() && hasIncompleteStoredSession()
+            ? restoreInterruptedSession()
+            : Promise.resolve(false);
+        pendingGuideEndStartPromise = restoreBeforeStartPromise.then(function (restored) {
+            if (restored) {
+                clearPendingGuideEndStateDay(dayKey);
+                return true;
+            }
+            return startFromEndStateWhenTutorialIdle(endState);
+        }).then(function (started) {
             if (!started) {
                 clearPendingGuideEndStateDay(pendingDay);
                 dispatchIcebreakerEnded('start_failed');

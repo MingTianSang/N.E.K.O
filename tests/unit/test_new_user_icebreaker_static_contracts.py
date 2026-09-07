@@ -1086,6 +1086,18 @@ def test_icebreaker_managed_restore_tutorial_wait_has_a_deadline():
         "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);"
     )
 
+    deferred_start = runtime.split("function attemptStartFromGuideEndState", 1)[1].split(
+        "function synthesizeEndStateFromEvent",
+        1,
+    )[0]
+    assert "isManagedDesktopReload() && hasIncompleteStoredSession()" in deferred_start
+    assert "? restoreInterruptedSession()" in deferred_start
+    assert "if (restored) {" in deferred_start
+    assert "clearPendingGuideEndStateDay(dayKey);" in deferred_start
+    assert deferred_start.index("? restoreInterruptedSession()") < deferred_start.index(
+        "return startFromEndStateWhenTutorialIdle(endState);"
+    )
+
 
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
