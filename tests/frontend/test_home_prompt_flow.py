@@ -5735,8 +5735,15 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
             window.appState = { lanlan_name: '' };
             window.__icebreakerPrompts = [];
             window.__icebreakerAppends = [];
+            window.__icebreakerBridgeEvents = [];
+            window.__icebreakerLocalPromptClears = [];
             window.__icebreakerRouteStarts = [];
             window.__icebreakerRouteEnds = [];
+            window.nekoElectronIcebreakerBridge = {
+                send: function(message) {
+                    window.__icebreakerBridgeEvents.push(message);
+                },
+            };
             window.reactChatWindowHost = {
                 isMounted: function() { return true; },
                 openWindow: function() {},
@@ -5759,7 +5766,10 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
                 setIcebreakerChoicePrompt: function(prompt) {
                     window.__icebreakerPrompts.push(prompt);
                 },
-                clearIcebreakerChoicePrompt: function() { return true; },
+                clearIcebreakerChoicePrompt: function(sessionId) {
+                    window.__icebreakerLocalPromptClears.push(sessionId);
+                    return true;
+                },
             };
             localStorage.setItem('i18nextLng', 'en');
             localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
@@ -5846,6 +5856,25 @@ def test_icebreaker_restore_uses_route_role_instead_of_newer_other_character_sna
     assert restored["routeStarts"] == []
     assert restored["routeEnds"] == []
     assert restored["appends"] == []
+    assert restored["session"]["ownsPageExitRouteLifecycle"] is False
+
+    mock_page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
+    follower_exit = mock_page.evaluate(
+        """() => ({
+            activeSession: window.newUserIcebreaker.getActiveSession(),
+            routeEnds: window.__icebreakerRouteEnds,
+            localPromptClears: window.__icebreakerLocalPromptClears,
+            promptClears: window.__icebreakerBridgeEvents.filter(
+                (message) => message.action === 'icebreaker_clear_choice_prompt'
+            ),
+        })"""
+    )
+    assert follower_exit == {
+        "activeSession": None,
+        "routeEnds": [],
+        "localPromptClears": ["route-yui"],
+        "promptClears": [],
+    }
 
 
 @pytest.mark.frontend
@@ -6247,6 +6276,89 @@ def test_icebreaker_restore_rolls_back_new_route_when_presentation_fails(mock_pa
 
 
 @pytest.mark.frontend
+def test_icebreaker_restore_waits_until_the_tutorial_is_idle(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.isInTutorial = true;
+            window.__icebreakerPrompts = [];
+            window.__icebreakerRouteStarts = [];
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            window.reactChatWindowHost = {
+                isMounted: function() { return true; },
+                openWindow: function() {},
+                appendMessage: async function(message) { return message; },
+                getState: function() { return { messages: [] }; },
+                setIcebreakerChoicePrompt: function(prompt) {
+                    window.__icebreakerPrompts.push(prompt);
+                },
+                clearIcebreakerChoicePrompt: function() { return true; },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'old-session',
+                        nodeId: 'root',
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({ ok: true, state: { icebreaker_active: false } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({
+                    days: {
+                        '1': {
+                            root: 'root',
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [{ id: 'A', labelKey: 'root.A', handoffKey: 'root.done' }],
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({ 'root.line': 'Question.', 'root.A': 'Finish.' });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__icebreakerRouteStarts.push(body);
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_timeout(700)
+    assert mock_page.evaluate(
+        "() => ({ starts: window.__icebreakerRouteStarts.length, prompts: window.__icebreakerPrompts.length })"
+    ) == {"starts": 0, "prompts": 0}
+
+    mock_page.evaluate("() => { window.isInTutorial = false; }")
+    mock_page.wait_for_function(
+        "() => window.__icebreakerRouteStarts.length === 1 && window.__icebreakerPrompts.length === 1"
+    )
+
+
+@pytest.mark.frontend
 def test_icebreaker_cross_day_start_waits_for_restored_session_to_end(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -6348,6 +6460,24 @@ def test_icebreaker_cross_day_start_waits_for_restored_session_to_end(mock_page:
             }));
         }"""
     )
+    mock_page.wait_for_function(
+        """() => {
+            const store = JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1') || '{}');
+            return store.days?.['1']?.completed === true;
+        }"""
+    )
+    terminal = mock_page.evaluate(
+        """() => ({
+            stored: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1'],
+            activeDay: window.newUserIcebreaker.getActiveSession()?.day,
+            routeStarts: window.__icebreakerRouteStarts.length,
+        })"""
+    )
+    assert terminal["stored"]["completed"] is True
+    assert terminal["stored"]["terminalHandoff"] is True
+    assert terminal["activeDay"] == "1"
+    assert terminal["routeStarts"] == 1
+
     mock_page.wait_for_function(
         """() => {
             const session = window.newUserIcebreaker.getActiveSession();

@@ -380,6 +380,9 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "appendLlmContext" in runtime
     assert "applyAssistantTextEmotion" in runtime
     assert "resolveAssistantAvatarUrl" in runtime
+    assert "var assistantAuthor = resolveSessionLanlanName(session) || resolveAuthor();" in runtime
+    assert "makeIcebreakerChatMessage('assistant', getText(session.localeData, node.lineKey)" in runtime
+    assert "}, session);" in runtime
     assert "window.appChatAvatar.getCurrentAvatarDataUrl()" in runtime
     assert "avatarUrl: role === 'assistant' ? resolveAssistantAvatarUrl() : undefined" in runtime
     assert "analyzeIcebreakerEmotion" not in runtime
@@ -830,14 +833,15 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "function waitForTtsRequest(text, voiceKey)" in runtime
     assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
+    assert "var handoffPresented = false;" in handoff_block
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "terminalHandoff: true" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
-    assert "}).then(function (completed) {" in handoff_block
-    assert "if (!completed) return false;" in handoff_block
+    assert "}).then(function (routeEnded) {" in handoff_block
+    assert "if (!handoffPresented) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
     )
@@ -850,12 +854,9 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "dispatchIcebreakerEnded('handoff');"
     )
-    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
-        "completed: true"
+    assert handoff_block.index("completed: true") < handoff_block.index(
+        "handoffSpeechPromise = speakLine"
     )
-    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.rindex(
-        "if (!completed) return false;"
-    ) < handoff_block.index("completed: true")
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
@@ -884,6 +885,10 @@ def test_icebreaker_unload_ends_active_route_without_completing_day():
     )[0]
     assert "markDay(" not in cleanup_block
     assert "completed" not in cleanup_block
+    assert "pageLifecycleSuspended = true;" in cleanup_block
+    assert "session.ownsPageExitRouteLifecycle === false" in cleanup_block
+    assert "if (activeSession === session) activeSession = null;" in cleanup_block
+    assert "window.addEventListener('pageshow', function (event)" in runtime
 
 
 def test_icebreaker_waits_long_enough_for_react_chat_host():
@@ -900,6 +905,8 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
     assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
     assert "window.isInTutorial" in runtime
+    assert "window.isNekoHomeTutorialPending === true" in runtime
+    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ !== true" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
     assert "neko-day1-systray-intro-open" in runtime
@@ -1025,6 +1032,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
 
     assert "if (!hasIncompleteStoredSession()) return false;" in bootstrap
     assert "return restoreInterruptedSession();" in bootstrap
+    assert "function waitForTutorialIdle()" in bootstrap
+    assert "if (isTutorialBlockingIcebreaker())" in bootstrap
     assert "waitForPageConfigForRestore().then(function ()" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
@@ -1041,18 +1050,22 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert runtime.index("var matchesActiveRoute = routeActive") < runtime.index(
         "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS"
     )
-    assert "sessionId: snapshot.matchesActiveRoute" in restore
+    assert "var reuseActiveRouteAsFollower = snapshot.matchesActiveRoute" in restore
+    assert "ownsPageExitRouteLifecycle: !reuseActiveRouteAsFollower" in restore
+    assert "routeOwnerPageId: reuseActiveRouteAsFollower ? storedOwnerPageId : pageInstanceId" in restore
+    assert "sessionId: reuseActiveRouteAsFollower" in restore
     assert "choiceSeq: restoredChoiceSeq(snapshot)" in restore
     assert "function inferChoiceSeq(dayConfig, nodeId)" in runtime
     assert "choiceSeq: nextChoiceSeq" in runtime
     assert ": makeIcebreakerSessionId(snapshot.day)" in restore
-    assert "snapshot.matchesActiveRoute\n                    ? Promise.resolve(true)" in restore
+    assert "reuseActiveRouteAsFollower\n                    ? Promise.resolve(true)" in restore
     assert ": startIcebreakerRoute(session);" in restore
     assert "return routeReady.then(function (started)" in restore
     assert "activeSession = session;" in restore
     assert "return restoreSessionPresentation(session).then(function (restored)" in restore
     assert "icebreaker_restore_presentation_failed" in restore
-    assert "if (snapshot.matchesActiveRoute) return false;" in restore
+    assert "if (reuseActiveRouteAsFollower) return false;" in restore
+    assert "if (pageLifecycleSuspended) return Promise.resolve(false);" in restore
 
     discard = runtime.split("function discardUnrestorableRoute(routeState, reason)", 1)[1].split(
         "function localChatHasIcebreakerNodeMessage",
@@ -1082,8 +1095,27 @@ def test_icebreaker_cross_day_start_waits_for_the_active_session_to_end():
     assert "window.addEventListener('neko:new-user-icebreaker-ended', finish);" in wait_block
     assert "if (activeSession !== session) finish();" in wait_block
     assert "return waitForActiveSessionRelease(activeSession).then(startWhenAvailable);" in start_block
+    assert "if (pageLifecycleSuspended) return false;" in start_block
     assert "activeSession && String(activeSession.day || '') === dayKey" in attempt_block
     assert "if (activeSession) return Promise.resolve(true);" not in attempt_block
+
+
+def test_icebreaker_persists_the_target_node_before_intermediate_delivery():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    advance = runtime.split("function advanceWithChoice(session, option, choice, label, choiceNodeId)", 1)[1].split(
+        "function handleChoice(detail)",
+        1,
+    )[0]
+    deliver = runtime.split("function deliverNode(nodeId)", 1)[1].split(
+        "function completeWithHandoff(option)",
+        1,
+    )[0]
+
+    assert "var nextNodeId = String((option && option.next) || '');" in advance
+    assert "nodeId: nextNodeId || choiceNodeId" in advance
+    assert "transitionPending: !!nextNodeId" in advance
+    assert advance.index("markDay(session.day") < advance.index("return deliverNode(option.next);")
+    assert "transitionPending: false" in deliver
 
 
 def test_icebreaker_restore_rebuilds_only_missing_local_question_presentation():
