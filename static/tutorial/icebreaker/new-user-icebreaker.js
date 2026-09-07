@@ -166,13 +166,31 @@
             });
         }
 
-        return getLocalMutationHeaders().then(function (headers) {
+        function postRouteWithHeaders(headers, allowRetry) {
             return fetch(ICEBREAKER_API_BASE + path, {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            }).then(parseRouteResponse);
+            }).then(function (response) {
+                if (allowRetry && response.status === 403) {
+                    return response.clone().json().catch(function () {
+                        return null;
+                    }).then(function (errorBody) {
+                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
+                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
+                                return postRouteWithHeaders(nextHeaders, false);
+                            });
+                        }
+                        return parseRouteResponse(response);
+                    });
+                }
+                return parseRouteResponse(response);
+            });
+        }
+
+        return getLocalMutationHeaders().then(function (headers) {
+            return postRouteWithHeaders(headers, true);
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] route lifecycle request failed:', path, error);
             return false;

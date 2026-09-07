@@ -442,6 +442,15 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
+    route_lifecycle = runtime.split("function postIcebreakerRoute", 1)[1].split(
+        "function startIcebreakerRoute",
+        1,
+    )[0]
+    assert "function postRouteWithHeaders(headers, allowRetry)" in route_lifecycle
+    assert "allowRetry && response.status === 403" in route_lifecycle
+    assert "errorBody.error_code === 'csrf_validation_failed'" in route_lifecycle
+    assert "return refreshLocalMutationHeaders().then(function (nextHeaders)" in route_lifecycle
+    assert "return postRouteWithHeaders(nextHeaders, false);" in route_lifecycle
     assert "postgameProactive: { enabled: false }" in runtime
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
