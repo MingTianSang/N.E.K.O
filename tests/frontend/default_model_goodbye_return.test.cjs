@@ -57,6 +57,8 @@ function createResetHarness({
   putOk = true,
   putData = { success: true },
   putNeverResolves = false,
+  putRejects = false,
+  persistenceStatusData = { success: true, state: 'succeeded' },
   persistenceTimeoutMs = 10_000,
   hasQueueHoldRelease = false,
 } = {}) {
@@ -96,12 +98,21 @@ function createResetHarness({
   };
   const document = { querySelector: () => null };
   const fetch = async (url, options) => {
-    calls.push({ type: 'put', url, options });
+    const isPersistenceStatus = url.includes('/catgirl/l2d/persistence/');
+    calls.push({ type: isPersistenceStatus ? 'status' : 'put', url, options });
+    if (isPersistenceStatus) {
+      return {
+        ok: persistenceStatusData.success === true,
+        status: persistenceStatusData.success === true ? 200 : 404,
+        async json() { return persistenceStatusData; },
+      };
+    }
     if (putNeverResolves) {
       return new Promise((resolve, reject) => {
         options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
       });
     }
+    if (putRejects) throw new Error('response_lost');
     return {
       ok: putOk,
       status: putOk ? 200 : 500,
@@ -470,6 +481,22 @@ test('PNGTuber retry state participates in the canonical goodbye predicate', () 
   assert.match(autoGoodbyeSource, /return window\.isNekoGoodbyeModeActive\(\);/);
 });
 
+test('PNGTuber dragged placement is consumed only after return settlement succeeds', () => {
+  const completeDispatch = surfaceSource.indexOf("new CustomEvent('neko:cat-return-complete'");
+  const pendingClear = surfaceSource.lastIndexOf(
+    'I.pendingPngtuberReturnConfig = null;',
+    completeDispatch,
+  );
+
+  assert.doesNotMatch(modelDisplaySource, /I\.pendingPngtuberReturnConfig = null;/);
+  assert.notEqual(pendingClear, -1);
+  assert.ok(pendingClear < completeDispatch);
+  assert.match(
+    surfaceSource.slice(pendingClear - 80, completeDispatch),
+    /if \(isReturningToPngtuber\) \{[\s\S]*?I\.pendingPngtuberReturnConfig = null;/,
+  );
+});
+
 test('default-model return skips restoring the model that is about to be replaced', () => {
   const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
   const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
@@ -520,7 +547,9 @@ test('default-model reset validates Live2D before persisting and restores on fai
   assert.match(resetSource, /if \(defaultReloadResult !== true\)/);
   assert.match(resetSource, /apply_runtime: false/);
   assert.match(resetSource, /putData\.success !== true/);
-  assert.match(resetSource, /if \(defaultReloadAttempted && !defaultPersisted && reloadModel\)/);
+  assert.match(resetSource, /persistence_operation_id: persistenceOperationId/);
+  assert.match(resetSource, /await waitForPersistenceResult\(\)/);
+  assert.match(resetSource, /if \(defaultReloadAttempted && !defaultPersisted && !persistenceOutcomeUnknown && reloadModel\)/);
 });
 
 test('default-model reset loads the built-in Live2D before persisting it', async () => {
@@ -575,7 +604,7 @@ test('default-model persistence keeps queued reloads behind the validated transa
   assert.match(handler, /if \(!keepReloadQueueHeld\) schedulePendingModelReload\(\);/);
 });
 
-test('default-model persistence timeout releases the reload queue before rollback', async () => {
+test('default-model persistence timeout releases the reload queue and reconciles server success', async () => {
   const harness = createResetHarness({
     putNeverResolves: true,
     persistenceTimeoutMs: 5,
@@ -586,10 +615,51 @@ test('default-model persistence timeout releases the reload queue before rollbac
     .filter((call) => call.type !== 'toast')
     .map((call) => call.type);
 
-  assert.equal(result.success, false);
-  assert.equal(result.error, 'default_model_persist_timeout');
-  assert.deepEqual(operationTypes, ['return', 'reload', 'put', 'release', 'reload']);
+  assert.equal(result.success, true);
+  assert.deepEqual(operationTypes, ['return', 'reload', 'put', 'release', 'status']);
   assert.equal(harness.calls.find((call) => call.type === 'put').options.signal.aborted, true);
+});
+
+test('confirmed persistence failure rolls back with recent reload deduplication bypassed', async () => {
+  const harness = createResetHarness({
+    putNeverResolves: true,
+    persistenceStatusData: { success: true, state: 'failed', error: 'save_failed' },
+    persistenceTimeoutMs: 5,
+    hasQueueHoldRelease: true,
+  });
+  const result = await harness.window.runResetToDefaultModel();
+  const reloads = harness.calls.filter((call) => call.type === 'reload');
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /^default_model_persist_failed/);
+  assert.equal(reloads.length, 2);
+  assert.equal(reloads[1].options.bypassRecentDedup, true);
+});
+
+test('lost persistence response reconciles the server result before rollback', async () => {
+  const harness = createResetHarness({
+    putRejects: true,
+    persistenceStatusData: { success: true, state: 'succeeded' },
+    hasQueueHoldRelease: true,
+  });
+  const result = await harness.window.runResetToDefaultModel();
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    harness.calls.filter((call) => call.type !== 'toast').map((call) => call.type),
+    ['return', 'reload', 'put', 'release', 'status'],
+  );
+  assert.equal(harness.calls.filter((call) => call.type === 'reload').length, 1);
+});
+
+test('rollback reload bypasses the one-second completed-request deduplication path', () => {
+  const handlerStart = modelReloadSource.indexOf('I.handleModelReload = async function handleModelReload');
+  const handlerEnd = modelReloadSource.indexOf('I.handleReloadModelParametersMessage =', handlerStart);
+  const handler = modelReloadSource.slice(handlerStart, handlerEnd);
+
+  assert.match(handler, /var bypassRecentDedup = !!reloadOptions\.bypassRecentDedup;/);
+  assert.match(handler, /if \(!bypassRecentDedup && !queueHoldToken && window\._lastModelReloadKey === reloadKey/);
+  assert.match(resetSource, /bypassRecentDedup: true/);
 });
 
 test('default-model reset restores the persisted prior model when PUT reports failure', async () => {

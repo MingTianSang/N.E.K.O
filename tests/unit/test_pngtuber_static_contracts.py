@@ -1264,6 +1264,64 @@ manager.setupHTMLLockIcon = () => {{ resumedMutations += 1; }};
     run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
+def test_layered_pngtuber_image_loading_aborts_without_waiting_for_image_events():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber cancellation tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const pendingImages = [];
+class PendingImage {{
+  constructor() {{ pendingImages.push(this); }}
+  removeAttribute(name) {{ if (name === 'src') this.srcRemoved = true; }}
+}}
+const window = {{
+  location: {{ pathname: '/' }},
+  innerWidth: 1280,
+  innerHeight: 720,
+  addEventListener() {{}},
+  removeEventListener() {{}},
+  dispatchEvent() {{}},
+}};
+const document = {{
+  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  getElementById() {{ return null; }},
+  querySelectorAll() {{ return []; }},
+}};
+const fetch = async () => ({{
+  ok: true,
+  async json() {{
+    return {{ runtime: 'layered_canvas', layers: [{{ image: 'slow.png' }}] }};
+  }},
+}});
+const context = {{ AbortController, console, document, fetch, Image: PendingImage, window }};
+vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js' }});
+
+(async () => {{
+  const manager = new window.PNGTuberManager();
+  const controller = new AbortController();
+  const pending = manager.setupLayeredAdapter({{
+    config: {{ adapter: 'layered_canvas_v1', layered_metadata: '/model/metadata.json' }},
+    isCurrentLoad: () => !controller.signal.aborted,
+    signal: controller.signal,
+  }});
+  while (pendingImages.length === 0) await Promise.resolve();
+  controller.abort();
+
+  assert.equal(await pending, false);
+  assert.equal(pendingImages[0].onload, null);
+  assert.equal(pendingImages[0].onerror, null);
+  assert.equal(pendingImages[0].srcRemoved, true);
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
+
+
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     attach_block = source[

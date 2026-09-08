@@ -22,9 +22,11 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 from ._shared import logger, router
 from .voice_providers import _config_value_is_enabled
 
+import asyncio
 import re
 import os
 import math
+import time
 from urllib.parse import unquote, urlparse
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -43,6 +45,49 @@ from utils.character_memory import character_config_mutation_lock
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
+
+
+_MODEL_PERSISTENCE_OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{8,128}$")
+_MODEL_PERSISTENCE_OPERATION_LIMIT = 64
+_model_persistence_operations = {}
+
+
+def _record_model_persistence_operation(operation_id: str, state: str, error: str = ""):
+    if not operation_id:
+        return
+    _model_persistence_operations[operation_id] = {
+        "state": state,
+        "error": str(error or ""),
+        "updated_at": time.monotonic(),
+    }
+    while len(_model_persistence_operations) > _MODEL_PERSISTENCE_OPERATION_LIMIT:
+        oldest_operation_id = min(
+            _model_persistence_operations,
+            key=lambda key: _model_persistence_operations[key]["updated_at"],
+        )
+        _model_persistence_operations.pop(oldest_operation_id, None)
+
+
+@router.get('/catgirl/l2d/persistence/{operation_id}')
+async def get_model_persistence_operation(operation_id: str):
+    """Return the authoritative completion state of a renderer persistence request."""
+    if not _MODEL_PERSISTENCE_OPERATION_ID_RE.fullmatch(operation_id or ""):
+        return JSONResponse(
+            content={"success": False, "error": "无效的持久化操作 ID"},
+            status_code=400,
+        )
+    operation = _model_persistence_operations.get(operation_id)
+    if operation is None:
+        return JSONResponse(
+            content={"success": False, "state": "unknown"},
+            status_code=404,
+        )
+    return JSONResponse(content={
+        "success": True,
+        "operation_id": operation_id,
+        "state": operation["state"],
+        "error": operation["error"],
+    })
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -592,8 +637,17 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 async def update_catgirl_l2d(name: str, request: Request):
     """Update the specified catgirl's model settings (supports Live2D and VRM)."""
     mutation_lock_acquired = False
+    persistence_operation_id = ""
     try:
         data = await request.json()
+        persistence_operation_id = str(data.get('persistence_operation_id') or '').strip()
+        if persistence_operation_id:
+            if not _MODEL_PERSISTENCE_OPERATION_ID_RE.fullmatch(persistence_operation_id):
+                return JSONResponse(
+                    content={'success': False, 'error': '无效的持久化操作 ID'},
+                    status_code=400,
+                )
+            _record_model_persistence_operation(persistence_operation_id, 'running')
         apply_runtime = _config_value_is_enabled(data.get('apply_runtime', True))
         query_params = getattr(request, 'query_params', {})
         if 'apply_runtime' in query_params:
@@ -1135,8 +1189,37 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
 
-        # 保存配置
-        await _config_manager.asave_characters(characters)
+        # 保存配置。带 operation id 的请求必须在客户端断开后仍等待底层线程
+        # 真正结束，再通过状态接口公布确定结果；AbortController 不能撤销
+        # asyncio.to_thread 中已经开始的原子写入。
+        if persistence_operation_id:
+            persistence_save_task = asyncio.create_task(
+                _config_manager.asave_characters(characters)
+            )
+            try:
+                await asyncio.shield(persistence_save_task)
+            except asyncio.CancelledError:
+                try:
+                    await persistence_save_task
+                except Exception as persistence_error:
+                    _record_model_persistence_operation(
+                        persistence_operation_id,
+                        'failed',
+                        str(persistence_error),
+                    )
+                    raise
+                _record_model_persistence_operation(
+                    persistence_operation_id,
+                    'succeeded',
+                )
+                raise
+            else:
+                _record_model_persistence_operation(
+                    persistence_operation_id,
+                    'succeeded',
+                )
+        else:
+            await _config_manager.asave_characters(characters)
         character_config_mutation_lock.release()
         mutation_lock_acquired = False
         # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
@@ -1160,9 +1243,22 @@ async def update_catgirl_l2d(name: str, request: Request):
             'applied_runtime': apply_runtime,
         })
 
-    except MaintenanceModeError:
+    except asyncio.CancelledError:
+        operation = _model_persistence_operations.get(persistence_operation_id)
+        if persistence_operation_id and (
+            operation is None or operation.get('state') != 'succeeded'
+        ):
+            _record_model_persistence_operation(
+                persistence_operation_id,
+                'failed',
+                'request_cancelled_before_save_completed',
+            )
+        raise
+    except MaintenanceModeError as e:
+        _record_model_persistence_operation(persistence_operation_id, 'failed', str(e))
         raise
     except Exception as e:
+        _record_model_persistence_operation(persistence_operation_id, 'failed', str(e))
         logger.exception("更新角色模型设置失败")
         return JSONResponse(content={
             'success': False,
@@ -1186,6 +1282,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
         }
     }
     """
+    mutation_lock_acquired = False
     try:
         data = await request.json()
 
@@ -1212,6 +1309,8 @@ async def update_catgirl_touch_set(name: str, request: Request):
             )
 
         _config_manager = get_config_manager()
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
         characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
@@ -1229,6 +1328,8 @@ async def update_catgirl_touch_set(name: str, request: Request):
 
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
         await _config_manager.asave_characters(characters)
+        character_config_mutation_lock.release()
+        mutation_lock_acquired = False
 
         # Fast path：只刷新被编辑角色的 session_manager（touch_set），不遍历其它 N-1 个。
         init_one_catgirl = get_init_one_catgirl()
@@ -1249,6 +1350,9 @@ async def update_catgirl_touch_set(name: str, request: Request):
             'success': False,
             'error': str(e)
         }, status_code=500)
+    finally:
+        if mutation_lock_acquired:
+            character_config_mutation_lock.release()
 
 
 @router.put('/catgirl/{name}/lighting')
@@ -1260,6 +1364,7 @@ async def update_catgirl_lighting(name: str, request: Request):
         request: body containing lighting (dict) and an optional apply_runtime (bool);
                  apply_runtime can also be passed as a query param, which takes precedence
     """
+    mutation_lock_acquired = False
     try:
         data = await request.json()
         lighting = data.get('lighting')
@@ -1270,6 +1375,8 @@ async def update_catgirl_lighting(name: str, request: Request):
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         _config_manager = get_config_manager()
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
         characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
@@ -1347,6 +1454,8 @@ async def update_catgirl_lighting(name: str, request: Request):
         )
 
         await _config_manager.asave_characters(characters)
+        character_config_mutation_lock.release()
+        mutation_lock_acquired = False
 
         if apply_runtime:
             # Fast path：只刷新被编辑角色的 session_manager（lighting），不遍历其它 N-1 个。
@@ -1375,6 +1484,9 @@ async def update_catgirl_lighting(name: str, request: Request):
             'success': False,
             'error': str(e)
         }, status_code=500)
+    finally:
+        if mutation_lock_acquired:
+            character_config_mutation_lock.release()
 
 
 @router.put('/catgirl/{name}/mmd_settings')
@@ -1387,10 +1499,13 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             return val.lower() in ('true', '1', 'yes')
         return bool(val)
 
+    mutation_lock_acquired = False
     try:
         data = await request.json()
 
         _config_manager = get_config_manager()
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
         characters = await _config_manager.aload_characters()
 
         if '猫娘' not in characters or name not in characters['猫娘']:
@@ -1458,6 +1573,8 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
         await _config_manager.asave_characters(characters)
+        character_config_mutation_lock.release()
+        mutation_lock_acquired = False
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1471,6 +1588,9 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             'success': False,
             'error': str(e)
         }, status_code=500)
+    finally:
+        if mutation_lock_acquired:
+            character_config_mutation_lock.release()
 
 
 @router.get('/catgirl/{name}/mmd_settings')

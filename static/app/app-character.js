@@ -194,9 +194,11 @@
                 window.live2dManager && window.live2dManager._returnButtonContainer,
                 window.vrmManager && window.vrmManager._returnButtonContainer,
                 window.mmdManager && window.mmdManager._returnButtonContainer,
+                window.pngtuberManager && window.pngtuberManager._returnButtonContainer,
                 document.getElementById('live2d-return-button-container'),
                 document.getElementById('vrm-return-button-container'),
-                document.getElementById('mmd-return-button-container')
+                document.getElementById('mmd-return-button-container'),
+                document.getElementById('pngtuber-return-button-container')
             ].forEach(hideReturnButtonContainer);
         };
 
@@ -212,6 +214,7 @@
             clearManagerReturnState(window.live2dManager);
             clearManagerReturnState(window.vrmManager);
             clearManagerReturnState(window.mmdManager);
+            clearManagerReturnState(window.pngtuberManager);
             hideAllReturnButtonContainers();
 
             window.__nekoGoodbyeSilentState = {
@@ -2062,6 +2065,9 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = false;
             }
         }
     }

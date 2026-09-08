@@ -88,11 +88,38 @@
         return base ? `${base}/${path}` : path;
     }
 
-    function loadImageElement(src) {
+    function loadImageElement(src, signal = null) {
         return new Promise((resolve, reject) => {
             const img = new Image();
-            img.onload = () => resolve(img);
-            img.onerror = reject;
+            let settled = false;
+            const cleanup = () => {
+                img.onload = null;
+                img.onerror = null;
+                if (signal) signal.removeEventListener('abort', handleAbort);
+            };
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                callback(value);
+            };
+            const handleAbort = () => {
+                const error = new Error('Image load aborted');
+                error.name = 'AbortError';
+                finish(reject, error);
+                try {
+                    img.removeAttribute?.('src');
+                } catch (_) {}
+            };
+            img.onload = () => finish(resolve, img);
+            img.onerror = (error) => finish(reject, error);
+            if (signal) {
+                signal.addEventListener('abort', handleAbort, { once: true });
+                if (signal.aborted) {
+                    handleAbort();
+                    return;
+                }
+            }
             assignImageSource(img, src);
         });
     }
@@ -923,7 +950,7 @@
                 await Promise.all(layers.map(async (layer, index) => {
                     const src = resolveSiblingAsset(config.layered_metadata, layer.image);
                     if (!src) return;
-                    const img = await loadImageElement(src);
+                    const img = await loadImageElement(src, signal);
                     if (!isCurrentLoad()) return;
                     layeredImages.set(index, img);
                     layer._imageIndex = index;

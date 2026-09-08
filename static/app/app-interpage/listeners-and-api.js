@@ -359,6 +359,7 @@
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var defaultReloadAttempted = false;
         var defaultPersisted = false;
+        var persistenceOutcomeUnknown = false;
         var reloadQueueHoldToken = 'reset-default-model-' + Date.now() + '-' + Math.random();
         var reloadQueueHeld = false;
         var reloadModel = typeof I.handleModelReload === 'function'
@@ -431,8 +432,43 @@
 
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
+            var persistenceOperationId = 'default-model-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+            var persistenceStatusUrl = '/api/characters/catgirl/l2d/persistence/'
+                + encodeURIComponent(persistenceOperationId);
             if (typeof window.AbortController !== 'function') {
                 throw new Error('model_persist_abort_unavailable');
+            }
+            async function waitForPersistenceResult() {
+                var statusDeadline = Date.now() + DEFAULT_MODEL_PERSIST_TIMEOUT_MS;
+                while (Date.now() < statusDeadline) {
+                    var statusAbortController = new window.AbortController();
+                    var statusTimeoutId = window.setTimeout(function () {
+                        statusAbortController.abort();
+                    }, Math.min(1000, Math.max(1, statusDeadline - Date.now())));
+                    try {
+                        var statusResponse = await fetch(persistenceStatusUrl, {
+                            signal: statusAbortController.signal
+                        });
+                        var statusData = null;
+                        try {
+                            statusData = await statusResponse.json();
+                        } catch (_) {}
+                        if (statusResponse.ok && statusData && (
+                            statusData.state === 'succeeded' || statusData.state === 'failed'
+                        )) {
+                            return statusData;
+                        }
+                    } catch (_) {
+                        // The original PUT may still be reaching the server, or
+                        // this individual status request may have timed out.
+                    } finally {
+                        window.clearTimeout(statusTimeoutId);
+                    }
+                    await new Promise(function (resolve) {
+                        window.setTimeout(resolve, 100);
+                    });
+                }
+                return { state: 'unknown' };
             }
             var persistenceAbortController = new window.AbortController();
             var persistenceTimeoutId = window.setTimeout(function () {
@@ -448,6 +484,7 @@
                         model_type: 'live2d',
                         live2d: DEFAULT_LIVE2D_MODEL_NAME,
                         live2d_idle_animation: null,
+                        persistence_operation_id: persistenceOperationId,
                         // The frontend already loaded and validated the target.
                         // Avoid a post-save init_one_catgirl failure being reported
                         // after the persistent binding has already changed.
@@ -455,18 +492,33 @@
                     }),
                     signal: persistenceAbortController.signal
                 });
-                try {
-                    putData = await putResp.json();
-                } catch (putBodyError) {
-                    // A malformed response is handled by the success check below;
-                    // an aborted body must retain the explicit timeout result.
-                    if (persistenceAbortController.signal.aborted) throw putBodyError;
-                }
+                putData = await putResp.json();
             } catch (persistenceError) {
-                if (persistenceAbortController.signal.aborted) {
-                    throw new Error('default_model_persist_timeout');
+                // A browser abort or lost response cannot cancel/undo an
+                // already-started ConfigManager save. Release queued model
+                // changes, then ask the backend for the authoritative result
+                // before deciding whether the previous model may be restored.
+                if (reloadQueueHeld && typeof I.releaseModelReloadQueueHold === 'function') {
+                    I.releaseModelReloadQueueHold(reloadQueueHoldToken);
+                    reloadQueueHeld = false;
                 }
-                throw persistenceError;
+                var persistenceResult = await waitForPersistenceResult();
+                if (persistenceResult.state === 'succeeded') {
+                    putResp = { ok: true, status: 200 };
+                    putData = { success: true };
+                } else if (persistenceResult.state === 'failed') {
+                    throw new Error(
+                        'default_model_persist_failed'
+                        + (persistenceResult.error ? (': ' + persistenceResult.error) : '')
+                    );
+                } else {
+                    persistenceOutcomeUnknown = true;
+                    throw new Error(
+                        persistenceAbortController.signal.aborted
+                            ? 'default_model_persist_pending'
+                            : 'default_model_persist_unconfirmed'
+                    );
+                }
             } finally {
                 window.clearTimeout(persistenceTimeoutId);
             }
@@ -497,11 +549,12 @@
             }
             // 临时热切换失败，或模型已切换但 PUT 失败时，服务端通常仍保留
             // 原 page_config。重新走标准热重载，避免旧模型容器保持隐藏。
-            if (defaultReloadAttempted && !defaultPersisted && reloadModel) {
+            if (defaultReloadAttempted && !defaultPersisted && !persistenceOutcomeUnknown && reloadModel) {
                 try {
                     await reloadModel(lanlanName, {
                         suppressToast: true,
-                        throwOnError: true
+                        throwOnError: true,
+                        bypassRecentDedup: true
                     });
                 } catch (restoreError) {
                     console.error('[Model] 默认模型恢复失败后回退原模型也失败:', restoreError);

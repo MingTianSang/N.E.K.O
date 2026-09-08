@@ -851,6 +851,7 @@ I.mod = window.appInterpage;
         var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
         var deferRevealPrepared = !!reloadOptions.deferRevealPrepared;
         var throwOnError = !!reloadOptions.throwOnError;
+        var bypassRecentDedup = !!reloadOptions.bypassRecentDedup;
         var queueHoldToken = typeof reloadOptions.queueHoldToken === 'string'
             ? reloadOptions.queueHoldToken
             : '';
@@ -862,7 +863,7 @@ I.mod = window.appInterpage;
             deferRevealPrepared: deferRevealPrepared
         });
 
-        if (!queueHoldToken && window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
+        if (!bypassRecentDedup && !queueHoldToken && window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
             console.log('[Model] 忽略短时间内重复的模型重载请求');
             return window._lastModelReloadResult;
         }

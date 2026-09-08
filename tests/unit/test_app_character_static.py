@@ -45,6 +45,9 @@ def test_character_switch_clears_goodbye_state_only_after_commit():
     assert "channel.postMessage(payload)" in source
     assert "manager._goodbyeClicked = false" in source
     assert "manager._isInReturnState = false" in source
+    assert "clearManagerReturnState(window.pngtuberManager);" in source
+    assert "window.pngtuberManager && window.pngtuberManager._returnButtonContainer" in source
+    assert "document.getElementById('pngtuber-return-button-container')" in source
     assert "window.__nekoGoodbyeSilentState = {" in source
     assert "action: 'goodbye_state'" in source
     assert "active: false" in source

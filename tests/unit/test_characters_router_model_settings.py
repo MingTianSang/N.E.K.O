@@ -2,6 +2,7 @@ import asyncio
 import copy
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,7 @@ def _single_saved_catgirl(saved):
 class DummyRequest:
     def __init__(self, payload):
         self._payload = payload
+        self.query_params = {}
 
     async def json(self):
         return self._payload
@@ -496,6 +498,143 @@ async def test_pngtuber_placement_save_is_atomic_with_a_later_model_selection(mo
     assert get_reserved(saved_catgirl, 'avatar', 'pngtuber', 'idle_image') == (
         '/static/pngtuber/new/idle.png'
     )
+
+
+@pytest.mark.asyncio
+async def test_model_persistence_operation_reports_authoritative_success(monkeypatch):
+    operation_id = 'default-model-test-success'
+    characters_router_module._model_persistence_operations.clear()
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'model_type': 'live2d',
+            'live2d': 'yui-lolita',
+            'live2d_idle_animation': None,
+            'persistence_operation_id': operation_id,
+            'apply_runtime': False,
+        },
+    )
+    status_response = await characters_router_module.get_model_persistence_operation(
+        operation_id
+    )
+    status_body = json.loads(status_response.body)
+
+    assert response.status_code == 200
+    assert body['success'] is True
+    assert saved is not None
+    assert status_body == {
+        'success': True,
+        'operation_id': operation_id,
+        'state': 'succeeded',
+        'error': '',
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancelled_model_persistence_waits_for_save_before_reporting_success(monkeypatch):
+    operation_id = 'default-model-test-cancelled-client'
+    characters_router_module._model_persistence_operations.clear()
+    config_manager = CoordinatedConfigManager(_build_characters_fixture())
+
+    async def _noop_init_one(_name, *, is_new=False):
+        return None
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
+
+    update_task = asyncio.create_task(characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'model_type': 'live2d',
+            'live2d': 'yui-lolita',
+            'live2d_idle_animation': None,
+            'persistence_operation_id': operation_id,
+            'apply_runtime': False,
+        }),
+    ))
+    await asyncio.wait_for(config_manager.first_save_started.wait(), timeout=1)
+    update_task.cancel()
+    await asyncio.sleep(0)
+
+    running_response = await characters_router_module.get_model_persistence_operation(
+        operation_id
+    )
+    assert json.loads(running_response.body)['state'] == 'running'
+
+    config_manager.allow_first_save.set()
+    with pytest.raises(asyncio.CancelledError):
+        await update_task
+
+    status_response = await characters_router_module.get_model_persistence_operation(
+        operation_id
+    )
+    status_body = json.loads(status_response.body)
+    assert status_body['state'] == 'succeeded'
+    saved_catgirl = config_manager.characters['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'model_type') == 'live2d'
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_placement_save_is_atomic_with_later_mmd_settings(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'avatar', 'model_type', 'pngtuber')
+    set_reserved(catgirl, 'avatar', 'pngtuber', {
+        'idle_image': '/static/pngtuber/old/idle.png',
+        'offset_x': 0,
+        'offset_y': 0,
+    })
+    config_manager = CoordinatedConfigManager(characters)
+
+    monkeypatch.setattr(
+        characters_router_module,
+        'character_config_mutation_lock',
+        asyncio.Lock(),
+    )
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+
+    placement_task = asyncio.create_task(characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'pngtuber_placement': {'offset_x': 25, 'offset_y': -40},
+            'expected_pngtuber_binding': '/static/pngtuber/old/idle.png',
+            'apply_runtime': False,
+        }),
+    ))
+    await asyncio.wait_for(config_manager.first_save_started.wait(), timeout=1)
+    mmd_settings_task = asyncio.create_task(
+        characters_router_module.update_catgirl_mmd_settings(
+            '测试角色',
+            DummyRequest({'physics': {'enabled': False, 'strength': 1.5}}),
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert config_manager.load_count == 1
+    config_manager.allow_first_save.set()
+    responses = await asyncio.gather(placement_task, mmd_settings_task)
+
+    assert all(response.status_code == 200 for response in responses)
+    saved_catgirl = config_manager.characters['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'pngtuber', 'offset_x') == 25
+    assert get_reserved(saved_catgirl, 'avatar', 'mmd', 'physics', 'strength') == 1.5
+
+
+def test_all_live2d_model_config_writers_share_the_character_transaction_lock():
+    source = Path(characters_router_module.__file__).read_text(encoding='utf-8')
+
+    for function_name in (
+        'update_catgirl_l2d',
+        'update_catgirl_touch_set',
+        'update_catgirl_lighting',
+        'update_catgirl_mmd_settings',
+    ):
+        function_start = source.index(f'async def {function_name}')
+        next_route = source.find('\n@router.', function_start)
+        function_source = source[function_start:next_route if next_route != -1 else None]
+        assert 'character_config_mutation_lock.acquire()' in function_source
+        assert 'character_config_mutation_lock.release()' in function_source
 
 
 @pytest.mark.asyncio

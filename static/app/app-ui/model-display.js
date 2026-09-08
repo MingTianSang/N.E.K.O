@@ -1104,7 +1104,6 @@
                 const pngtuberConfig = I.pendingPngtuberReturnConfig
                     ? Object.assign({}, basePngtuberConfig, I.pendingPngtuberReturnConfig)
                     : basePngtuberConfig;
-                I.pendingPngtuberReturnConfig = null;
 
                 if (window.loadPNGTuberAvatar) {
                     await window.loadPNGTuberAvatar(

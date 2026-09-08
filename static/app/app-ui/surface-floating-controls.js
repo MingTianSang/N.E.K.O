@@ -2277,6 +2277,9 @@
                     window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor).catch(() => {});
                 } catch (_) {}
             }
+            if (isReturningToPngtuber) {
+                I.pendingPngtuberReturnConfig = null;
+            }
             window.dispatchEvent(new CustomEvent('neko:cat-return-complete', {
                 detail: {
                     source: event && event.type ? event.type : 'return-click',
