@@ -147,6 +147,7 @@
     if (metadata) result.layered_metadata = metadata;
     const adapter = cleanString(source.adapter, 64);
     if (adapter) result.adapter = adapter;
+    result.mirror = source.mirror === true;
     return Object.freeze(result);
   }
 
@@ -764,9 +765,44 @@
           await manager.init('mmd-canvas', 'mmd-container');
           await retireIfStale(manager, 'mmd', generation);
         }
+        let savedSettings = null;
+        try {
+          const settingsData = await json(
+            `/api/characters/catgirl/${encodeURIComponent(descriptor.name)}/mmd_settings`,
+            { signal },
+          );
+          await retireIfStale(manager, 'mmd', generation);
+          if (settingsData?.success && settingsData.settings
+              && typeof settingsData.settings === 'object'
+              && !Array.isArray(settingsData.settings)) {
+            savedSettings = settingsData.settings;
+            const physics = savedSettings.physics;
+            if (physics && typeof physics === 'object' && !Array.isArray(physics)) {
+              if (physics.enabled != null) manager.enablePhysics = physics.enabled === true;
+              if (physics.strength != null && Number.isFinite(Number(physics.strength))) {
+                manager.physicsStrength = boundedNumber(physics.strength, 0.1, 2.0, 1.0);
+              }
+            }
+          }
+        } catch (error) {
+          // Saved settings are optional, but cancellation must still retire this renderer.
+          await retireIfStale(manager, 'mmd', generation);
+          windowImpl.console?.warn?.('[Drawing Avatar] MMD settings request failed:', error);
+        }
         suppressChrome(manager);
         await manager.loadModel(path, {});
         await retireIfStale(manager, 'mmd', generation);
+        if (savedSettings && typeof manager.applySettings === 'function') {
+          const { physics: _physics, ...nonPhysicsSettings } = savedSettings;
+          try {
+            await manager.applySettings(nonPhysicsSettings);
+            await retireIfStale(manager, 'mmd', generation);
+          } catch (error) {
+            // A bad optional appearance setting must not discard a usable model.
+            await retireIfStale(manager, 'mmd', generation);
+            windowImpl.console?.warn?.('[Drawing Avatar] MMD settings apply failed:', error);
+          }
+        }
         const idleAnimation = descriptor?.mmdIdleAnimations?.[0];
         if (idleAnimation && typeof manager.loadAnimation === 'function') {
           try {

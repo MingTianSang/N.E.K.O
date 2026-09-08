@@ -184,6 +184,9 @@ async function main() {
   const activeIntervals = new Set();
   const activeTimeouts = new Set();
   const disposeGates = { vrm: null, mmd: null, pngtuber: null };
+  let nextMmdSettingsFailure = null;
+  let nextMmdSettingsGate = null;
+  let onNextMmdSettingsFetch = null;
   let nextMmdAnimationFailure = null;
   let nextMmdAnimationGate = null;
   let onNextMmdAnimationLoad = null;
@@ -376,13 +379,24 @@ async function main() {
   class MMDManagerMock {
     constructor() {
       this.currentModel = null;
+      this.enablePhysics = true;
+      this.physicsStrength = 1.0;
       this.animationModule = {
         startLipSync(value) { calls.push(['mmd-speaking', value === analyser]); },
         stopLipSync() { calls.push(['mmd-stop-speaking']); },
       };
     }
     async init() { calls.push(['mmd-init']); }
-    async loadModel(model) { this.currentModel = {}; calls.push(['mmd-model', model]); }
+    async loadModel(model) {
+      this.currentModel = {};
+      calls.push(['mmd-model', model, this.enablePhysics, this.physicsStrength]);
+    }
+    applySettings(settings) {
+      calls.push([
+        'mmd-settings-apply', settings,
+        Object.prototype.hasOwnProperty.call(settings || {}, 'physics'),
+      ]);
+    }
     async loadAnimation(animation) {
       calls.push(['mmd-idle-load', animation]);
       const failure = nextMmdAnimationFailure;
@@ -404,7 +418,7 @@ async function main() {
   }
 
   class PNGTuberManagerMock {
-    async load(config) { calls.push(['pngtuber-model', config.idle_image]); }
+    async load(config) { calls.push(['pngtuber-model', config.idle_image, config.mirror]); }
     setSpeaking(active) { calls.push(['pngtuber-speaking', active]); }
     setState(name) { calls.push(['pngtuber-emotion', name]); }
     pauseRendering() { calls.push(['pngtuber-pause']); }
@@ -535,12 +549,25 @@ async function main() {
       },
     },
     'PNG Neko': {
+      pngtuber: { idle_image: '/avatars/legacy.png', mirror: false },
       _reserved: {
         avatar: {
           model_type: 'pngtuber',
-          pngtuber: { idle_image: '/avatars/idle.png', talking_image: '/avatars/talk.png' },
+          pngtuber: {
+            idle_image: '/avatars/idle.png',
+            talking_image: '/avatars/talk.png',
+            mirror: true,
+          },
         },
       },
+    },
+  };
+  const mmdSettingsByName = {
+    'MMD Neko': {
+      lighting: { ambientIntensity: 0.45 },
+      rendering: { exposure: 1.25 },
+      physics: { enabled: false, strength: 1.6 },
+      cursorFollow: { enabled: true, intensity: 0.7 },
     },
   };
   let liveModelFetchGate = null;
@@ -557,6 +584,21 @@ async function main() {
       onLiveModelFetch?.();
       if (liveModelFetchGate) await liveModelFetchGate;
       return jsonResponse({ Version: 3, FileReferences: {} });
+    }
+    const mmdSettingsMatch = target.match(/^\/api\/characters\/catgirl\/([^/]+)\/mmd_settings$/);
+    if (mmdSettingsMatch) {
+      const name = decodeURIComponent(mmdSettingsMatch[1]);
+      calls.push(['mmd-settings-fetch', name, target]);
+      const failure = nextMmdSettingsFailure;
+      nextMmdSettingsFailure = null;
+      const gate = nextMmdSettingsGate;
+      nextMmdSettingsGate = null;
+      const notify = onNextMmdSettingsFetch;
+      onNextMmdSettingsFetch = null;
+      notify?.();
+      if (gate) await gate;
+      if (failure) throw failure;
+      return jsonResponse({ success: true, settings: mmdSettingsByName[name] || {} });
     }
     throw new Error(`unexpected fetch: ${target}`);
   };
@@ -680,8 +722,15 @@ async function main() {
       'private VRM lighting or motion settings crossed the public Avatar descriptor boundary');
     }
     if (name === 'MMD Neko') {
-      assert(JSON.stringify(descriptor).includes('mmd-idle') === false,
-        'private MMD motion paths crossed the public Avatar descriptor boundary');
+      const serialized = JSON.stringify(descriptor);
+      assert(serialized.includes('mmd-idle') === false
+        && serialized.includes('physics') === false
+        && serialized.includes('cursorFollow') === false,
+      'private MMD settings crossed the public Avatar descriptor boundary');
+    }
+    if (name === 'PNG Neko') {
+      assert(JSON.stringify(descriptor).includes('mirror') === false,
+        'private PNGTuber mirror settings crossed the public Avatar descriptor boundary');
     }
     descriptors.set(name, descriptor);
   }
@@ -813,15 +862,30 @@ async function main() {
       && entry[2] === 2 && entry[3] === '/animations/live2d-legacy-only.motion3.json'),
   'Live2D legacy idle compatibility or explicit canonical clearing was lost');
   const firstMmdModel = calls.findIndex((entry) => entry[0] === 'mmd-model');
+  const firstMmdInit = calls.findIndex((entry) => entry[0] === 'mmd-init');
+  const firstMmdSettingsFetch = calls.findIndex((entry) => entry[0] === 'mmd-settings-fetch');
+  const firstMmdSettingsApply = calls.findIndex((entry) => entry[0] === 'mmd-settings-apply');
   const firstMmdIdleLoad = calls.findIndex((entry) => entry[0] === 'mmd-idle-load');
   const firstMmdIdlePlay = calls.findIndex((entry) => entry[0] === 'mmd-idle-play');
-  assert(firstMmdModel >= 0 && firstMmdModel < firstMmdIdleLoad
+  assert(firstMmdInit >= 0 && firstMmdInit < firstMmdSettingsFetch
+    && firstMmdSettingsFetch < firstMmdModel
+    && firstMmdModel < firstMmdSettingsApply
+    && firstMmdSettingsApply < firstMmdIdleLoad
     && firstMmdIdleLoad < firstMmdIdlePlay
+    && calls[firstMmdSettingsFetch][1] === 'MMD Neko'
+    && calls[firstMmdSettingsFetch][2]
+      === '/api/characters/catgirl/MMD%20Neko/mmd_settings'
+    && calls[firstMmdModel][2] === false
+    && calls[firstMmdModel][3] === 1.6
+    && calls[firstMmdSettingsApply][2] === false
+    && calls[firstMmdSettingsApply][1]?.lighting?.ambientIntensity === 0.45
+    && calls[firstMmdSettingsApply][1]?.rendering?.exposure === 1.25
+    && calls[firstMmdSettingsApply][1]?.cursorFollow?.enabled === true
     && calls[firstMmdIdleLoad][1] === '/animations/mmd-idle.vmd'
     && calls[firstMmdIdlePlay][1] === 'idle'
     && !calls.some((entry) => entry[0] === 'mmd-idle-load'
       && entry[1] === '/animations/mmd-idle-2.vmd'),
-  'MMD did not load and play the first configured idle motion after its model');
+  'MMD did not apply saved settings in the required init/load/apply/idle order');
   assert(calls.some((entry) => entry[0] === 'mmd-model'
     && entry[1] === '/mmd-resolved/avatar.pmx')
     && !calls.some((entry) => entry.includes('/animations/mmd-stale-list.vmd')
@@ -837,6 +901,9 @@ async function main() {
     && calls[legacyMmdIdleLoad][1] === '/animations/mmd-legacy-list.vmd'
     && !calls.some((entry) => entry.includes('/animations/mmd-stale-singular.vmd')),
   'MMD plural legacy idle animation was overridden by the stale singular field');
+  assert(calls.some((entry) => entry[0] === 'pngtuber-model'
+    && entry[1] === '/avatars/idle.png' && entry[2] === true),
+  'PNGTuber did not preserve the canonical mirror setting');
   assert(calls.some((entry) => entry[0] === 'live2d-mouth')
     && calls.some((entry) => entry[0] === 'vrm-speaking' && entry[1] === true)
     && calls.some((entry) => entry[0] === 'mmd-speaking' && entry[1] === true)
@@ -957,6 +1024,49 @@ async function main() {
   'a stale Live2D manager played its idle motion after disposal');
 
   const mmdDescriptor = descriptors.get('MMD Neko');
+  const rejectedSettingsModelsBefore = calls.filter(
+    (entry) => entry[0] === 'mmd-model'
+  ).length;
+  const rejectedSettingsDisposalsBefore = calls.filter(
+    (entry) => entry[0] === 'mmd-dispose-start'
+  ).length;
+  nextMmdSettingsFailure = new Error('settings_unavailable');
+  const resilientMmdSettings = await host.mount(mountConfig('MMD Neko', mmdDescriptor.model));
+  assert(resilientMmdSettings.getState().ready === true
+    && calls.filter((entry) => entry[0] === 'mmd-model').length
+      === rejectedSettingsModelsBefore + 1,
+  'a rejected optional MMD settings request prevented the model from becoming ready');
+  assert(calls.filter((entry) => entry[0] === 'mmd-dispose-start').length
+    === rejectedSettingsDisposalsBefore,
+  'a rejected optional MMD settings request disposed a usable model');
+  await resilientMmdSettings.dispose();
+
+  const staleSettingsMmd = await host.mount(mountConfig('MMD Neko', mmdDescriptor.model));
+  let releaseMmdSettings;
+  nextMmdSettingsGate = new Promise((resolve) => { releaseMmdSettings = resolve; });
+  const mmdSettingsStarted = new Promise((resolve) => { onNextMmdSettingsFetch = resolve; });
+  const staleSettingsReload = staleSettingsMmd.setModel(mmdDescriptor.model);
+  await withTimeout(
+    mmdSettingsStarted,
+    'timed out waiting for the stale MMD settings request to start',
+  );
+  const staleSettingsModelsBefore = calls.filter((entry) => entry[0] === 'mmd-model').length;
+  const staleSettingsDisposalsBefore = calls.filter(
+    (entry) => entry[0] === 'mmd-dispose-start'
+  ).length;
+  await staleSettingsMmd.dispose();
+  releaseMmdSettings();
+  const staleSettingsError = await withTimeout(
+    rejection(staleSettingsReload),
+    'timed out waiting for the stale MMD settings load to be cancelled',
+  );
+  assert(staleSettingsError?.code === 'disposed'
+    && calls.filter((entry) => entry[0] === 'mmd-model').length === staleSettingsModelsBefore,
+  'disposing during MMD settings loading did not stop the stale model load');
+  assert(calls.filter((entry) => entry[0] === 'mmd-dispose-start').length
+    === staleSettingsDisposalsBefore + 1,
+  'the MMD manager waiting on saved settings was not disposed exactly once');
+
   const rejectedMotionDisposalsBefore = calls.filter(
     (entry) => entry[0] === 'mmd-dispose-start'
   ).length;

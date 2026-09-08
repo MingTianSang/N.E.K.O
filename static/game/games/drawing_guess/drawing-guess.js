@@ -79,6 +79,7 @@
   var AI_DRAW_PLAN_MAX_PATH_CHARS = 6000;
   var AI_DRAW_PLAN_MAX_PATH_COMMANDS = 512;
   var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
+  var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;
   var AI_GUESS_TIMEOUT_MAX_RETRIES = 2;
   var AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50;
   var AI_GUESS_MIN_DELAY_MS = 10000;
@@ -3055,7 +3056,11 @@
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
     attempt = Number(attempt || 0);
     var flowToken = state.roundFlowToken;
-    return executeRoundCommand(ROUND_COMMANDS.TIMEOUT, roundCommandPayload(), 10000).then(function (res) {
+    return executeRoundCommand(
+      ROUND_COMMANDS.TIMEOUT,
+      roundCommandPayload(),
+      AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS
+    ).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         if (res && res.reason === 'session_busy') {

@@ -714,6 +714,7 @@ def test_drawing_guess_static_route_contract():
     assert "var AI_DRAW_REVIEW_WIDTH = 384;" in script
     assert "var AI_DRAW_REVIEW_HEIGHT = 288;" in script
     assert "var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;" in script
+    assert "var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;" in script
     assert "var AI_GUESS_MIN_DELAY_MS = 10000;" in script
     assert "var AI_GUESS_MAX_DELAY_MS = 60000;" in script
     assert "var AI_DRAWING_PLACEHOLDER_DELAY_MS = 1200;" in script
@@ -775,6 +776,13 @@ def test_drawing_guess_static_route_contract():
     assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
     assert "AI_GUESS_TIMEOUT_MAX_RETRIES = 2" in script
     assert "AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50" in script
+    assert (
+        "executeRoundCommand(\n"
+        "      ROUND_COMMANDS.TIMEOUT,\n"
+        "      roundCommandPayload(),\n"
+        "      AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS\n"
+        "    )"
+    ) in script
     assert "addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });\n                updateControls();" in script
     assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
     assert "reason: readableRequestError(err)" in script
