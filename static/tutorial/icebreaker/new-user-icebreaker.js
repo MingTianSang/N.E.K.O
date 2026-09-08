@@ -432,6 +432,22 @@
         return waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state');
     }
 
+    function startIcebreakerRouteForRestore(session) {
+        return startIcebreakerRoute(session).then(function (started) {
+            if (started) return true;
+            return loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session)).then(function (result) {
+                var state = result && result.state;
+                return !!(
+                    result
+                    && result.loaded
+                    && state
+                    && state.icebreaker_active === true
+                    && String(state.session_id || '') === String(session.sessionId || '')
+                );
+            });
+        });
+    }
+
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
         if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
@@ -590,7 +606,7 @@
                 sessionId: makeIcebreakerSessionId(snapshot.day)
             };
             broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
-            return startIcebreakerRoute(session).then(function (started) {
+            return startIcebreakerRouteForRestore(session).then(function (started) {
                 if (!started) return false;
                 activeSession = session;
                 markDay(session.day, {

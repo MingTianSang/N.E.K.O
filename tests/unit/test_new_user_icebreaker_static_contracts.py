@@ -1044,7 +1044,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "resolveLanlanName() !== configuredLanlanName" in restore
     assert "icebreaker_restore_missing_locale" in restore
     assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
-    assert "return startIcebreakerRoute(session).then(function (started)" in restore
+    assert "return startIcebreakerRouteForRestore(session).then(function (started)" in restore
     assert "activeSession = session;" in restore
     assert "var presentationPromise" in restore
     assert "var presentationPromise = setChoicePrompt(" in restore
@@ -1074,6 +1074,13 @@ def test_icebreaker_restore_waits_are_bounded_without_timing_out_the_storage_cho
     assert "var RESTORE_READ_TIMEOUT_MS = 12000;" in runtime
     assert "function waitForRestoreRead(promise, fallback, label)" in runtime
     assert "waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state')" in runtime
+    restore_start = runtime.split("function startIcebreakerRouteForRestore(session)", 1)[1].split(
+        "function waitForPageConfigForRestore",
+        1,
+    )[0]
+    assert "return startIcebreakerRoute(session).then(function (started)" in restore_start
+    assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in restore_start
+    assert "String(state.session_id || '') === String(session.sessionId || '')" in restore_start
     assert "function loadScriptsForRestore()" in runtime
     assert "waitForRestoreRead(fetchJson(SCRIPT_URL), null, 'scripts')" in runtime
     assert "function loadLocaleForRestore(locale)" in runtime
