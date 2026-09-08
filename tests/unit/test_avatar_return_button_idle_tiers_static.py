@@ -938,7 +938,7 @@ def test_model_cat_transition_contract_is_present():
     return_handler_guard_start = source.index("let modelDisplayReady = true;")
     return_handler_block = source[
         return_handler_guard_start:
-        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_guard_start)
+        source.index("const modelBoundsSettled = await settleReturnedModelBounds(", return_handler_guard_start)
     ]
     _assert_source_order(
         return_handler_block,
@@ -951,7 +951,7 @@ def test_model_cat_transition_contract_is_present():
     return_handler_start = source.index("const handleReturnClick = async (event) => {")
     return_handler_full_block = source[
         return_handler_start:
-        source.index("await settleReturnedModelBounds(returnModelWasMoved);", return_handler_start)
+        source.index("const modelBoundsSettled = await settleReturnedModelBounds(", return_handler_start)
     ]
     pre_return_guard_start = return_handler_full_block.index("let preReturnViewportReady = await ensureModelViewportReadyBeforeShowCurrentModel({")
     return_handler_start_block = return_handler_full_block[
@@ -1008,14 +1008,21 @@ def test_model_cat_transition_contract_is_present():
     assert "revealReturnBallContainer(container, 'return-ball-model-viewport-blocked')" in restore_block
     assert "showReturnBallContainer(container, returnRect)" in restore_block
     settle_block = source[
-        source.index("async function settleReturnedModelBounds(shouldSaveWhenUnchanged)"):
+        source.index("async function settleReturnedModelBounds(shouldSaveWhenUnchanged, options = {})"):
         source.index("function cancelReturnBallReveal(container)")
     ]
+    assert "waitForReturnTransitionOperation(" in settle_block
+    assert "if (operationResult.cancelled || isCancelled()) return false;" in settle_block
+    assert "if (!isCancelled() && shouldSaveWhenUnchanged && activeModelType)" in settle_block
+    assert "signal: returnLifecycle.signal" in return_handler_full_block
+    assert "if (modelBoundsSettled === false || returnLifecycle.cancelled)" in source
+    assert "function hideReturnedModelForRetry()" in source
+    assert "if (returnedModelShown) hideReturnedModelForRetry();" in source
     _assert_source_order(
         settle_block,
         "return settle waits for model enter animation before snap/save",
-        "await waitForModelReturnEnterToSettle();",
-        "await waitForAnimationFrames(2);",
+        "waitForModelReturnEnterToSettle(),",
+        "waitForAnimationFrames(2),",
         "if (window.mmdManager && window.mmdManager.currentModel",
         "if (window.vrmManager && window.vrmManager.currentModel",
         "if (window.live2dManager) {",

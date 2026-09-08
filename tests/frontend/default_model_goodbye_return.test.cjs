@@ -426,6 +426,11 @@ test('position persistence cannot block return completion', () => {
   assert.doesNotMatch(returnTransitionsSource, /await saveReturnModelPosition\(/);
   assert.match(returnTransitionsSource, /void saveReturnModelPosition\('pngtuber'\)/);
   assert.match(returnTransitionsSource, /void saveReturnModelPosition\('live2d'\)/);
+  assert.match(returnTransitionsSource, /async function settleReturnedModelBounds\(shouldSaveWhenUnchanged, options = \{\}\)/);
+  assert.match(returnTransitionsSource, /waitForReturnTransitionOperation\([\s\S]*?returnSignal/);
+  assert.match(surfaceSource, /settleReturnedModelBounds\(returnModelWasMoved, \{[\s\S]*?signal: returnLifecycle\.signal/);
+  assert.match(surfaceSource, /if \(returnedModelShown\) hideReturnedModelForRetry\(\);/);
+  assert.match(surfaceSource, /\['live2d', 'vrm', 'mmd', 'pngtuber'\]\.forEach/);
 });
 
 test('default-model reset validates Live2D before persisting and restores on failure', () => {

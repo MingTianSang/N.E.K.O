@@ -226,10 +226,39 @@
         }
     }
 
-    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
+    function waitForReturnTransitionOperation(operation, signal) {
+        if (!signal) return Promise.resolve(operation).then(value => ({ cancelled: false, value }));
+        if (signal.aborted) return Promise.resolve({ cancelled: true, value: undefined });
+        return new Promise((resolve, reject) => {
+            const handleAbort = () => resolve({ cancelled: true, value: undefined });
+            signal.addEventListener('abort', handleAbort, { once: true });
+            Promise.resolve(operation).then(
+                (value) => {
+                    signal.removeEventListener('abort', handleAbort);
+                    resolve({ cancelled: false, value });
+                },
+                (error) => {
+                    signal.removeEventListener('abort', handleAbort);
+                    reject(error);
+                }
+            );
+        });
+    }
+
+    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged, options = {}) {
+        const returnSignal = options && options.signal ? options.signal : null;
+        const isCancelled = () => !!(returnSignal && returnSignal.aborted);
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
-        await waitForModelReturnEnterToSettle();
-        await I.waitForAnimationFrames(2);
+        let operationResult = await waitForReturnTransitionOperation(
+            waitForModelReturnEnterToSettle(),
+            returnSignal
+        );
+        if (operationResult.cancelled || isCancelled()) return false;
+        operationResult = await waitForReturnTransitionOperation(
+            I.waitForAnimationFrames(2),
+            returnSignal
+        );
+        if (operationResult.cancelled || isCancelled()) return false;
 
         let activeModelType = null;
         try {
@@ -237,42 +266,56 @@
                 activeModelType = 'mmd';
                 const interaction = window.mmdManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
-                    if (!snapped && shouldSaveWhenUnchanged) {
+                    operationResult = await waitForReturnTransitionOperation(
+                        interaction._snapModelIntoScreen({ animate: true }),
+                        returnSignal
+                    );
+                    if (operationResult.cancelled || isCancelled()) return false;
+                    if (!operationResult.value && shouldSaveWhenUnchanged) {
                         void saveReturnModelPosition('mmd');
                     }
                 } else if (shouldSaveWhenUnchanged) {
+                    if (isCancelled()) return false;
                     void saveReturnModelPosition('mmd');
                 }
-                return;
+                return true;
             }
 
             if (window.vrmManager && window.vrmManager.currentModel && isModelContainerVisible('vrm-container')) {
                 activeModelType = 'vrm';
                 const interaction = window.vrmManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
-                    if (snapped) {
+                    operationResult = await waitForReturnTransitionOperation(
+                        interaction._snapModelIntoScreen({ animate: true }),
+                        returnSignal
+                    );
+                    if (operationResult.cancelled || isCancelled()) return false;
+                    if (operationResult.value) {
                         // VRM 的回弹方法只负责动画，最终位置需要由外层保存。
                         void saveReturnModelPosition('vrm');
                     } else if (shouldSaveWhenUnchanged) {
                         void saveReturnModelPosition('vrm');
                     }
                 } else if (shouldSaveWhenUnchanged) {
+                    if (isCancelled()) return false;
                     void saveReturnModelPosition('vrm');
                 }
-                return;
+                return true;
             }
 
             if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
                 && getPngtuberManager()
                 && isModelContainerVisible('pngtuber-container')) {
                 activeModelType = 'pngtuber';
-                const snapped = await snapPngtuberIntoScreen();
-                if (snapped || shouldSaveWhenUnchanged) {
+                operationResult = await waitForReturnTransitionOperation(
+                    snapPngtuberIntoScreen(),
+                    returnSignal
+                );
+                if (operationResult.cancelled || isCancelled()) return false;
+                if (operationResult.value || shouldSaveWhenUnchanged) {
                     void saveReturnModelPosition('pngtuber');
                 }
-                return;
+                return true;
             }
 
             if (window.live2dManager) {
@@ -280,20 +323,26 @@
                 const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
                     ? window.live2dManager.getCurrentModel() : null;
                 if (liveModel && !liveModel.destroyed && typeof window.live2dManager._checkAndPerformSnap === 'function') {
-                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true });
-                    if (!snapped && shouldSaveWhenUnchanged) {
+                    operationResult = await waitForReturnTransitionOperation(
+                        window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true }),
+                        returnSignal
+                    );
+                    if (operationResult.cancelled || isCancelled()) return false;
+                    if (!operationResult.value && shouldSaveWhenUnchanged) {
                         void saveReturnModelPosition('live2d');
                     }
                 } else if (shouldSaveWhenUnchanged) {
+                    if (isCancelled()) return false;
                     void saveReturnModelPosition('live2d');
                 }
             }
         } catch (error) {
             console.warn('[App] 回来后的边界回弹计算失败:', error);
-            if (shouldSaveWhenUnchanged && activeModelType) {
+            if (!isCancelled() && shouldSaveWhenUnchanged && activeModelType) {
                 void saveReturnModelPosition(activeModelType);
             }
         }
+        return !isCancelled();
     }
 
     function cancelReturnBallReveal(container) {

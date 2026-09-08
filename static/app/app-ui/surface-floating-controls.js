@@ -1597,6 +1597,38 @@
         }
     });
 
+        function hideReturnedModelForRetry() {
+            [window.live2dManager, window.vrmManager, window.mmdManager].forEach((manager) => {
+                if (manager) manager._goodbyeClicked = true;
+            });
+            if (window.live2d) window.live2d._goodbyeClicked = true;
+            if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+                window.pngtuberManager.hide();
+            }
+            ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach((modelType) => {
+                const container = document.getElementById(`${modelType}-container`);
+                if (container) {
+                    container.classList.add('hidden');
+                    container.style.setProperty('display', 'none', 'important');
+                    container.style.setProperty('visibility', 'hidden', 'important');
+                    container.style.setProperty('pointer-events', 'none', 'important');
+                }
+                const canvas = document.getElementById(`${modelType}-canvas`);
+                if (canvas) {
+                    canvas.style.setProperty('visibility', 'hidden', 'important');
+                    canvas.style.setProperty('pointer-events', 'none', 'important');
+                }
+                [`${modelType}-floating-buttons`, `${modelType}-lock-icon`].forEach((controlId) => {
+                    const control = document.getElementById(controlId);
+                    if (!control) return;
+                    control.style.setProperty('display', 'none', 'important');
+                    control.style.setProperty('visibility', 'hidden', 'important');
+                    control.style.setProperty('opacity', '0', 'important');
+                });
+            });
+            window._nekoModelReturnEnterRect = null;
+        }
+
         function restoreReturnBallAfterBlockedModelViewport(event) {
             const eventType = String(event && event.type || '');
             const match = eventType.match(/^([a-z0-9-]+)-return-click$/i);
@@ -1635,7 +1667,11 @@
                 console.log('[App] 请她回来流程已在执行，忽略重复事件');
                 return;
             }
-            returnLifecycle.restoreRetryState = () => restoreReturnBallAfterBlockedModelViewport(event);
+            let returnedModelShown = false;
+            returnLifecycle.restoreRetryState = () => {
+                if (returnedModelShown) hideReturnedModelForRetry();
+                restoreReturnBallAfterBlockedModelViewport(event);
+            };
             let returnTerminalPublished = false;
             let returnAbortReason = 'return-incomplete';
             try {
@@ -1805,13 +1841,16 @@
                 if (modelDisplayReady === false) {
                     return;
                 }
+                returnedModelShown = true;
                 if (returnLifecycle.cancelled) {
                     returnAbortReason = 'return-lifecycle-cancelled';
                     return;
                 }
 
-                await I.settleReturnedModelBounds(returnModelWasMoved);
-                if (returnLifecycle.cancelled) {
+                const modelBoundsSettled = await I.settleReturnedModelBounds(returnModelWasMoved, {
+                    signal: returnLifecycle.signal
+                });
+                if (modelBoundsSettled === false || returnLifecycle.cancelled) {
                     returnAbortReason = 'return-lifecycle-cancelled';
                     return;
                 }
