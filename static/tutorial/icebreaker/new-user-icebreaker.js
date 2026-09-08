@@ -17,6 +17,7 @@
     var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;
     var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;
     var ROUTE_STATE_RESTORE_RETRY_MS = 300;
+    var RESTORE_ASSET_MAX_WAIT_MS = 3000;
     var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
     var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
@@ -312,9 +313,9 @@
         }
     }
 
-    function loadScripts() {
+    function loadScripts(options) {
         if (!scriptPromise) {
-            scriptPromise = fetchJson(SCRIPT_URL);
+            scriptPromise = fetchJson(SCRIPT_URL, options);
         }
         return scriptPromise;
     }
@@ -371,16 +372,51 @@
         return payload;
     }
 
-    function loadLocale(locale) {
+    function loadLocale(locale, options) {
         var normalized = normalizeLocale(locale);
         if (!localePromises[normalized]) {
-            localePromises[normalized] = fetchJson(LOCALE_BASE_URL + encodeURIComponent(normalized) + '.json')
-                .catch(function () {
-                    if (normalized === 'zh-CN') return {};
-                    return loadLocale('zh-CN');
-                });
+            localePromises[normalized] = fetchJson(
+                LOCALE_BASE_URL + encodeURIComponent(normalized) + '.json',
+                options
+            ).catch(function (error) {
+                if (error && error.name === 'AbortError') throw error;
+                if (normalized === 'zh-CN') return {};
+                return loadLocale('zh-CN', options);
+            });
         }
         return localePromises[normalized];
+    }
+
+    function loadRestoreAssets(locale) {
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var options = controller ? { signal: controller.signal } : undefined;
+        var assetsPromise = Promise.all([loadScripts(options), loadLocale(locale, options)]);
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                if (controller) controller.abort();
+                // A fetch that never settles must not poison the shared caches and block
+                // a later explicit start or restore retry for the rest of the page lifetime.
+                scriptPromise = null;
+                localePromises = Object.create(null);
+                resolve(null);
+            }, RESTORE_ASSET_MAX_WAIT_MS);
+            assetsPromise.then(function (assets) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(assets);
+            }).catch(function () {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                scriptPromise = null;
+                localePromises = Object.create(null);
+                resolve(null);
+            });
+        });
     }
 
     function getText(localeData, key) {
@@ -614,6 +650,24 @@
             var entry = days[day];
             if (!entry || entry.releasePending !== true || entry.completed === true) return;
             if (String(entry.lanlanName || '') !== expectedLanlanName) return;
+            var updatedAt = Number(entry.updatedAt || 0);
+            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) {
+                markDay(day, {
+                    started: true,
+                    completed: true,
+                    completedAt: Date.now(),
+                    releasePending: false,
+                    releaseText: '',
+                    releaseVoiceKey: '',
+                    releaseRequestId: '',
+                    releaseMessageDelivered: false,
+                    releaseSpeechDelivered: false,
+                    pendingFreeText: null,
+                    releasedByFreeText: true,
+                    updatedAt: Date.now()
+                });
+                return;
+            }
             if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) {
                 foundMismatchedActiveRelease = true;
                 return;
@@ -647,6 +701,27 @@
         });
     }
 
+    function ensurePendingReleaseSpeech(snapshot, lanlanName) {
+        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
+        var releaseText = String(entry.releaseText || '');
+        if (!releaseText || entry.releaseSpeechDelivered === true) return Promise.resolve(true);
+        var releaseSession = {
+            day: String(snapshot.day || ''),
+            sessionId: String(entry.sessionId || ''),
+            lanlanName: String(lanlanName || entry.lanlanName || ''),
+            nodeId: String(entry.nodeId || '')
+        };
+        return speakLine(releaseText, String(entry.releaseVoiceKey || ''), releaseSession).then(function () {
+            markDay(snapshot.day, {
+                releaseSpeechDelivered: true,
+                updatedAt: Date.now()
+            });
+            return true;
+        }).catch(function () {
+            return false;
+        });
+    }
+
     function completePendingRelease(routeState, snapshot, lanlanName) {
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var entry = snapshot && snapshot.entry ? snapshot.entry : {};
@@ -655,6 +730,9 @@
             && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
         return ensurePendingReleaseMessage(snapshot, lanlanName).then(function (messageDelivered) {
             if (!messageDelivered) return false;
+            return ensurePendingReleaseSpeech(snapshot, lanlanName);
+        }).then(function (speechDelivered) {
+            if (!speechDelivered) return false;
             if (state.icebreaker_active !== true || routeMatchesRelease) {
                 broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
             }
@@ -675,6 +753,8 @@
                 releaseVoiceKey: '',
                 releaseRequestId: '',
                 releaseMessageDelivered: false,
+                releaseSpeechDelivered: false,
+                pendingFreeText: null,
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
@@ -770,7 +850,13 @@
         var option = node && Array.isArray(node.options) ? node.options.find(function (candidate) {
             return String(candidate.id || '') === choice;
         }) : null;
-        if (!option) return Promise.resolve(false);
+        if (!option) {
+            markDay(session.day, {
+                pendingUserChoice: null,
+                updatedAt: Date.now()
+            });
+            return Promise.resolve(false);
+        }
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
         var meta = {
             day: session.day,
@@ -811,6 +897,45 @@
         });
     }
 
+    function recoverPendingFreeText(session, pendingFreeText) {
+        var pending = pendingFreeText && typeof pendingFreeText === 'object' ? pendingFreeText : {};
+        var nodeId = String(pending.nodeId || session.nodeId || '');
+        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
+        if (!node || pending.messageDelivered !== true) {
+            markDay(session.day, {
+                pendingFreeText: null,
+                updatedAt: Date.now()
+            });
+            return node ? setChoicePrompt(node, session.localeData, 0) : Promise.resolve(false);
+        }
+        session.freeTextInFlight = true;
+        return applyFreeTextInterpretation(session, fallbackFreeTextInterpretation({
+            localeData: session.localeData,
+            fallback: session.dayConfig && session.dayConfig.fallback || {}
+        }), {
+            day: session.day,
+            nodeId: nodeId,
+            sessionId: session.sessionId,
+            localeData: session.localeData,
+            fallback: session.dayConfig && session.dayConfig.fallback || {},
+            userText: '',
+            requestId: String(pending.requestId || ''),
+            recoveryMessageId: String(pending.recoveryMessageId || '')
+        }).then(function (result) {
+            if (activeSession === session) session.freeTextInFlight = false;
+            clearPendingFreeText(session, pending.requestId);
+            return result !== false && result !== null;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] pending free-text recovery failed:', error);
+            if (activeSession !== session) return false;
+            session.freeTextInFlight = false;
+            return setChoicePrompt(node, session.localeData, 0).then(function () {
+                clearPendingFreeText(session, pending.requestId);
+                return true;
+            });
+        });
+    }
+
     function restoreInterruptedSession() {
         if (!isManagedDesktopReload()) return Promise.resolve(false);
         if (activeSession) return Promise.resolve(true);
@@ -821,9 +946,11 @@
                 if (!configReady || activeSession) return null;
                 return Promise.all([
                     loadIcebreakerRouteStateForRestore(),
-                    loadScripts(),
-                    loadLocale(currentLocale())
-                ]);
+                    loadRestoreAssets(currentLocale())
+                ]).then(function (restoreInputs) {
+                    var assets = restoreInputs[1];
+                    return assets ? [restoreInputs[0], assets[0], assets[1]] : null;
+                });
             });
         }).then(function (results) {
             if (!results) return !!activeSession;
@@ -887,6 +1014,10 @@
                 && typeof snapshot.entry.pendingUserChoice === 'object'
                 ? Object.assign({}, snapshot.entry.pendingUserChoice, { sessionId: session.sessionId })
                 : null;
+            var restoredPendingFreeText = snapshot.entry.pendingFreeText
+                && typeof snapshot.entry.pendingFreeText === 'object'
+                ? Object.assign({}, snapshot.entry.pendingFreeText, { sessionId: session.sessionId })
+                : null;
             var activationPromise = reuseActiveRoute
                 ? Promise.resolve(true)
                 : startIcebreakerRouteForRestore(session);
@@ -914,10 +1045,13 @@
                     choiceSeq: session.choiceSeq,
                     choiceWriteMetas: session.choiceWriteMetas,
                     pendingUserChoice: restoredPendingUserChoice,
+                    pendingFreeText: restoredPendingFreeText,
                     updatedAt: Date.now()
                 });
                 var presentationPromise = restoredPendingUserChoice
                     ? resumePendingUserChoice(session, restoredPendingUserChoice)
+                    : restoredPendingFreeText
+                    ? recoverPendingFreeText(session, restoredPendingFreeText)
                     : snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
                     ? deliverNode(snapshot.pendingNodeId)
                     : setChoicePrompt(
@@ -927,14 +1061,14 @@
                     );
                 return presentationPromise.then(function (presented) {
                     if (presented) return true;
-                    if (restoredPendingUserChoice && activeSession === session) {
+                    if ((restoredPendingUserChoice || restoredPendingFreeText) && activeSession === session) {
                         session.choiceInFlight = false;
                         return setChoicePrompt(
                             session.dayConfig.nodes[session.nodeId],
                             session.localeData,
                             0
                         ).then(function () {
-                            return false;
+                            return true;
                         });
                     }
                     clearChoicePrompt();
@@ -1066,10 +1200,11 @@
         }
     }
 
-    function broadcastIcebreakerAppendMessage(message) {
+    function broadcastIcebreakerAppendMessage(message, session) {
         broadcastIcebreaker(null, {
             action: 'icebreaker_append_chat_message',
-            message: message
+            message: message,
+            lanlan_name: resolveSessionLanlanName(session)
         });
     }
 
@@ -1396,10 +1531,34 @@
         });
     }
 
+    function clearPendingFreeText(session, requestId) {
+        if (!session) return;
+        var entry = getStoredDayEntry(session.day);
+        var pending = entry && entry.pendingFreeText;
+        if (!pending || String(pending.requestId || '') !== String(requestId || '')) return;
+        markDay(session.day, {
+            pendingFreeText: null,
+            updatedAt: Date.now()
+        });
+    }
+
+    function markPendingFreeTextDelivered(session, meta) {
+        if (!session || !meta || meta.pendingFreeText !== true) return;
+        var entry = getStoredDayEntry(session.day);
+        var pending = entry && entry.pendingFreeText;
+        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
+        markDay(session.day, {
+            pendingFreeText: Object.assign({}, pending, { messageDelivered: true }),
+            updatedAt: Date.now()
+        });
+    }
+
     function appendChatMessage(role, text, meta, session) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
         var targetSession = session || activeSession;
+        var broadcastMeta = Object.assign({}, meta || {});
+        delete broadcastMeta.signal;
         var message = {
             id: String(meta && meta.messageId || '') || makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,
@@ -1412,13 +1571,14 @@
             avatarLabel: role === 'assistant' ? resolveAuthor(targetSession) : undefined,
             avatarUrl: role === 'assistant' ? resolveAssistantAvatarUrl() : undefined,
             actions: undefined,
-            icebreaker: Object.assign({ source: SOURCE }, meta || {})
+            icebreaker: Object.assign({ source: SOURCE }, broadcastMeta)
         };
-        broadcastIcebreakerAppendMessage(message);
+        broadcastIcebreakerAppendMessage(message, targetSession);
         var isPendingAssistantMessage = role === 'assistant' && targetSession && meta && (
             meta.handoff === true || (meta.freeText === true && meta.fallback === 'release')
         );
         var isPendingUserChoice = role === 'user' && targetSession && meta && meta.pendingUserChoice === true;
+        var isPendingFreeText = role === 'user' && targetSession && meta && meta.pendingFreeText === true;
         if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
             // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
             // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
@@ -1426,6 +1586,9 @@
         }
         if (isPendingUserChoice && !shouldRenderIcebreakerOnLocalChatHost()) {
             markPendingUserChoiceDelivered(targetSession, meta);
+        }
+        if (isPendingFreeText && !shouldRenderIcebreakerOnLocalChatHost()) {
+            markPendingFreeTextDelivered(targetSession, meta);
         }
         // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
         // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
@@ -1459,6 +1622,9 @@
                 if (isPendingUserChoice) {
                     markPendingUserChoiceDelivered(targetSession, meta);
                 }
+                if (isPendingFreeText) {
+                    markPendingFreeTextDelivered(targetSession, meta);
+                }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
                     finalizeIcebreakerAssistantSubtitleTranslation(role, message);
@@ -1471,12 +1637,13 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey, signal) {
+    function speakViaProjectTts(text, voiceKey, signal, session) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        var targetSession = session || activeSession;
+        var sessionId = targetSession && targetSession.sessionId ? targetSession.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveSessionLanlanName(activeSession),
+            lanlan_name: resolveSessionLanlanName(targetSession),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -1488,7 +1655,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload(activeSession));
+        }, conversationLanguagePayload(targetSession));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -1510,7 +1677,7 @@
         });
     }
 
-    function waitForTtsRequest(text, voiceKey) {
+    function waitForTtsRequest(text, voiceKey, session) {
         return new Promise(function (resolve) {
             var settled = false;
             var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1526,7 +1693,7 @@
             }
             try {
                 Promise.resolve(
-                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined, session)
                 ).then(finish).catch(function () {
                     finish();
                 });
@@ -1537,11 +1704,11 @@
         });
     }
 
-    function speakLine(text, voiceKey) {
+    function speakLine(text, voiceKey, session) {
         var speechDurationPromise = new Promise(function (resolve) {
             window.setTimeout(resolve, estimateSpeechDurationMs(text));
         });
-        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);
         return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
@@ -2094,6 +2261,7 @@
             choiceSeq: session.choiceSeq,
             choiceWriteMetas: session.choiceWriteMetas,
             pendingUserChoice: null,
+            pendingFreeText: null,
             updatedAt: Date.now()
         });
         if (option.next) {
@@ -2299,6 +2467,8 @@
                 releaseVoiceKey: releaseVoiceKey,
                 releaseRequestId: String(info.requestId || ''),
                 releaseMessageDelivered: false,
+                releaseSpeechDelivered: false,
+                pendingFreeText: null,
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
                 nodeId: nodeId,
@@ -2330,7 +2500,12 @@
                 clearFreeTextRuntimeStateForSession(session);
                 return Promise.resolve().then(function () {
                     if (!releaseText) return null;
-                    return speakLine(releaseText, releaseVoiceKey);
+                    return speakLine(releaseText, releaseVoiceKey).then(function () {
+                        markDay(day, {
+                            releaseSpeechDelivered: true,
+                            updatedAt: Date.now()
+                        });
+                    });
                 }).catch(function () {}).then(function () {
                     if (activeSession !== session) return false;
                     return endIcebreakerRoute(session, 'icebreaker_free_text_release');
@@ -2348,6 +2523,8 @@
                     releaseVoiceKey: '',
                     releaseRequestId: '',
                     releaseMessageDelivered: false,
+                    releaseSpeechDelivered: false,
+                    pendingFreeText: null,
                     releasedByFreeText: true
                 });
                 if (activeSession === session) {
@@ -2360,7 +2537,10 @@
 
         var replyText = decision.reply || getText(localeData, fallback.redirectKey);
         if (!replyText) {
-            return currentNode ? setChoicePrompt(currentNode, localeData) : Promise.resolve(null);
+            return currentNode ? setChoicePrompt(currentNode, localeData).then(function (result) {
+                clearPendingFreeText(session, info.requestId);
+                return result;
+            }) : Promise.resolve(null);
         }
         recordFreeTextTurn(session, {
             userText: info.userText,
@@ -2373,7 +2553,8 @@
             nodeId: nodeId,
             fallback: 'respond_and_keep_options',
             freeText: true,
-            requestId: info.requestId || ''
+            requestId: info.requestId || '',
+            messageId: info.recoveryMessageId || ''
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return null;
             if (decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL) {
@@ -2388,7 +2569,10 @@
                 ? session.dayConfig.nodes[nodeId]
                 : null;
             if (!currentNode) return null;
-            return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText));
+            return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText)).then(function (result) {
+                clearPendingFreeText(session, info.requestId);
+                return result;
+            });
         });
     }
 
@@ -2406,15 +2590,31 @@
         var sessionId = session.sessionId;
         var localeData = session.localeData;
         var fallback = (session.dayConfig && session.dayConfig.fallback) || {};
-        var requestId = detail.requestId || '';
+        var requestId = detail.requestId || makeMessageId('icebreaker-free-text-request');
+        var userMessageId = detail.messageId || makeMessageId('icebreaker-user');
+        var recoveryMessageId = makeMessageId('icebreaker-assistant');
+        markDay(day, {
+            pendingFreeText: {
+                sessionId: sessionId,
+                nodeId: nodeId,
+                requestId: requestId,
+                messageId: userMessageId,
+                recoveryMessageId: recoveryMessageId,
+                messageDelivered: false
+            },
+            updatedAt: Date.now()
+        });
 
         return appendChatMessage('user', text, {
             day: day,
             nodeId: nodeId,
             freeText: true,
-            requestId: requestId
-        }).then(function (message) {
+            requestId: requestId,
+            messageId: userMessageId,
+            pendingFreeText: true
+        }, session).then(function (message) {
             if (!message) {
+                clearPendingFreeText(session, requestId);
                 if (activeSession === session) {
                     var restoreNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
@@ -2433,7 +2633,8 @@
                 localeData: localeData,
                 fallback: fallback,
                 userText: text,
-                requestId: requestId
+                requestId: requestId,
+                recoveryMessageId: recoveryMessageId
             }).catch(function (error) {
                 if (isIcebreakerRouteInactiveError(error)) {
                     throw error;
@@ -2451,7 +2652,8 @@
                     localeData: localeData,
                     fallback: fallback,
                     userText: text,
-                    requestId: requestId
+                    requestId: requestId,
+                    recoveryMessageId: recoveryMessageId
                 });
             });
         }).then(function (result) {
@@ -2461,6 +2663,7 @@
             return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] free-text handling failed:', error);
+            clearPendingFreeText(session, requestId);
             if (activeSession === session) {
                 session.freeTextInFlight = false;
                 if (isIcebreakerRouteInactiveError(error)) {
@@ -2578,12 +2781,14 @@
                     choiceSeq: 0,
                     choiceWriteMetas: [],
                     pendingUserChoice: null,
+                    pendingFreeText: null,
                     terminalPending: false,
                     terminalChoiceRecorded: false,
                     terminalChoice: '',
                     terminalChoiceSeq: 0,
                     terminalMessageDelivered: false,
                     releasePending: false,
+                    releaseSpeechDelivered: false,
                     releasedByFreeText: false,
                     freeTextDerailStreaks: {},
                     updatedAt: Date.now()
@@ -2739,12 +2944,13 @@
         // started-but-incomplete 的破冰节点。旧 route 可能已被 pagehide 提前结束，
         // 因此它只用于优先匹配节点，不能作为是否恢复的硬前提。
         if (!isManagedDesktopReload() || !hasIncompleteStoredSession(resolveLanlanName())) return false;
-        var restoreIdleDeadline = getEndStateTriggerDeadline({ endedAt: Date.now() });
         return new Promise(function (resolve) {
             window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
         }).then(function waitForTutorialIdle() {
             if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();
-            if (Date.now() >= restoreIdleDeadline) return false;
+            // The storage/startup chooser is user-controlled and may legitimately remain
+            // open beyond the ordinary tutorial trigger window. Keep this one-shot restore
+            // alive until startup settles instead of abandoning the persisted session.
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(waitForTutorialIdle);
