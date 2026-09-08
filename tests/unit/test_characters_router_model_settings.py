@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import importlib
 import json
@@ -42,6 +43,26 @@ class DummyConfigManager:
 
     async def asave_characters(self, characters, character_json_path=None):
         self.save_characters(characters, character_json_path)
+
+
+class CoordinatedConfigManager(DummyConfigManager):
+    def __init__(self, characters):
+        super().__init__(characters)
+        self.load_count = 0
+        self.save_count = 0
+        self.first_save_started = asyncio.Event()
+        self.allow_first_save = asyncio.Event()
+
+    async def aload_characters(self, character_json_path=None):
+        self.load_count += 1
+        return await super().aload_characters(character_json_path)
+
+    async def asave_characters(self, characters, character_json_path=None):
+        self.save_count += 1
+        if self.save_count == 1:
+            self.first_save_started.set()
+            await self.allow_first_save.wait()
+        await super().asave_characters(characters, character_json_path)
 
 
 def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
@@ -425,6 +446,56 @@ async def test_pngtuber_placement_only_save_skips_a_replaced_binding(monkeypatch
         'applied_runtime': False,
     }
     assert saved is None
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_placement_save_is_atomic_with_a_later_model_selection(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'avatar', 'model_type', 'pngtuber')
+    set_reserved(catgirl, 'avatar', 'pngtuber', {
+        'idle_image': '/static/pngtuber/old/idle.png',
+        'scale': 1,
+        'offset_x': 0,
+        'offset_y': 0,
+    })
+    config_manager = CoordinatedConfigManager(characters)
+
+    async def _noop_init_one(_name, *, is_new=False):
+        return None
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
+
+    placement_task = asyncio.create_task(characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'pngtuber_placement': {'offset_x': 25, 'offset_y': -40},
+            'expected_pngtuber_binding': '/static/pngtuber/old/idle.png',
+            'apply_runtime': False,
+        }),
+    ))
+    await asyncio.wait_for(config_manager.first_save_started.wait(), timeout=1)
+    model_selection_task = asyncio.create_task(characters_router_module.update_catgirl_l2d(
+        '测试角色',
+        DummyRequest({
+            'model_type': 'pngtuber',
+            'pngtuber': {'idle_image': '/static/pngtuber/new/idle.png'},
+            'apply_runtime': False,
+        }),
+    ))
+    await asyncio.sleep(0)
+
+    assert config_manager.load_count == 1
+    config_manager.allow_first_save.set()
+    responses = await asyncio.gather(placement_task, model_selection_task)
+
+    assert all(response.status_code == 200 for response in responses)
+    saved_catgirl = config_manager.characters['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'model_type') == 'pngtuber'
+    assert get_reserved(saved_catgirl, 'avatar', 'pngtuber', 'idle_image') == (
+        '/static/pngtuber/new/idle.png'
+    )
 
 
 @pytest.mark.asyncio

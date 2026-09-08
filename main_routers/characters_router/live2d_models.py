@@ -39,6 +39,7 @@ from utils.config_manager import (
 from utils.frontend_utils import find_models, find_model_directory
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
+from utils.character_memory import character_config_mutation_lock
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
@@ -590,6 +591,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 @router.put('/catgirl/l2d/{name}')
 async def update_catgirl_l2d(name: str, request: Request):
     """Update the specified catgirl's model settings (supports Live2D and VRM)."""
+    mutation_lock_acquired = False
     try:
         data = await request.json()
         apply_runtime = _config_value_is_enabled(data.get('apply_runtime', True))
@@ -616,6 +618,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 )
 
             _config_manager = get_config_manager()
+            await character_config_mutation_lock.acquire()
+            mutation_lock_acquired = True
             characters = await _config_manager.aload_characters()
             catgirls = characters.get('猫娘')
             if not isinstance(catgirls, dict) or name not in catgirls:
@@ -642,6 +646,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 live2d_idle_animation,
             )
             await _config_manager.asave_characters(characters)
+            character_config_mutation_lock.release()
+            mutation_lock_acquired = False
 
             if apply_runtime:
                 init_one_catgirl = get_init_one_catgirl()
@@ -688,6 +694,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 )
 
             _config_manager = get_config_manager()
+            await character_config_mutation_lock.acquire()
+            mutation_lock_acquired = True
             characters = await _config_manager.aload_characters()
             catgirls = characters.get('猫娘')
             if not isinstance(catgirls, dict) or name not in catgirls:
@@ -759,6 +767,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             updated_pngtuber.update(normalized_placement)
             set_reserved(catgirl, 'avatar', 'pngtuber', updated_pngtuber)
             await _config_manager.asave_characters(characters)
+            character_config_mutation_lock.release()
+            mutation_lock_acquired = False
             return JSONResponse(content={
                 'success': True,
                 'pngtuber_placement_updated': True,
@@ -945,6 +955,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # 加载当前角色配置
         _config_manager = get_config_manager()
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
         characters = await _config_manager.aload_characters()
 
         # 确保猫娘配置存在
@@ -1125,6 +1137,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # 保存配置
         await _config_manager.asave_characters(characters)
+        character_config_mutation_lock.release()
+        mutation_lock_acquired = False
         # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
         init_one_catgirl = get_init_one_catgirl()
         if apply_runtime:
@@ -1154,6 +1168,9 @@ async def update_catgirl_l2d(name: str, request: Request):
             'success': False,
             'error': str(e)
         })
+    finally:
+        if mutation_lock_acquired:
+            character_config_mutation_lock.release()
 
 
 @router.patch('/catgirl/{name}/touch_set')

@@ -8,6 +8,10 @@ const surfaceSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-ui/surface-floating-controls.js'),
   'utf8',
 );
+const appStateSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-state.js'),
+  'utf8',
+);
 const resetSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/listeners-and-api.js'),
   'utf8',
@@ -442,6 +446,7 @@ test('a cancelled committed return restores the complete suspended goodbye state
   assert.match(retrySource, /live2dManager\.setLocked\(true/);
   assert.match(retrySource, /vrmManager\.core\.setLocked\(true\)/);
   assert.match(retrySource, /mmdManager\.core\.setLocked\(true\)/);
+  assert.match(retrySource, /window\.pngtuberManager\]\.forEach/);
   assert.match(retrySource, /I\.reapplyGoodbyeResourceSuspend\(goodbyeResourceSnapshot\)/);
   assert.match(handlerSource, /if \(returnStateCommitted\) \{\s*hideReturnedModelForRetry\(retryGoodbyeResourceSnapshot\)/);
   assert.match(handlerSource, /reason: 'return-abort-rollback'/);
@@ -450,6 +455,19 @@ test('a cancelled committed return restores the complete suspended goodbye state
   assert.match(goodbyeResourceSource, /snapshot\.agentHudWasVisible = !!prior\.agentHudWasVisible/);
   assert.match(autoGoodbyeSource, /window\.addEventListener\('neko:cat-return-abort', handleReturnAbort\)/);
   assert.match(autoGoodbyeSource, /syncGoodbyeSilentState\(true, 'return-abort'\)/);
+});
+
+test('PNGTuber retry state participates in the canonical goodbye predicate', () => {
+  const window = {
+    pngtuberManager: { _goodbyeClicked: true },
+  };
+
+  vm.runInNewContext(appStateSource, { window }, { filename: 'app-state.js' });
+
+  assert.equal(window.isNekoGoodbyeModeActive(), true);
+  assert.match(surfaceSource, /window\.pngtuberManager\._goodbyeClicked = true;/);
+  assert.match(surfaceSource, /window\.pngtuberManager\._goodbyeClicked = false;/);
+  assert.match(autoGoodbyeSource, /return window\.isNekoGoodbyeModeActive\(\);/);
 });
 
 test('default-model return skips restoring the model that is about to be replaced', () => {

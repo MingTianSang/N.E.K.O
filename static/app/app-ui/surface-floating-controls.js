@@ -106,6 +106,7 @@
                 (window.live2dManager && window.live2dManager._goodbyeClicked)
                 || (window.vrmManager && window.vrmManager._goodbyeClicked)
                 || (window.mmdManager && window.mmdManager._goodbyeClicked)
+                || (window.pngtuberManager && window.pngtuberManager._goodbyeClicked)
             );
         // PNGTuber 在全新启动时没有 Live2D/VRM/MMD manager，离开态由可见的
         // return-ball 表示。这里以实际 UI 为准，避免把目标固定为 Live2D 误当成
@@ -1088,6 +1089,9 @@
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = true;
             }
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = true;
+            }
             if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
                 window.appInterpage.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
             } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
@@ -1571,7 +1575,8 @@
                 const goodbyeStillActive = !!(
                     (window.live2dManager && window.live2dManager._goodbyeClicked) ||
                     (window.vrmManager && window.vrmManager._goodbyeClicked) ||
-                    (window.mmdManager && window.mmdManager._goodbyeClicked)
+                    (window.mmdManager && window.mmdManager._goodbyeClicked) ||
+                    (window.pngtuberManager && window.pngtuberManager._goodbyeClicked)
                 );
                 if (!goodbyeStillActive) {
                     console.log('[App] 跳过过期的 resetSessionButton.click()：当前已不在 goodbye 状态', reason || '');
@@ -1598,7 +1603,7 @@
     });
 
         function hideReturnedModelForRetry(goodbyeResourceSnapshot) {
-            [window.live2dManager, window.vrmManager, window.mmdManager].forEach((manager) => {
+            [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager].forEach((manager) => {
                 if (manager) manager._goodbyeClicked = true;
             });
             if (window.live2d) window.live2d._goodbyeClicked = true;
@@ -1805,6 +1810,9 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = false;
             }
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);

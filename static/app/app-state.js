@@ -300,6 +300,7 @@
             (window.live2dManager && window.live2dManager._goodbyeClicked)
             || (window.vrmManager && window.vrmManager._goodbyeClicked)
             || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.pngtuberManager && window.pngtuberManager._goodbyeClicked)
         );
     };
 
