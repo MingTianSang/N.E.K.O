@@ -645,6 +645,7 @@
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var activeRouteSessionId = state.icebreaker_active === true ? String(state.session_id || '') : '';
         var best = null;
+        var expiredActiveRelease = null;
         var foundMismatchedActiveRelease = false;
         Object.keys(days).forEach(function (day) {
             var entry = days[day];
@@ -652,6 +653,12 @@
             if (String(entry.lanlanName || '') !== expectedLanlanName) return;
             var updatedAt = Number(entry.updatedAt || 0);
             if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) {
+                if (activeRouteSessionId && String(entry.sessionId || '') === activeRouteSessionId) {
+                    if (!expiredActiveRelease || updatedAt > Number(expiredActiveRelease.entry.updatedAt || 0)) {
+                        expiredActiveRelease = { day: day, entry: entry, expired: true };
+                    }
+                    return;
+                }
                 markDay(day, {
                     started: true,
                     completed: true,
@@ -676,7 +683,7 @@
                 best = { day: day, entry: entry };
             }
         });
-        return best || (foundMismatchedActiveRelease ? { mismatchedActiveRoute: true } : null);
+        return best || expiredActiveRelease || (foundMismatchedActiveRelease ? { mismatchedActiveRoute: true } : null);
     }
 
     function ensurePendingReleaseMessage(snapshot, lanlanName) {
@@ -763,6 +770,32 @@
                 releaseCleanupCompleted: true,
                 day: String(snapshot.day || '')
             };
+        });
+    }
+
+    function completeExpiredPendingRelease(snapshot, lanlanName) {
+        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
+        return endIcebreakerRoute({
+            sessionId: String(entry.sessionId || ''),
+            lanlanName: String(lanlanName || entry.lanlanName || '')
+        }, 'icebreaker_stale_release_expired').then(function (ended) {
+            if (!ended) return false;
+            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_stale_release_expired', lanlanName);
+            markDay(snapshot.day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                releasePending: false,
+                releaseText: '',
+                releaseVoiceKey: '',
+                releaseRequestId: '',
+                releaseMessageDelivered: false,
+                releaseSpeechDelivered: false,
+                pendingFreeText: null,
+                releasedByFreeText: true,
+                updatedAt: Date.now()
+            });
+            return { releaseCleanupCompleted: true, day: String(snapshot.day || '') };
         });
     }
 
@@ -909,22 +942,28 @@
             return node ? setChoicePrompt(node, session.localeData, 0) : Promise.resolve(false);
         }
         session.freeTextInFlight = true;
-        return applyFreeTextInterpretation(session, fallbackFreeTextInterpretation({
-            localeData: session.localeData,
-            fallback: session.dayConfig && session.dayConfig.fallback || {}
-        }), {
+        var fallback = session.dayConfig && session.dayConfig.fallback || {};
+        var replyText = getText(session.localeData, fallback.redirectKey);
+        var recoveryReply = replyText ? appendAssistantChatMessage(replyText, {
             day: session.day,
             nodeId: nodeId,
-            sessionId: session.sessionId,
-            localeData: session.localeData,
-            fallback: session.dayConfig && session.dayConfig.fallback || {},
-            userText: '',
+            fallback: 'respond_and_keep_options',
+            freeText: true,
             requestId: String(pending.requestId || ''),
-            recoveryMessageId: String(pending.recoveryMessageId || '')
-        }).then(function (result) {
-            if (activeSession === session) session.freeTextInFlight = false;
-            clearPendingFreeText(session, pending.requestId);
-            return result !== false && result !== null;
+            messageId: String(pending.recoveryMessageId || '')
+        }, session) : Promise.resolve(null);
+        return recoveryReply.then(function (message) {
+            if (didAppendChatMessage(message)) {
+                applyAssistantTextEmotion(replyText);
+                speakLine(replyText, '');
+            }
+            if (activeSession !== session) return false;
+            return setChoicePrompt(node, session.localeData, replyText ? computeChoicePromptRevealDelay(replyText) : 0)
+                .then(function () {
+                    session.freeTextInFlight = false;
+                    clearPendingFreeText(session, pending.requestId);
+                    return true;
+                });
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] pending free-text recovery failed:', error);
             if (activeSession !== session) return false;
@@ -971,6 +1010,9 @@
             var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);
             var hasMismatchedPendingRelease = pendingRelease && pendingRelease.mismatchedActiveRoute === true;
             if (pendingRelease && !hasMismatchedPendingRelease) {
+                if (pendingRelease.expired === true) {
+                    return completeExpiredPendingRelease(pendingRelease, restoreLanlanName);
+                }
                 return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);
             }
             var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);

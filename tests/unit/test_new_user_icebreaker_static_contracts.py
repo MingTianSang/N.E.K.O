@@ -1146,6 +1146,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in pending_release_matcher
     assert "releasePending: false" in pending_release_matcher
+    assert "expiredActiveRelease = { day: day, entry: entry, expired: true };" in pending_release_matcher
     assert "foundMismatchedActiveRelease = true;" in runtime
     assert "{ mismatchedActiveRoute: true }" in runtime
     release_cleanup = runtime.split("function completePendingRelease", 1)[1].split(
@@ -1162,6 +1163,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "releaseCleanupCompleted: true" in release_cleanup
     assert "ensurePendingReleaseMessage(snapshot, lanlanName)" in release_cleanup
     assert "ensurePendingReleaseSpeech(snapshot, lanlanName)" in release_cleanup
+    assert "function completeExpiredPendingRelease(snapshot, lanlanName)" in release_cleanup
+    assert "icebreaker_stale_release_expired" in release_cleanup
     assert "releaseSpeechDelivered: true" in runtime
     assert release_cleanup.index("ensurePendingReleaseMessage(snapshot, lanlanName)") < release_cleanup.index(
         "broadcastIcebreakerClearChoicePromptSource"
@@ -1290,6 +1293,12 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "return resumePendingUserChoice(session, pending);" in runtime
     assert "function recoverPendingFreeText(session, pendingFreeText)" in runtime
     assert "pendingFreeText: restoredPendingFreeText" in runtime
+    pending_free_text_recovery = runtime.split("function recoverPendingFreeText", 1)[1].split(
+        "function restoreInterruptedSession",
+        1,
+    )[0]
+    assert "fallbackFreeTextInterpretation" not in pending_free_text_recovery
+    assert "setFreeTextDerailStreak" not in pending_free_text_recovery
     assert "pendingFreeText: null" in advance
     assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
     assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime

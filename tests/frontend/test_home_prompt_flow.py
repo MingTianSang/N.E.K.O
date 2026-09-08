@@ -5973,6 +5973,7 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
             window.__NEKO_MULTI_WINDOW__ = true;
             window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
             window.__icebreakerBridgeEvents = [];
+            window.__icebreakerRouteEnds = [];
             window.nekoElectronIcebreakerBridge = {
                 send: function(message) { window.__icebreakerBridgeEvents.push(message); },
             };
@@ -5988,6 +5989,7 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
                     lanlanName: 'yui',
                     sessionId: 'restore-session',
                     nodeId: 'root',
+                    freeTextDerailStreaks: { root: 1 },
                     pendingFreeText: {
                         sessionId: 'restore-session',
                         nodeId: 'root',
@@ -6016,6 +6018,10 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
             }
             if (requestUrl === '/api/icebreaker/context' && method === 'POST') return jsonResponse({ ok: true });
             if (requestUrl === '/api/icebreaker/speak' && method === 'POST') return jsonResponse({ ok: true });
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                window.__icebreakerRouteEnds.push(body);
+                return jsonResponse({ ok: true });
+            }
         """,
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
     )
@@ -6027,8 +6033,8 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
     )
     recovered = mock_page.evaluate(
         """() => ({
-            pending: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
-                .days['1'].pendingFreeText,
+            day: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1'],
+            routeEnds: window.__icebreakerRouteEnds,
             messages: window.__icebreakerBridgeEvents.filter(
                 (event) => event.action === 'icebreaker_append_chat_message'
             ).map((event) => ({
@@ -6039,7 +6045,10 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
             })),
         })"""
     )
-    assert recovered["pending"] is None
+    assert recovered["day"]["pendingFreeText"] is None
+    assert recovered["day"]["completed"] is False
+    assert recovered["day"]["freeTextDerailStreaks"] == {"root": 1}
+    assert recovered["routeEnds"] == []
     assert len(recovered["messages"]) == 1
     assert recovered["messages"][0]["id"] == "free-text-recovery"
     assert recovered["messages"][0]["role"] == "assistant"
@@ -6150,7 +6159,7 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
             window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
             window.__icebreakerBridgeEvents = [];
             window.__icebreakerSpeakCount = 0;
-            window.__icebreakerRouteEndCount = 0;
+            window.__icebreakerRouteEnds = [];
             window.nekoElectronIcebreakerBridge = {
                 send: function(message) { window.__icebreakerBridgeEvents.push(message); },
             };
@@ -6178,7 +6187,14 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
         """,
         fetch_js="""
             if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
-                return jsonResponse({ ok: true, state: { icebreaker_active: false } });
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        icebreaker_active: true,
+                        session_id: 'stale-release-session',
+                        lanlan_name: 'yui',
+                    },
+                });
             }
             if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
                 return jsonResponse({ days: { '1': { nodes: { root: { options: [] } } } } });
@@ -6189,7 +6205,7 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
                 return jsonResponse({ ok: true });
             }
             if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
-                window.__icebreakerRouteEndCount += 1;
+                window.__icebreakerRouteEnds.push(body);
                 return jsonResponse({ ok: true });
             }
         """,
@@ -6208,10 +6224,14 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
                 (event) => event.action === 'icebreaker_append_chat_message'
             ).length,
             speaks: window.__icebreakerSpeakCount,
-            routeEnds: window.__icebreakerRouteEndCount,
+            routeEnds: window.__icebreakerRouteEnds,
         })"""
     )
-    assert result == {"messages": 0, "speaks": 0, "routeEnds": 0}
+    assert result["messages"] == 0
+    assert result["speaks"] == 0
+    assert len(result["routeEnds"]) == 1
+    assert result["routeEnds"][0]["session_id"] == "stale-release-session"
+    assert result["routeEnds"][0]["reason"] == "icebreaker_stale_release_expired"
 
 
 @pytest.mark.frontend
