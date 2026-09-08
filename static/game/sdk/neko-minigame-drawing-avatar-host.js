@@ -12,6 +12,7 @@
   const CHARACTER_LIMIT = 256;
   const NAME_LIMIT = 128;
   const PATH_LIMIT = 2048;
+  const VRM_DEFAULT_IDLE = '/static/vrm/animation/wait03.vrma.gz';
   const TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
   const PNG_IMAGE_KEYS = Object.freeze([
     'idle_image', 'talking_image', 'drag_image', 'click_image',
@@ -42,6 +43,58 @@
     const text = value.trim();
     if (!text || text.length > maximum || ['undefined', 'null'].includes(text.toLowerCase())) return '';
     return text;
+  }
+
+  function hasOwn(value, key) {
+    return Boolean(value) && typeof value === 'object'
+      && Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function firstOwnValue(candidates) {
+    for (const [source, key] of candidates) {
+      if (hasOwn(source, key)) return source[key];
+    }
+    return undefined;
+  }
+
+  function animationPaths(value) {
+    return Object.freeze((Array.isArray(value) ? value : [value])
+      .slice(0, 16)
+      .map((item) => cleanString(item))
+      .filter(Boolean));
+  }
+
+  function comparableMotionPath(value) {
+    return cleanString(value).replace(/\\/g, '/');
+  }
+
+  function motionFile(definition) {
+    return comparableMotionPath(definition?.File || definition?.file);
+  }
+
+  function configuredMotionIndex(definitions, configuredPath) {
+    if (!Array.isArray(definitions)) return -1;
+    const expected = comparableMotionPath(configuredPath);
+    if (!expected) return -1;
+    const exactIndex = definitions.findIndex((definition) => motionFile(definition) === expected);
+    if (exactIndex >= 0) return exactIndex;
+    const basename = expected.split('/').pop().toLowerCase();
+    const basenameMatches = definitions
+      .map((definition, index) => ({ index, path: motionFile(definition) }))
+      .filter((entry) => entry.path && entry.path.split('/').pop().toLowerCase() === basename);
+    return basenameMatches.length === 1 ? basenameMatches[0].index : -1;
+  }
+
+  function ensureLive2DPreviewMotionGroup(modelConfig, configuredPath) {
+    if (!comparableMotionPath(configuredPath)) return;
+    if (!modelConfig.FileReferences || typeof modelConfig.FileReferences !== 'object'
+        || Array.isArray(modelConfig.FileReferences)) modelConfig.FileReferences = {};
+    const fileReferences = modelConfig.FileReferences;
+    if (!fileReferences.Motions || typeof fileReferences.Motions !== 'object'
+        || Array.isArray(fileReferences.Motions)) fileReferences.Motions = {};
+    if (!Array.isArray(fileReferences.Motions.PreviewAll)) {
+      fileReferences.Motions.PreviewAll = [];
+    }
   }
 
   function boundedNumber(value, minimum, maximum, fallback) {
@@ -99,9 +152,14 @@
 
   function rawAvatarConfig(name, character) {
     const avatar = reservedAvatar(character);
-    const live2d = avatar.live2d && typeof avatar.live2d === 'object' ? avatar.live2d : {};
-    const vrm = avatar.vrm && typeof avatar.vrm === 'object' ? avatar.vrm : {};
-    const mmd = avatar.mmd && typeof avatar.mmd === 'object' ? avatar.mmd : {};
+    const live2d = avatar.live2d && typeof avatar.live2d === 'object'
+      && !Array.isArray(avatar.live2d) ? avatar.live2d : {};
+    const legacyLive2d = character?.avatar?.live2d && typeof character.avatar.live2d === 'object'
+      && !Array.isArray(character.avatar.live2d) ? character.avatar.live2d : {};
+    const vrm = avatar.vrm && typeof avatar.vrm === 'object'
+      && !Array.isArray(avatar.vrm) ? avatar.vrm : {};
+    const mmd = avatar.mmd && typeof avatar.mmd === 'object'
+      && !Array.isArray(avatar.mmd) ? avatar.mmd : {};
     const pngtuber = safePngConfig(character, avatar);
     const modelType = cleanString(character?.model_type, 32)
       || cleanString(avatar.model_type, 32)
@@ -131,24 +189,35 @@
     const paths = { live2d: live2dPath, vrm: vrmPath, mmd: mmdPath, pngtuber: pngPath };
     if (effective === 'vrm' && !paths.vrm) paths.vrm = '/static/vrm/sister1.0.vrm';
     if (effective === 'mmd' && !paths.mmd) paths.mmd = '/static/mmd/Miku/Miku.pmx';
-    const rawMmdIdleAnimations = mmd.idle_animation
-      ?? character?.mmd_idle_animations
-      ?? character?.mmd_idle_animation;
-    const mmdIdleAnimations = (Array.isArray(rawMmdIdleAnimations)
-      ? rawMmdIdleAnimations : [rawMmdIdleAnimations])
-      .slice(0, 16)
-      .map((item) => cleanString(item))
-      .filter(Boolean);
+    const live2dIdleAnimations = animationPaths(firstOwnValue([
+      [live2d, 'idle_animation'],
+      [character, 'live2d_idle_animation'],
+      [legacyLive2d, 'idle_animation'],
+    ]));
+    const vrmIdleAnimations = animationPaths(firstOwnValue([
+      [vrm, 'idle_animation'],
+      [character, 'idle_animation'],
+      [character, 'idleAnimations'],
+      [character, 'idleAnimation'],
+    ]));
+    const mmdIdleAnimations = animationPaths(firstOwnValue([
+      [mmd, 'idle_animation'],
+      [character, 'mmd_idle_animations'],
+      [character, 'mmd_idle_animation'],
+    ]));
     return {
       name,
       type: effective,
       path: cleanString(paths[effective]),
       pngtuber,
-      lighting: safeLighting(character?.lighting),
-      idleAnimation: cleanString(character?.idleAnimation),
-      idleAnimations: Object.freeze((Array.isArray(character?.idleAnimations)
-        ? character.idleAnimations : []).slice(0, 16).map((item) => cleanString(item)).filter(Boolean)),
-      mmdIdleAnimations: Object.freeze(mmdIdleAnimations),
+      lighting: safeLighting(firstOwnValue([
+        [vrm, 'lighting'],
+        [character, 'lighting'],
+      ])),
+      live2dIdleAnimation: live2dIdleAnimations[0] || '',
+      idleAnimation: vrmIdleAnimations[0] || '',
+      idleAnimations: vrmIdleAnimations,
+      mmdIdleAnimations,
     };
   }
 
@@ -549,7 +618,74 @@
         } catch (_) { /* a later ResizeObserver pass can retry */ }
       }
 
-      async function loadLive2D(model, generation) {
+      async function restoreLive2DIdle(manager, descriptor, generation) {
+        const configuredPath = comparableMotionPath(descriptor?.live2dIdleAnimation);
+        if (!configuredPath) return;
+        const loadedModel = manager.getCurrentModel?.() || manager.currentModel;
+        const motionManager = loadedModel?.internalModel?.motionManager;
+        const definitions = motionManager?.definitions || motionManager?._definitions;
+        const motionIndex = configuredMotionIndex(definitions?.PreviewAll, configuredPath);
+        const matchedPath = motionIndex >= 0
+          ? motionFile(definitions.PreviewAll[motionIndex]) : '';
+        const basename = (matchedPath || configuredPath).split('/').pop();
+
+        // loadModel suppresses its combined Idle expression+motion path below.
+        // Restore only the expression without racing the configured motion, and
+        // keep this optional network-backed work off the renderer-ready gate.
+        try {
+          const expressionTask = manager.playExpression?.('Idle');
+          expressionTask?.catch?.((error) => windowImpl.console?.warn?.(
+            '[Drawing Avatar] Live2D idle expression failed:', error,
+          ));
+        } catch (error) {
+          windowImpl.console?.warn?.('[Drawing Avatar] Live2D idle expression failed:', error);
+        }
+
+        try {
+          if (!loadedModel || typeof loadedModel.motion !== 'function'
+              || !motionManager || typeof motionManager.loadMotion !== 'function'
+              || motionIndex < 0) {
+            throw new Error('Configured Live2D idle motion is unavailable for this model');
+          }
+          if (!motionManager.motionGroups && !motionManager._motionGroups) {
+            motionManager.motionGroups = {};
+          }
+          const motionGroups = motionManager.motionGroups || motionManager._motionGroups;
+          if (!Array.isArray(motionGroups.PreviewAll)) motionGroups.PreviewAll = [];
+          try { manager._clearIdleMotionLoopTimers?.(); } catch (_) { /* optional scheduler */ }
+          const loadedMotion = await motionManager.loadMotion('PreviewAll', motionIndex);
+          await retireIfStale(manager, 'live2d', generation);
+
+          const motion = motionGroups.PreviewAll?.[motionIndex] || loadedMotion;
+          if (!motion) throw new Error('Configured Live2D idle motion could not be loaded');
+          if (typeof motion.setIsLoop === 'function') motion.setIsLoop(true);
+          else if (motion._loop !== undefined) motion._loop = true;
+          manager._userIdleAnimations = [basename];
+          if (manager.hasActiveActionMotion?.(loadedModel)) {
+            try { manager.setupIdleMotionLoop?.(loadedModel); } catch (_) { /* optional scheduler */ }
+            return;
+          }
+
+          const motionState = motionManager.state;
+          if ((Number(motionState?.currentPriority || 0) === 1
+              || motionState?.reservedIdleGroup !== undefined)
+              && typeof motionManager.stopAllMotions === 'function') {
+            motionManager.stopAllMotions();
+          }
+          const started = await loadedModel.motion('PreviewAll', motionIndex, 1);
+          await retireIfStale(manager, 'live2d', generation);
+          if (started === false) throw new Error('Configured Live2D idle motion did not start');
+          try { manager.setupIdleMotionLoop?.(loadedModel); } catch (_) { /* optional scheduler */ }
+        } catch (error) {
+          // A stale loader must still be retired; a missing optional motion must not discard the model.
+          await retireIfStale(manager, 'live2d', generation);
+          manager._userIdleAnimations = [];
+          try { manager.setupIdleMotionLoop?.(loadedModel); } catch (_) { /* default idle remains optional */ }
+          windowImpl.console?.warn?.('[Drawing Avatar] Live2D idle animation failed:', error);
+        }
+      }
+
+      async function loadLive2D(model, descriptor, generation) {
         await waitForRuntime(
           () => typeof windowImpl.Live2DManager === 'function' && Boolean(windowImpl.PIXI?.live2d),
           null, null, 'live2d', signal,
@@ -558,6 +694,7 @@
         const modelConfig = await json(model.path, { signal });
         ensureLoadActive(generation);
         modelConfig.url = model.path;
+        ensureLive2DPreviewMotionGroup(modelConfig, descriptor?.live2dIdleAnimation);
         const manager = new windowImpl.Live2DManager();
         state.manager = manager;
         suppressChrome(manager);
@@ -575,7 +712,10 @@
           isMobile: false,
           skipCloseWindows: true,
           suppressPersistentExpressions: true,
+          suppressInitialIdle: Boolean(descriptor?.live2dIdleAnimation),
         });
+        await retireIfStale(manager, 'live2d', generation);
+        await restoreLive2DIdle(manager, descriptor, generation);
         await retireIfStale(manager, 'live2d', generation);
         manager.pixi_app?.ticker?.start?.();
       }
@@ -598,7 +738,8 @@
         await manager.loadModel(path, {
           canvasId: 'vrm-canvas',
           containerId: 'vrm-container',
-          idleAnimation: descriptor?.idleAnimation || undefined,
+          // Never let this isolated renderer borrow another character's global idle motion.
+          idleAnimation: descriptor?.idleAnimation || VRM_DEFAULT_IDLE,
           idleAnimations: descriptor?.idleAnimations || undefined,
         });
         await retireIfStale(manager, 'vrm', generation);
@@ -683,7 +824,7 @@
         state.mouthParameterId = '';
         setLayer(type);
         try {
-          if (type === 'live2d') await loadLive2D(state.model, generation);
+          if (type === 'live2d') await loadLive2D(state.model, state.descriptor, generation);
           else if (type === 'vrm') await loadVrm(state.model, state.descriptor, generation);
           else if (type === 'mmd') await loadMmd(state.model, state.descriptor, generation);
           else await loadPngtuber(state.model, state.descriptor, generation);
