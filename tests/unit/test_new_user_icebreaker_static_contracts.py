@@ -875,7 +875,7 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
         1,
     )[0]
     assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in completion_end
-    assert "if (result && result.loaded && !stillActive) return true;" in completion_end
+    assert "state && state.icebreaker_active !== true" in completion_end
     assert "if (!stillActive || !canRetry) return false;" in completion_end
     assert "ended || reconcileIcebreakerRouteEnd(session, reason, false)" in completion_end
     assert "ended || reconcileIcebreakerRouteEnd(session, reason, true)" in completion_end

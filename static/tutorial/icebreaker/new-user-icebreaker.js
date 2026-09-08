@@ -242,7 +242,7 @@
                 && state.icebreaker_active === true
                 && String(state.session_id || '') === String(session.sessionId || '')
             );
-            if (result && result.loaded && !stillActive) return true;
+            if (result && result.loaded && state && state.icebreaker_active !== true) return true;
             if (!stillActive || !canRetry) return false;
             return endIcebreakerRoute(session, reason).then(function (ended) {
                 return ended || reconcileIcebreakerRouteEnd(session, reason, false);
