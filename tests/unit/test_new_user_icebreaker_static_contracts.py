@@ -1210,6 +1210,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "terminalChoiceRecorded: false" in start_for_day
     assert "terminalMessageDelivered: false" in start_for_day
     assert "releasePending: false" in start_for_day
+    assert "if (!force && isDayReleasePending(dayKey)) return false;" in start_for_day
+    assert "if (isDayReleasePending(day)) return false;" in runtime
     assert "freeTextDerailStreaks: {}" in start_for_day
     assert "started: false" in start_for_day
 

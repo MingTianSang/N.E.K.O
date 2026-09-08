@@ -87,6 +87,12 @@
         return !!(entry && entry.completed);
     }
 
+    function isDayReleasePending(day) {
+        var store = readStore();
+        var entry = store && store.days ? store.days[String(day || '')] : null;
+        return !!(entry && entry.releasePending === true);
+    }
+
     function isPeriodActive() {
         return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
@@ -2929,6 +2935,7 @@
         var day = String(endState.day || '');
         if (!day || !scripts || !scripts.days || !scripts.days[day]) return false;
         if (isDayCompleted(day)) return false;
+        if (isDayReleasePending(day)) return false;
         return true;
     }
 
@@ -2991,6 +2998,7 @@
             var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
             if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
             if (!force && isDayCompleted(dayKey)) return false;
+            if (!force && isDayReleasePending(dayKey)) return false;
             var nextSession = {
                 day: dayKey,
                 dayConfig: dayConfig,

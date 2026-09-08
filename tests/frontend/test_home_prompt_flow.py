@@ -6320,7 +6320,11 @@ def test_interrupted_icebreaker_terminal_retry_removes_each_successful_choice_wr
             }));
         }"""
     )
-    mock_page.wait_for_function("() => window.__choiceBodies.length === 4")
+    mock_page.wait_for_function(
+        """() => window.__choiceBodies.length === 4
+            && JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+                .days['1'].choiceWriteMetas.length === 1"""
+    )
     remaining = mock_page.evaluate(
         """() => JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
             .days['1'].choiceWriteMetas"""
@@ -6690,6 +6694,7 @@ def test_interrupted_icebreaker_keeps_release_pending_when_restored_tts_fails(mo
             window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
             window.__icebreakerSpeakCount = 0;
             window.__icebreakerRouteEndCount = 0;
+            window.__icebreakerRouteStartCount = 0;
             window.nekoLocalMutationSecurity = {
                 getMutationHeaders: async function() { return { 'X-CSRF-Token': 'test-token' }; },
             };
@@ -6729,6 +6734,10 @@ def test_interrupted_icebreaker_keeps_release_pending_when_restored_tts_fails(mo
                 window.__icebreakerRouteEndCount += 1;
                 return jsonResponse({ ok: true });
             }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__icebreakerRouteStartCount += 1;
+                return jsonResponse({ ok: true });
+            }
         """,
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
     )
@@ -6748,6 +6757,13 @@ def test_interrupted_icebreaker_keeps_release_pending_when_restored_tts_fails(mo
     assert result["day"]["releasePending"] is True
     assert result["day"]["releaseSpeechDelivered"] is False
     assert result["routeEnds"] == 0
+    mock_page.evaluate(
+        """() => window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-complete', {
+            detail: { day: 1, ended: true, outcome: 'complete', endedAt: Date.now() },
+        }))"""
+    )
+    mock_page.wait_for_timeout(300)
+    assert mock_page.evaluate("() => window.__icebreakerRouteStartCount") == 0
 
 
 @pytest.mark.frontend
