@@ -6421,6 +6421,91 @@ def test_interrupted_icebreaker_keeps_pending_free_text_when_recovery_append_fai
 
 
 @pytest.mark.frontend
+def test_interrupted_icebreaker_bounds_recovery_context_and_keeps_it_retryable(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerBridgeEvents = [];
+            window.__recoveryContextAborts = 0;
+            window.nekoElectronIcebreakerBridge = {
+                send: function(message) { window.__icebreakerBridgeEvents.push(message); },
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() { return { 'X-CSRF-Token': 'test-token' }; },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: { '1': {
+                    started: true,
+                    completed: false,
+                    lanlanName: 'yui',
+                    sessionId: 'restore-session',
+                    nodeId: 'root',
+                    pendingFreeText: {
+                        sessionId: 'restore-session',
+                        nodeId: 'root',
+                        requestId: 'free-text-request',
+                        messageId: 'free-text-message',
+                        recoveryMessageId: 'free-text-recovery',
+                        messageDelivered: true,
+                        recoveryMessageDelivered: false,
+                    },
+                    updatedAt: Date.now(),
+                } },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({ ok: true, state: {
+                    icebreaker_active: true, session_id: 'restore-session', lanlan_name: 'yui',
+                } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({ days: { '1': { root: 'root', fallback: {
+                    redirectKey: 'fallback.redirect',
+                }, nodes: { root: { options: [{ id: 'A', labelKey: 'root.A' }] } } } } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({ 'root.A': 'Continue', 'fallback.redirect': 'Please choose below.' });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return new Promise(function(resolve, reject) {
+                    requestOptions.signal.addEventListener('abort', function() {
+                        window.__recoveryContextAborts += 1;
+                        reject(new DOMException('aborted', 'AbortError'));
+                    }, { once: true });
+                });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_function(
+        """() => window.__recoveryContextAborts === 1
+            && window.__icebreakerBridgeEvents.some(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            )""",
+        timeout=6000,
+    )
+    result = mock_page.evaluate(
+        """() => ({
+            pending: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+                .days['1'].pendingFreeText,
+            messages: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_append_chat_message'
+            ).length,
+        })"""
+    )
+    assert result["pending"]["recoveryMessageDelivered"] is True
+    assert result["pending"]["recoveryMessageId"] == "free-text-recovery"
+    assert result["messages"] == 1
+
+
+@pytest.mark.frontend
 def test_interrupted_icebreaker_replays_pending_release_with_snapshot_identity_and_speech(mock_page: Page):
     _bootstrap_page(
         mock_page,

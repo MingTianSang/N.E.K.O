@@ -872,11 +872,53 @@
                 });
             });
         }).then(function (started) {
-            if (started || attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) return started;
+            if (started) return true;
+            if (attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) {
+                return loadIcebreakerRouteStateForRestore().then(function (routeResult) {
+                    var state = routeResult && routeResult.state || {};
+                    return !!(
+                        routeResult && routeResult.loaded
+                        && state.icebreaker_active === true
+                        && String(state.session_id || '') === String(session.sessionId || '')
+                        && String(state.lanlan_name || session.lanlanName || '') === String(session.lanlanName || '')
+                    );
+                });
+            }
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, ROUTE_START_RESTORE_RETRY_MS);
             }).then(function () {
                 return startIcebreakerRouteForRestore(session, attemptIndex + 1);
+            });
+        });
+    }
+
+    function runBoundedRestoreContextOperation(operation, label) {
+        return withRestoreWaitTimeout(
+            getLocalMutationHeaders(),
+            null,
+            String(label || 'restore context') + ' headers'
+        ).then(function (headers) {
+            if (!headers) return false;
+            var controller = typeof AbortController === 'function' ? new AbortController() : null;
+            return new Promise(function (resolve) {
+                var settled = false;
+                var timeoutId = window.setTimeout(function () {
+                    if (settled) return;
+                    settled = true;
+                    if (controller) controller.abort();
+                    resolve(false);
+                }, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);
+                Promise.resolve(operation(headers, controller ? controller.signal : null)).then(function (result) {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timeoutId);
+                    resolve(result);
+                }).catch(function () {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timeoutId);
+                    resolve(false);
+                });
             });
         });
     }
@@ -897,39 +939,23 @@
             });
             return Promise.resolve(false);
         }
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
         var meta = {
             day: session.day,
             nodeId: nodeId,
             choice: choice,
             requestId: String(pending.requestId || ''),
             messageId: String(pending.messageId || ''),
-            pendingUserChoice: true,
-            signal: controller ? controller.signal : null
+            pendingUserChoice: true
         };
-        var resumePromise = pending.messageDelivered === true
-            ? appendLlmContext('user', label, meta, session)
-            : appendChatMessage('user', label, meta, session);
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                if (controller) controller.abort();
-                resolve(false);
-            }, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);
-            Promise.resolve(resumePromise).then(function (result) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(result);
-            }).catch(function () {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(false);
+        return runBoundedRestoreContextOperation(function (headers, signal) {
+            var requestMeta = Object.assign({}, meta, {
+                preparedHeaders: headers,
+                signal: signal
             });
-        }).then(function (result) {
+            return pending.messageDelivered === true
+                ? appendLlmContext('user', label, requestMeta, session)
+                : appendChatMessage('user', label, requestMeta, session);
+        }, 'pending choice context').then(function (result) {
             if (pending.messageDelivered === true && result !== true) return false;
             if (pending.messageDelivered !== true && !didAppendChatMessage(result)) return false;
             if (activeSession !== session) return false;
@@ -986,19 +1012,29 @@
                 return true;
             });
         }
-        var recoveryReply = pending.recoveryMessageDelivered === true
-            ? Promise.resolve({ delivered: true, newlyDelivered: false })
-            : appendAssistantChatMessage(replyText, {
-                day: session.day,
-                nodeId: nodeId,
-                fallback: 'respond_and_keep_options',
-                freeText: true,
-                requestId: String(pending.requestId || ''),
-                messageId: String(pending.recoveryMessageId || ''),
-                pendingFreeTextRecovery: true
-            }, session).then(function (message) {
+        var recoveryMeta = {
+            day: session.day,
+            nodeId: nodeId,
+            fallback: 'respond_and_keep_options',
+            freeText: true,
+            requestId: String(pending.requestId || ''),
+            messageId: String(pending.recoveryMessageId || ''),
+            pendingFreeTextRecovery: true
+        };
+        var recoveryReply = runBoundedRestoreContextOperation(function (headers, signal) {
+            var requestMeta = Object.assign({}, recoveryMeta, {
+                preparedHeaders: headers,
+                signal: signal
+            });
+            if (pending.recoveryMessageDelivered === true) {
+                return appendLlmContext('assistant', replyText, requestMeta, session).then(function (appended) {
+                    return { delivered: appended === true, newlyDelivered: false };
+                });
+            }
+            return appendAssistantChatMessage(replyText, requestMeta, session).then(function (message) {
                 return { delivered: didAppendChatMessage(message), newlyDelivered: true };
             });
+        }, 'pending free-text context');
         return recoveryReply.then(function (result) {
             if (!result.delivered) {
                 session.freeTextInFlight = false;
@@ -1100,6 +1136,14 @@
                 : []).map(function (storedMeta) {
                 return Object.assign({}, storedMeta, { sessionId: session.sessionId });
             });
+            if (!reuseActiveRoute) {
+                markDay(session.day, {
+                    lanlanName: session.lanlanName,
+                    sessionId: session.sessionId,
+                    choiceWriteMetas: session.choiceWriteMetas,
+                    updatedAt: Date.now()
+                });
+            }
             clearIncompatiblePendingHandoff(session, snapshot.entry);
             var restoredPendingUserChoice = snapshot.entry.pendingUserChoice
                 && typeof snapshot.entry.pendingUserChoice === 'object'
@@ -1380,7 +1424,10 @@
         }
 
         contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
-            return getLocalMutationHeaders().then(function (headers) {
+            var headersPromise = extra.preparedHeaders
+                ? Promise.resolve(extra.preparedHeaders)
+                : getLocalMutationHeaders();
+            return headersPromise.then(function (headers) {
                 return postContextWithHeaders(headers, true);
             }).catch(function (error) {
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
@@ -1661,6 +1708,7 @@
         var targetSession = session || activeSession;
         var broadcastMeta = Object.assign({}, meta || {});
         delete broadcastMeta.signal;
+        delete broadcastMeta.preparedHeaders;
         var message = {
             id: String(meta && meta.messageId || '') || makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,

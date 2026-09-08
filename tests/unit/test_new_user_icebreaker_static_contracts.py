@@ -1078,6 +1078,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;" in runtime
     assert "if (controller) controller.abort();" in runtime
     assert "return startIcebreakerRouteForRestore(session, attemptIndex + 1);" in runtime
+    assert "return loadIcebreakerRouteStateForRestore().then(function (routeResult)" in runtime
+    assert "String(state.session_id || '') === String(session.sessionId || '')" in runtime
     route_start_restore = runtime.split("function startIcebreakerRouteForRestore", 1)[1].split(
         "function restoreInterruptedSession",
         1,
@@ -1093,6 +1095,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "activeSession = session;" in restore
     assert "choiceSeq: Number(snapshot.entry.choiceSeq) || 0" in restore
     assert "session.choiceWriteMetas = (Array.isArray(snapshot.entry.choiceWriteMetas)" in restore
+    assert "if (!reuseActiveRoute)" in restore
+    assert "sessionId: session.sessionId" in restore
     assert "session.pendingChoiceWrites = session.choiceWriteMetas.map" in restore
     assert "var presentationPromise" in restore
     assert ": setChoicePrompt(" in restore
@@ -1294,12 +1298,19 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
         1,
     )[0]
     assert "var PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS = 3000;" in runtime
-    assert "signal: controller ? controller.signal : null" in pending_choice_resume
-    assert "if (controller) controller.abort();" in pending_choice_resume
-    assert "}, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);" in pending_choice_resume
+    restore_context = runtime.split("function runBoundedRestoreContextOperation", 1)[1].split(
+        "function resumePendingUserChoice",
+        1,
+    )[0]
+    assert "String(label || 'restore context') + ' headers'" in restore_context
+    assert "if (controller) controller.abort();" in restore_context
+    assert "}, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);" in restore_context
+    assert "preparedHeaders: headers" in pending_choice_resume
+    assert "signal: signal" in pending_choice_resume
     assert "if (pending.messageDelivered === true && result !== true) return false;" in pending_choice_resume
     assert "if (extra.signal) requestOptions.signal = extra.signal;" in runtime
     assert "delete broadcastMeta.signal;" in append_message
+    assert "delete broadcastMeta.preparedHeaders;" in append_message
     assert "icebreaker: Object.assign({ source: SOURCE }, broadcastMeta)" in append_message
     assert "if ((restoredPendingUserChoice || restoredPendingFreeText) && activeSession === session)" in runtime
     assert "function retryPendingUserChoice(session, choice, choiceNodeId)" in runtime
