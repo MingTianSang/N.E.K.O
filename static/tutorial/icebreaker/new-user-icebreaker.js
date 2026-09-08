@@ -509,10 +509,11 @@
             var updatedAt = Number((entry && entry.updatedAt) || 0);
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
-            if (entryLanlanName !== currentLanlanName) return;
+            if (entryLanlanName && entryLanlanName !== currentLanlanName) return;
             var matchesActiveRoute = routeActive
                 && !!routeSessionId
                 && String(entry.sessionId || '') === routeSessionId;
+            if (!entryLanlanName && !matchesActiveRoute) return;
             if (routeActive && !matchesActiveRoute) return;
             if (!matchesActiveRoute && (
                 !Number.isFinite(updatedAt)
@@ -552,7 +553,7 @@
                 && entry.completed !== true
                 && entry.sessionId
                 && entry.nodeId
-                && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
+                && (!expectedLanlanName || !entry.lanlanName || String(entry.lanlanName) === expectedLanlanName)
             );
         });
     }

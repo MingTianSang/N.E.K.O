@@ -1068,7 +1068,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         1,
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
-    assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (entryLanlanName && entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (!entryLanlanName && !matchesActiveRoute) return;" in snapshot_matcher
     assert "if (routeActive && !matchesActiveRoute) return;" in snapshot_matcher
     assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in snapshot_matcher
 
