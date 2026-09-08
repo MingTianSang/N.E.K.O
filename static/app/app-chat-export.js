@@ -2677,9 +2677,9 @@
         // srcdoc browsing context blank. Replace it with a visible frame for
         // every Markdown navigation and keep the loading cover until the new
         // document has actually loaded.
+        nextFrame.srcdoc = String(previewDocument || '');
         modal.frame = nextFrame;
         modal.previewBody.replaceChild(nextFrame, currentFrame);
-        nextFrame.srcdoc = String(previewDocument || '');
     }
 
     function createPreviewModal(targetDocument) {

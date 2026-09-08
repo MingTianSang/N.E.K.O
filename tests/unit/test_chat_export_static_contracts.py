@@ -127,6 +127,11 @@ const previewBody = {
     child: null,
     replaceChild(nextFrame, currentFrame) {
         assert.equal(this.child, currentFrame);
+        assert.notEqual(
+            nextFrame.srcdoc,
+            '',
+            'srcdoc must be assigned before the replacement iframe is inserted'
+        );
         currentFrame.parentNode = null;
         nextFrame.parentNode = this;
         this.child = nextFrame;
