@@ -52,6 +52,9 @@ function createResetHarness({
   temporaryReloadResult = true,
   putOk = true,
   putData = { success: true },
+  putNeverResolves = false,
+  persistenceTimeoutMs = 10_000,
+  hasQueueHoldRelease = false,
 } = {}) {
   const functionStart = resetSource.indexOf('async function resetToDefaultModel() {');
   const functionEnd = resetSource.indexOf('    // =====================================================================\n    // Public API', functionStart);
@@ -67,6 +70,11 @@ function createResetHarness({
       return options.temporaryConfig ? temporaryReloadResult : true;
     };
   }
+  if (hasQueueHoldRelease) {
+    parts.releaseModelReloadQueueHold = (token) => {
+      calls.push({ type: 'release', token });
+    };
+  }
   const window = {
     lanlan_config: { lanlan_name: 'Test Character' },
     appUi: {
@@ -78,10 +86,18 @@ function createResetHarness({
     showStatusToast(message) {
       calls.push({ type: 'toast', message });
     },
+    AbortController,
+    setTimeout,
+    clearTimeout,
   };
   const document = { querySelector: () => null };
   const fetch = async (url, options) => {
     calls.push({ type: 'put', url, options });
+    if (putNeverResolves) {
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    }
     return {
       ok: putOk,
       status: putOk ? 200 : 500,
@@ -92,6 +108,7 @@ function createResetHarness({
   vm.runInNewContext(`
     var DEFAULT_LIVE2D_MODEL_NAME = 'yui-lolita';
     var DEFAULT_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json';
+    var DEFAULT_MODEL_PERSIST_TIMEOUT_MS = ${persistenceTimeoutMs};
     var _resetToDefaultModelInFlight = false;
     ${resetFunction}
     window.runResetToDefaultModel = resetToDefaultModel;
@@ -469,7 +486,7 @@ test('position persistence cannot block return completion', () => {
 test('default-model reset validates Live2D before persisting and restores on failure', () => {
   const returnCall = resetSource.indexOf('await window.appUi.returnFromGoodbye({');
   const reloadCall = resetSource.indexOf('await reloadModel(lanlanName, {', returnCall);
-  const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", reloadCall);
+  const persistenceCall = resetSource.indexOf('putResp = await fetch(putUrl', reloadCall);
   const catchBlock = resetSource.indexOf('} catch (e) {', persistenceCall);
   const restoreCall = resetSource.indexOf('await reloadModel(lanlanName, {', catchBlock);
 
@@ -538,6 +555,23 @@ test('default-model persistence keeps queued reloads behind the validated transa
   assert.match(modelReloadSource, /I\.releaseModelReloadQueueHold = function releaseModelReloadQueueHold/);
   assert.match(handler, /var keepReloadQueueHeld = reloadSucceeded && !!queueHoldToken;/);
   assert.match(handler, /if \(!keepReloadQueueHeld\) schedulePendingModelReload\(\);/);
+});
+
+test('default-model persistence timeout releases the reload queue before rollback', async () => {
+  const harness = createResetHarness({
+    putNeverResolves: true,
+    persistenceTimeoutMs: 5,
+    hasQueueHoldRelease: true,
+  });
+  const result = await harness.window.runResetToDefaultModel();
+  const operationTypes = harness.calls
+    .filter((call) => call.type !== 'toast')
+    .map((call) => call.type);
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'default_model_persist_timeout');
+  assert.deepEqual(operationTypes, ['return', 'reload', 'put', 'release', 'reload']);
+  assert.equal(harness.calls.find((call) => call.type === 'put').options.signal.aborted, true);
 });
 
 test('default-model reset restores the persisted prior model when PUT reports failure', async () => {

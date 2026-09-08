@@ -346,6 +346,7 @@
     // =====================================================================
     var DEFAULT_LIVE2D_MODEL_NAME = 'yui-lolita';
     var DEFAULT_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json';
+    var DEFAULT_MODEL_PERSIST_TIMEOUT_MS = 10000;
     var _resetToDefaultModelInFlight = false;
 
     async function resetToDefaultModel() {
@@ -430,21 +431,45 @@
 
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
-            var putResp = await fetch(putUrl, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model_type: 'live2d',
-                    live2d: DEFAULT_LIVE2D_MODEL_NAME,
-                    live2d_idle_animation: null,
-                    // The frontend already loaded and validated the target.
-                    // Avoid a post-save init_one_catgirl failure being reported
-                    // after the persistent binding has already changed.
-                    apply_runtime: false
-                })
-            });
+            if (typeof window.AbortController !== 'function') {
+                throw new Error('model_persist_abort_unavailable');
+            }
+            var persistenceAbortController = new window.AbortController();
+            var persistenceTimeoutId = window.setTimeout(function () {
+                persistenceAbortController.abort();
+            }, DEFAULT_MODEL_PERSIST_TIMEOUT_MS);
+            var putResp;
             var putData = null;
-            try { putData = await putResp.json(); } catch (_) {}
+            try {
+                putResp = await fetch(putUrl, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model_type: 'live2d',
+                        live2d: DEFAULT_LIVE2D_MODEL_NAME,
+                        live2d_idle_animation: null,
+                        // The frontend already loaded and validated the target.
+                        // Avoid a post-save init_one_catgirl failure being reported
+                        // after the persistent binding has already changed.
+                        apply_runtime: false
+                    }),
+                    signal: persistenceAbortController.signal
+                });
+                try {
+                    putData = await putResp.json();
+                } catch (putBodyError) {
+                    // A malformed response is handled by the success check below;
+                    // an aborted body must retain the explicit timeout result.
+                    if (persistenceAbortController.signal.aborted) throw putBodyError;
+                }
+            } catch (persistenceError) {
+                if (persistenceAbortController.signal.aborted) {
+                    throw new Error('default_model_persist_timeout');
+                }
+                throw persistenceError;
+            } finally {
+                window.clearTimeout(persistenceTimeoutId);
+            }
             if (!putResp.ok || !putData || putData.success !== true) {
                 var errorDetail = (putData && putData.error) || '';
                 throw new Error('HTTP ' + putResp.status + (errorDetail ? (': ' + errorDetail) : ''));
