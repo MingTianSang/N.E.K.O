@@ -778,9 +778,11 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "if (activeSession !== session)" in handle_choice_block
     assert "return advanceWithChoice(session, option, choice, label, choiceNodeId);" in handle_choice_block
     assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
-    assert "return deliverNode(option.next).then(function (delivered)" in advance_choice_block
+    assert "return Promise.resolve(choiceWritePromise).then(function (recorded)" in advance_choice_block
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance_choice_block
+    assert "if (option.next) return deliverNode(option.next);" in advance_choice_block
     assert "return completeWithHandoff(option);" in advance_choice_block
-    assert "return Promise.resolve(false);" in advance_choice_block
+    assert "return false;" in advance_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
 
@@ -824,6 +826,10 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
         "function handleChoice(detail)",
         1,
     )[0]
+    advance_choice_block = runtime.split("function advanceWithChoice", 1)[1].split(
+        "function handleChoice",
+        1,
+    )[0]
 
     assert "var session = activeSession;" in handoff_block
     assert "function speakViaProjectTts(text, voiceKey, signal)" in runtime
@@ -833,7 +839,10 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "results.every(function (result) { return result === true; })" in handoff_block
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance_choice_block
+    assert advance_choice_block.index("recorded !== true") < advance_choice_block.index(
+        "completeWithHandoff(option)"
+    )
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
@@ -1026,16 +1035,19 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
     assert "!hasIncompleteStoredSession(configuredLanlanName)" in restore
     assert "loadIcebreakerRouteStateForRestore(configuredLanlanName)" in restore
-    assert "waitForRestoreRead(loadScripts(), null, 'scripts')" in restore
-    assert "waitForRestoreRead(loadLocale(currentLocale()), null, 'locale')" in restore
+    assert "loadScriptsForRestore()" in restore
+    assert "loadLocaleForRestore(currentLocale())" in restore
+    assert "Promise.resolve(configuredLanlanName)" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
     assert "if (!routeResult.loaded || !scripts || !localeData) return false;" in restore
+    assert "resolveLanlanName() !== configuredLanlanName" in restore
+    assert "icebreaker_restore_missing_locale" in restore
     assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
     assert "return startIcebreakerRoute(session).then(function (started)" in restore
     assert "activeSession = session;" in restore
     assert "var presentationPromise" in restore
-    assert ": setChoicePrompt(" in restore
+    assert "var presentationPromise = setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
 
     snapshot_matcher = runtime.split("function findRestorableDaySnapshot", 1)[1].split(
@@ -1062,6 +1074,10 @@ def test_icebreaker_restore_waits_are_bounded_without_timing_out_the_storage_cho
     assert "var RESTORE_READ_TIMEOUT_MS = 12000;" in runtime
     assert "function waitForRestoreRead(promise, fallback, label)" in runtime
     assert "waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state')" in runtime
+    assert "function loadScriptsForRestore()" in runtime
+    assert "waitForRestoreRead(fetchJson(SCRIPT_URL), null, 'scripts')" in runtime
+    assert "function loadLocaleForRestore(locale)" in runtime
+    assert "return waitForRestoreRead(localePromise, null, 'locale');" in runtime
     assert "waitForRestoreRead(" in runtime.split("function waitForPageConfigForRestore()", 1)[1].split(
         "function waitForStorageStartupDecisionForRestore",
         1,
@@ -1087,13 +1103,20 @@ def test_icebreaker_restore_preserves_unowned_active_routes_and_waits_for_tutori
     assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false" in tutorial_blocker
 
 
-def test_icebreaker_restore_preserves_session_identity_and_transition_state():
+def test_icebreaker_restore_preserves_session_identity_and_waits_for_choice_writes():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    advance = runtime.split("function advanceWithChoice", 1)[1].split(
+        "function handleChoice",
+        1,
+    )[0]
 
     assert "function conversationLanguagePayload(session)" in runtime
     assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
-    assert "pendingNodeId: option.next" in runtime
-    assert "snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]" in runtime
+    assert "pendingNodeId: option.next" not in runtime
+    assert "return Promise.resolve(choiceWritePromise).then(function (recorded)" in advance
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance
+    assert advance.index("recorded !== true") < advance.index("deliverNode(option.next)")
+    assert advance.index("recorded !== true") < advance.index("completeWithHandoff(option)")
     assert "completed: true" in runtime.split("function completeWithHandoff", 1)[1].split(
         "function advanceWithChoice",
         1,
