@@ -3821,7 +3821,7 @@ async def _generate_vision_guess(
     try:
         from utils.config_manager import get_config_manager
 
-        api_config = get_config_manager().get_model_api_config("vision")
+        api_config = await get_config_manager().aget_model_api_config("vision")
         model = str(api_config.get("model") or "")
         base_url = str(api_config.get("base_url") or "")
         if not model.strip():
@@ -3999,7 +3999,7 @@ async def _review_ai_drawing(
     try:
         from utils.config_manager import get_config_manager
 
-        api_config = get_config_manager().get_model_api_config("vision") or {}
+        api_config = await get_config_manager().aget_model_api_config("vision") or {}
         model = str(api_config.get("model") or "")
         provider_type = str(api_config.get("provider_type") or "")
         if not model.strip():

@@ -3433,7 +3433,7 @@ async def test_vision_guess_uses_text_context_model_when_vision_unavailable(monk
 @pytest.mark.asyncio
 async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
     class _FakeConfigManager:
-        def get_model_api_config(self, model_type):
+        async def aget_model_api_config(self, model_type):
             assert model_type == "vision"
             return {
                 "model": "test-vision-model",
@@ -3505,7 +3505,7 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
 @pytest.mark.asyncio
 async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(monkeypatch):
     class _FakeConfigManager:
-        def get_model_api_config(self, model_type):
+        async def aget_model_api_config(self, model_type):
             assert model_type == "vision"
             return {
                 "model": "test-vision-model",
@@ -3606,7 +3606,7 @@ async def test_ai_drawing_review_invalid_image_is_unavailable_without_model_call
 @pytest.mark.asyncio
 async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
     class _FakeConfigManager:
-        def get_model_api_config(self, model_type):
+        async def aget_model_api_config(self, model_type):
             assert model_type == "vision"
             return {
                 "model": "test-vision-model",

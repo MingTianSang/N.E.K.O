@@ -1,8 +1,11 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,8 +20,9 @@ def test_drawing_guess_sdk_preferences_node_runtime():
         pytest.skip("node not found")
 
     try:
-        result = subprocess.run(
-            [node_path, str(SCRIPT_PATH)],
+        result = run_node_script(
+            node_path,
+            f"require({json.dumps(str(SCRIPT_PATH.resolve()))});",
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,

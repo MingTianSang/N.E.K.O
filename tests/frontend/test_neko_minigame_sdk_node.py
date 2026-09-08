@@ -1,8 +1,11 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -26,8 +29,9 @@ def test_neko_minigame_sdk_node_runtime(script_name: str):
 
     script_path = Path(__file__).with_name(script_name)
     try:
-        result = subprocess.run(
-            [node_path, str(script_path)],
+        result = run_node_script(
+            node_path,
+            f"require({json.dumps(str(script_path.resolve()))});",
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
