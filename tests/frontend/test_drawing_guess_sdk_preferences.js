@@ -111,6 +111,7 @@ function loadHarness() {
 
   let localStorageReads = 0;
   const createdCanvases = [];
+  let canvasDataUrlFactory = null;
   function makeCanvas() {
     const operations = [];
     const context = { operations };
@@ -134,7 +135,10 @@ function loadHarness() {
       getContext(kind) { return kind === '2d' ? context : null; },
       toDataURL(type, quality) {
         operations.push({ name: 'toDataURL', args: [type, quality] });
-        return `data:${type || 'image/png'};base64,${this.width}x${this.height}`;
+        const fallback = `data:${type || 'image/png'};base64,${this.width}x${this.height}`;
+        return canvasDataUrlFactory
+          ? canvasDataUrlFactory({ canvas: this, type: type || 'image/png', quality, fallback })
+          : fallback;
       },
       __context: context,
     };
@@ -244,6 +248,16 @@ function loadHarness() {
     canvasDisplayPixelBounds: canvasDisplayPixelBounds,
     floodFillPixelBuffer: floodFillPixelBuffer,
     prepareAiDrawing: prepareAiDrawing,
+    captureUserCanvasPng: captureUserCanvasPng,
+    captureVisionCommandImage: captureVisionCommandImage,
+    postVisionGuess: postVisionGuess,
+    submitFeedbackInput: submitFeedbackInput,
+    submitDrawing: submitDrawing,
+    triggerSupplementGuess: triggerSupplementGuess,
+    triggerRandomAiGuess: triggerRandomAiGuess,
+    flushDeferredAiGuessWork: flushDeferredAiGuessWork,
+    settleAiGuessTimeout: settleAiGuessTimeout,
+    addNekoMessage: addNekoMessage,
     logSdkBestEffort: logSdkBestEffort,
     currentLanguage: currentLanguage,
     submitPlayerText: submitPlayerText,
@@ -255,6 +269,48 @@ function loadHarness() {
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
     startRoute: startRoute,
+    installCanvasForCapture: function (canvas) {
+      els.canvas = canvas;
+    },
+    setAiGuessTimeoutBusyMaxPolls: function (value) {
+      AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = Math.max(0, Number(value) || 0);
+    },
+    installRoundCommandSpies: function (handler, events) {
+      executeRoundCommand = function (command, payload, timeoutMs) {
+        events.commands.push({ command: command, payload: payload, timeoutMs: timeoutMs });
+        return Promise.resolve().then(function () {
+          return handler(command, payload, timeoutMs);
+        });
+      };
+      addMessage = function (key, fallback, params) {
+        events.messages.push({ key: key, fallback: fallback, params: params });
+      };
+      addNekoMessage = function (text) { events.nekoMessages.push(text); };
+      addEventMessage = function () {};
+      addAiGuessOutcomeMessage = function () {};
+      stopThinkingEventMessage = function () {};
+      startThinkingEventMessage = function () {};
+      startCountdown = function () {};
+      flushDeferredAiGuessWork = function () {};
+      scheduleNextRandomAiGuess = function () {};
+      setChatPlaceholder = function () {};
+      setPhase = function (phase) {
+        state.phase = phase;
+        events.phases.push(phase);
+      };
+      renderSummary = function (response) {
+        state.phase = 'summary';
+        events.summaries.push(response);
+      };
+      updateControls = function () {};
+    },
+    installNekoMessageSpies: function (events) {
+      addMessage = function (_key, text, _params, className) {
+        events.push({ kind: 'bubble', text: text, className: className });
+      };
+      enqueueNekoVoice = function (text) { events.push({ kind: 'voice', text: text }); };
+      pulseModelMood = function (mood) { events.push({ kind: 'mood', mood: mood }); };
+    },
     installPlayerTextSpies: function (handler) {
       addUserMessage = function () {};
       submitUserGuess = function (value, metadata) { return handler('user_guessing', value, metadata); };
@@ -301,6 +357,7 @@ function loadHarness() {
     source,
     sandbox,
     createdCanvases,
+    setCanvasDataUrlFactory(factory) { canvasDataUrlFactory = factory; },
     localStorageReads: () => localStorageReads,
   };
 }
@@ -1203,6 +1260,312 @@ async function testDrawingReviewCaptureIsLowResolutionOpaqueJpeg() {
     'the visual review image used an unexpected encoding or quality');
 }
 
+async function testVisionCommandsUseBoundedSnapshotsAndPreserveFullPng() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+
+  const oversizedPng = `data:image/png;base64,${'x'.repeat(1800000)}`;
+  harness.setCanvasDataUrlFactory(({ type, fallback }) => (
+    type === 'image/png' ? oversizedPng : fallback
+  ));
+
+  const fullPng = api.captureUserCanvasPng();
+  const commandImage = api.captureVisionCommandImage();
+  assertEqual(fullPng, oversizedPng, 'the full-resolution PNG capture was unexpectedly replaced');
+  assertEqual(commandImage, 'data:image/jpeg;base64,480x360',
+    'the vision command image was not a downscaled JPEG');
+  assert(commandImage.length < 1800000, 'the bounded vision image still exceeded the command contract');
+
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => ({ ok: false, reason: 'test_response' }), events);
+  api.state.phase = 'user_drawing';
+  api.state.hasDrawn = true;
+  api.state.roundFlowToken = 12;
+  api.state.activeRoundToken = 12;
+
+  api.submitDrawing(true);
+  await waitFor(() => events.commands.length === 1 && !api.state.aiGuessInFlight,
+    'the initial vision guess did not finish');
+
+  api.state.phase = 'ai_guess_feedback';
+  api.triggerSupplementGuess(false);
+  await waitFor(() => events.commands.length === 2 && !api.state.aiGuessInFlight,
+    'the supplemental vision guess did not finish');
+
+  api.state.phase = 'ai_guess_feedback';
+  api.triggerRandomAiGuess();
+  await waitFor(() => events.commands.length === 3 && !api.state.aiGuessInFlight,
+    'the automatic vision guess did not finish');
+
+  api.state.phase = 'ai_guess_feedback';
+  await api.submitFeedbackInput('another hint', { request_id: 'bounded-feedback' });
+
+  assertEqual(events.commands.length, 4, 'not every vision-bearing command was exercised');
+  events.commands.forEach((call) => {
+    assertEqual(call.payload.image_data_url, 'data:image/jpeg;base64,480x360',
+      `${call.command} sent an unbounded canvas image`);
+  });
+  assertEqual(api.state.userPng, oversizedPng,
+    'network image bounding overwrote the full PNG used by summaries and downloads');
+}
+
+async function testDeferredVisionSnapshotsPreserveTriggerImage() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  let jpegMarker = 'initial';
+  harness.setCanvasDataUrlFactory(({ type }) => (
+    type === 'image/png'
+      ? 'data:image/png;base64,full-resolution'
+      : `data:image/jpeg;base64,${jpegMarker}`
+  ));
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => ({ ok: false, reason: 'test_response' }), events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.roundFlowToken = 15;
+  api.state.activeRoundToken = 15;
+
+  api.state.chatInFlight = true;
+  jpegMarker = 'supplement-A';
+  api.triggerSupplementGuess(false);
+  assertEqual(api.state.pendingSupplementImage, 'data:image/jpeg;base64,supplement-A',
+    'the supplemental trigger did not queue its bounded snapshot');
+  jpegMarker = 'supplement-B';
+  api.state.chatInFlight = false;
+  api.flushDeferredAiGuessWork();
+  await waitFor(() => events.commands.length === 1 && !api.state.aiGuessInFlight,
+    'the deferred supplemental guess did not finish');
+  assertEqual(events.commands[0].payload.image_data_url, 'data:image/jpeg;base64,supplement-A',
+    'the deferred supplemental guess recaptured a different canvas');
+
+  api.state.phase = 'ai_guess_feedback';
+  api.state.chatInFlight = true;
+  jpegMarker = 'auto-A';
+  api.triggerRandomAiGuess();
+  assertEqual(api.state.pendingAutoGuessImage, 'data:image/jpeg;base64,auto-A',
+    'the automatic trigger did not queue its bounded snapshot');
+  jpegMarker = 'auto-B';
+  api.state.chatInFlight = false;
+  api.flushDeferredAiGuessWork();
+  await waitFor(() => events.commands.length === 2 && !api.state.aiGuessInFlight,
+    'the deferred automatic guess did not finish');
+  assertEqual(events.commands[1].payload.image_data_url, 'data:image/jpeg;base64,auto-A',
+    'the deferred automatic guess recaptured a different canvas');
+}
+
+async function testBusyVisionRetryPreservesBoundedSnapshot() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  let jpegMarker = 'retry-A';
+  harness.setCanvasDataUrlFactory(({ type }) => (
+    type === 'image/png'
+      ? 'data:image/png;base64,full-resolution'
+      : `data:image/jpeg;base64,${jpegMarker}`
+  ));
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  let attempt = 0;
+  api.installRoundCommandSpies(() => {
+    attempt += 1;
+    return attempt === 1
+      ? { ok: false, reason: 'session_busy' }
+      : { ok: false, reason: 'test_response' };
+  }, events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.roundFlowToken = 16;
+  api.state.activeRoundToken = 16;
+
+  api.triggerSupplementGuess(false);
+  jpegMarker = 'retry-B';
+  await waitFor(() => events.commands.length === 2 && !api.state.aiGuessInFlight,
+    'the busy vision retry did not finish');
+
+  assertEqual(events.commands[0].payload.image_data_url, 'data:image/jpeg;base64,retry-A',
+    'the first vision request did not use the trigger snapshot');
+  assertEqual(events.commands[1].payload.image_data_url, 'data:image/jpeg;base64,retry-A',
+    'the busy retry recaptured a different canvas');
+}
+
+async function testRejectedVisionCommandUnlocksTheRound() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => {
+    throw new Error('transport_failed');
+  }, events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.roundFlowToken = 17;
+  api.state.activeRoundToken = 17;
+
+  await api.postVisionGuess('', {});
+
+  assertEqual(events.commands.length, 1, 'the rejected vision command was not attempted');
+  assertEqual(api.state.aiGuessInFlight, false,
+    'a rejected vision command left the AI guess request locked');
+  assertEqual(events.messages.length, 1,
+    'a rejected fire-and-forget vision command did not surface a controlled failure');
+}
+
+async function testFailedJpegCaptureNeverSendsPngOrEmptyImage() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  const oversizedPng = `data:image/png;base64,${'x'.repeat(1800000)}`;
+  harness.setCanvasDataUrlFactory(({ type }) => (type === 'image/png' ? oversizedPng : ''));
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => ({ ok: true }), events);
+  api.state.hasDrawn = true;
+  api.state.roundFlowToken = 18;
+  api.state.activeRoundToken = 18;
+
+  api.state.phase = 'user_drawing';
+  api.submitDrawing(true);
+  api.state.phase = 'ai_guess_feedback';
+  api.triggerSupplementGuess(false);
+  api.triggerRandomAiGuess();
+  await api.submitFeedbackInput('hint', { request_id: 'capture-failed' });
+  await api.postVisionGuess('', { image_data_url: oversizedPng });
+
+  assertEqual(events.commands.length, 0,
+    'a failed JPEG capture sent a full PNG or empty image to a command');
+  assertEqual(api.state.aiGuessInFlight, false,
+    'a failed JPEG capture left the AI guess request locked');
+  assertEqual(api.state.chatInFlight, false,
+    'a failed feedback capture left chat input locked');
+  assertEqual(api.state.userPng, oversizedPng,
+    'a failed network capture discarded the local full-resolution PNG');
+}
+
+async function testAutomaticDrawingTimeoutSettlesWhenJpegCaptureFails() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  harness.setCanvasDataUrlFactory(({ type }) => (
+    type === 'image/png' ? 'data:image/png;base64,full-resolution' : ''
+  ));
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  const timeoutResponses = [
+    { ok: true, phase: 'ai_guessing', state: { phase: 'ai_guessing' } },
+    { ok: true, phase: 'summary', state: { phase: 'summary' }, evaluation: 'capture failed' },
+  ];
+  api.installRoundCommandSpies((command) => {
+    if (command !== 'round:timeout') throw new Error(`unexpected command: ${command}`);
+    return timeoutResponses.shift();
+  }, events);
+  api.state.phase = 'user_drawing';
+  api.state.hasDrawn = true;
+  api.state.roundFlowToken = 19;
+  api.state.activeRoundToken = 19;
+
+  api.submitDrawing(false);
+  await waitFor(() => events.summaries.length === 1,
+    'an automatic drawing timeout stayed stuck after JPEG capture failed');
+
+  assertEqual(events.commands.length, 2,
+    'capture failure did not follow the backend two-stage timeout contract');
+  assert(events.commands.every((call) => call.command === 'round:timeout'),
+    'capture failure sent a vision command without a valid JPEG');
+  assertEqual(api.state.phase, 'summary',
+    'automatic capture failure did not leave the user drawing phase');
+}
+
+async function testTimeoutResettlesAfterBackendPhaseAdvance() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  const responses = [
+    { ok: true, phase: 'ai_guessing', state: { phase: 'ai_guessing' } },
+    { ok: true, phase: 'summary', state: { phase: 'summary' }, evaluation: 'done' },
+  ];
+  api.installRoundCommandSpies(() => responses.shift(), events);
+  api.state.phase = 'ai_guessing';
+  api.state.roundFlowToken = 21;
+  api.state.activeRoundToken = 21;
+
+  await api.settleAiGuessTimeout();
+
+  assertEqual(events.commands.length, 2,
+    'timeout settlement did not continue after the backend advanced into AI guessing');
+  events.commands.forEach((call) => {
+    assertEqual(call.command, 'round:timeout', 'timeout recovery issued the wrong command');
+    assertEqual(call.timeoutMs, 30000, 'timeout recovery lost its dedicated request budget');
+  });
+  assertEqual(events.summaries.length, 1, 'timeout recovery did not render exactly one summary');
+}
+
+async function testTimeoutServerBusyRetriesAreBounded() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => ({ ok: false, reason: 'session_busy' }), events);
+  api.setAiGuessTimeoutBusyMaxPolls(2);
+  api.state.phase = 'ai_guessing';
+  api.state.roundFlowToken = 25;
+  api.state.activeRoundToken = 25;
+
+  await api.settleAiGuessTimeout();
+  await waitFor(() => events.commands.length === 3 && events.messages.length === 1,
+    'persistent server busy responses were not stopped at the retry limit');
+
+  assertEqual(events.commands.length, 3, 'server busy settlement retried past its limit');
+  assertEqual(events.messages[0].params.reason, 'session_busy',
+    'server busy exhaustion reported the wrong failure');
+}
+
+async function testTimeoutPhaseAdvanceStopsWhenRoundChanges() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies(() => {
+    api.state.roundFlowToken += 1;
+    return { ok: true, phase: 'ai_guessing', state: { phase: 'ai_guessing' } };
+  }, events);
+  api.state.phase = 'ai_guessing';
+  api.state.roundFlowToken = 31;
+  api.state.activeRoundToken = 31;
+
+  await api.settleAiGuessTimeout();
+
+  assertEqual(events.commands.length, 1, 'a stale timeout response crossed into the next round');
+  assertEqual(events.summaries.length, 0, 'a stale timeout response rendered a summary');
+}
+
+async function testRepeatedNekoRepliesAreRenderedAndSpoken() {
+  const harness = loadHarness();
+  const events = [];
+  harness.api.installNekoMessageSpies(events);
+
+  harness.api.addNekoMessage('Try again.');
+  harness.api.addNekoMessage('Try again.');
+
+  assertEqual(events.filter((event) => event.kind === 'bubble').length, 2,
+    'a repeated valid fallback reply lost its chat bubble');
+  assertEqual(events.filter((event) => event.kind === 'voice').length, 2,
+    'a repeated valid fallback reply was not spoken');
+  assertEqual(events.filter((event) => event.kind === 'mood').length, 2,
+    'a repeated valid fallback reply did not animate the avatar');
+}
+
 async function runPrepareAiDrawingReview(responseFactory) {
   const harness = loadHarness();
   const api = harness.api;
@@ -1347,6 +1710,16 @@ async function main() {
   await testRawAiSvgFillsResponsiveStage();
   await testComplexDrawingPlanSupportsCurvesAndMoreDetail();
   await testDrawingReviewCaptureIsLowResolutionOpaqueJpeg();
+  await testVisionCommandsUseBoundedSnapshotsAndPreserveFullPng();
+  await testDeferredVisionSnapshotsPreserveTriggerImage();
+  await testBusyVisionRetryPreservesBoundedSnapshot();
+  await testRejectedVisionCommandUnlocksTheRound();
+  await testFailedJpegCaptureNeverSendsPngOrEmptyImage();
+  await testAutomaticDrawingTimeoutSettlesWhenJpegCaptureFails();
+  await testTimeoutResettlesAfterBackendPhaseAdvance();
+  await testTimeoutServerBusyRetriesAreBounded();
+  await testTimeoutPhaseAdvanceStopsWhenRoundChanges();
+  await testRepeatedNekoRepliesAreRenderedAndSpoken();
   await testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan();
   await testDrawingPlanReviewUnavailableKeepsOriginalDrawing();
   await testStopSdkVoiceBestEffortRejectsResolvedFailureAndSyncThrow();

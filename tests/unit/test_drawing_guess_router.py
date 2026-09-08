@@ -3814,14 +3814,14 @@ async def test_time_expired_user_drawing_settles_after_first_missed_ai_guess(mon
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_timeout_settles_ai_guessing_round(monkeypatch):
+async def test_timeout_advances_user_drawing_then_settles_ai_guessing_round(monkeypatch):
     await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-ai-guessing-timeout",
         "i18n_language": "en",
     }))
     session = dgr._drawing_guess_sessions["YUI:dg-ai-guessing-timeout"]
-    session["phase"] = "ai_guessing"
+    session["phase"] = "user_drawing"
     session["user_word_id"] = "banana"
     session["ai_guess_attempts"] = 1
 
@@ -3849,11 +3849,19 @@ async def test_timeout_settles_ai_guessing_round(monkeypatch):
     monkeypatch.setattr(dgr, "_generate_summary_evaluation", fake_summary_evaluation)
     monkeypatch.setattr(dgr, "_maybe_write_drawing_guess_memory_summary", fake_memory_summary)
 
-    result = await dgr.drawing_guess_timeout(_FakeRequest({
+    timeout_payload = {
         "lanlan_name": "YUI",
         "session_id": "dg-ai-guessing-timeout",
         "i18n_language": "en",
-    }))
+    }
+    advanced = await dgr.drawing_guess_timeout(_FakeRequest(timeout_payload))
+
+    assert advanced["ok"] is True
+    assert advanced["phase"] == "ai_guessing"
+    assert advanced["state"]["phase"] == "ai_guessing"
+    assert session["phase"] == "ai_guessing"
+
+    result = await dgr.drawing_guess_timeout(_FakeRequest(timeout_payload))
 
     assert result["ok"] is True
     assert result["phase"] == "summary"

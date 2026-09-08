@@ -20,6 +20,7 @@
     required: ['ok'],
     additionalProperties: true
   });
+  var VISION_COMMAND_DATA_MAX_CHARS = 1800000;
 
   function roundCommandRequestSchema(extraProperties, requiredProperties) {
     return {
@@ -39,7 +40,7 @@
     'round:start': roundCommandRequestSchema(),
     'round:ai-draw': roundCommandRequestSchema(),
     'round:ai-draw-review': roundCommandRequestSchema({
-      image_data_url: { type: 'string', maxLength: 1800000 }
+      image_data_url: { type: 'string', maxLength: VISION_COMMAND_DATA_MAX_CHARS }
     }, ['image_data_url']),
     'round:input': roundCommandRequestSchema({
       text: { type: 'string', maxLength: 2000 },
@@ -50,7 +51,7 @@
     }, ['text']),
     'round:feedback': roundCommandRequestSchema({
       text: { type: 'string', maxLength: 2000 },
-      image_data_url: { type: 'string', maxLength: 1800000 },
+      image_data_url: { type: 'string', maxLength: VISION_COMMAND_DATA_MAX_CHARS },
       input_kind: { type: 'string', maxLength: 64 },
       source: { type: 'string', maxLength: 128 },
       request_id: { type: 'string', maxLength: 256 }
@@ -60,7 +61,7 @@
     }, ['word_id']),
     'round:timeout': roundCommandRequestSchema(),
     'round:vision-guess': roundCommandRequestSchema({
-      image_data_url: { type: 'string', maxLength: 1800000 },
+      image_data_url: { type: 'string', maxLength: VISION_COMMAND_DATA_MAX_CHARS },
       user_hint: { type: 'string', maxLength: 260 },
       settle_on_miss: { type: 'boolean' },
       time_expired: { type: 'boolean' }
@@ -81,6 +82,7 @@
   var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
   var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;
   var AI_GUESS_TIMEOUT_MAX_RETRIES = 2;
+  var AI_GUESS_TIMEOUT_PHASE_ADVANCE_MAX_RETRIES = 1;
   var AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50;
   var AI_GUESS_MIN_DELAY_MS = 10000;
   var AI_GUESS_MAX_DELAY_MS = 60000;
@@ -200,7 +202,6 @@
     avatarController: null,
     avatarMountPromise: null,
     avatarLoadToken: 0,
-    recentNekoMessages: [],
     roundNumber: 0,
     currentRoundSummarySaved: false,
     roundSummaries: []
@@ -1295,10 +1296,6 @@
   function addNekoMessage(text) {
     var normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return;
-    var recent = state.recentNekoMessages || [];
-    if (recent.slice(-4).indexOf(normalized) >= 0) return;
-    recent.push(normalized);
-    state.recentNekoMessages = recent.slice(-8);
     addMessage('', text, null, 'dg-message-neko');
     enqueueNekoVoice(normalized);
     pulseModelMood('talking', Math.min(2800, Math.max(1200, String(text).length * 45)));
@@ -1482,6 +1479,17 @@
       }
     } catch (_) {}
     return '';
+  }
+
+  function boundedVisionCommandImage(value) {
+    var dataUrl = String(value || '');
+    if (dataUrl.indexOf('data:image/jpeg;base64,') !== 0) return '';
+    if (dataUrl.length > VISION_COMMAND_DATA_MAX_CHARS) return '';
+    return dataUrl;
+  }
+
+  function captureVisionCommandImage() {
+    return boundedVisionCommandImage(captureRouteCanvasSnapshot());
   }
 
   function canvasContextPayload(force) {
@@ -2408,7 +2416,7 @@
       context.fillRect(0, 0, review.width, review.height);
       context.drawImage(source, 0, 0, review.width, review.height);
       var dataUrl = review.toDataURL('image/jpeg', 0.78);
-      return dataUrl.length <= 1800000 ? dataUrl : '';
+      return dataUrl.length <= VISION_COMMAND_DATA_MAX_CHARS ? dataUrl : '';
     } catch (_) {
       return '';
     }
@@ -3028,17 +3036,23 @@
 
   function triggerRandomAiGuess(imageDataUrl) {
     if (state.phase !== 'ai_guess_feedback') return;
-    var snapshot = imageDataUrl || captureUserCanvasPng();
-    if (snapshot) state.userPng = snapshot;
+    var fullSnapshot = captureUserCanvasPng();
+    if (fullSnapshot) state.userPng = fullSnapshot;
+    var commandImage = boundedVisionCommandImage(imageDataUrl) || captureVisionCommandImage();
+    if (!commandImage) {
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+      scheduleNextRandomAiGuess();
+      return;
+    }
     if (state.chatInFlight || state.aiGuessInFlight) {
       state.pendingAutoGuess = true;
-      state.pendingAutoGuessImage = snapshot || state.userPng || '';
+      state.pendingAutoGuessImage = commandImage;
       return;
     }
     state.pendingAutoGuess = false;
     state.pendingAutoGuessImage = '';
     startThinkingEventMessage('drawingGuess.messages.aiGuessing', 'She is looking at your drawing...');
-    postVisionGuess('', { auto: true, image_data_url: snapshot || state.userPng });
+    postVisionGuess('', { auto: true, image_data_url: commandImage });
   }
 
   function handleAiGuessTimeout() {
@@ -3051,10 +3065,12 @@
     settleAiGuessTimeout();
   }
 
-  function settleAiGuessTimeout(attempt) {
+  function settleAiGuessTimeout(attempt, phaseAdvanceAttempt, busyAttempt) {
     stopAiGuessSchedule();
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
     attempt = Number(attempt || 0);
+    phaseAdvanceAttempt = Number(phaseAdvanceAttempt || 0);
+    busyAttempt = Number(busyAttempt || 0);
     var flowToken = state.roundFlowToken;
     return executeRoundCommand(
       ROUND_COMMANDS.TIMEOUT,
@@ -3064,6 +3080,12 @@
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
         if (res && res.reason === 'session_busy') {
+          if (busyAttempt >= AI_GUESS_TIMEOUT_BUSY_MAX_POLLS) {
+            state.pendingAiGuessTimeout = false;
+            addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });
+            updateControls();
+            return;
+          }
           state.pendingAiGuessTimeout = true;
           clearTimeout(state.aiGuessTimeoutRetryTimer);
           var busyPollCount = 0;
@@ -3083,7 +3105,7 @@
               return;
             }
             state.pendingAiGuessTimeout = false;
-            settleAiGuessTimeout(attempt);
+            settleAiGuessTimeout(attempt, phaseAdvanceAttempt, busyAttempt + 1);
           };
           state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);
         }
@@ -3091,8 +3113,19 @@
       }
       state.pendingAiGuessTimeout = false;
       if (res.message) addNekoMessage(res.message);
-      if (res.phase === 'summary' || (res.state && res.state.phase === 'summary')) {
+      var responsePhase = String(res.phase || (res.state && res.state.phase) || '');
+      if (responsePhase === 'summary') {
         renderSummary(res);
+        return;
+      }
+      if (responsePhase === 'ai_guessing' || responsePhase === 'ai_guess_feedback') {
+        setPhase(responsePhase);
+        if (phaseAdvanceAttempt < AI_GUESS_TIMEOUT_PHASE_ADVANCE_MAX_RETRIES) {
+          return settleAiGuessTimeout(0, phaseAdvanceAttempt + 1, 0);
+        }
+        addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', {
+          reason: 'timeout_not_settled'
+        });
       }
     }).catch(function (err) {
       if (!isCurrentRoundFlow(flowToken)) return;
@@ -3100,7 +3133,7 @@
       if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES) {
         state.aiGuessTimeoutRetryTimer = setTimeout(function () {
           if (!isCurrentRoundFlow(flowToken)) return;
-          settleAiGuessTimeout(attempt + 1);
+          settleAiGuessTimeout(attempt + 1, phaseAdvanceAttempt, busyAttempt);
         }, 500 * Math.pow(2, attempt));
         return;
       }
@@ -3327,13 +3360,19 @@
   }
 
   function submitFeedbackInput(text, inputMetadata) {
-    state.chatInFlight = true;
     var flowToken = state.roundFlowToken;
     var feedbackImage = captureUserCanvasPng();
     if (feedbackImage) state.userPng = feedbackImage;
+    var feedbackCommandImage = captureVisionCommandImage();
+    if (!feedbackCommandImage) {
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+      updateControls();
+      return Promise.resolve();
+    }
+    state.chatInFlight = true;
     return executeRoundCommand(ROUND_COMMANDS.FEEDBACK, roundCommandPayload(Object.assign({
       text: text,
-      image_data_url: feedbackImage || state.userPng
+      image_data_url: feedbackCommandImage
     }, inputMetadata || {})), AI_GUESS_REQUEST_TIMEOUT_MS).then(function (res) {
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
@@ -3450,40 +3489,62 @@
       triggerSupplementGuess(true);
       return;
     }
+    state.userPng = captureUserCanvasPng();
+    var commandImage = captureVisionCommandImage();
+    if (!commandImage) {
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+      if (!manual) {
+        setPhase('ai_guessing');
+        settleAiGuessTimeout();
+      }
+      return;
+    }
     stopCountdown();
     stopAiGuessSchedule();
-    state.userPng = captureUserCanvasPng();
     state.aiGuessDeadline = Date.now() + ROUND_FALLBACK_SECONDS * 1000;
     state.aiGuessAttempts = 0;
     setPhase('ai_guessing');
     setChatPlaceholder('drawingGuess.input.hintPlaceholder', 'Keep chatting; give a hint when you want her to guess again');
     startThinkingEventMessage('drawingGuess.messages.aiGuessing', 'She is looking at your drawing...');
     startCountdown(ROUND_FALLBACK_SECONDS, handleAiGuessTimeout);
-    postVisionGuess('', { first_guess: true });
+    postVisionGuess('', { first_guess: true, image_data_url: commandImage });
   }
 
   function triggerSupplementGuess(announce, imageDataUrl) {
     if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
-    state.userPng = imageDataUrl || captureUserCanvasPng() || state.userPng;
+    var fullSnapshot = captureUserCanvasPng();
+    if (fullSnapshot) state.userPng = fullSnapshot;
+    var commandImage = boundedVisionCommandImage(imageDataUrl) || captureVisionCommandImage();
+    if (!commandImage) {
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+      return;
+    }
     clearTimeout(state.aiGuessTimer);
     state.aiGuessTimer = null;
     state.pendingAutoGuess = false;
     state.pendingAutoGuessImage = '';
     if (state.aiGuessInFlight || state.chatInFlight) {
       state.pendingSupplementGuess = true;
-      state.pendingSupplementImage = state.userPng || '';
+      state.pendingSupplementImage = commandImage;
       return;
     }
     state.pendingSupplementGuess = false;
     state.pendingSupplementImage = '';
     startThinkingEventMessage('drawingGuess.messages.aiGuessing', 'She is looking at your drawing...');
-    postVisionGuess('', { supplement: true, image_data_url: state.userPng });
+    postVisionGuess('', { supplement: true, image_data_url: commandImage });
   }
 
   function postVisionGuess(userHint, options) {
-    state.aiGuessInFlight = true;
     var flowToken = state.roundFlowToken;
-    var imageDataUrl = (options && options.image_data_url) || state.userPng;
+    var imageDataUrl = boundedVisionCommandImage(options && options.image_data_url)
+      || captureVisionCommandImage();
+    if (!imageDataUrl) {
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
+      stopThinkingEventMessage();
+      updateControls();
+      return Promise.resolve();
+    }
+    state.aiGuessInFlight = true;
     return executeRoundCommand(ROUND_COMMANDS.VISION_GUESS, roundCommandPayload({
       image_data_url: imageDataUrl,
       user_hint: userHint || '',
@@ -3527,6 +3588,9 @@
         addEventMessage('drawingGuess.messages.aiNeedsHint', 'You can just keep chatting. Give her a hint when you want another guess.');
         scheduleNextRandomAiGuess();
       }
+    }).catch(function () {
+      if (!isCurrentRoundFlow(flowToken)) return;
+      addMessage('drawingGuess.messages.inputFailed', 'Input failed.');
     }).finally(function () {
       if (!isCurrentRoundFlow(flowToken)) return;
       state.aiGuessInFlight = false;

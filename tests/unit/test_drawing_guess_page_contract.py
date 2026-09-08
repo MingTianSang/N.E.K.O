@@ -738,7 +738,8 @@ def test_drawing_guess_static_route_contract():
     assert "state.phase !== 'user_drawing'" in script
     assert "submitGameChat(value, { inputMetadata: options.inputMetadata })" in script
     assert "var feedbackImage = captureUserCanvasPng();" in script
-    assert "image_data_url: feedbackImage || state.userPng" in script
+    assert "var feedbackCommandImage = captureVisionCommandImage();" in script
+    assert "image_data_url: feedbackCommandImage" in script
     assert "summary_chat_only: !!options.summaryChatOnly" in script
     assert "submitGameChat(value, { summaryChatOnly: true, inputMetadata: options.inputMetadata });" in script
     assert "addUserMessage(value)" in script
@@ -747,7 +748,8 @@ def test_drawing_guess_static_route_contract():
     assert "stopThinkingEventMessage()" in script
     assert "setChatPlaceholder('drawingGuess.input.summaryPlaceholder'" in script
     assert "startCountdown(ROUND_FALLBACK_SECONDS, handleAiGuessTimeout)" in script
-    assert "postVisionGuess('', { first_guess: true })" in script
+    assert "postVisionGuess('', { first_guess: true, image_data_url: commandImage })" in script
+    assert "if (!manual) {\n        setPhase('ai_guessing');\n        settleAiGuessTimeout();" in script
     assert "function addAiGuessOutcomeMessage" in script
     assert "drawingGuess.messages.aiGuessCorrect" in script
     assert "drawingGuess.messages.aiGuessWrong" in script
@@ -755,14 +757,18 @@ def test_drawing_guess_static_route_contract():
     assert "function triggerSupplementGuess" in script
     assert "drawingGuess.messages.userSupplemented" not in script
     assert "function captureUserCanvasPng" in script
+    assert "function captureVisionCommandImage" in script
+    assert "var VISION_COMMAND_DATA_MAX_CHARS = 1800000;" in script
+    assert "data:image/jpeg;base64," in script
     assert "function persistCurrentUserCanvasSnapshot" in script
     assert "persistCurrentUserCanvasSnapshot();\n    setPhase('summary');" in script
-    assert "state.pendingSupplementImage = state.userPng || ''" in script
-    assert "postVisionGuess('', { supplement: true, image_data_url: state.userPng })" in script
+    assert "state.pendingSupplementImage = commandImage" in script
+    assert "boundedVisionCommandImage(imageDataUrl) || captureVisionCommandImage()" in script
+    assert "postVisionGuess('', { supplement: true, image_data_url: commandImage })" in script
     assert "state.pendingSupplementGuess = true" in script
     assert "scheduleNextRandomAiGuess()" in script
     assert "state.pendingAutoGuess = true" in script
-    assert "state.pendingAutoGuessImage = snapshot || state.userPng || ''" in script
+    assert "state.pendingAutoGuessImage = commandImage" in script
     assert "triggerRandomAiGuess(autoImage)" in script
     assert "flushDeferredAiGuessWork()" in script
     assert "res.correct || res.kind === 'give_up'" in script
@@ -775,6 +781,7 @@ def test_drawing_guess_static_route_contract():
     assert "aiGuessTimeoutRetryTimer: null" in script
     assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
     assert "AI_GUESS_TIMEOUT_MAX_RETRIES = 2" in script
+    assert "AI_GUESS_TIMEOUT_PHASE_ADVANCE_MAX_RETRIES = 1" in script
     assert "AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50" in script
     assert (
         "executeRoundCommand(\n"
@@ -785,7 +792,9 @@ def test_drawing_guess_static_route_contract():
     ) in script
     assert "addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });\n                updateControls();" in script
     assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
+    assert "settleAiGuessTimeout(0, phaseAdvanceAttempt + 1, 0)" in script
     assert "reason: readableRequestError(err)" in script
+    assert "recentNekoMessages" not in script
     assert "client.speech.speak({" in script
     assert "client.speech.onState(handleSpeechPlaybackState)" in script
     assert "roundFlowToken: state.roundFlowToken" in script
