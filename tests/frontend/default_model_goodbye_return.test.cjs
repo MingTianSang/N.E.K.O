@@ -525,6 +525,21 @@ test('direct model reloads publish their final success result to callers', () =>
   assert.match(handler, /return window\._lastModelReloadResult === true;\s*}/);
 });
 
+test('default-model persistence keeps queued reloads behind the validated transaction', () => {
+  const resetStart = resetSource.indexOf('async function resetToDefaultModel() {');
+  const resetEnd = resetSource.indexOf('// Public API', resetStart);
+  const reset = resetSource.slice(resetStart, resetEnd);
+  const handlerStart = modelReloadSource.indexOf('I.handleModelReload = async function handleModelReload');
+  const handlerEnd = modelReloadSource.indexOf('I.handleReloadModelParametersMessage =', handlerStart);
+  const handler = modelReloadSource.slice(handlerStart, handlerEnd);
+
+  assert.match(reset, /queueHoldToken: reloadQueueHoldToken/);
+  assert.match(reset, /defaultPersisted = true;\s*if \(reloadQueueHeld\) \{\s*I\.releaseModelReloadQueueHold/);
+  assert.match(modelReloadSource, /I\.releaseModelReloadQueueHold = function releaseModelReloadQueueHold/);
+  assert.match(handler, /var keepReloadQueueHeld = reloadSucceeded && !!queueHoldToken;/);
+  assert.match(handler, /if \(!keepReloadQueueHeld\) schedulePendingModelReload\(\);/);
+});
+
 test('default-model reset restores the persisted prior model when PUT reports failure', async () => {
   const harness = createResetHarness({ putData: { success: false, error: 'save_failed' } });
   const result = await harness.window.runResetToDefaultModel();

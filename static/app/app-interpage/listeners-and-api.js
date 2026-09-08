@@ -358,6 +358,8 @@
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         var defaultReloadAttempted = false;
         var defaultPersisted = false;
+        var reloadQueueHoldToken = 'reset-default-model-' + Date.now() + '-' + Math.random();
+        var reloadQueueHeld = false;
         var reloadModel = typeof I.handleModelReload === 'function'
             ? I.handleModelReload
             : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
@@ -414,7 +416,8 @@
                 skipIdleRestore: true,
                 skipPersistentExpressions: true,
                 suppressToast: true,
-                throwOnError: true
+                throwOnError: true,
+                queueHoldToken: reloadQueueHoldToken
             });
             if (defaultReloadResult !== true) {
                 // A queued reload can be displaced by a newer request and
@@ -423,6 +426,7 @@
                 defaultReloadAttempted = false;
                 throw new Error('default_model_reload_not_applied');
             }
+            reloadQueueHeld = typeof I.releaseModelReloadQueueHold === 'function';
 
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
@@ -446,6 +450,10 @@
                 throw new Error('HTTP ' + putResp.status + (errorDetail ? (': ' + errorDetail) : ''));
             }
             defaultPersisted = true;
+            if (reloadQueueHeld) {
+                I.releaseModelReloadQueueHold(reloadQueueHoldToken);
+                reloadQueueHeld = false;
+            }
 
             try {
                 if (typeof window.showStatusToast === 'function') {
@@ -458,6 +466,10 @@
 
             return { success: true };
         } catch (e) {
+            if (reloadQueueHeld && typeof I.releaseModelReloadQueueHold === 'function') {
+                I.releaseModelReloadQueueHold(reloadQueueHoldToken);
+                reloadQueueHeld = false;
+            }
             // 临时热切换失败，或模型已切换但 PUT 失败时，服务端通常仍保留
             // 原 page_config。重新走标准热重载，避免旧模型容器保持隐藏。
             if (defaultReloadAttempted && !defaultPersisted && reloadModel) {
@@ -481,6 +493,9 @@
             } catch (_) {}
             return { success: false, error: (e && e.message) || String(e) };
         } finally {
+            if (reloadQueueHeld && typeof I.releaseModelReloadQueueHold === 'function') {
+                I.releaseModelReloadQueueHold(reloadQueueHoldToken);
+            }
             _resetToDefaultModelInFlight = false;
         }
     }
@@ -491,6 +506,7 @@
 
     I.mod.nekoBroadcastChannel = I.nekoBroadcastChannel;
     I.mod.handleModelReload = I.handleModelReload;
+    I.mod.releaseModelReloadQueueHold = I.releaseModelReloadQueueHold;
     I.mod.resetToDefaultModel = resetToDefaultModel;
     I.mod.handleHideMainUI = I.handleHideMainUI;
     I.mod.handleShowMainUI = I.handleShowMainUI;

@@ -340,6 +340,94 @@ async def test_pngtuber_position_save_can_skip_runtime_refresh(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pngtuber_placement_only_save_preserves_active_model_binding(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'avatar', 'pngtuber', {
+        'idle_image': '/static/pngtuber/default/idle.png',
+        'talking_image': '/static/pngtuber/default/talking.png',
+        'scale': 1,
+        'offset_x': 0,
+        'offset_y': 0,
+    })
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'pngtuber_placement': {
+                'scale': 1.5,
+                'offset_x': 24,
+                'offset_y': -36,
+                'mobile_scale': 9,
+                'mobile_offset_x': -7000,
+                'mobile_offset_y': 7000,
+                'position_anchor': 'center',
+                'mirror': True,
+            },
+            'expected_pngtuber_binding': '/static/pngtuber/default/idle.png',
+            'apply_runtime': False,
+        },
+        characters=characters,
+    )
+
+    assert response.status_code == 200
+    assert body == {
+        'success': True,
+        'pngtuber_placement_updated': True,
+        'applied_runtime': False,
+    }
+    saved_catgirl = saved['猫娘']['测试角色']
+    assert get_reserved(saved_catgirl, 'avatar', 'model_type') == 'live3d'
+    assert get_reserved(saved_catgirl, 'avatar', 'live3d_sub_type') == 'vrm'
+    pngtuber = get_reserved(saved_catgirl, 'avatar', 'pngtuber')
+    assert pngtuber['idle_image'] == '/static/pngtuber/default/idle.png'
+    assert pngtuber['talking_image'] == '/static/pngtuber/default/talking.png'
+    assert pngtuber['scale'] == 1.5
+    assert pngtuber['offset_x'] == 24
+    assert pngtuber['offset_y'] == -36
+    assert pngtuber['mobile_scale'] == 5
+    assert pngtuber['mobile_offset_x'] == -5000
+    assert pngtuber['mobile_offset_y'] == 5000
+    assert pngtuber['position_anchor'] == 'center'
+    assert pngtuber['mirror'] is True
+
+
+@pytest.mark.asyncio
+async def test_pngtuber_placement_only_save_skips_a_replaced_binding(monkeypatch):
+    characters = _build_characters_fixture()
+    catgirl = characters['猫娘']['测试角色']
+    set_reserved(catgirl, 'avatar', 'pngtuber', {
+        'idle_image': '/static/pngtuber/new/idle.png',
+        'scale': 2,
+        'offset_x': 10,
+        'offset_y': 20,
+    })
+
+    response, body, saved = await _call_update(
+        monkeypatch,
+        {
+            'pngtuber_placement': {
+                'scale': 1,
+                'offset_x': 99,
+                'offset_y': 99,
+            },
+            'expected_pngtuber_binding': '/static/pngtuber/old/idle.png',
+            'apply_runtime': False,
+        },
+        characters=characters,
+    )
+
+    assert response.status_code == 200
+    assert body == {
+        'success': True,
+        'pngtuber_placement_updated': False,
+        'skipped': 'pngtuber_binding_changed',
+        'applied_runtime': False,
+    }
+    assert saved is None
+
+
+@pytest.mark.asyncio
 async def test_model_update_refreshes_runtime_by_default(monkeypatch):
     init_calls = []
     response, body, _saved = await _call_update(

@@ -803,6 +803,34 @@ I.mod = window.appInterpage;
         }
     }
 
+    function schedulePendingModelReload() {
+        if (!window._pendingModelReload) return false;
+        console.log('[Model] 执行待处理的模型重载请求');
+        var pendingReload = window._pendingModelReload;
+        window._pendingModelReload = null;
+        setTimeout(function () {
+            I.handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions)
+                .then(function (result) {
+                    if (typeof pendingReload.resolve === 'function') pendingReload.resolve(result);
+                })
+                .catch(function (error) {
+                    if (typeof pendingReload.reject === 'function') pendingReload.reject(error);
+                });
+        }, 100);
+        return true;
+    }
+
+    I.releaseModelReloadQueueHold = function releaseModelReloadQueueHold(queueHoldToken) {
+        if (!queueHoldToken || window._modelReloadQueueHoldToken !== queueHoldToken) {
+            return false;
+        }
+        window._modelReloadQueueHoldToken = '';
+        window._modelReloadInFlight = false;
+        window._modelReloadKey = '';
+        schedulePendingModelReload();
+        return true;
+    };
+
     /**
      * Handle model hot-swap triggered from another tab (model_manager).
      *
@@ -823,6 +851,9 @@ I.mod = window.appInterpage;
         var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
         var deferRevealPrepared = !!reloadOptions.deferRevealPrepared;
         var throwOnError = !!reloadOptions.throwOnError;
+        var queueHoldToken = typeof reloadOptions.queueHoldToken === 'string'
+            ? reloadOptions.queueHoldToken
+            : '';
         var reloadKey = JSON.stringify({
             lanlan_name: targetLanlanName,
             temporaryConfig: temporaryConfig || null,
@@ -831,7 +862,7 @@ I.mod = window.appInterpage;
             deferRevealPrepared: deferRevealPrepared
         });
 
-        if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
+        if (!queueHoldToken && window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
             console.log('[Model] 忽略短时间内重复的模型重载请求');
             return window._lastModelReloadResult;
         }
@@ -853,7 +884,7 @@ I.mod = window.appInterpage;
         // Concurrency: wait if another reload is in-flight
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
-            if (window._modelReloadKey === reloadKey) {
+            if (!queueHoldToken && window._modelReloadKey === reloadKey) {
                 console.log('[Model] 模型重载已在进行，复用当前重载请求');
                 return window._modelReloadPromise;
             }
@@ -1611,8 +1642,12 @@ I.mod = window.appInterpage;
                 throw error;
             }
         } finally {
-            // Clear in-flight flag
-            window._modelReloadInFlight = false;
+            // A transactional caller may keep the queue reserved after the
+            // runtime load succeeds, so queued reloads cannot observe stale
+            // persistence before the caller commits its matching config.
+            var keepReloadQueueHeld = reloadSucceeded && !!queueHoldToken;
+            window._modelReloadInFlight = keepReloadQueueHeld;
+            window._modelReloadQueueHoldToken = keepReloadQueueHeld ? queueHoldToken : '';
             activeMMDReloadCanvasSessionId = '';
             if (reloadSucceeded) {
                 window._lastModelReloadKey = reloadKey;
@@ -1622,7 +1657,7 @@ I.mod = window.appInterpage;
             } else {
                 window._lastModelReloadResult = false;
             }
-            window._modelReloadKey = '';
+            window._modelReloadKey = keepReloadQueueHeld ? reloadKey : '';
             resolveReload(window._lastModelReloadResult);
 
             // If the model manager is still open, keep the Pet UI hidden even
@@ -1638,21 +1673,7 @@ I.mod = window.appInterpage;
                 I.handleShowMainUI(deferredShowOptions);
             }
 
-            // Process any queued reload request
-            if (window._pendingModelReload) {
-                console.log('[Model] 执行待处理的模型重载请求');
-                var pendingReload = window._pendingModelReload;
-                window._pendingModelReload = null;
-                setTimeout(function () {
-                    I.handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions)
-                        .then(function (result) {
-                            if (typeof pendingReload.resolve === 'function') pendingReload.resolve(result);
-                        })
-                        .catch(function (error) {
-                            if (typeof pendingReload.reject === 'function') pendingReload.reject(error);
-                        });
-                }, 100);
-            }
+            if (!keepReloadQueueHeld) schedulePendingModelReload();
         }
         return window._lastModelReloadResult === true;
     }

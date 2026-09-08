@@ -653,6 +653,118 @@ async def update_catgirl_l2d(name: str, request: Request):
                 'applied_runtime': apply_runtime,
             })
 
+        # Runtime drag/return persistence only owns PNGTuber placement. Keep it
+        # separate from model selection so a delayed position save cannot bind
+        # an old PNGTuber again after the user has selected another model.
+        placement_only_keys = {
+            'pngtuber_placement',
+            'expected_pngtuber_binding',
+            'apply_runtime',
+        }
+        is_pngtuber_placement_only_update = (
+            isinstance(data.get('pngtuber_placement'), dict)
+            and set(data).issubset(placement_only_keys)
+        )
+        if is_pngtuber_placement_only_update:
+            placement = data['pngtuber_placement']
+            allowed_placement_keys = {
+                'scale',
+                'offset_x',
+                'offset_y',
+                'mobile_scale',
+                'mobile_offset_x',
+                'mobile_offset_y',
+                'position_anchor',
+                'mirror',
+            }
+            unexpected_keys = set(placement) - allowed_placement_keys
+            if unexpected_keys:
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'PNGTuber placement 包含不支持的字段',
+                    },
+                    status_code=400,
+                )
+
+            _config_manager = get_config_manager()
+            characters = await _config_manager.aload_characters()
+            catgirls = characters.get('猫娘')
+            if not isinstance(catgirls, dict) or name not in catgirls:
+                return JSONResponse(
+                    content={'success': False, 'error': '猫娘不存在'},
+                    status_code=404,
+                )
+
+            catgirl = catgirls[name]
+            saved_pngtuber = get_reserved(
+                catgirl,
+                'avatar',
+                'pngtuber',
+                default={},
+            )
+            if not isinstance(saved_pngtuber, dict) or not saved_pngtuber:
+                return JSONResponse(content={
+                    'success': True,
+                    'pngtuber_placement_updated': False,
+                    'skipped': 'pngtuber_config_missing',
+                    'applied_runtime': False,
+                })
+
+            expected_binding = str(data.get('expected_pngtuber_binding') or '').strip()
+            current_binding = str(
+                saved_pngtuber.get('layered_metadata')
+                or saved_pngtuber.get('idle_image')
+                or ''
+            ).strip()
+            if not expected_binding or expected_binding != current_binding:
+                return JSONResponse(content={
+                    'success': True,
+                    'pngtuber_placement_updated': False,
+                    'skipped': 'pngtuber_binding_changed',
+                    'applied_runtime': False,
+                })
+
+            number_bounds = {
+                'scale': (1, 0.1, 5),
+                'offset_x': (0, -5000, 5000),
+                'offset_y': (0, -5000, 5000),
+                'mobile_scale': (1, 0.1, 5),
+                'mobile_offset_x': (0, -5000, 5000),
+                'mobile_offset_y': (0, -5000, 5000),
+            }
+            normalized_placement = {}
+            try:
+                for key, (default, min_value, max_value) in number_bounds.items():
+                    if key not in placement:
+                        continue
+                    value = float(placement.get(key, default))
+                    if not math.isfinite(value):
+                        raise ValueError('数值字段必须是有限值')
+                    normalized_placement[key] = max(min_value, min(max_value, value))
+            except (TypeError, ValueError) as exc:
+                return JSONResponse(
+                    content={'success': False, 'error': str(exc)},
+                    status_code=400,
+                )
+            if 'position_anchor' in placement:
+                anchor = str(placement.get('position_anchor') or '').strip().lower()
+                normalized_placement['position_anchor'] = (
+                    anchor if anchor in {'center', 'bottom_right'} else 'bottom_right'
+                )
+            if 'mirror' in placement:
+                normalized_placement['mirror'] = _config_value_is_enabled(placement.get('mirror'))
+
+            updated_pngtuber = dict(saved_pngtuber)
+            updated_pngtuber.update(normalized_placement)
+            set_reserved(catgirl, 'avatar', 'pngtuber', updated_pngtuber)
+            await _config_manager.asave_characters(characters)
+            return JSONResponse(content={
+                'success': True,
+                'pngtuber_placement_updated': True,
+                'applied_runtime': False,
+            })
+
         live2d_model = data.get('live2d')
         vrm_model = data.get('vrm')
         mmd_model = data.get('mmd')

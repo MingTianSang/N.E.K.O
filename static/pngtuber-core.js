@@ -3593,14 +3593,29 @@
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
             const runSave = async () => {
+                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                    return false;
+                }
                 const name = await this.resolveCurrentLanlanName();
                 if (!name) {
                     console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
                     return false;
                 }
+                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                    return false;
+                }
                 const payload = {
-                    model_type: 'pngtuber',
-                    pngtuber: Object.assign({}, this.config),
+                    pngtuber_placement: {
+                        offset_x: this.config.offset_x,
+                        offset_y: this.config.offset_y,
+                        scale: this.config.scale,
+                        mobile_offset_x: this.config.mobile_offset_x,
+                        mobile_offset_y: this.config.mobile_offset_y,
+                        mobile_scale: this.config.mobile_scale,
+                        position_anchor: this.config.position_anchor,
+                        mirror: this.config.mirror
+                    },
+                    expected_pngtuber_binding: this.config.layered_metadata || this.config.idle_image || '',
                     apply_runtime: false
                 };
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(name)}`, {
@@ -3613,6 +3628,7 @@
                     console.warn('[PNGTuber] 保存位置失败:', result.error || response.statusText);
                     return false;
                 }
+                if (result.pngtuber_placement_updated !== true) return false;
                 this._lastSavedPositionKey = saveKey;
                 return true;
             };

@@ -107,6 +107,9 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "this.config.mobile_scale" in runtime_save_block
     assert "this.config.position_anchor" in runtime_save_block
     assert "apply_runtime: false" in runtime_save_block
+    assert "pngtuber_placement:" in runtime_save_block
+    assert "expected_pngtuber_binding:" in runtime_save_block
+    assert "model_type: 'pngtuber'" not in runtime_save_block
 
 
 def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
