@@ -3288,12 +3288,21 @@
       requireCurrentCommandRoute();
       const response = await normalizeTransportResponse(rawResponse);
       requireCurrentCommandRoute();
-      const data = normalizeContractPayload(
-        response.data,
-        contract.response,
-        `${operation} response`,
-        MAX_COMMAND_PAYLOAD_BYTES,
-      );
+      // A failed HTTP or application response does not promise the command's
+      // success schema. Preserve its bounded diagnostic body and status rather
+      // than replacing the real failure with an unrelated invalid_contract.
+      const data = (response.ok && response.data?.ok !== false)
+        ? normalizeContractPayload(
+          response.data,
+          contract.response,
+          `${operation} response`,
+          MAX_COMMAND_PAYLOAD_BYTES,
+        )
+        : normalizeBoundedJson(
+          response.data,
+          `${operation} error response`,
+          MAX_COMMAND_PAYLOAD_BYTES,
+        );
       return Object.freeze({
         ok: response.ok,
         status: response.status,

@@ -297,6 +297,31 @@ async function main() {
     && JSON.stringify(current).includes('secret') === false,
   'character secrets crossed the trusted Avatar boundary');
 
+  for (const inheritedName of [
+    'constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__',
+  ]) {
+    assert(await host.getCharacter(inheritedName) === null,
+      `unknown character ${inheritedName} resolved through Object.prototype`);
+  }
+  Object.defineProperty(characters, '__proto__', {
+    enumerable: true,
+    configurable: true,
+    value: {
+      'Injected Neko': {
+        _reserved: {
+          avatar: {
+            model_type: 'live3d',
+            live3d_sub_type: 'vrm',
+            vrm: { model_path: '/attacker/injected.vrm' },
+          },
+        },
+      },
+    },
+  });
+  assert(await host.getCharacter('Injected Neko') === null,
+    'an enumerable __proto__ character polluted the trusted catalog lookup');
+  delete characters.__proto__;
+
   const descriptors = new Map();
   for (const [name, expectedType] of [
     ['Live Neko', 'live2d'],

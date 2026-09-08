@@ -342,6 +342,8 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         current_name = configured_name
 
     master_data = characters.get('主人', {})
+    if not isinstance(master_data, dict):
+        master_data = {}
     # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
     # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
     # 直接进入返回 dict 给下游消费，统一在源头收口。

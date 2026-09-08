@@ -139,6 +139,39 @@ def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("master_entry", (None, "invalid", []))
+def test_character_info_normalizes_non_mapping_master_data(monkeypatch, master_entry):
+    class FakeConfigManager:
+        def load_characters(self):
+            return {"当前猫娘": "Lan", "主人": master_entry}
+
+        def get_character_data(self):
+            return (
+                "",
+                "Lan",
+                {},
+                {"Lan": {}},
+                {},
+                {"Lan": "You are {LANLAN_NAME}; player is {MASTER_NAME}."},
+                {},
+                {},
+                [],
+            )
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "game_main"
+            return {}
+
+    monkeypatch.setattr(gr_char_info, "get_config_manager", FakeConfigManager)
+    monkeypatch.setattr(gr_char_info, "_resolve_game_prompt_locale", lambda _name: "en")
+
+    info = gr_char_info._get_character_info("Lan")
+
+    assert info["master_name"] == "玩家"
+    assert info["lanlan_prompt"] == "You are Lan; player is 玩家."
+
+
+@pytest.mark.unit
 def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
     manager = SimpleNamespace(
         user_language="en",

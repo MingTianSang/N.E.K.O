@@ -174,7 +174,7 @@
         charactersPromise = json('/api/characters').then((payload) => {
           const raw = payload?.['猫娘'];
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.freeze({});
-          const result = {};
+          const result = Object.create(null);
           for (const [rawName, value] of Object.entries(raw).slice(0, CHARACTER_LIMIT)) {
             const name = cleanString(rawName, NAME_LIMIT);
             if (name && value && typeof value === 'object' && !Array.isArray(value)) result[name] = value;
@@ -234,7 +234,9 @@
       const requested = cleanString(name, NAME_LIMIT) || await currentCharacterName();
       if (!requested) return null;
       const characters = await loadCharacters();
-      const character = characters[requested];
+      const character = Object.prototype.hasOwnProperty.call(characters, requested)
+        ? characters[requested]
+        : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
       if (configured.type === 'live2d') {

@@ -451,6 +451,43 @@ async function main() {
   assert(commandRequests.at(-1).envelope.sessionId === 'sdk-test-session'
     && commandRequests.at(-1).envelope.routeInstanceId === routeInstanceId,
   'game command was not bound to the active runtime identity');
+
+  const successfulCommandTransport = transport.executeGameCommand;
+  transport.executeGameCommand = async () => ({
+    ok: false,
+    status: 422,
+    async json() { return { detail: 'bad request' }; },
+  });
+  const failedHttpCommand = await game.commands.execute('round:input', { text: 'http failure' });
+  assert(failedHttpCommand.ok === false
+    && failedHttpCommand.status === 422
+    && failedHttpCommand.data.detail === 'bad request'
+    && Object.isFrozen(failedHttpCommand.data),
+  'an HTTP command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({
+    ok: true,
+    status: 200,
+    async json() { return { ok: false, reason: 'session_busy' }; },
+  });
+  const failedApplicationCommand = await game.commands.execute(
+    'round:input', { text: 'application failure' },
+  );
+  assert(failedApplicationCommand.ok === true
+    && failedApplicationCommand.status === 200
+    && failedApplicationCommand.data.ok === false
+    && failedApplicationCommand.data.reason === 'session_busy'
+    && Object.isFrozen(failedApplicationCommand.data),
+  'an application command failure was replaced by success-contract validation');
+
+  transport.executeGameCommand = async () => ({ ok: true });
+  let invalidSuccessfulCommandError = null;
+  try { await game.commands.execute('round:input', { text: 'invalid success' }); }
+  catch (error) { invalidSuccessfulCommandError = error; }
+  assert(invalidSuccessfulCommandError?.code === 'invalid_contract',
+    'a successful command response bypassed its declared response contract');
+  transport.executeGameCommand = successfulCommandTransport;
+
   const wideCommandText = 'x'.repeat(300 * 1024);
   const wideCommandResult = await game.commands.execute('round:input', { text: wideCommandText });
   assert(wideCommandResult.data.echo.length === wideCommandText.length,

@@ -35,6 +35,16 @@ def _i18n_script() -> str:
     return I18N_SCRIPT.read_text(encoding="utf-8")
 
 
+def _css_declarations(source: str, selector: str) -> str:
+    selector_pattern = r"\s+".join(re.escape(part) for part in selector.split())
+    match = re.search(
+        rf"(?m)^\s*{selector_pattern}\s*\{{(?P<body>[^}}]*)\}}",
+        source,
+    )
+    assert match is not None, f"missing CSS rule for {selector}"
+    return match.group("body")
+
+
 def _get_nested(payload: dict, dotted_key: str):
     node = payload
     for part in dotted_key.split("."):
@@ -242,6 +252,16 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
 def test_drawing_guess_static_route_contract():
     html = _html()
     script = _script()
+    toolbar_rule = _css_declarations(html, ".dg-toolbar")
+    canvas_wrap_rule = _css_declarations(html, ".dg-canvas-wrap")
+    canvas_stage_rule = _css_declarations(html, ".dg-canvas-stage")
+    size_preview_rule = _css_declarations(html, ".dg-size-preview")
+    size_preview_hidden_rule = _css_declarations(html, ".dg-size-preview[hidden]")
+    model_stage_rule = _css_declarations(html, ".dg-model-stage")
+    model_layers_rule = _css_declarations(
+        html,
+        ".dg-model-renderer, .dg-model-loading, .dg-model-fallback",
+    )
 
     assert "/static/game/games/drawing_guess/drawing-guess.js" in html
     assert "var GAME_TYPE = 'drawing_guess';" in script
@@ -280,11 +300,9 @@ def test_drawing_guess_static_route_contract():
     assert 'id="canvas-placeholder-detail" data-i18n="drawingGuess.layout.canvasWaiting"' in html
     assert ".dg-canvas-actions .dg-button:not(:disabled):hover" in html
     assert ".dg-button-danger:not(:disabled):hover" in html
-    assert ".dg-toolbar {" in html
-    assert "z-index: 18;" in html
-    assert "overflow: visible;" in html
-    assert ".dg-canvas-wrap {" in html
-    assert "z-index: 1;" in html
+    assert "z-index: 18;" in toolbar_rule
+    assert "overflow: visible;" in toolbar_rule
+    assert "z-index: 1;" in canvas_wrap_rule
     assert 'class="dg-tool-popover"' in html
     assert 'class="dg-tool-menu"' in html
     assert 'id="brush-size" class="dg-size"' in html
@@ -309,10 +327,12 @@ def test_drawing_guess_static_route_contract():
     assert 'id="brush-size-preview-ring" class="dg-size-preview-ring" aria-hidden="true"' in html
     assert '<input id="brush-size" class="dg-size" type="range" min="2" max="28" value="7"' in html
     assert '<input id="eraser-size" class="dg-size" type="range" min="4" max="56" value="13"' in html
-    assert "z-index: 18;" in html
-    assert "inset: 0;" in html
-    assert "place-items: center;" in html
-    assert "display: none !important;" in html
+    assert "place-items: center;" in canvas_stage_rule
+    assert "overflow: hidden;" in canvas_stage_rule
+    assert "z-index: 18;" in size_preview_rule
+    assert "inset: 0;" in size_preview_rule
+    assert "pointer-events: none;" in size_preview_rule
+    assert "display: none !important;" in size_preview_hidden_rule
     assert ".dg-size-preview-ring" in html
     assert "width: var(--dg-size-preview-diameter, 20px);" in html
     assert "border: var(--dg-size-preview-border, 2px) solid var(--dg-size-preview-color, var(--dg-accent-strong));" in html
@@ -357,8 +377,10 @@ def test_drawing_guess_static_route_contract():
     assert ".dg-model-loading[hidden]" in html
     assert ".dg-pngtuber-renderer" in html
     assert "dg-model-loading-spin" in html
-    assert "padding: 0;" in html
-    assert "inset: 0;" in html
+    assert "padding: 0;" in model_stage_rule
+    assert "inset: 0;" in model_layers_rule
+    assert "display: grid;" in model_layers_rule
+    assert "place-items: center;" in model_layers_rule
     assert 'id="model-state"' not in html
     assert 'id="model-kind"' not in html
     assert 'class="dg-model-status"' not in html
