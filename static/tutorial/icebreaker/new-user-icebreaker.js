@@ -795,6 +795,7 @@
                 releasedByFreeText: true,
                 updatedAt: Date.now()
             });
+            dispatchIcebreakerEnded('stale_release_expired');
             return { releaseCleanupCompleted: true, day: String(snapshot.day || '') };
         });
     }
@@ -944,21 +945,29 @@
         session.freeTextInFlight = true;
         var fallback = session.dayConfig && session.dayConfig.fallback || {};
         var replyText = getText(session.localeData, fallback.redirectKey);
-        var recoveryReply = replyText ? appendAssistantChatMessage(replyText, {
+        if (!replyText) {
+            return setChoicePrompt(node, session.localeData, 0).then(function () {
+                session.freeTextInFlight = false;
+                clearPendingFreeText(session, pending.requestId);
+                return true;
+            });
+        }
+        return appendAssistantChatMessage(replyText, {
             day: session.day,
             nodeId: nodeId,
             fallback: 'respond_and_keep_options',
             freeText: true,
             requestId: String(pending.requestId || ''),
             messageId: String(pending.recoveryMessageId || '')
-        }, session) : Promise.resolve(null);
-        return recoveryReply.then(function (message) {
-            if (didAppendChatMessage(message)) {
-                applyAssistantTextEmotion(replyText);
-                speakLine(replyText, '');
+        }, session).then(function (message) {
+            if (!didAppendChatMessage(message)) {
+                session.freeTextInFlight = false;
+                return false;
             }
+            applyAssistantTextEmotion(replyText);
+            speakLine(replyText, '');
             if (activeSession !== session) return false;
-            return setChoicePrompt(node, session.localeData, replyText ? computeChoicePromptRevealDelay(replyText) : 0)
+            return setChoicePrompt(node, session.localeData, computeChoicePromptRevealDelay(replyText))
                 .then(function () {
                     session.freeTextInFlight = false;
                     clearPendingFreeText(session, pending.requestId);
@@ -968,10 +977,7 @@
             console.warn('[NewUserIcebreaker] pending free-text recovery failed:', error);
             if (activeSession !== session) return false;
             session.freeTextInFlight = false;
-            return setChoicePrompt(node, session.localeData, 0).then(function () {
-                clearPendingFreeText(session, pending.requestId);
-                return true;
-            });
+            return false;
         });
     }
 

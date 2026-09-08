@@ -6057,6 +6057,76 @@ def test_interrupted_icebreaker_free_text_is_recovered_without_persisting_its_te
 
 
 @pytest.mark.frontend
+def test_interrupted_icebreaker_keeps_pending_free_text_when_recovery_append_fails(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            history.replaceState({}, '', '/chat');
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerPrompts = [];
+            window.reactChatWindowHost = {
+                isMounted: function() { return true; },
+                openWindow: function() {},
+                appendMessage: function() { return false; },
+                setIcebreakerChoicePrompt: function(prompt) { window.__icebreakerPrompts.push(prompt); },
+                clearIcebreakerChoicePrompt: function() {},
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() { return { 'X-CSRF-Token': 'test-token' }; },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: { '1': {
+                    started: true,
+                    completed: false,
+                    lanlanName: 'yui',
+                    sessionId: 'restore-session',
+                    nodeId: 'root',
+                    pendingFreeText: {
+                        sessionId: 'restore-session',
+                        nodeId: 'root',
+                        requestId: 'free-text-request',
+                        messageId: 'free-text-message',
+                        recoveryMessageId: 'free-text-recovery',
+                        messageDelivered: true,
+                    },
+                    updatedAt: Date.now(),
+                } },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({ ok: true, state: {
+                    icebreaker_active: true, session_id: 'restore-session', lanlan_name: 'yui',
+                } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({ days: { '1': { root: 'root', fallback: {
+                    redirectKey: 'fallback.redirect',
+                }, nodes: { root: { options: [{ id: 'A', labelKey: 'root.A' }] } } } } });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({ 'root.A': 'Continue', 'fallback.redirect': 'Please choose below.' });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') return jsonResponse({ ok: true });
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_function("() => window.__icebreakerPrompts.length === 1")
+    pending = mock_page.evaluate(
+        """() => JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1'))
+            .days['1'].pendingFreeText"""
+    )
+    assert pending["requestId"] == "free-text-request"
+    assert pending["recoveryMessageId"] == "free-text-recovery"
+    assert pending["messageDelivered"] is True
+
+
+@pytest.mark.frontend
 def test_interrupted_icebreaker_replays_pending_release_with_snapshot_identity_and_speech(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -6160,6 +6230,10 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
             window.__icebreakerBridgeEvents = [];
             window.__icebreakerSpeakCount = 0;
             window.__icebreakerRouteEnds = [];
+            window.__icebreakerEndedReasons = [];
+            window.addEventListener('neko:new-user-icebreaker-ended', function(event) {
+                window.__icebreakerEndedReasons.push(event.detail.reason);
+            });
             window.nekoElectronIcebreakerBridge = {
                 send: function(message) { window.__icebreakerBridgeEvents.push(message); },
             };
@@ -6225,6 +6299,7 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
             ).length,
             speaks: window.__icebreakerSpeakCount,
             routeEnds: window.__icebreakerRouteEnds,
+            endedReasons: window.__icebreakerEndedReasons,
         })"""
     )
     assert result["messages"] == 0
@@ -6232,6 +6307,7 @@ def test_interrupted_icebreaker_expires_a_stale_pending_release_without_replayin
     assert len(result["routeEnds"]) == 1
     assert result["routeEnds"][0]["session_id"] == "stale-release-session"
     assert result["routeEnds"][0]["reason"] == "icebreaker_stale_release_expired"
+    assert result["endedReasons"] == ["stale_release_expired"]
 
 
 @pytest.mark.frontend

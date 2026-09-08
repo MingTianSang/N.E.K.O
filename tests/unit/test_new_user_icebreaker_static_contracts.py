@@ -1165,6 +1165,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "ensurePendingReleaseSpeech(snapshot, lanlanName)" in release_cleanup
     assert "function completeExpiredPendingRelease(snapshot, lanlanName)" in release_cleanup
     assert "icebreaker_stale_release_expired" in release_cleanup
+    assert "dispatchIcebreakerEnded('stale_release_expired');" in release_cleanup
     assert "releaseSpeechDelivered: true" in runtime
     assert release_cleanup.index("ensurePendingReleaseMessage(snapshot, lanlanName)") < release_cleanup.index(
         "broadcastIcebreakerClearChoicePromptSource"
@@ -1299,6 +1300,11 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "fallbackFreeTextInterpretation" not in pending_free_text_recovery
     assert "setFreeTextDerailStreak" not in pending_free_text_recovery
+    pending_free_text_append = pending_free_text_recovery.split("return appendAssistantChatMessage", 1)[1]
+    assert "if (!didAppendChatMessage(message))" in pending_free_text_append
+    assert pending_free_text_append.index("if (!didAppendChatMessage(message))") < pending_free_text_append.index(
+        "clearPendingFreeText(session, pending.requestId);"
+    )
     assert "pendingFreeText: null" in advance
     assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
     assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
