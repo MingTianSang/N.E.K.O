@@ -718,7 +718,8 @@
             lanlanName: String(lanlanName || entry.lanlanName || ''),
             nodeId: String(entry.nodeId || '')
         };
-        return speakLine(releaseText, String(entry.releaseVoiceKey || ''), releaseSession).then(function () {
+        return speakLine(releaseText, String(entry.releaseVoiceKey || ''), releaseSession).then(function (spoken) {
+            if (!spoken) return false;
             markDay(snapshot.day, {
                 releaseSpeechDelivered: true,
                 updatedAt: Date.now()
@@ -735,20 +736,25 @@
         var routeMatchesRelease = state.icebreaker_active === true
             && String(state.session_id || '') === String(entry.sessionId || '')
             && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
-        return ensurePendingReleaseMessage(snapshot, lanlanName).then(function (messageDelivered) {
+        var releaseSession = {
+            day: String(snapshot.day || ''),
+            sessionId: String(entry.sessionId || ''),
+            lanlanName: String(lanlanName || entry.lanlanName || ''),
+            nodeId: String(entry.nodeId || '')
+        };
+        var activationPromise = routeMatchesRelease
+            ? Promise.resolve(true)
+            : startIcebreakerRouteForRestore(releaseSession);
+        return activationPromise.then(function (started) {
+            if (!started) return false;
+            return ensurePendingReleaseMessage(snapshot, lanlanName);
+        }).then(function (messageDelivered) {
             if (!messageDelivered) return false;
             return ensurePendingReleaseSpeech(snapshot, lanlanName);
         }).then(function (speechDelivered) {
             if (!speechDelivered) return false;
-            if (state.icebreaker_active !== true || routeMatchesRelease) {
-                broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
-            }
-            return routeMatchesRelease
-                ? endIcebreakerRoute({
-                    sessionId: String(entry.sessionId || ''),
-                    lanlanName: String(lanlanName || '')
-                }, 'icebreaker_free_text_release_restore')
-                : true;
+            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
+            return endIcebreakerRoute(releaseSession, 'icebreaker_free_text_release_restore');
         }).then(function (cleaned) {
             if (!cleaned) return false;
             markDay(snapshot.day, {
@@ -931,6 +937,34 @@
         });
     }
 
+    function clearIncompatiblePendingHandoff(session, entry) {
+        if (!session || !entry || entry.terminalPending !== true) return;
+        var choice = String(entry.terminalChoice || '');
+        var nodeId = String(entry.nodeId || session.nodeId || '');
+        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
+        var option = node && Array.isArray(node.options) ? node.options.find(function (candidate) {
+            return String(candidate.id || '') === choice && !!candidate.handoffKey;
+        }) : null;
+        if (option) return;
+        session.choiceWriteMetas = (session.choiceWriteMetas || []).filter(function (meta) {
+            return !(
+                meta && meta.handoff === true
+                && String(meta.nodeId || '') === nodeId
+                && String(meta.choice || '') === choice
+            );
+        });
+        markDay(session.day, {
+            terminalPending: false,
+            terminalChoiceRecorded: false,
+            terminalChoice: '',
+            terminalChoiceSeq: 0,
+            terminalMessageDelivered: false,
+            terminalSpeechDelivered: false,
+            choiceWriteMetas: session.choiceWriteMetas,
+            updatedAt: Date.now()
+        });
+    }
+
     function recoverPendingFreeText(session, pendingFreeText) {
         var pending = pendingFreeText && typeof pendingFreeText === 'object' ? pendingFreeText : {};
         var nodeId = String(pending.nodeId || session.nodeId || '');
@@ -952,20 +986,28 @@
                 return true;
             });
         }
-        return appendAssistantChatMessage(replyText, {
-            day: session.day,
-            nodeId: nodeId,
-            fallback: 'respond_and_keep_options',
-            freeText: true,
-            requestId: String(pending.requestId || ''),
-            messageId: String(pending.recoveryMessageId || '')
-        }, session).then(function (message) {
-            if (!didAppendChatMessage(message)) {
+        var recoveryReply = pending.recoveryMessageDelivered === true
+            ? Promise.resolve({ delivered: true, newlyDelivered: false })
+            : appendAssistantChatMessage(replyText, {
+                day: session.day,
+                nodeId: nodeId,
+                fallback: 'respond_and_keep_options',
+                freeText: true,
+                requestId: String(pending.requestId || ''),
+                messageId: String(pending.recoveryMessageId || ''),
+                pendingFreeTextRecovery: true
+            }, session).then(function (message) {
+                return { delivered: didAppendChatMessage(message), newlyDelivered: true };
+            });
+        return recoveryReply.then(function (result) {
+            if (!result.delivered) {
                 session.freeTextInFlight = false;
                 return false;
             }
-            applyAssistantTextEmotion(replyText);
-            speakLine(replyText, '');
+            if (result.newlyDelivered) {
+                applyAssistantTextEmotion(replyText);
+                speakLine(replyText, '');
+            }
             if (activeSession !== session) return false;
             return setChoicePrompt(node, session.localeData, computeChoicePromptRevealDelay(replyText))
                 .then(function () {
@@ -1058,6 +1100,7 @@
                 : []).map(function (storedMeta) {
                 return Object.assign({}, storedMeta, { sessionId: session.sessionId });
             });
+            clearIncompatiblePendingHandoff(session, snapshot.entry);
             var restoredPendingUserChoice = snapshot.entry.pendingUserChoice
                 && typeof snapshot.entry.pendingUserChoice === 'object'
                 ? Object.assign({}, snapshot.entry.pendingUserChoice, { sessionId: session.sessionId })
@@ -1601,6 +1644,17 @@
         });
     }
 
+    function markPendingFreeTextRecoveryDelivered(session, meta) {
+        if (!session || !meta || meta.pendingFreeTextRecovery !== true) return;
+        var entry = getStoredDayEntry(session.day);
+        var pending = entry && entry.pendingFreeText;
+        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
+        markDay(session.day, {
+            pendingFreeText: Object.assign({}, pending, { recoveryMessageDelivered: true }),
+            updatedAt: Date.now()
+        });
+    }
+
     function appendChatMessage(role, text, meta, session) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
@@ -1627,6 +1681,8 @@
         );
         var isPendingUserChoice = role === 'user' && targetSession && meta && meta.pendingUserChoice === true;
         var isPendingFreeText = role === 'user' && targetSession && meta && meta.pendingFreeText === true;
+        var isPendingFreeTextRecovery = role === 'assistant' && targetSession && meta
+            && meta.pendingFreeTextRecovery === true;
         if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
             // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
             // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
@@ -1637,6 +1693,9 @@
         }
         if (isPendingFreeText && !shouldRenderIcebreakerOnLocalChatHost()) {
             markPendingFreeTextDelivered(targetSession, meta);
+        }
+        if (isPendingFreeTextRecovery && !shouldRenderIcebreakerOnLocalChatHost()) {
+            markPendingFreeTextRecoveryDelivered(targetSession, meta);
         }
         // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
         // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
@@ -1672,6 +1731,9 @@
                 }
                 if (isPendingFreeText) {
                     markPendingFreeTextDelivered(targetSession, meta);
+                }
+                if (isPendingFreeTextRecovery) {
+                    markPendingFreeTextRecoveryDelivered(targetSession, meta);
                 }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
@@ -1731,23 +1793,23 @@
             var controller = typeof AbortController === 'function' ? new AbortController() : null;
             var timeoutId = window.setTimeout(function () {
                 if (controller) controller.abort();
-                finish();
+                finish(false);
             }, TTS_REQUEST_MAX_WAIT_MS);
-            function finish() {
+            function finish(result) {
                 if (settled) return;
                 settled = true;
                 window.clearTimeout(timeoutId);
-                resolve();
+                resolve(result === true);
             }
             try {
                 Promise.resolve(
                     speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined, session)
                 ).then(finish).catch(function () {
-                    finish();
+                    finish(false);
                 });
             } catch (error) {
                 console.warn('[NewUserIcebreaker] project TTS failed:', error);
-                finish();
+                finish(false);
             }
         });
     }
@@ -1757,7 +1819,9 @@
             window.setTimeout(resolve, estimateSpeechDurationMs(text));
         });
         var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);
-        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {
+            return results[1] === true;
+        });
     }
 
     function applyAssistantTextEmotion(text) {
@@ -2118,6 +2182,7 @@
                 terminalChoice: '',
                 terminalChoiceSeq: 0,
                 terminalMessageDelivered: false,
+                terminalSpeechDelivered: false,
                 choiceWriteMetas: [],
                 lanlanName: session.lanlanName,
                 sessionId: sessionId,
@@ -2141,19 +2206,31 @@
     }
 
     function ensurePendingHandoffMessage(session, option, entry) {
-        if (entry && entry.terminalMessageDelivered === true) return Promise.resolve(true);
         var text = getText(session.localeData, option.handoffKey);
-        return appendAssistantChatMessage(text, {
-            day: session.day,
-            nodeId: session.nodeId,
-            voiceKey: option.handoffVoiceKey || '',
-            handoff: true
-        }, session).then(function (message) {
-            if (!didAppendChatMessage(message)) return false;
-            clearChoicePrompt();
-            applyAssistantTextEmotion(text);
-            speakLine(text, option.handoffVoiceKey || '');
-            return true;
+        var messagePromise = entry && entry.terminalMessageDelivered === true
+            ? Promise.resolve(true)
+            : appendAssistantChatMessage(text, {
+                day: session.day,
+                nodeId: session.nodeId,
+                voiceKey: option.handoffVoiceKey || '',
+                handoff: true
+            }, session).then(function (message) {
+                if (!didAppendChatMessage(message)) return false;
+                clearChoicePrompt();
+                applyAssistantTextEmotion(text);
+                return true;
+            });
+        return messagePromise.then(function (messageDelivered) {
+            if (!messageDelivered) return false;
+            if (!text || (entry && entry.terminalSpeechDelivered === true)) return true;
+            return speakLine(text, option.handoffVoiceKey || '', session).then(function (spoken) {
+                if (!spoken) return false;
+                markDay(session.day, {
+                    terminalSpeechDelivered: true,
+                    updatedAt: Date.now()
+                });
+                return true;
+            });
         });
     }
 
@@ -2169,14 +2246,14 @@
         if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);
         return ensurePendingHandoffMessage(session, option, entry).then(function (delivered) {
             if (!delivered) return false;
-            if (entry.terminalChoiceRecorded === true) {
+            if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length)) {
                 return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
             }
 
             // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
             // 已成功项会被去重，失败项得到补写；已经广播的 handoff 台词由持久化标记去重。
             var retryMetas = (session.choiceWriteMetas || []).slice();
-            if (!retryMetas.some(function (meta) {
+            if (entry.terminalChoiceRecorded !== true && !retryMetas.some(function (meta) {
                 return meta && meta.handoff === true && String(meta.choice || '') === String(choice || '');
             })) {
                 retryMetas.push({
@@ -2190,8 +2267,13 @@
                     seq: Number(entry.terminalChoiceSeq) || (session.choiceSeq = (session.choiceSeq || 0) + 1)
                 });
             }
+            session.choiceWriteMetas = retryMetas.slice();
+            markDay(session.day, {
+                choiceWriteMetas: session.choiceWriteMetas,
+                updatedAt: Date.now()
+            });
             var retryWrites = retryMetas.map(function (meta) {
-                return recordChoiceToPool(meta);
+                return trackPendingChoiceWrite(session, meta, recordChoiceToPool(meta));
             });
             return waitForTerminalChoiceWrite(Promise.all(retryWrites)).then(function (writeResults) {
                 if (!didAllChoiceWritesSucceed(writeResults)) return false;
@@ -2236,6 +2318,7 @@
             terminalChoice: String(option.id || ''),
             terminalChoiceSeq: Number(session.choiceSeq) || 0,
             terminalMessageDelivered: false,
+            terminalSpeechDelivered: false,
             lanlanName: session.lanlanName,
             sessionId: sessionId,
             nodeId: nodeId,
@@ -2252,7 +2335,14 @@
             handoffDelivered = true;
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
-            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
+            handoffSpeechPromise = text ? speakLine(text, option.handoffVoiceKey || '', session).then(function (spoken) {
+                if (!spoken) return false;
+                markDay(day, {
+                    terminalSpeechDelivered: true,
+                    updatedAt: Date.now()
+                });
+                return true;
+            }) : Promise.resolve(true);
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
@@ -2266,14 +2356,14 @@
                         terminalChoiceRecorded: true,
                         updatedAt: Date.now()
                     });
-                    return completeHandoffRoute(session, day, nodeId, sessionId);
+                    return Promise.resolve(handoffSpeechPromise).then(function (spoken) {
+                        return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;
+                    });
                 });
             });
         }).then(function (completed) {
             if (!handoffDelivered) return false;
-            return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
-                return completed;
-            });
+            return completed;
         }).then(function (completed) {
             if (!completed) return false;
             return finishActiveHandoff(session);
@@ -2548,7 +2638,8 @@
                 clearFreeTextRuntimeStateForSession(session);
                 return Promise.resolve().then(function () {
                     if (!releaseText) return null;
-                    return speakLine(releaseText, releaseVoiceKey).then(function () {
+                    return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {
+                        if (!spoken) return;
                         markDay(day, {
                             releaseSpeechDelivered: true,
                             updatedAt: Date.now()
@@ -2648,7 +2739,8 @@
                 requestId: requestId,
                 messageId: userMessageId,
                 recoveryMessageId: recoveryMessageId,
-                messageDelivered: false
+                messageDelivered: false,
+                recoveryMessageDelivered: false
             },
             updatedAt: Date.now()
         });
@@ -2835,6 +2927,7 @@
                     terminalChoice: '',
                     terminalChoiceSeq: 0,
                     terminalMessageDelivered: false,
+                    terminalSpeechDelivered: false,
                     releasePending: false,
                     releaseSpeechDelivered: false,
                     releasedByFreeText: false,

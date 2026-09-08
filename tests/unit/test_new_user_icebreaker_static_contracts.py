@@ -756,14 +756,15 @@ def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
     assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);" in speak_line_block
-    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in speak_line_block
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {" in speak_line_block
+    assert "return results[1] === true;" in speak_line_block
     assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
     assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
         "var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);"
     )
     assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);") < speak_line_block.index(
-        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});"
+        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {"
     )
 
 
@@ -837,26 +838,26 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "var session = activeSession;" in handoff_block
     assert "function speakViaProjectTts(text, voiceKey, signal, session)" in runtime
     assert "function waitForTtsRequest(text, voiceKey, session)" in runtime
-    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
-    assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
+    assert "handoffSpeechPromise = text ? speakLine(text, option.handoffVoiceKey || '', session)" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "return completeHandoffRoute(session, day, nodeId, sessionId);" in handoff_block
+    assert "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;" in handoff_block
     route_completion = runtime.split("function completeHandoffRoute", 1)[1].split(
         "function finishActiveHandoff",
         1,
     )[0]
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {" in route_completion
     assert "if (!routeEnded) return false;" in route_completion
-    assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
+    assert "return Promise.resolve(handoffSpeechPromise).then(function (spoken) {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return completeHandoffRoute(session, day, nodeId, sessionId);"
+        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
     )
-    assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
-        "return completeHandoffRoute(session, day, nodeId, sessionId);"
+    assert handoff_block.index("handoffSpeechPromise = text ? speakLine") < handoff_block.index(
+        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "return finishActiveHandoff(session);"
@@ -864,7 +865,7 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("terminalPending: true") < handoff_block.index(
         "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
     ) < handoff_block.index("terminalChoiceRecorded: true") < handoff_block.index(
-        "return completeHandoffRoute(session, day, nodeId, sessionId);"
+        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
     )
     assert "completed: true" in route_completion
     assert "return finishActiveHandoff(session);" in handoff_block
@@ -873,7 +874,7 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
         1,
     )[1].split("function getStoredDayEntry", 1)[0]
     assert handoff_block.index(
-        "return completeHandoffRoute(session, day, nodeId, sessionId);"
+        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
     ) < handoff_block.index(
         "return finishActiveHandoff(session);"
     )
@@ -1156,13 +1157,17 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "routeMatchesRelease" in release_cleanup
     assert "endIcebreakerRoute({" in release_cleanup
     assert "releasePending: false" in release_cleanup
-    assert "if (state.icebreaker_active !== true || routeMatchesRelease)" in release_cleanup
-    assert release_cleanup.index("if (state.icebreaker_active !== true || routeMatchesRelease)") < release_cleanup.index(
-        "broadcastIcebreakerClearChoicePromptSource"
-    )
+    assert "var activationPromise = routeMatchesRelease" in release_cleanup
+    assert ": startIcebreakerRouteForRestore(releaseSession);" in release_cleanup
+    assert "return endIcebreakerRoute(releaseSession, 'icebreaker_free_text_release_restore');" in release_cleanup
     assert "releaseCleanupCompleted: true" in release_cleanup
     assert "ensurePendingReleaseMessage(snapshot, lanlanName)" in release_cleanup
     assert "ensurePendingReleaseSpeech(snapshot, lanlanName)" in release_cleanup
+    release_speech = runtime.split("function ensurePendingReleaseSpeech", 1)[1].split(
+        "function completePendingRelease",
+        1,
+    )[0]
+    assert "if (!spoken) return false;" in release_speech
     assert "function completeExpiredPendingRelease(snapshot, lanlanName)" in release_cleanup
     assert "icebreaker_stale_release_expired" in release_cleanup
     assert "dispatchIcebreakerEnded('stale_release_expired');" in release_cleanup
@@ -1229,7 +1234,7 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
         "return appendAssistantChatMessage(text"
     ) < handoff.index(
         "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
-    ) < handoff.index("return completeHandoffRoute(session, day, nodeId, sessionId);")
+    ) < handoff.index("return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;")
     assert "terminalPending: false" in runtime
     assert "var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;" in runtime
     terminal_wait = runtime.split("function waitForTerminalChoiceWrite", 1)[1].split(
@@ -1249,6 +1254,8 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "function ensurePendingHandoffMessage" in runtime
     assert "patch.terminalMessageDelivered = true" in runtime
     assert "terminalMessageDelivered: false" in runtime
+    assert "terminalSpeechDelivered: false" in runtime
+    assert "terminalSpeechDelivered: true" in runtime
     append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
         "function speakViaProjectTts",
         1,
@@ -1260,14 +1267,19 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert append_message.index("if (!result) return result;") < append_message.index(
         "if (isPendingAssistantMessage)"
     )
-    assert "if (entry.terminalChoiceRecorded === true)" in runtime
+    assert "if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length))" in runtime
     retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
         "function completeWithHandoff",
         1,
     )[0]
     assert retry_handoff.index(
         "if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);"
-    ) < retry_handoff.index("if (entry.terminalChoiceRecorded === true)")
+    ) < retry_handoff.index(
+        "if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length))"
+    )
+    assert "return trackPendingChoiceWrite(session, meta, recordChoiceToPool(meta));" in retry_handoff
+    assert "function clearIncompatiblePendingHandoff(session, entry)" in runtime
+    assert "clearIncompatiblePendingHandoff(session, snapshot.entry);" in runtime
     advance = runtime.split("function advanceWithChoice", 1)[1].split(
         "function handleChoice",
         1,
@@ -1300,9 +1312,12 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     )[0]
     assert "fallbackFreeTextInterpretation" not in pending_free_text_recovery
     assert "setFreeTextDerailStreak" not in pending_free_text_recovery
-    pending_free_text_append = pending_free_text_recovery.split("return appendAssistantChatMessage", 1)[1]
-    assert "if (!didAppendChatMessage(message))" in pending_free_text_append
-    assert pending_free_text_append.index("if (!didAppendChatMessage(message))") < pending_free_text_append.index(
+    assert "pending.recoveryMessageDelivered === true" in pending_free_text_recovery
+    assert "pendingFreeTextRecovery: true" in pending_free_text_recovery
+    assert "function markPendingFreeTextRecoveryDelivered(session, meta)" in runtime
+    pending_free_text_append = pending_free_text_recovery.split("appendAssistantChatMessage", 1)[1]
+    assert "if (!result.delivered)" in pending_free_text_append
+    assert pending_free_text_append.index("if (!result.delivered)") < pending_free_text_append.index(
         "clearPendingFreeText(session, pending.requestId);"
     )
     assert "pendingFreeText: null" in advance
@@ -1637,13 +1652,13 @@ def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append(
     assert "setChoicePrompt(currentNode, localeData);" in runtime
     assert "dispatchIcebreakerEnded('free_text_release');" in runtime
     assert "return Promise.resolve().then(function () {" in runtime
-    assert "return speakLine(releaseText, releaseVoiceKey).then(function () {" in runtime
+    assert "return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {" in runtime
     assert "}).catch(function () {}).then(function () {" in runtime
     assert "didAppendRelease" in runtime
     assert "var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {" in runtime
     assert "}) : Promise.resolve(activeSession === session);" in runtime
     assert "if (!didAppendRelease || activeSession !== session) return false;" in runtime
-    assert runtime.index("return speakLine(releaseText, releaseVoiceKey).then(function () {") < runtime.index(
+    assert runtime.index("return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {") < runtime.index(
         "dispatchIcebreakerEnded('free_text_release');"
     )
     assert "Number(session.offTopicCount || 0) >= 1" not in free_text_block
