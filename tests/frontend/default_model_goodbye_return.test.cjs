@@ -598,7 +598,7 @@ test('default-model persistence keeps queued reloads behind the validated transa
   const handler = modelReloadSource.slice(handlerStart, handlerEnd);
 
   assert.match(reset, /queueHoldToken: reloadQueueHoldToken/);
-  assert.match(reset, /defaultPersisted = true;\s*if \(reloadQueueHeld\) \{\s*I\.releaseModelReloadQueueHold/);
+  assert.match(reset, /defaultPersisted = true;[\s\S]*?if \(reloadQueueHeld\) \{\s*I\.releaseModelReloadQueueHold/);
   assert.match(modelReloadSource, /I\.releaseModelReloadQueueHold = function releaseModelReloadQueueHold/);
   assert.match(handler, /var keepReloadQueueHeld = reloadSucceeded && !!queueHoldToken;/);
   assert.match(handler, /if \(!keepReloadQueueHeld\) schedulePendingModelReload\(\);/);
@@ -616,7 +616,9 @@ test('default-model persistence timeout releases the reload queue and reconciles
     .map((call) => call.type);
 
   assert.equal(result.success, true);
-  assert.deepEqual(operationTypes, ['return', 'reload', 'put', 'release', 'status']);
+  assert.deepEqual(operationTypes, ['return', 'reload', 'put', 'release', 'status', 'reload']);
+  const reloads = harness.calls.filter((call) => call.type === 'reload');
+  assert.equal(reloads[1].options.bypassRecentDedup, true);
   assert.equal(harness.calls.find((call) => call.type === 'put').options.signal.aborted, true);
 });
 
@@ -647,9 +649,9 @@ test('lost persistence response reconciles the server result before rollback', a
   assert.equal(result.success, true);
   assert.deepEqual(
     harness.calls.filter((call) => call.type !== 'toast').map((call) => call.type),
-    ['return', 'reload', 'put', 'release', 'status'],
+    ['return', 'reload', 'put', 'release', 'status', 'reload'],
   );
-  assert.equal(harness.calls.filter((call) => call.type === 'reload').length, 1);
+  assert.equal(harness.calls.filter((call) => call.type === 'reload').length, 2);
 });
 
 test('rollback reload bypasses the one-second completed-request deduplication path', () => {

@@ -360,6 +360,7 @@
         var defaultReloadAttempted = false;
         var defaultPersisted = false;
         var persistenceOutcomeUnknown = false;
+        var reloadQueueReleasedBeforePersistenceResult = false;
         var reloadQueueHoldToken = 'reset-default-model-' + Date.now() + '-' + Math.random();
         var reloadQueueHeld = false;
         var reloadModel = typeof I.handleModelReload === 'function'
@@ -440,7 +441,8 @@
             }
             async function waitForPersistenceResult() {
                 var statusDeadline = Date.now() + DEFAULT_MODEL_PERSIST_TIMEOUT_MS;
-                while (Date.now() < statusDeadline) {
+                var observedRunningOperation = false;
+                while (observedRunningOperation || Date.now() < statusDeadline) {
                     var statusAbortController = new window.AbortController();
                     var statusTimeoutId = window.setTimeout(function () {
                         statusAbortController.abort();
@@ -457,6 +459,13 @@
                             statusData.state === 'succeeded' || statusData.state === 'failed'
                         )) {
                             return statusData;
+                        }
+                        if (statusResponse.ok && statusData && statusData.state === 'running') {
+                            // Once the server has acknowledged the operation,
+                            // keep observing it until the real save reaches a
+                            // terminal state. The reload queue is released
+                            // separately, so this cannot block model changes.
+                            observedRunningOperation = true;
                         }
                     } catch (_) {
                         // The original PUT may still be reaching the server, or
@@ -501,6 +510,7 @@
                 if (reloadQueueHeld && typeof I.releaseModelReloadQueueHold === 'function') {
                     I.releaseModelReloadQueueHold(reloadQueueHoldToken);
                     reloadQueueHeld = false;
+                    reloadQueueReleasedBeforePersistenceResult = true;
                 }
                 var persistenceResult = await waitForPersistenceResult();
                 if (persistenceResult.state === 'succeeded') {
@@ -527,6 +537,17 @@
                 throw new Error('HTTP ' + putResp.status + (errorDetail ? (': ' + errorDetail) : ''));
             }
             defaultPersisted = true;
+            if (reloadQueueReleasedBeforePersistenceResult) {
+                // A queued reload may have fetched the old page_config while
+                // the backend save was still running. Re-fetch after the
+                // terminal result; handleModelReload queues this behind any
+                // active reload, so the last rendered model is authoritative.
+                await reloadModel(lanlanName, {
+                    suppressToast: true,
+                    throwOnError: true,
+                    bypassRecentDedup: true
+                });
+            }
             if (reloadQueueHeld) {
                 I.releaseModelReloadQueueHold(reloadQueueHoldToken);
                 reloadQueueHeld = false;
