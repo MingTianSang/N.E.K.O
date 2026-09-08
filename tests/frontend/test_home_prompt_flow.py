@@ -5621,6 +5621,7 @@ def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(m
         script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
     )
 
+    assert mock_page.evaluate("() => window.NekoNewUserIcebreakerState.isPeriodActive()") is True
     assert mock_page.evaluate("() => window.__icebreakerRouteStateUrls") == []
     mock_page.evaluate("() => window.__resolveIcebreakerPageConfig()")
     mock_page.wait_for_timeout(600)
@@ -5869,6 +5870,8 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             window.__NEKO_MULTI_WINDOW__ = true;
             window.__terminalChoiceAttempts = 0;
             window.__routeEndCount = 0;
+            window.__routeStateCount = 0;
+            window.__routeActive = true;
             window.__icebreakerBridgeEvents = [];
             window.nekoElectronIcebreakerBridge = {
                 send: (message) => window.__icebreakerBridgeEvents.push(message),
@@ -5926,13 +5929,15 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             }
             if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
                 window.__routeEndCount += 1;
-                return jsonResponse({ ok: window.__routeEndCount > 1 });
+                if (window.__routeEndCount > 1) window.__routeActive = false;
+                return jsonResponse({ ok: false });
             }
             if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                window.__routeStateCount += 1;
                 return jsonResponse({
                     ok: true,
                     state: {
-                        icebreaker_active: true,
+                        icebreaker_active: window.__routeActive,
                         session_id: window.__routeSessionId,
                     },
                 });
@@ -5977,6 +5982,7 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
     completed = mock_page.evaluate(
         """() => ({
             routeEndCount: window.__routeEndCount,
+            routeStateCount: window.__routeStateCount,
             messages: window.__icebreakerBridgeEvents
                 .filter((event) => event.action === 'icebreaker_append_chat_message')
                 .map((event) => event.message.role),
@@ -5984,6 +5990,7 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
     )
     assert completed == {
         "routeEndCount": 2,
+        "routeStateCount": 2,
         "messages": ["assistant", "user", "assistant"],
     }
 

@@ -76,7 +76,7 @@
     }
 
     function isPeriodActive() {
-        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay || restoreSessionPromise);
     }
 
     function fetchJson(url) {
@@ -232,22 +232,27 @@
         });
     }
 
+    function reconcileIcebreakerRouteEnd(session, reason, canRetry) {
+        return loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session)).then(function (result) {
+            var state = result && result.state;
+            var stillActive = !!(
+                result
+                && result.loaded
+                && state
+                && state.icebreaker_active === true
+                && String(state.session_id || '') === String(session.sessionId || '')
+            );
+            if (result && result.loaded && !stillActive) return true;
+            if (!stillActive || !canRetry) return false;
+            return endIcebreakerRoute(session, reason).then(function (ended) {
+                return ended || reconcileIcebreakerRouteEnd(session, reason, false);
+            });
+        });
+    }
+
     function endIcebreakerRouteForCompletion(session, reason) {
         return endIcebreakerRoute(session, reason).then(function (ended) {
-            if (ended) return true;
-            return loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session)).then(function (result) {
-                var state = result && result.state;
-                var stillActive = !!(
-                    result
-                    && result.loaded
-                    && state
-                    && state.icebreaker_active === true
-                    && String(state.session_id || '') === String(session.sessionId || '')
-                );
-                if (result && result.loaded && !stillActive) return true;
-                if (stillActive) return endIcebreakerRoute(session, reason);
-                return false;
-            });
+            return ended || reconcileIcebreakerRouteEnd(session, reason, true);
         });
     }
 
@@ -632,6 +637,7 @@
                 if (!started) return false;
                 broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
                 activeSession = session;
+                clearPendingGuideEndStateDay(String(session.day || ''));
                 markDay(session.day, {
                     started: true,
                     completed: false,

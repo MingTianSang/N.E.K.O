@@ -442,6 +442,8 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
+    assert "function reconcileIcebreakerRouteEnd(session, reason, canRetry)" in runtime
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, false)" in runtime
     assert "postgameProactive: { enabled: false }" in runtime
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
@@ -868,13 +870,15 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
     )
-    completion_end = runtime.split("function endIcebreakerRouteForCompletion(session, reason)", 1)[1].split(
+    completion_end = runtime.split("function reconcileIcebreakerRouteEnd(session, reason, canRetry)", 1)[1].split(
         "function endIcebreakerRouteOnPageExit",
         1,
     )[0]
     assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in completion_end
     assert "if (result && result.loaded && !stillActive) return true;" in completion_end
-    assert "if (stillActive) return endIcebreakerRoute(session, reason);" in completion_end
+    assert "if (!stillActive || !canRetry) return false;" in completion_end
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, false)" in completion_end
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, true)" in completion_end
 
 
 def test_icebreaker_unload_ends_active_route_without_completing_day():
@@ -1059,6 +1063,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         "broadcastIcebreakerClearChoicePromptSource"
     )
     assert "activeSession = session;" in restore
+    assert "clearPendingGuideEndStateDay(String(session.day || ''));" in restore
     assert "var presentationPromise" in restore
     assert "var presentationPromise = setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
@@ -1585,6 +1590,8 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
             storage_body = store_body + entry_body
         else:
             assert "getActiveSession()" in period_body
+            assert "window.NekoNewUserIcebreakerState" in period_body
+            assert "state.isPeriodActive()" in period_body
             assert "isNewUserIcebreakerEntryBlocking(entry)" in period_body
             entry_body = re.search(
                 r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
@@ -1623,7 +1630,10 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     assert "function isTutorialReleaseGreetingReason(reason)" not in app_websocket
     assert "function markPendingStartFromEndState(endState)" in runtime
     assert "pendingGuideEndStateDay" in runtime
-    assert "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);" in runtime
+    assert (
+        "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay || restoreSessionPromise);"
+        in runtime
+    )
     assert "window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended'" in runtime
 
 
