@@ -5907,6 +5907,7 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
                 });
             }
             if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__routeSessionId = body.session_id;
                 return jsonResponse({ ok: true });
             }
             if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
@@ -5925,7 +5926,16 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             }
             if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
                 window.__routeEndCount += 1;
-                return jsonResponse({ ok: true });
+                return jsonResponse({ ok: window.__routeEndCount > 1 });
+            }
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        icebreaker_active: true,
+                        session_id: window.__routeSessionId,
+                    },
+                });
             }
             if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
                 return jsonResponse({ ok: true });
@@ -5945,21 +5955,9 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
         session_id,
     )
     mock_page.wait_for_function(
-        """() => window.__terminalChoiceAttempts === 1
-            && window.__icebreakerBridgeEvents.filter(
-                (event) => event.action === 'icebreaker_set_choice_prompt'
-            ).length >= 2"""
+        """() => window.__terminalChoiceAttempts === 2
+            && typeof window.__resolveTerminalChoice === 'function'"""
     )
-    assert mock_page.evaluate("() => window.__routeEndCount") == 0
-
-    mock_page.evaluate(
-        """(sessionId) => window.dispatchEvent(new CustomEvent(
-            'neko:icebreaker-choice-selected',
-            { detail: { sessionId, choice: 'A', option: { label: 'Answer' } } }
-        ))""",
-        session_id,
-    )
-    mock_page.wait_for_function("() => typeof window.__resolveTerminalChoice === 'function'")
 
     pending = mock_page.evaluate(
         """() => ({
@@ -5976,7 +5974,18 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             localStorage.getItem('neko.new_user_icebreaker.v1')
         ).days['1'].completed === true"""
     )
-    assert mock_page.evaluate("() => window.__routeEndCount") == 1
+    completed = mock_page.evaluate(
+        """() => ({
+            routeEndCount: window.__routeEndCount,
+            messages: window.__icebreakerBridgeEvents
+                .filter((event) => event.action === 'icebreaker_append_chat_message')
+                .map((event) => event.message.role),
+        })"""
+    )
+    assert completed == {
+        "routeEndCount": 2,
+        "messages": ["assistant", "user", "assistant"],
+    }
 
 
 @pytest.mark.frontend

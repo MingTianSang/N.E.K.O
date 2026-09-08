@@ -780,6 +780,7 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
     assert "return Promise.resolve(choiceWritePromise).then(function (recorded)" in advance_choice_block
     assert "if (recorded !== true || activeSession !== session) return false;" in advance_choice_block
+    assert "return recordChoiceToPool(choicePayload);" in advance_choice_block
     assert "if (option.next) return deliverNode(option.next);" in advance_choice_block
     assert "return completeWithHandoff(option);" in advance_choice_block
     assert "return false;" in advance_choice_block
@@ -843,17 +844,17 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert advance_choice_block.index("recorded !== true") < advance_choice_block.index(
         "completeWithHandoff(option)"
     )
-    assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
+    assert "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');"
     )
-    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+    assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
         "completed: true"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
@@ -864,9 +865,16 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     )
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
-    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+    assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
     )
+    completion_end = runtime.split("function endIcebreakerRouteForCompletion(session, reason)", 1)[1].split(
+        "function endIcebreakerRouteOnPageExit",
+        1,
+    )[0]
+    assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in completion_end
+    assert "if (result && result.loaded && !stillActive) return true;" in completion_end
+    assert "if (stillActive) return endIcebreakerRoute(session, reason);" in completion_end
 
 
 def test_icebreaker_unload_ends_active_route_without_completing_day():
@@ -1024,14 +1032,16 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         "window.addEventListener('neko:avatar-floating-guide-complete'",
         1,
     )[0]
-    restore = runtime.split("function restoreInterruptedSession()", 1)[1].split(
+    restore = runtime.split("function restoreInterruptedSession(startupBarrier)", 1)[1].split(
         "function makeIcebreakerApiError",
         1,
     )[0]
 
     assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
-    assert "if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();" in bootstrap
-    assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
+    assert "if (!isTutorialBlockingIcebreaker()) return true;" in bootstrap
+    assert "return restoreInterruptedSession(tutorialIdlePromise);" in bootstrap
+    assert "restoreSessionPromise = Promise.resolve(startupBarrier)" in restore
+    assert "return waitForStorageStartupDecisionForRestore();" in restore
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
     assert "!hasIncompleteStoredSession(configuredLanlanName)" in restore
     assert "loadIcebreakerRouteStateForRestore(configuredLanlanName)" in restore
@@ -1045,6 +1055,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "icebreaker_restore_missing_locale" in restore
     assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
     assert "return startIcebreakerRouteForRestore(session).then(function (started)" in restore
+    assert restore.index("if (!started) return false;") < restore.index(
+        "broadcastIcebreakerClearChoicePromptSource"
+    )
     assert "activeSession = session;" in restore
     assert "var presentationPromise" in restore
     assert "var presentationPromise = setChoicePrompt(" in restore
