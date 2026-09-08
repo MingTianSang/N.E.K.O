@@ -27,7 +27,7 @@
   const MAX_COMMAND_PAYLOAD_BYTES = 2 * 1024 * 1024;
   const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
   const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
-  const MAX_CONTRACT_STRING_CHARS = 1800000;
+  const MAX_COMMAND_CONTRACT_STRING_CHARS = 1800000;
   const MAX_CONTEXT_SCOPES = 16;
   const MAX_CONTEXT_PENDING_REQUESTS = 2;
   const MAX_DIALOGUE_PENDING_REQUESTS = 4;
@@ -36,7 +36,6 @@
   const MAX_AUTHOR_PROMPT_TOTAL_CHARS = 64000;
   const MAX_MEMORY_PENDING_REQUESTS = 2;
   const MAX_STORAGE_PENDING_REQUESTS = 4;
-  const MAX_WINDOW_CONTROL_PENDING_REQUESTS = 1;
   const MAX_STORAGE_VALUE_BYTES = 64 * 1024;
   const MAX_LEADERBOARD_BOARDS = 16;
   const MAX_LEADERBOARD_PENDING_REQUESTS = 4;
@@ -72,8 +71,6 @@
   // cut-scene or a whole spoken line. Only a handler that has been stuck for a
   // full minute is abandoned, and the next output is still delivered.
   const MAX_RUNTIME_HANDLER_MS = 60000;
-  const HOST_LOCALES = Object.freeze(['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']);
-  const MAX_HOST_LOCALE_LANGUAGE_CHARS = 16;
   const MIN_RUNTIME_INTERVAL_MS = 250;
   const MAX_RUNTIME_INTERVAL_MS = 60000;
   const DEFAULT_HEARTBEAT_INTERVAL_MS = 2500;
@@ -134,7 +131,6 @@
     'speech-output',
     'context-read',
     'memory',
-    'window-control',
     'storage',
     'leaderboard-local',
     'leaderboard-server',
@@ -284,7 +280,8 @@
     return value;
   }
 
-  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0) {
+  function normalizeContractSchema(schemaInput, fieldName, state, depth = 0, options = {}) {
+    const maxStringChars = options.maxStringChars || 4096;
     state.nodes += 1;
     if (state.nodes > MAX_CONTRACT_SCHEMA_NODES || depth > 12) {
       fail('invalid_manifest', `${fieldName} exceeds the contract schema complexity limit`, {
@@ -297,9 +294,9 @@
       // `enum` form carries no such bound, so converting first dropped it and a
       // longer string connected against a schema that rejects it.
       for (const item of input) {
-        if (typeof item === 'string' && [...item].length > 4096) {
+        if (typeof item === 'string' && [...item].length > maxStringChars) {
           fail('invalid_manifest', `${fieldName} enum shorthand value exceeds its length limit`, {
-            limit: 4096,
+            limit: maxStringChars,
           });
         }
       }
@@ -378,19 +375,13 @@
       }
     }
     if (type === 'string') {
-      schema.minLength = contractInteger(
-        input.minLength,
-        `${fieldName}.minLength`,
-        0,
-        4096,
-        0,
-      );
+      schema.minLength = contractInteger(input.minLength, `${fieldName}.minLength`, 0, maxStringChars, 0);
       schema.maxLength = contractInteger(
         input.maxLength,
         `${fieldName}.maxLength`,
         0,
-        MAX_CONTRACT_STRING_CHARS,
-        4096,
+        maxStringChars,
+        maxStringChars,
       );
       if (schema.minLength > schema.maxLength) {
         fail('invalid_manifest', `${fieldName}.minLength must not exceed maxLength`);
@@ -403,7 +394,7 @@
         fail('invalid_manifest', `${fieldName}.minItems must not exceed maxItems`);
       }
       if (!input.items) fail('invalid_manifest', `${fieldName}.items is required for arrays`);
-      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1);
+      schema.items = normalizeContractSchema(input.items, `${fieldName}.items`, state, depth + 1, options);
     }
     if (type === 'object') {
       // Same rule as manifest.contracts: only ABSENT defaults. The schema
@@ -433,6 +424,7 @@
           `${fieldName}.properties.${name}`,
           state,
           depth + 1,
+          options,
         );
       }
       const requiredInput = input.required === undefined ? [] : input.required;
@@ -516,16 +508,21 @@
           if (declaration.request === undefined || declaration.response === undefined) {
             fail('invalid_manifest', `manifest.contracts.commands.${name} requires request and response schemas`);
           }
+          const commandSchemaOptions = { maxStringChars: MAX_COMMAND_CONTRACT_STRING_CHARS };
           normalized[name] = Object.freeze({
             request: normalizeContractSchema(
               declaration.request,
               `manifest.contracts.commands.${name}.request`,
               state,
+              0,
+              commandSchemaOptions,
             ),
             response: normalizeContractSchema(
               declaration.response,
               `manifest.contracts.commands.${name}.response`,
               state,
+              0,
+              commandSchemaOptions,
             ),
           });
         } else {
@@ -1279,30 +1276,6 @@
     return Object.freeze({ mode, gameId, version, publisherId });
   }
 
-  function normalizeHostLocaleSnapshot(value, options = {}) {
-    if (value === undefined && options.fallbackIfMissing === true) {
-      return Object.freeze({ language: 'en', revision: 0 });
-    }
-    const errorCode = String(options.errorCode || 'invalid_handshake');
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      fail(errorCode, 'The host locale snapshot is invalid');
-    }
-    const language = value.language;
-    const revision = value.revision;
-    if (
-      typeof language !== 'string'
-      || language.length < 1
-      || language.length > MAX_HOST_LOCALE_LANGUAGE_CHARS
-      || !HOST_LOCALES.includes(language)
-    ) {
-      fail(errorCode, 'The host locale language is invalid');
-    }
-    if (!Number.isSafeInteger(revision) || revision < 0) {
-      fail(errorCode, 'The host locale revision is invalid');
-    }
-    return Object.freeze({ language, revision });
-  }
-
   function normalizeHandshakeResponse(value, manifest) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       fail('invalid_handshake', 'The host returned an invalid connection handshake');
@@ -1336,7 +1309,6 @@
       hostVersion,
       registration: normalizeHandshakeRegistration(value.registration, manifest),
       grantedCapabilities: Object.freeze(grantedCapabilities),
-      locale: normalizeHostLocaleSnapshot(value.locale, { fallbackIfMissing: true }),
     });
   }
 
@@ -1429,9 +1401,7 @@
           && typeof transport.requestVoiceControl === 'function'
           && typeof transport.stopVoiceControlBridge === 'function';
       case 'avatar-renderer':
-        return typeof transport.mountAvatar === 'function'
-          && typeof transport.getAvatarCharacter === 'function'
-          && typeof transport.listAvatarCharacters === 'function';
+        return typeof transport.mountAvatar === 'function';
       case 'audio':
         return typeof transport.mountAudio === 'function';
       case 'speech-output':
@@ -1451,8 +1421,6 @@
       case 'memory':
         return typeof transport.configureGameMemoryConsent === 'function'
           && typeof transport.submitGameMemory === 'function';
-      case 'window-control':
-        return typeof transport.requestWindowClose === 'function';
       case 'storage':
         return typeof transport.requestGameStorage === 'function';
       case 'leaderboard-local':
@@ -1482,7 +1450,7 @@
     const type = String(value.type || '').trim().toLowerCase();
     const path = String(value.path || '').trim();
     if (!AVATAR_TYPES.includes(type)) {
-      fail('invalid_request', 'avatar model.type must be live2d, vrm, mmd or pngtuber', { type });
+      fail('invalid_request', 'avatar model.type must be live2d, vrm, mmd, or pngtuber', { type });
     }
     if (!path || path.length > 2048) {
       fail('invalid_request', 'avatar model.path is required and must not exceed 2048 characters');
@@ -2138,8 +2106,6 @@
 
     const grantedSet = new Set(usableGranted);
     const listeners = new Map();
-    let currentHostLocale = handshake.locale;
-    let hostLocaleUnsubscribe = null;
     const avatarRenderers = new Set();
     let avatarMountsPending = 0;
     const audioControllers = new Set();
@@ -2160,7 +2126,6 @@
     const contextPendingRequests = new Set();
     const dialoguePendingRequests = new Set();
     const memoryPendingRequests = new Set();
-    const windowControlPendingRequests = new Set();
     const storagePendingRequests = new Set();
     const localLeaderboardPendingRequests = new Set();
     const localLeaderboardMutationPendingRequests = new Set();
@@ -2278,21 +2243,6 @@
       }
     }
 
-    function acceptHostLocaleSnapshot(value) {
-      if (disposed || disposing) return false;
-      let next;
-      try {
-        next = normalizeHostLocaleSnapshot(value, { errorCode: 'invalid_handshake' });
-      } catch (_) {
-        return false;
-      }
-      if (next.revision <= currentHostLocale.revision) return false;
-      const changed = next.language !== currentHostLocale.language;
-      currentHostLocale = next;
-      if (changed) emit('host-locale-change', next);
-      return true;
-    }
-
     function runtimeSession() {
       let state = {};
       try { state = transport.getRuntimeState() || {}; }
@@ -2302,8 +2252,6 @@
         characterName: String(
           state.characterName || state.lanlanName || state.lanlan_name || '',
         ),
-        // Ownership nonce for same-origin custom RPCs that have not yet gained
-        // a first-class SDK capability. It is retired with the route.
         routeInstanceId: String(runtimeRouteInstanceId || ''),
       });
     }
@@ -2617,6 +2565,7 @@
     function stopPageExitLifecycle() {
       if (!pageExitHandler) return;
       windowImpl.removeEventListener?.('pagehide', pageExitHandler);
+      windowImpl.removeEventListener?.('beforeunload', pageExitHandler);
       pageExitHandler = null;
     }
 
@@ -2769,7 +2718,7 @@
           && String(data.reason || '') === 'route_instance_id_mismatch';
         if (data.active === false && (routeGenerationRetired || (response.ok && data.ok !== false))) {
           heartbeatLifecycle.failures = 0;
-          abortPendingCommandRequests('cancelled');
+          abortManagedRequests(commandPendingRequests, 'cancelled');
           runtimeRouteEstablished = false;
           // Retire the generation with the route. Capabilities that are allowed
           // before a route exists (speech.speak/mirror/preload, context.read)
@@ -2886,14 +2835,6 @@
       pageExitHandler = (event = {}) => {
         if (disposed || pageExitDispatched) return;
         pageExitDispatched = true;
-        // `runtime.configure()` installs page-exit cleanup while the client is
-        // still idle. Closing that never-started page must not emit an ID-less
-        // end that can match and retire a legacy route reusing the query/session
-        // identity. A minted generation is enough to prove a start attempt was
-        // made (including an in-flight or transport-ambiguous start), while an
-        // established route covers the ordinary running/degraded end path.
-        const shouldEndRuntimeRoute = runtimeRouteEstablished
-          || runtimeRouteInstanceIds.length > 0;
         const type = String(event.type || 'page-exit');
         const exitContext = Object.freeze({
           type,
@@ -2915,22 +2856,21 @@
             error,
           });
         }
-        if (shouldEndRuntimeRoute) {
-          // Invoke the host transport directly: an unload handler cannot rely on
-          // a Promise continuation after an in-flight start settles. The
-          // same-origin host calls sendBeacon synchronously before this returns;
-          // the backend orders an early end against the matching start.
-          try {
-            const endRequest = transport.end(
-              runtimeRoutePayload(payload),
-              { useBeacon: true },
-            );
-            Promise.resolve(endRequest).catch(() => null);
-          } catch (_) { /* page exit remains best effort */ }
-        }
+        // Invoke the host transport directly: an unload handler cannot rely on
+        // a Promise continuation after an in-flight start settles. The
+        // same-origin host calls sendBeacon synchronously before this returns;
+        // the backend orders an early end against the matching start.
+        try {
+          const endRequest = transport.end(
+            runtimeRoutePayload(payload),
+            { useBeacon: true },
+          );
+          Promise.resolve(endRequest).catch(() => null);
+        } catch (_) { /* page exit remains best effort */ }
         client.dispose({ preserveRuntimeEnd: true });
       };
       windowImpl.addEventListener?.('pagehide', pageExitHandler);
+      windowImpl.addEventListener?.('beforeunload', pageExitHandler);
     }
 
     function startRuntimeMonitoring({ heartbeat = true, outputs = true } = {}) {
@@ -3294,10 +3234,6 @@
       return { name, contract };
     }
 
-    function abortPendingCommandRequests(reason = 'cancelled') {
-      abortManagedRequests(commandPendingRequests, reason);
-    }
-
     async function executeGameCommand(nameInput, payloadInput, requestOptions = {}) {
       const operation = 'commands.execute';
       requireCapability('runtime', operation);
@@ -3336,9 +3272,6 @@
         requestOptions,
         invoke: (options) => transport.executeGameCommand(name, envelope, options),
       });
-      // A host transport is allowed to settle after ignoring AbortSignal. Never
-      // project that result into a session or generation that replaced the one
-      // captured before the request left the SDK.
       const requireCurrentCommandRoute = () => {
         const currentSession = runtimeSession();
         if (
@@ -3645,7 +3578,7 @@
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
-        abortPendingCommandRequests('cancelled');
+        abortManagedRequests(commandPendingRequests, 'cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
         abortManagedRequests(dialoguePendingRequests, 'cancelled');
         abortManagedRequests(memoryPendingRequests, 'cancelled');
@@ -3663,12 +3596,6 @@
         // fifth clear here is unreachable and would be an untestable guard.
         // If a new route-loss path is ever added, retire the generation THERE.
         const state = transport.resetRuntime({ newSession: resetOptions.newSession === true });
-        if (resetOptions.newSession === true) {
-          // Logging sessions are keyed by the runtime session id. Retiring the
-          // old local gate also aborts a late /logs/enable request so it cannot
-          // reactivate an already-ended backend log after the new session starts.
-          try { transport.logger?.reset?.(); } catch (_) { /* logging is optional */ }
-        }
         memoryConsentEnabled = false;
         memoryConsentLocked = false;
         memoryConsentConfigured = false;
@@ -3685,7 +3612,6 @@
           characterName: String(
             normalized?.characterName || normalized?.lanlanName || normalized?.lanlan_name || '',
           ),
-          routeInstanceId: String(runtimeRouteInstanceId || ''),
         });
       },
       async start(payload = {}, requestOptions = {}) {
@@ -3809,7 +3735,7 @@
         if (runtimePhase === 'ending') {
           fail('busy', 'The runtime lifecycle is already ending');
         }
-        abortPendingCommandRequests('cancelled');
+        abortManagedRequests(commandPendingRequests, 'cancelled');
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         const operation = beginRuntimeOperation('end', endRequestOptions);
@@ -3829,11 +3755,6 @@
               runtimeRouteEstablished = false;
               clearRuntimeRouteInstanceIds();
               setRuntimePhase('ended', 'end-accepted');
-              // The backend diagnostic log is closed with the route. Retire the
-              // local gate even when a later start intentionally reuses the same
-              // runtime session id, so enableAfterRuntimeStart creates/reopens
-              // the matching backend log instead of skipping as already enabled.
-              try { transport.logger?.reset?.(); } catch (_) { /* logging is optional */ }
             } else recoverEndFailure('end-rejected');
           }
           return response;
@@ -4020,28 +3941,6 @@
           }), options),
         });
         return normalizeTransportResponse(rawResponse);
-      },
-    });
-
-    const windowControl = Object.freeze({
-      get pendingCount() { return windowControlPendingRequests.size; },
-      async close(requestOptions = {}) {
-        requireCapability('window-control', 'window.close');
-        const rawResponse = await performManagedHostRequest({
-          operation: 'window.close',
-          pendingSet: windowControlPendingRequests,
-          limit: MAX_WINDOW_CONTROL_PENDING_REQUESTS,
-          timeoutMs: 5000,
-          requestOptions,
-          invoke: (options) => transport.requestWindowClose(options),
-        });
-        const response = await normalizeTransportResponse(rawResponse);
-        const closed = response.ok && response.data?.ok !== false;
-        return Object.freeze({
-          ok: closed,
-          status: response.status,
-          data: Object.freeze({ closed }),
-        });
       },
     });
 
@@ -4863,7 +4762,6 @@
       start(requestOptions) { return requestVoice('start', requestOptions); },
       stop(requestOptions) { return requestVoice('stop', requestOptions); },
       toggle(requestOptions) { return requestVoice('toggle', requestOptions); },
-      handoff(requestOptions) { return requestVoice('handoff', requestOptions); },
       onState(handler) {
         requireCapability('voice-input', 'voice.onState');
         return subscribe('voice-state', handler);
@@ -5232,6 +5130,9 @@
       get activeCount() { return avatarRenderers.size; },
       async getCurrentCharacter() {
         requireCapability('avatar-renderer', 'avatar.getCurrentCharacter');
+        if (typeof transport.getAvatarCharacter !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
         try {
           return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(''));
         } catch (error) {
@@ -5240,6 +5141,9 @@
       },
       async getCharacter(nameInput) {
         requireCapability('avatar-renderer', 'avatar.getCharacter');
+        if (typeof transport.getAvatarCharacter !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
         const name = normalizeAvatarCharacterName(nameInput);
         try {
           return normalizeAvatarCharacterDescriptor(await transport.getAvatarCharacter(name));
@@ -5249,6 +5153,9 @@
       },
       async listCharacters() {
         requireCapability('avatar-renderer', 'avatar.listCharacters');
+        if (typeof transport.listAvatarCharacters !== 'function') {
+          fail('transport_unavailable', 'The host does not support avatar character discovery');
+        }
         try {
           return normalizeAvatarCharacterList(await transport.listAvatarCharacters());
         } catch (error) {
@@ -5353,13 +5260,6 @@
       },
     });
 
-    const locale = Object.freeze({
-      get current() { return currentHostLocale; },
-      onChange(handler) {
-        return subscribe('host-locale-change', handler);
-      },
-    });
-
     const client = {
       manifest,
       host: Object.freeze({
@@ -5376,7 +5276,6 @@
       results,
       context,
       memory,
-      window: windowControl,
       storage,
       leaderboard,
       presentation,
@@ -5386,7 +5285,6 @@
       speech,
       audio,
       avatar,
-      locale,
       get disposed() { return disposed || disposing; },
       dispose(disposeOptions = {}) {
         if (disposed || disposing) return;
@@ -5397,11 +5295,10 @@
         stopRuntimeOperation({ preserveEnd: disposeOptions.preserveRuntimeEnd === true });
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
-        abortPendingCommandRequests('disposed');
+        abortManagedRequests(commandPendingRequests, 'disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');
-        abortManagedRequests(windowControlPendingRequests, 'disposed');
         abortManagedRequests(storagePendingRequests, 'disposed');
         abortManagedRequests(localLeaderboardPendingRequests, 'disposed');
         abortManagedRequests(localLeaderboardMutationPendingRequests, 'disposed');
@@ -5436,10 +5333,6 @@
           item.disposed = true;
         }
         consentPresentations.clear();
-        if (hostLocaleUnsubscribe) {
-          try { hostLocaleUnsubscribe(); } catch (_) { /* host owns subscription cleanup */ }
-          hostLocaleUnsubscribe = null;
-        }
         listeners.clear();
         runtimeConfig = null;
         voiceBridgeStarted = false;
@@ -5457,14 +5350,7 @@
         }
         if (typeof transport.dispose === 'function') {
           const preservePendingOperations = disposeOptions.preserveRuntimeEnd ? ['route_end'] : [];
-          transport.dispose({
-            preservePendingOperations,
-            // Page-exit route end first asks the host logger for one final
-            // flush. If sendBeacon declines, that flush becomes a keepalive
-            // fetch; preserve it alongside the route-end request instead of
-            // aborting it in the same synchronous dispose call.
-            preserveLogTransport: disposeOptions.preserveRuntimeEnd === true,
-          });
+          transport.dispose({ preservePendingOperations });
         } else {
           try { transport.stopVoiceControlBridge?.('disposed'); } catch (_) { /* already stopped */ }
           try { transport.stopSpeechOutputBridge?.('disposed'); } catch (_) { /* already stopped */ }
@@ -5472,12 +5358,6 @@
         }
       },
     };
-    if (typeof transport.subscribeHostLocale === 'function') {
-      try {
-        const unsubscribe = transport.subscribeHostLocale(acceptHostLocaleSnapshot);
-        if (typeof unsubscribe === 'function') hostLocaleUnsubscribe = unsubscribe;
-      } catch (_) { /* host locale updates are optional after the handshake */ }
-    }
     return Object.freeze(client);
   }
 

@@ -88,38 +88,83 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     async def async_worker():
         ws = None
         receive_task = None
+        completion_armed = None
+        completion_send_settled = None
         current_speech_id = None
         
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
-        async def receive_loop(ws_conn, source_speech_id):
-            """Independent receive task, handles the audio stream"""
+        async def receive_loop(
+            ws_conn,
+            speech_id,
+            completion_event,
+            send_settled_event,
+        ):
+            """Independent receive task, handles the audio stream.
+
+            The protocol has no explicit JSON completion frame, but its test
+            client treats the server's normal WebSocket close after ``event=end``
+            as the utterance boundary. Only that armed, normal close may emit
+            ``__audio_done__``. Interrupt cancellation and abnormal disconnects
+            remain incomplete instead of inventing a timing-based boundary.
+            """
+            completed_normally = False
             try:
                 async for message in ws_conn:
                     if isinstance(message, bytes):
                         # 服务器返回 16-bit PCM @ 22050Hz
                         audio_array = np.frombuffer(message, dtype=np.int16)
                         resampled_bytes = _resample_audio(audio_array, SRC_RATE, 48000, resampler)
-                        if source_speech_id is not None:
-                            response_queue.put(("__audio__", source_speech_id, resampled_bytes))
+                        response_queue.put(("__audio__", speech_id, resampled_bytes))
+                completed_normally = True
+            except websockets.exceptions.ConnectionClosedOK:
+                completed_normally = True
             except websockets.exceptions.ConnectionClosed:
                 logger.debug("本地 WebSocket 连接已关闭")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 _enqueue_error(response_queue, f"接收循环异常: {e}")
+            finally:
+                if completed_normally and speech_id and completion_event.is_set():
+                    # ``send(end)`` may yield while the peer closes normally.
+                    # Wait for that send to settle so a genuine send failure
+                    # can disarm completion instead of publishing a false done.
+                    await send_settled_event.wait()
+                    if completion_event.is_set():
+                        tail = _resample_audio(
+                            np.empty(0, dtype=np.int16),
+                            SRC_RATE,
+                            48000,
+                            resampler,
+                            last=True,
+                        )
+                        if tail:
+                            response_queue.put(("__audio__", speech_id, tail))
+                        response_queue.put(("__audio_done__", speech_id))
 
-        async def send_end_signal(ws_conn):
+        async def send_end_signal(
+            ws_conn,
+            completion_event=None,
+            send_settled_event=None,
+        ):
             """Send the end signal (text was already sent in real time in the main loop; only end needs sending here)"""
+            if completion_event is not None:
+                completion_event.set()
             try:
                 await ws_conn.send(json.dumps({"event": "end"}))
                 logger.debug("发送结束信号")
             except Exception as e:
+                if completion_event is not None:
+                    completion_event.clear()
                 _enqueue_error(response_queue, f"发送结束信号失败: {e}")
+            finally:
+                if send_settled_event is not None:
+                    send_settled_event.set()
 
-        async def create_connection(source_speech_id=None):
+        async def create_connection(speech_id=None):
             """Create a new connection and send the config"""
-            nonlocal ws, receive_task, resampler
+            nonlocal ws, receive_task, completion_armed, completion_send_settled, resampler
             
             # 清理旧连接
             if receive_task and not receive_task.done():
@@ -148,9 +193,18 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             }
             await ws.send(json.dumps(config))
             logger.debug(f"发送配置: {config}")
-            
+
             # 启动接收任务
-            receive_task = asyncio.create_task(receive_loop(ws, source_speech_id))
+            completion_armed = asyncio.Event()
+            completion_send_settled = asyncio.Event()
+            receive_task = asyncio.create_task(
+                receive_loop(
+                    ws,
+                    speech_id,
+                    completion_armed,
+                    completion_send_settled,
+                )
+            )
             return ws
 
         # 初始连接
@@ -195,8 +249,12 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
             # speech_id 变化 -> 打断旧语音，建立新连接
             if sid != current_speech_id and sid is not None:
-                if ws:
-                    await send_end_signal(ws)
+                if ws and receive_task and not receive_task.done():
+                    await send_end_signal(
+                        ws,
+                        completion_armed,
+                        completion_send_settled,
+                    )
                 
                 current_speech_id = sid
                 try:
@@ -209,7 +267,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if sid is None:
                 # 正常结束：发送结束信号
                 if ws:
-                    await send_end_signal(ws)
+                    await send_end_signal(
+                        ws,
+                        completion_armed,
+                        completion_send_settled,
+                    )
                 current_speech_id = None
                 continue
 

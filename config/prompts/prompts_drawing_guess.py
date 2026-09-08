@@ -93,7 +93,7 @@ DRAWING_GUESS_CONTEXT_END = "======以上为开启上下文输入======"
 DRAWING_GUESS_SCENE_PREMISES: dict[str, str] = {
     "ai_drawing_ready": "You have just finished your drawing. The user does not know the answer yet.",
     "user_guess_correct": "The user guessed your drawing correctly. Congratulate them, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
-    "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
+    "user_guess_wrong": "The user's latest guess is not the answer. You know the hidden answer to your own drawing. Keep it hidden, and base any new clue only on that answer rather than on the user's wrong guess or earlier speculative clues.",
     "hint_request": "The user wants help while guessing your drawing. You know your own hidden answer; make a fresh in-character clue from that answer, but do not expose the exact answer unless public_details.allow_answer_reveal is true.",
     "user_guess_timeout": "The user's guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
     "ai_guess_attempt": "The character is making a visual guess from the user's drawing. The backend has not told the character whether the guess is correct yet. Speak the guess naturally and wait for feedback.",
@@ -128,6 +128,7 @@ DRAWING_GUESS_GAME_LINE_EXTRA_RULES = (
     "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
     "- For user_guess_correct and user_guess_wrong, public_details.judgement is the backend-scored result of the user's guess. Do not re-score, reinterpret, or contradict that judgement.\n"
     "- If public_details.judgement.is_correct is false, respond as a missed guess and keep the hidden answer private.\n"
+    "- For user_guess_wrong, ground every clue in public_details.character_private_answer_label. Treat guess_label only as the rejected guess; never derive the next clue from it or continue a chain of associations from earlier wrong guesses.\n"
     "- For user_guess_correct and user_guess_timeout, keep the turn transition clear: the character's drawing turn has ended, the next drawing belongs to the user, and the character will guess.\n"
     "- For ai_guess_attempt, public_details.guess_label is only the character's current guess. Do not say whether it is correct or wrong; the backend will give feedback after the guess.\n"
     "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"

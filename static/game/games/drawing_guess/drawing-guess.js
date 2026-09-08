@@ -36,9 +36,7 @@
   }
 
   var ROUND_COMMAND_CONTRACTS = Object.freeze({
-    'round:start': roundCommandRequestSchema({
-      debug_start_phase: { type: 'string', enum: ['word_picking'] }
-    }),
+    'round:start': roundCommandRequestSchema(),
     'round:ai-draw': roundCommandRequestSchema(),
     'round:ai-draw-review': roundCommandRequestSchema({
       image_data_url: { type: 'string', maxLength: 1800000 }
@@ -113,7 +111,6 @@
     sdkVoiceStateUnsubscribe: null,
     sdkVoiceTranscriptUnsubscribe: null,
     sdkVoiceErrorUnsubscribe: null,
-    sdkLocaleUnsubscribe: null,
     locale: 'zh-CN',
     sdkPulseForceRequestedSequence: 0,
     sdkPulseForceAcknowledgedSequence: 0,
@@ -126,7 +123,6 @@
     aiDrawingPlaceholderTimer: null,
     sizePreviewTimer: null,
     colorPanelDrag: null,
-    debugPanelDrag: null,
     colorWheelPointerId: null,
     colorHistory: [],
     drawPickTimer: null,
@@ -143,9 +139,6 @@
     voiceRouteActive: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
-    voiceHandoffRetryPending: false,
-    voiceHandoffRetryAttempts: 0,
-    voiceHandoffIntentEpoch: null,
     speechPlaybackActive: false,
     lastVoiceTranscriptRequestId: '',
     playerTextQueueGeneration: 0,
@@ -157,14 +150,6 @@
     thinkingMessageNode: null,
     modelMoodTimer: null,
     modelResizeHandler: null,
-    debugGesture: [],
-    debugGestureTimer: null,
-    debugCountdownTimer: null,
-    debugCharactersLoaded: false,
-    debugSwitchPromise: null,
-    debugRotateRounds: true,
-    debugRoundMode: 'auto',
-    debugWordCycle: null,
     roundFlowToken: 0,
     activeRoundToken: 0,
     roundRequestControllers: new Set(),
@@ -229,21 +214,6 @@
       routeStatus: $('route-status'),
       characterName: $('character-name'),
       sessionId: $('session-id'),
-      debugTrigger: $('debug-trigger'),
-      debugPanel: $('debug-panel'),
-      debugPanelHandle: $('debug-panel-handle'),
-      debugClose: $('debug-close'),
-      debugCharacterSelect: $('debug-character-select'),
-      debugAiRound: $('debug-ai-round'),
-      debugUserRound: $('debug-user-round'),
-      debugRotateRounds: $('debug-rotate-rounds'),
-      debugAiGuessCountdown: $('debug-ai-guess-countdown'),
-      debugWordPool1Count: $('debug-word-pool1-count'),
-      debugWordPool1Lock: $('debug-word-pool1-lock'),
-      debugWordPool2Count: $('debug-word-pool2-count'),
-      debugWordPool2Lock: $('debug-word-pool2-lock'),
-      debugSessionLock: $('debug-session-lock'),
-      debugTriggerAiGuess: $('debug-trigger-ai-guess'),
       modelStage: $('model-stage'),
       sidePane: $('side-pane'),
       sideResizer: $('side-resizer'),
@@ -919,7 +889,6 @@
       && !state.routeEnding
       && !state.sdkStartPromise
       && !state.sdkReconcilePromise
-      && !state.debugSwitchPromise
       && isCanvasEditablePhase();
   }
 
@@ -954,7 +923,7 @@
   }
 
   function updateControls() {
-    var lifecycleBusy = state.routeEnding || !!state.sdkStartPromise || !!state.sdkReconcilePromise || !!state.debugSwitchPromise;
+    var lifecycleBusy = state.routeEnding || !!state.sdkStartPromise || !!state.sdkReconcilePromise;
     var memoryLocked = lifecycleBusy || !!(state.sdkClient && state.sdkClient.memory.consent.locked);
     var routeReady = !!state.lanlanName && state.routeActive && !lifecycleBusy;
     var tutorialOpen = !!els.tutorialOverlay && !els.tutorialOverlay.hidden;
@@ -981,122 +950,6 @@
     });
     if (!canvasEditable || (state.brushMode === 'brush' && state.brushToolKind === 'bucket')) hideSizePreview();
     syncVoiceRouteButton();
-    syncDebugPanelState();
-  }
-
-  function isDebugAiGuessAvailable() {
-    return ['user_drawing', 'ai_guessing', 'ai_guess_feedback'].indexOf(state.phase) >= 0;
-  }
-
-  function formatDebugCountdown(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return '0s';
-    var seconds = Math.ceil(ms / 1000);
-    var minutes = Math.floor(seconds / 60);
-    var rest = seconds % 60;
-    if (minutes <= 0) return seconds + 's';
-    return minutes + ':' + String(rest).padStart(2, '0');
-  }
-
-  function applyRoundState(roundState) {
-    if (!roundState || typeof roundState !== 'object') return;
-    if (roundState.word_cycle && typeof roundState.word_cycle === 'object') {
-      state.debugWordCycle = roundState.word_cycle;
-      syncDebugPanelState();
-    }
-  }
-
-  function debugPoolLabel(pool, field) {
-    var wordCycle = state.debugWordCycle || {};
-    var pools = wordCycle.pools || {};
-    var data = pools[pool] || {};
-    if (field === 'count') {
-      var count = Number(data.remaining_count);
-      return Number.isFinite(count) ? String(count) : '--';
-    }
-    if (field === 'lock') {
-      if (!wordCycle.active_pool) return '--';
-      return data.locked
-        ? t('drawingGuess.debug.locked', 'Locked')
-        : t('drawingGuess.debug.available', 'Available');
-    }
-    return '--';
-  }
-
-  function isDebugPoolLocked(pool) {
-    var wordCycle = state.debugWordCycle || {};
-    var pools = wordCycle.pools || {};
-    return !!wordCycle.active_pool && !!((pools[pool] || {}).locked);
-  }
-
-  function updateDebugWordCycle() {
-    if (els.debugWordPool1Count) els.debugWordPool1Count.textContent = debugPoolLabel('pool1', 'count');
-    if (els.debugWordPool1Lock) {
-      var pool1Lock = debugPoolLabel('pool1', 'lock');
-      els.debugWordPool1Lock.textContent = pool1Lock;
-      els.debugWordPool1Lock.dataset.locked = String(isDebugPoolLocked('pool1'));
-    }
-    if (els.debugWordPool2Count) els.debugWordPool2Count.textContent = debugPoolLabel('pool2', 'count');
-    if (els.debugWordPool2Lock) {
-      var pool2Lock = debugPoolLabel('pool2', 'lock');
-      els.debugWordPool2Lock.textContent = pool2Lock;
-      els.debugWordPool2Lock.dataset.locked = String(isDebugPoolLocked('pool2'));
-    }
-    if (els.debugSessionLock) {
-      var locked = !!(state.debugWordCycle && state.debugWordCycle.request_locked);
-      els.debugSessionLock.textContent = locked
-        ? t('drawingGuess.debug.requestLocked', 'Request locked')
-        : t('drawingGuess.debug.requestUnlocked', 'Unlocked');
-      els.debugSessionLock.dataset.locked = String(locked);
-    }
-  }
-
-  function updateDebugGuessCountdown() {
-    if (!els.debugAiGuessCountdown) return;
-    var text = '--';
-    if (state.phase === 'ai_guess_feedback') {
-      if (state.pendingAutoGuess && state.chatInFlight) {
-        text = t('drawingGuess.debug.waitingForChat', 'Waiting for chat');
-      } else if (state.aiGuessInFlight) {
-        text = t('drawingGuess.debug.guessing', 'Guessing');
-      } else if (state.aiGuessTimer && state.aiGuessNextAt) {
-        text = formatDebugCountdown(state.aiGuessNextAt - Date.now());
-      } else if (state.aiGuessAttempts >= state.maxAiGuessAttempts) {
-        text = t('drawingGuess.debug.attemptsExhausted', 'No attempts left');
-      } else {
-        text = t('drawingGuess.debug.notScheduled', 'Not scheduled');
-      }
-    }
-    els.debugAiGuessCountdown.textContent = text;
-  }
-
-  function syncDebugPanelState() {
-    var lifecycleBusy = !!state.debugSwitchPromise || !!state.sdkStartPromise || state.routeEnding;
-    if (els.debugRotateRounds) {
-      els.debugRotateRounds.checked = !!state.debugRotateRounds;
-      els.debugRotateRounds.disabled = lifecycleBusy;
-    }
-    if (els.debugAiRound) {
-      els.debugAiRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'ai' ? 'true' : 'false');
-      els.debugAiRound.disabled = lifecycleBusy;
-    }
-    if (els.debugUserRound) {
-      els.debugUserRound.setAttribute('aria-pressed', !state.debugRotateRounds && state.debugRoundMode === 'user' ? 'true' : 'false');
-      els.debugUserRound.disabled = lifecycleBusy;
-    }
-    if (els.debugCharacterSelect && state.lanlanName) {
-      els.debugCharacterSelect.value = state.lanlanName;
-      els.debugCharacterSelect.disabled = lifecycleBusy;
-    }
-    if (els.debugTriggerAiGuess) {
-      els.debugTriggerAiGuess.disabled = lifecycleBusy || !isDebugAiGuessAvailable() || state.aiGuessInFlight;
-    }
-    updateDebugWordCycle();
-    updateDebugGuessCountdown();
-  }
-
-  function startDebugCountdownUpdater() {
-    clearInterval(state.debugCountdownTimer);
-    state.debugCountdownTimer = setInterval(updateDebugGuessCountdown, 300);
   }
 
   function abortRoundRequests() {
@@ -1186,26 +1039,6 @@
   }
 
   function closeDrawingGuessWindow() {
-    var client = state.sdkClient;
-    if (client
-      && !client.disposed
-      && client.capabilities.has('window-control')
-      && client.window
-      && typeof client.window.close === 'function') {
-      try {
-        Promise.resolve(client.window.close({ timeoutMs: 3000 }))
-          .then(function (response) {
-            if (!response || response.ok !== true
-              || !response.data || response.data.closed !== true) {
-              closeDrawingGuessBrowserFallback();
-            }
-          })
-          .catch(function () {
-            closeDrawingGuessBrowserFallback();
-          });
-        return;
-      } catch (_) {}
-    }
     closeDrawingGuessBrowserFallback();
   }
 
@@ -1221,238 +1054,8 @@
     closeDrawingGuessWindow();
   }
 
-  function shakeDebugTrigger() {
-    if (!els.debugTrigger) return;
-    els.debugTrigger.classList.remove('is-shaking');
-    void els.debugTrigger.offsetWidth;
-    els.debugTrigger.classList.add('is-shaking');
-  }
-
-  function recordDebugGesture(step) {
-    clearTimeout(state.debugGestureTimer);
-    state.debugGesture.push(step);
-    state.debugGesture = state.debugGesture.slice(-4);
-    if (state.debugGesture.join('') === 'LLRR') {
-      state.debugGesture = [];
-      openDebugPanel();
-      return;
-    }
-    state.debugGestureTimer = setTimeout(function () {
-      state.debugGesture = [];
-    }, 1800);
-  }
-
-  function openDebugPanel() {
-    if (!els.debugPanel) return;
-    els.debugPanel.hidden = false;
-    loadDebugCharacters();
-    syncDebugPanelState();
-  }
-
-  function closeDebugPanel() {
-    if (els.debugPanel) els.debugPanel.hidden = true;
-  }
-
-  function loadDebugCharacters() {
-    if (!els.debugCharacterSelect || state.debugCharactersLoaded) return;
-    connectMiniGameSdk().then(function (client) {
-      return client.avatar.listCharacters();
-    }).then(function (characterNames) {
-      var names = Array.prototype.slice.call(characterNames || []).sort(function (a, b) {
-        return a.localeCompare(b);
-      });
-      if (!names.length && state.lanlanName) names = [state.lanlanName];
-      els.debugCharacterSelect.innerHTML = names.map(function (name) {
-        return '<option value="' + escapeAttr(name) + '">' + escapeHtml(name) + '</option>';
-      }).join('');
-      state.debugCharactersLoaded = true;
-      syncDebugPanelState();
-    }).catch(function () {
-      var fallbackName = state.lanlanName || '';
-      els.debugCharacterSelect.innerHTML = fallbackName
-        ? '<option value="' + escapeAttr(fallbackName) + '">' + escapeHtml(fallbackName) + '</option>'
-        : '<option value="">角色列表读取失败</option>';
-      syncDebugPanelState();
-    });
-  }
-
-  function endRouteForDebugSwitch(lanlanName, sessionId) {
-    if (!lanlanName || !sessionId) return Promise.resolve(true);
-    return connectMiniGameSdk().then(function (client) {
-      var runtimeState = client.runtime.state;
-      if (['idle', 'ended', 'inactive'].indexOf(runtimeState) >= 0) return { skipped: true };
-      // runtime.end() owns the starting-settlement wait. An already-ending
-      // route belongs to another lifecycle action and must not be reset out
-      // from underneath it.
-      if (runtimeState === 'ending') return { busy: true };
-      return stopSdkVoiceBestEffort(client).then(function () {
-        return client.runtime.end(sdkRouteEndPayload({
-          reason: 'drawing_guess_debug_character_switch',
-          completedRoute: false,
-          suppressWindowStateChange: true,
-          suppressRouteEndStatus: true
-        }), { timeoutMs: 12000 });
-      });
-    }).then(function (response) {
-      if (response && response.skipped) return true;
-      if (response && response.busy) return false;
-      var data = sdkResponseData(response);
-      return !!response && response.ok !== false && data.ok !== false
-        && state.sdkClient && state.sdkClient.runtime.state === 'ended';
-    }).catch(function () {
-      return false;
-    });
-  }
-
-  function performDebugCharacterSwitch(name) {
-    var nextName = String(name || '').trim();
-    if (!nextName || nextName === state.lanlanName) return Promise.resolve();
-    var oldName = state.lanlanName;
-    var oldSessionId = state.sessionId;
-    var previousDebugMode = state.debugRoundMode;
-    var previousRotateRounds = state.debugRotateRounds;
-    var shouldContinueRound = state.phase !== 'tutorial' && state.phase !== 'ended' && state.phase !== 'final_summary';
-    if (!state.windowLanlanName) state.windowLanlanName = oldName;
-    // Freeze the old round before awaiting SDK end. Otherwise a timeout, chat
-    // submit, or late round response can mutate the session while route
-    // ownership is already being handed to the next character.
-    state.routeEnding = true;
-    cleanupRouteResources({ preserveCanvasRouteState: true });
-    setStatus('ending', 'Ending');
-    updateControls();
-    return connectMiniGameSdk().then(function () {
-      return endRouteForDebugSwitch(oldName, oldSessionId);
-    }).then(function (ended) {
-      if (!ended) {
-        state.routeEnding = false;
-        if (state.routeActive) {
-          setStatus('active', 'Active');
-        }
-        addMessage('', 'Debug: could not close the current SDK route; character switch was cancelled.');
-        if (!state.routeActive || !shouldContinueRound) return false;
-        // The old asynchronous round was deliberately invalidated above. Start
-        // a clean replacement so the visible UI is never left attached to dead
-        // timers and request controllers after a cancelled switch.
-        return startRound().then(function () { return false; }, function () { return false; });
-      }
-      cleanupRouteResources();
-      stopThinkingEventMessage();
-      state.routeActive = false;
-      state.routeEnding = false;
-      state.voiceRouteActive = false;
-      state.voiceControlPending = false;
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
-      state.voiceControlRequestSequence += 1;
-      state.lastVoiceTranscriptRequestId = '';
-      state.canvasContextLastHash = '';
-      state.canvasContextLastSentAt = 0;
-      state.sessionId = state.sdkClient.runtime.reset({ newSession: true }).id;
-      state.lanlanName = nextName;
-      state.debugRoundMode = previousDebugMode || 'auto';
-      state.debugRotateRounds = previousRotateRounds;
-      loadModelViewSettings();
-      initModelSlotForCurrentCharacter(nextName).catch(function () {});
-      showPlaceholder();
-      setPhase('loading_round');
-      addEventMessage(
-        shouldContinueRound ? 'drawingGuess.debug.switchedCharacterContinue' : 'drawingGuess.debug.switchedCharacter',
-        shouldContinueRound
-          ? 'Debug: switched to {{name}}, continuing the current test round.'
-          : 'Debug: switched to {{name}}.',
-        { name: nextName }
-      );
-      return startRoute().then(function (ok) {
-        if (!ok || !shouldContinueRound) return ok;
-        if (!state.debugRotateRounds && state.debugRoundMode === 'user') return startDebugUserRound(true);
-        if (!state.debugRotateRounds && state.debugRoundMode === 'ai') return startDebugAiRound(true);
-        return startRound();
-      });
-    }).catch(function (error) {
-      state.routeEnding = false;
-      if (state.routeActive) {
-        setStatus('active', 'Active');
-      }
-      throw error;
-    }).finally(function () {
-      syncDebugPanelState();
-      updateControls();
-    });
-  }
-
-  function switchDebugCharacter(name) {
-    var nextName = String(name || '').trim();
-    if (!nextName || nextName === state.lanlanName) return Promise.resolve(false);
-    if (state.debugSwitchPromise) {
-      if (els.debugCharacterSelect) els.debugCharacterSelect.value = state.lanlanName;
-      return state.debugSwitchPromise;
-    }
-    if (els.debugCharacterSelect) els.debugCharacterSelect.disabled = true;
-    var switchPromise = performDebugCharacterSwitch(nextName).catch(function (error) {
-      addMessage('', 'Debug: character switch failed: ' + sdkErrorReason(error));
-      return false;
-    }).finally(function () {
-      if (state.debugSwitchPromise === switchPromise) state.debugSwitchPromise = null;
-      if (els.debugCharacterSelect) els.debugCharacterSelect.disabled = false;
-      syncDebugPanelState();
-      updateControls();
-    });
-    state.debugSwitchPromise = switchPromise;
-    return switchPromise;
-  }
-
-  function ensureDebugRouteReady() {
-    readMemoryConsent();
-    if (els.tutorialOverlay) els.tutorialOverlay.hidden = true;
-    if (state.routeActive) return Promise.resolve(true);
-    return startRoute();
-  }
-
-  function startDebugAiRound(keepMode) {
-    if (!keepMode) state.debugRoundMode = 'ai';
-    return ensureDebugRouteReady().then(function (ok) {
-      if (!ok) return false;
-      return startRound({ debugRoundMode: 'ai' });
-    });
-  }
-
-  function startDebugUserRound(keepMode) {
-    if (!keepMode) state.debugRoundMode = 'user';
-    return ensureDebugRouteReady().then(function (ok) {
-      if (!ok) return false;
-      var flowToken = resetRoundStartState();
-      return executeRoundCommand(ROUND_COMMANDS.START, roundCommandPayload({ debug_start_phase: 'word_picking' }), 10000)
-        .then(function (res) {
-          ensureCurrentRoundFlow(flowToken);
-          if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
-          prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
-          return true;
-        })
-        .catch(function (err) {
-          if (err && err.staleRoundFlow) return false;
-          setPhase('loading_round');
-          showPlaceholder();
-          addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: readableRequestError(err) });
-          return false;
-        })
-        .finally(updateControls);
-    });
-  }
-
   function startNextRound() {
-    if (!state.debugRotateRounds && state.debugRoundMode === 'user') return startDebugUserRound(true);
-    if (!state.debugRotateRounds && state.debugRoundMode === 'ai') return startDebugAiRound(true);
     return startRound();
-  }
-
-  function triggerDebugAiGuessNow() {
-    if (!isDebugAiGuessAvailable()) return;
-    if (state.phase === 'user_drawing') {
-      submitDrawing(false);
-      return;
-    }
-    triggerSupplementGuess(false);
   }
 
   function addMessage(key, fallback, params, className) {
@@ -1551,7 +1154,6 @@
     }
     state.speechPlaybackActive = !!detail.active || speechPlaybackHasPendingAudioWork(detail);
     stopDrawingGuessLipSync();
-    if (!state.speechPlaybackActive) schedulePendingVoiceHandoffRetry();
   }
 
   function clearNekoVoiceQueue() {
@@ -1620,7 +1222,7 @@
         || speechSessionId !== state.sessionId
         || speechRouteInstanceId !== sdkRouteInstanceId()) return;
       if (state.sdkClient) {
-        state.sdkClient.logger.warn('speech', 'speak_failed', '小游戏 SDK 语音输出失败', {
+        logSdkBestEffort(state.sdkClient, 'warn', 'speech', 'speak_failed', '小游戏 SDK 语音输出失败', {
           reason: sdkErrorReason(error)
         });
       }
@@ -1783,9 +1385,6 @@
       // Route termination, SDK inactivity, or a new round invalidates every
       // earlier command. Do not let its state projection land before the
       // caller's own stale-flow guard gets a chance to reject it.
-      if (data && data.state && isCurrentRoundFlow(requestFlowToken)) {
-        applyRoundState(data.state);
-      }
       return data;
     }).catch(function (err) {
       if (!isCurrentRoundFlow(requestFlowToken)) {
@@ -1898,8 +1497,6 @@
       source: 'drawing_guess',
       gameStarted: state.phase !== 'tutorial',
       game_started: state.phase !== 'tutorial',
-      externalInputTakeover: false,
-      external_input_takeover: false,
       client_round_token: state.roundFlowToken,
       currentState: {
         game: GAME_TYPE,
@@ -1946,6 +1543,17 @@
     return String((error && (error.code || error.message)) || 'request_failed');
   }
 
+  function logSdkBestEffort(client, level, category, event, message, details) {
+    try {
+      var logger = client && client.logger;
+      if (!logger || typeof logger[level] !== 'function') return false;
+      logger[level](category, event, message, details);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function isSdkRouteRunning(client) {
     return !!client
       && state.sdkClient === client
@@ -1954,8 +1562,7 @@
       && client.runtime.state === 'running';
   }
 
-  function cleanupRouteResources(options) {
-    options = options || {};
+  function cleanupRouteResources() {
     beginRoundFlow();
     state.activeRoundToken = state.roundFlowToken;
     state.isDrawing = false;
@@ -1975,17 +1582,12 @@
     clearNekoVoiceQueue();
     state.voiceRouteActive = false;
     state.voiceControlPending = false;
-    state.voiceHandoffRetryPending = false;
-    state.voiceHandoffRetryAttempts = 0;
-    state.voiceHandoffIntentEpoch = null;
     state.voiceControlRequestSequence += 1;
     state.lastVoiceTranscriptRequestId = '';
-    if (!options.preserveCanvasRouteState) {
-      state.canvasContextLastHash = '';
-      state.canvasContextLastSentAt = 0;
-      state.canvasContextLastClearAttemptAt = 0;
-      state.canvasContextLastPayloadKind = '';
-    }
+    state.canvasContextLastHash = '';
+    state.canvasContextLastSentAt = 0;
+    state.canvasContextLastClearAttemptAt = 0;
+    state.canvasContextLastPayloadKind = '';
     state.sdkPulseForceRequestedSequence = 0;
     state.sdkPulseForceAcknowledgedSequence = 0;
     state.sdkPulsePayloadForce = false;
@@ -2018,15 +1620,19 @@
     setPhase('tutorial');
     setStatus('heartbeatLost', 'Route inactive');
     if (state.sdkClient) {
-      state.sdkClient.logger.warn('runtime', 'route_inactive', '小游戏宿主路由已失效', {
+      logSdkBestEffort(state.sdkClient, 'warn', 'runtime', 'route_inactive', '小游戏宿主路由已失效', {
         reason: String((event && event.payload && event.payload.reason) || 'inactive')
       });
     }
     updateControls();
   }
 
-  function applySdkLocale(locale) {
-    var language = String((locale && locale.language) || '').trim();
+  function syncPageLocale() {
+    var language = String(
+      (window.i18n && window.i18n.language)
+      || document.documentElement.lang
+      || 'zh-CN'
+    ).trim();
     if (!language || language === state.locale) return;
     state.locale = language;
     updateControls();
@@ -2094,139 +1700,18 @@
     });
   }
 
-  function isPlaybackHandoffFailure(reason) {
-    return ['speech_playback_active', 'speech_playback_started'].indexOf(String(reason || '')) >= 0;
-  }
-
-  function schedulePendingVoiceHandoffRetry() {
-    if (!state.voiceHandoffRetryPending
-      || state.speechPlaybackActive
-      || state.voiceControlPending) return false;
-    if (state.voiceHandoffRetryAttempts >= 2) {
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
-      return false;
-    }
-    var client = state.sdkClient;
-    if (!client || !isSdkRouteRunning(client)) {
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
-      return false;
-    }
-    state.voiceHandoffRetryPending = false;
-    var retryRequestSequence = state.voiceControlRequestSequence;
-    var retrySessionId = String((client.runtime.session && client.runtime.session.id) || '');
-    setTimeout(function () {
-      if (retryRequestSequence !== state.voiceControlRequestSequence
-        || retrySessionId !== String((client.runtime.session && client.runtime.session.id) || '')
-        || !isSdkRouteRunning(client)) return;
-      if (state.speechPlaybackActive) {
-        state.voiceHandoffRetryPending = true;
-        return;
-      }
-      state.voiceHandoffRetryAttempts += 1;
-      handoffOrdinaryVoiceToSdk(client).catch(function () {});
-    }, 0);
-    return true;
-  }
-
-  function handoffOrdinaryVoiceToSdk(client) {
-    if (!client || !client.capabilities.has('voice-input') || !isSdkRouteRunning(client)) {
-      state.voiceRouteActive = false;
-      updateControls();
-      return Promise.resolve(false);
-    }
-    if (state.voiceControlPending) return Promise.resolve(false);
-    var requestSequence = state.voiceControlRequestSequence + 1;
-    state.voiceControlRequestSequence = requestSequence;
-    state.voiceControlPending = true;
-    updateControls();
-    var handoffRequest;
-    try {
-      var handoffOptions = { timeoutMs: 12000 };
-      if (Number.isSafeInteger(state.voiceHandoffIntentEpoch)) {
-        handoffOptions.handoffIntentEpoch = state.voiceHandoffIntentEpoch;
-      }
-      handoffRequest = client.voice.handoff(handoffOptions);
-    } catch (error) {
-      handoffRequest = Promise.reject(error);
-    }
-    return Promise.resolve(handoffRequest).then(function (voiceState) {
-      if (requestSequence !== state.voiceControlRequestSequence) return false;
-      handleSdkVoiceState(voiceState);
-      if (voiceState && voiceState.ok === false) {
-        if (isPlaybackHandoffFailure(voiceState.reason)) {
-          var responseIntentEpoch = Number(voiceState.ordinary_voice_intent_epoch);
-          if (typeof voiceState.ordinary_voice_intent_epoch === 'number'
-            && Number.isSafeInteger(responseIntentEpoch)
-            && responseIntentEpoch >= 0) {
-            state.voiceHandoffIntentEpoch = responseIntentEpoch;
-            state.voiceHandoffRetryPending = true;
-          } else {
-            state.voiceHandoffRetryPending = false;
-          }
-          return false;
-        }
-        state.voiceHandoffRetryPending = false;
-        state.voiceHandoffRetryAttempts = 0;
-        state.voiceHandoffIntentEpoch = null;
-        if (String(voiceState.reason || '') === 'ordinary_voice_handoff_cancelled') return false;
-        if (els.chatMessages) {
-          addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
-            reason: String(voiceState.reason || 'request_failed')
-          });
-        }
-        return false;
-      }
-      if (!voiceState || voiceState.active !== true) {
-        state.voiceHandoffRetryPending = false;
-        state.voiceHandoffRetryAttempts = 0;
-        state.voiceHandoffIntentEpoch = null;
-        return false;
-      }
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
-      state.voiceRouteActive = true;
-      if (els.chatMessages) {
-        addEventMessage(
-          'drawingGuess.voice.connectedNotice',
-          'Voice is on for this round.'
-        );
-      }
-      return true;
-    }).catch(function (error) {
-      if (requestSequence !== state.voiceControlRequestSequence) return false;
-      if (isPlaybackHandoffFailure(sdkErrorReason(error))) {
-        state.voiceHandoffRetryPending = Number.isSafeInteger(state.voiceHandoffIntentEpoch);
-        return false;
-      }
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
-      if (sdkErrorReason(error) === 'ordinary_voice_handoff_cancelled') return false;
-      if (els.chatMessages) {
-        addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
-          reason: sdkErrorReason(error)
-        });
-      }
-      return false;
-    }).finally(function () {
-      if (requestSequence !== state.voiceControlRequestSequence) return;
-      state.voiceControlPending = false;
-      updateControls();
-      schedulePendingVoiceHandoffRetry();
-    });
-  }
-
   function stopSdkVoiceBestEffort(client) {
     if (!client || !client.capabilities.has('voice-input')) return Promise.resolve(false);
     if (['running', 'degraded'].indexOf(client.runtime.state) < 0) return Promise.resolve(false);
-    return client.voice.stop({ timeoutMs: 6500 }).then(function (voiceState) {
+    var stopRequest;
+    try {
+      stopRequest = client.voice.stop({ timeoutMs: 6500 });
+    } catch (error) {
+      stopRequest = Promise.reject(error);
+    }
+    return Promise.resolve(stopRequest).then(function (voiceState) {
       handleSdkVoiceState(voiceState);
-      return true;
+      return !!voiceState && voiceState.ok !== false;
     }).catch(function () {
       state.voiceRouteActive = false;
       state.voiceControlPending = false;
@@ -2269,7 +1754,7 @@
           version: SDK_GAME_VERSION,
           protocolVersion: '1',
           requiredCapabilities: ['runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory'],
-          optionalCapabilities: ['voice-input', 'window-control', 'storage'],
+          optionalCapabilities: ['voice-input', 'storage'],
           contracts: {
             commands: ROUND_COMMAND_CONTRACTS
           }
@@ -2278,8 +1763,7 @@
       .then(function (client) {
         state.sdkClient = client;
         state.sessionId = client.runtime.session.id || state.sessionId;
-        applySdkLocale(client.locale.current);
-        state.sdkLocaleUnsubscribe = client.locale.onChange(applySdkLocale);
+        syncPageLocale();
         hydrateSdkPreferences(client).catch(function () {});
         client.logger.configure({
           captureGlobalErrors: false,
@@ -2302,7 +1786,7 @@
         state.sdkPageExitUnsubscribe = client.events.on('page-exit', handleSdkPageExit);
         state.sdkSpeechStateUnsubscribe = client.speech.onState(handleSpeechPlaybackState);
         state.sdkSpeechErrorUnsubscribe = client.speech.onError(function (error) {
-          client.logger.warn('speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
+          logSdkBestEffort(client, 'warn', 'speech', 'playback_bridge_error', '小游戏 SDK 播放状态桥异常', {
             reason: String((error && (error.code || error.message)) || 'unknown')
           });
         });
@@ -3035,7 +2519,9 @@
     }
     svg.removeAttribute('width');
     svg.removeAttribute('height');
-    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    // Match the Canvas renderer: both the generated drawing and the player's
+    // 800 x 600 backing canvas fill the whole responsive stage.
+    svg.setAttribute('preserveAspectRatio', 'none');
     svg.setAttribute('focusable', 'false');
     svg.style.transform = '';
     svg.style.transformOrigin = '';
@@ -3156,7 +2642,12 @@
   function fitAiDrawingSvgToContent(svg) {
     if (!svg) return;
     var viewBox = parseSvgViewBox(svg);
-    var viewBoxRatio = 240 / 180;
+    var stageRect = els.aiDrawing && typeof els.aiDrawing.getBoundingClientRect === 'function'
+      ? els.aiDrawing.getBoundingClientRect()
+      : null;
+    var viewBoxRatio = stageRect && stageRect.width > 0 && stageRect.height > 0
+      ? stageRect.width / stageRect.height
+      : viewBox[2] / viewBox[3];
     var metrics = measureSvgContentMetrics(svg, viewBox);
     if (!metrics || !metrics.bounds) return;
     var bounds = metrics.bounds;
@@ -3333,9 +2824,6 @@
       state.routeActive = true;
       state.voiceRouteActive = false;
       state.voiceControlPending = false;
-      state.voiceHandoffRetryPending = false;
-      state.voiceHandoffRetryAttempts = 0;
-      state.voiceHandoffIntentEpoch = null;
       state.lastVoiceTranscriptRequestId = '';
       state.sessionId = client.runtime.session.id || state.sessionId;
       if (res.state && res.state.lanlan_name) state.lanlanName = String(res.state.lanlan_name || state.lanlanName);
@@ -3346,7 +2834,7 @@
       return Promise.resolve(client.logger.enableAfterRuntimeStart()).then(function (logResult) {
         if (!isSdkRouteRunning(client)) return false;
         if (logResult && logResult.ok) {
-          client.logger.info('runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
+          logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_started', '你画我猜已通过小游戏 SDK 启动', {
             sdk_version: String(window.NekoMiniGame && window.NekoMiniGame.version || ''),
             host_version: String(client.host && client.host.version || ''),
             capabilities: client.capabilities.granted.slice()
@@ -3357,10 +2845,9 @@
         return isSdkRouteRunning(client);
       }).then(function (started) {
         if (!started) return false;
-        // Voice input is optional. If the ordinary voice session was already
-        // open, ask the SDK controller to transfer it in the background. The
-        // game route itself never waits for microphone ownership or permission.
-        handoffOrdinaryVoiceToSdk(client).catch(function () {});
+        // The host owns the single microphone session. Reflect its current
+        // state without starting a second recognizer or taking over capture.
+        querySdkVoiceRouteState(client).catch(function () {});
         return true;
       });
     }).catch(function (error) {
@@ -3392,7 +2879,7 @@
     setStatus('ending', 'Ending');
     updateControls();
     return connectMiniGameSdk().then(function (client) {
-      client.logger.info('runtime', 'sdk_route_ending', '你画我猜正在通过小游戏 SDK 结束', {
+      logSdkBestEffort(client, 'info', 'runtime', 'sdk_route_ending', '你画我猜正在通过小游戏 SDK 结束', {
         completed: !!options.finalSummary || state.phase === 'summary' || state.phase === 'final_summary'
       });
       return stopSdkVoiceBestEffort(client).then(function () {
@@ -3500,7 +2987,6 @@
       state.aiGuessNextAt = 0;
       triggerRandomAiGuess();
     }, delay);
-    updateDebugGuessCountdown();
   }
 
   function triggerRandomAiGuess(imageDataUrl) {
@@ -3662,9 +3148,7 @@
     return token;
   }
 
-  function startRound(options) {
-    options = options || {};
-    if (options.debugRoundMode) state.debugRoundMode = options.debugRoundMode;
+  function startRound() {
     var flowToken = resetRoundStartState();
     return executeRoundCommand(ROUND_COMMANDS.START, roundCommandPayload(), 10000)
       .then(function (res) {
@@ -3716,24 +3200,8 @@
       .finally(updateControls);
   }
 
-  function shouldStayOnDebugAiRound() {
-    return !state.debugRotateRounds && state.debugRoundMode === 'ai';
-  }
-
   function continueAfterAiDrawingHalf(res, flowToken) {
     if (!isCurrentRoundFlow(flowToken)) return;
-    if (shouldStayOnDebugAiRound()) {
-      stopCountdown();
-      addEventMessage(
-        'drawingGuess.debug.holdAiRound',
-        'Debug: keeping Neko round, preparing the next word.'
-      );
-      setTimeout(function () {
-        if (!isCurrentRoundFlow(flowToken)) return;
-        startDebugAiRound(true);
-      }, 450);
-      return;
-    }
     prepareUserDrawing(res.user_draw_options || res.user_draw_answer, res.draw_seconds || ROUND_FALLBACK_SECONDS);
   }
 
@@ -4664,7 +4132,7 @@
     if (!canvasRect || !displayRect) return fullBounds;
     var canvasWidth = Number(canvasRect && canvasRect.width) || 0;
     var canvasHeight = Number(canvasRect && canvasRect.height) || 0;
-    if (canvasWidth <= 0 || canvasHeight <= 0) return fullBounds;
+    if (canvasWidth <= 0 || canvasHeight <= 0) return null;
     var canvasLeft = Number(canvasRect.left) || 0;
     var canvasTop = Number(canvasRect.top) || 0;
     var canvasRight = Number.isFinite(Number(canvasRect.right)) ? Number(canvasRect.right) : canvasLeft + canvasWidth;
@@ -4681,7 +4149,120 @@
     var visibleTop = Math.max(canvasTop, displayTop);
     var visibleRight = Math.min(canvasRight, displayRight);
     var visibleBottom = Math.min(canvasBottom, displayBottom);
-    if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return fullBounds;
+
+    function clipsOverflow(value) {
+      value = String(value || '').toLowerCase();
+      return value === 'hidden' || value === 'clip' || value === 'scroll'
+        || value === 'auto' || value === 'overlay';
+    }
+
+    function intersectVisibleRect(rect, clipX, clipY) {
+      if (!rect) return;
+      var rectLeft = Number(rect.left);
+      var rectTop = Number(rect.top);
+      var rectWidth = Number(rect.width);
+      var rectHeight = Number(rect.height);
+      if (!Number.isFinite(rectLeft)) rectLeft = 0;
+      if (!Number.isFinite(rectTop)) rectTop = 0;
+      var rectRight = Number(rect.right);
+      var rectBottom = Number(rect.bottom);
+      if (!Number.isFinite(rectRight)) rectRight = rectLeft + (Number.isFinite(rectWidth) ? rectWidth : 0);
+      if (!Number.isFinite(rectBottom)) rectBottom = rectTop + (Number.isFinite(rectHeight) ? rectHeight : 0);
+      if (clipX) {
+        visibleLeft = Math.max(visibleLeft, rectLeft);
+        visibleRight = Math.min(visibleRight, rectRight);
+      }
+      if (clipY) {
+        visibleTop = Math.max(visibleTop, rectTop);
+        visibleBottom = Math.min(visibleBottom, rectBottom);
+      }
+    }
+
+    function elementOverflowClipRect(element) {
+      var rect = element.getBoundingClientRect();
+      if (!rect) return null;
+      var rectWidth = Number(rect.width);
+      var rectHeight = Number(rect.height);
+      if (!Number.isFinite(rectWidth)) rectWidth = Number(rect.right) - Number(rect.left);
+      if (!Number.isFinite(rectHeight)) rectHeight = Number(rect.bottom) - Number(rect.top);
+      var offsetWidth = Number(element.offsetWidth);
+      var offsetHeight = Number(element.offsetHeight);
+      var clientWidth = Number(element.clientWidth);
+      var clientHeight = Number(element.clientHeight);
+      var scaleX = rectWidth > 0 && offsetWidth > 0 ? rectWidth / offsetWidth : 1;
+      var scaleY = rectHeight > 0 && offsetHeight > 0 ? rectHeight / offsetHeight : 1;
+      var left = Number(rect.left) || 0;
+      var top = Number(rect.top) || 0;
+      if (Number.isFinite(clientWidth) && clientWidth >= 0 && offsetWidth > 0) {
+        left += (Number(element.clientLeft) || 0) * scaleX;
+        rectWidth = clientWidth * scaleX;
+      }
+      if (Number.isFinite(clientHeight) && clientHeight >= 0 && offsetHeight > 0) {
+        top += (Number(element.clientTop) || 0) * scaleY;
+        rectHeight = clientHeight * scaleY;
+      }
+      return {
+        left: left,
+        top: top,
+        right: left + (Number.isFinite(rectWidth) ? rectWidth : 0),
+        bottom: top + (Number.isFinite(rectHeight) ? rectHeight : 0)
+      };
+    }
+
+    // The stage is not necessarily the outermost clipping box. For example,
+    // the rounded board also uses overflow:hidden, and responsive layouts can
+    // put part of that board outside the viewport. Treat every actually visible
+    // clipping edge as a hard flood-fill boundary.
+    var view = canvas.ownerDocument && canvas.ownerDocument.defaultView
+      ? canvas.ownerDocument.defaultView
+      : window;
+    var ancestor = canvas.parentElement;
+    var ancestorDepth = 0;
+    while (ancestor && ancestorDepth < 64) {
+      if (ancestor !== displayArea && typeof ancestor.getBoundingClientRect === 'function') {
+        var style = null;
+        try {
+          style = view && typeof view.getComputedStyle === 'function'
+            ? view.getComputedStyle(ancestor)
+            : null;
+        } catch (_) {}
+        var overflow = style && style.overflow;
+        var clipX = clipsOverflow(style && (style.overflowX || overflow));
+        var clipY = clipsOverflow(style && (style.overflowY || overflow));
+        if (clipX || clipY) {
+          var ancestorClipRect = null;
+          try {
+            ancestorClipRect = elementOverflowClipRect(ancestor);
+          } catch (_) {}
+          intersectVisibleRect(ancestorClipRect, clipX, clipY);
+        }
+      }
+      ancestor = ancestor.parentElement;
+      ancestorDepth += 1;
+    }
+
+    var documentElement = canvas.ownerDocument && canvas.ownerDocument.documentElement;
+    var viewport = view && view.visualViewport;
+    var hasVisualViewport = Number(viewport && viewport.width) > 0
+      && Number(viewport && viewport.height) > 0;
+    var viewportWidth = hasVisualViewport
+      ? Number(viewport.width)
+      : Number(view && view.innerWidth) || Number(documentElement && documentElement.clientWidth) || 0;
+    var viewportHeight = hasVisualViewport
+      ? Number(viewport.height)
+      : Number(view && view.innerHeight) || Number(documentElement && documentElement.clientHeight) || 0;
+    if (viewportWidth > 0 && viewportHeight > 0) {
+      var viewportLeft = hasVisualViewport ? Number(viewport.offsetLeft) || 0 : 0;
+      var viewportTop = hasVisualViewport ? Number(viewport.offsetTop) || 0 : 0;
+      intersectVisibleRect({
+        left: viewportLeft,
+        top: viewportTop,
+        right: viewportLeft + viewportWidth,
+        bottom: viewportTop + viewportHeight
+      }, true, true);
+    }
+
+    if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return null;
     return {
       minX: Math.max(0, Math.min(width - 1, Math.floor((visibleLeft - canvasLeft) * width / canvasWidth))),
       minY: Math.max(0, Math.min(height - 1, Math.floor((visibleTop - canvasTop) * height / canvasHeight))),
@@ -4694,6 +4275,7 @@
     width = Math.max(0, Math.floor(Number(width) || 0));
     height = Math.max(0, Math.floor(Number(height) || 0));
     if (!data || width < 1 || height < 1 || data.length < width * height * 4) return false;
+    if (displayBounds === null) return false;
     displayBounds = displayBounds && typeof displayBounds === 'object' ? displayBounds : {};
     var boundaryMinX = Math.max(0, Math.min(width - 1, Math.floor(Number(displayBounds.minX) || 0)));
     var boundaryMinY = Math.max(0, Math.min(height - 1, Math.floor(Number(displayBounds.minY) || 0)));
@@ -4705,13 +4287,17 @@
       height - 1,
       Number.isFinite(Number(displayBounds.maxY)) ? Math.floor(Number(displayBounds.maxY)) : height - 1
     ));
+    var requestedX = Math.floor(Number(startX) || 0);
+    var requestedY = Math.floor(Number(startY) || 0);
+    if (requestedX < boundaryMinX || requestedX > boundaryMaxX
+        || requestedY < boundaryMinY || requestedY > boundaryMaxY) return false;
     var edgeIsBoundary = boundaryMaxX - boundaryMinX > 1 && boundaryMaxY - boundaryMinY > 1;
     var minX = edgeIsBoundary ? boundaryMinX + 1 : boundaryMinX;
     var minY = edgeIsBoundary ? boundaryMinY + 1 : boundaryMinY;
     var maxX = edgeIsBoundary ? boundaryMaxX - 1 : boundaryMaxX;
     var maxY = edgeIsBoundary ? boundaryMaxY - 1 : boundaryMaxY;
-    var x = Math.max(minX, Math.min(maxX, Math.floor(Number(startX) || 0)));
-    var y = Math.max(minY, Math.min(maxY, Math.floor(Number(startY) || 0)));
+    var x = Math.max(minX, Math.min(maxX, requestedX));
+    var y = Math.max(minY, Math.min(maxY, requestedY));
     var startPixel = y * width + x;
     var startIndex = startPixel * 4;
     var target = {
@@ -4782,6 +4368,7 @@
     var height = image.height;
     var fill = hexToRgba(currentBrushColor());
     var displayBounds = canvasDisplayPixelBounds(els.canvas, els.canvasStage);
+    if (!displayBounds) return false;
     if (!floodFillPixelBuffer(data, width, height, point.x, point.y, fill, displayBounds)) return false;
     els.ctx.putImageData(image, 0, 0);
     return true;
@@ -4890,45 +4477,6 @@
 
   function hideColorPanel() {
     if (els.colorPanel) els.colorPanel.hidden = true;
-  }
-
-  function setDebugPanelPosition(left, top) {
-    if (!els.debugPanel) return;
-    var width = els.debugPanel.offsetWidth || 360;
-    var height = els.debugPanel.offsetHeight || 360;
-    var maxLeft = Math.max(8, window.innerWidth - width - 8);
-    var maxTop = Math.max(8, window.innerHeight - height - 8);
-    els.debugPanel.style.left = Math.max(8, Math.min(maxLeft, left)) + 'px';
-    els.debugPanel.style.top = Math.max(8, Math.min(maxTop, top)) + 'px';
-    els.debugPanel.style.right = 'auto';
-  }
-
-  function beginDebugPanelDrag(event) {
-    if (!els.debugPanel || !els.debugPanelHandle || event.button !== 0) return;
-    if (event.target && event.target.closest && event.target.closest('button,input,select')) return;
-    event.preventDefault();
-    var rect = els.debugPanel.getBoundingClientRect();
-    state.debugPanelDrag = {
-      pointerId: event.pointerId,
-      dx: event.clientX - rect.left,
-      dy: event.clientY - rect.top
-    };
-    els.debugPanel.classList.add('is-dragging');
-    try { els.debugPanelHandle.setPointerCapture(event.pointerId); } catch (_) {}
-  }
-
-  function moveDebugPanelDrag(event) {
-    if (!state.debugPanelDrag || state.debugPanelDrag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    setDebugPanelPosition(event.clientX - state.debugPanelDrag.dx, event.clientY - state.debugPanelDrag.dy);
-  }
-
-  function endDebugPanelDrag(event) {
-    if (!state.debugPanelDrag || state.debugPanelDrag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    state.debugPanelDrag = null;
-    if (els.debugPanel) els.debugPanel.classList.remove('is-dragging');
-    try { els.debugPanelHandle.releasePointerCapture(event.pointerId); } catch (_) {}
   }
 
   function toggleColorPanel() {
@@ -5233,9 +4781,6 @@
       return;
     }
     if (state.voiceControlPending) return;
-    state.voiceHandoffRetryPending = false;
-    state.voiceHandoffRetryAttempts = 0;
-    state.voiceHandoffIntentEpoch = null;
     var client = state.sdkClient;
     if (!client || !hasVoiceInputCapability()) {
       addEventMessage('drawingGuess.voice.unavailable', 'In-game voice is unavailable in this environment.');
@@ -5284,47 +4829,6 @@
     els.tutorialStartButton.addEventListener('click', startGame);
     els.nextRoundButton.addEventListener('click', startNextRound);
     els.endButton.addEventListener('click', finishGame);
-    if (els.debugTrigger) {
-      els.debugTrigger.addEventListener('click', function () {
-        shakeDebugTrigger();
-        recordDebugGesture('L');
-      });
-      els.debugTrigger.addEventListener('contextmenu', function (event) {
-        event.preventDefault();
-        recordDebugGesture('R');
-      });
-    }
-    if (els.debugClose) els.debugClose.addEventListener('click', closeDebugPanel);
-    if (els.debugPanelHandle) {
-      els.debugPanelHandle.addEventListener('pointerdown', beginDebugPanelDrag);
-      els.debugPanelHandle.addEventListener('pointermove', moveDebugPanelDrag);
-      els.debugPanelHandle.addEventListener('pointerup', endDebugPanelDrag);
-      els.debugPanelHandle.addEventListener('pointercancel', endDebugPanelDrag);
-    }
-    if (els.debugCharacterSelect) {
-      els.debugCharacterSelect.addEventListener('change', function () {
-        switchDebugCharacter(els.debugCharacterSelect.value);
-      });
-    }
-    if (els.debugAiRound) {
-      els.debugAiRound.addEventListener('click', function () {
-        startDebugAiRound(false);
-      });
-    }
-    if (els.debugUserRound) {
-      els.debugUserRound.addEventListener('click', function () {
-        startDebugUserRound(false);
-      });
-    }
-    if (els.debugRotateRounds) {
-      els.debugRotateRounds.addEventListener('change', function () {
-        state.debugRotateRounds = !!els.debugRotateRounds.checked;
-        syncDebugPanelState();
-      });
-    }
-    if (els.debugTriggerAiGuess) {
-      els.debugTriggerAiGuess.addEventListener('click', triggerDebugAiGuessNow);
-    }
     if (els.exitStayButton) els.exitStayButton.addEventListener('click', deferExitConfirm);
     if (els.exitLeaveButton) els.exitLeaveButton.addEventListener('click', leaveDrawingGuessPage);
     if (els.exitReopenButton) els.exitReopenButton.addEventListener('click', showExitConfirm);
@@ -5431,6 +4935,8 @@
     state.sessionId = String(boot.sessionId || '') || makeSessionId();
     state.lanlanName = String(boot.lanlanName || '').trim();
     state.windowLanlanName = state.lanlanName;
+    syncPageLocale();
+    window.addEventListener('localechange', syncPageLocale);
     loadModelViewSettings();
     loadSideSplitRatio();
     resetCanvas();
@@ -5438,7 +4944,6 @@
     setPhase('tutorial');
     readMemoryConsent();
     bindEvents();
-    startDebugCountdownUpdater();
     connectMiniGameSdk().catch(function (error) {
       console.warn('[DrawingGuessSDK] SDK connection unavailable:', sdkErrorReason(error));
     });

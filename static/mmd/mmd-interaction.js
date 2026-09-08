@@ -40,7 +40,7 @@ class MMDInteraction {
             duration: 260,
             easingType: 'easeOutBack'
         };
-        this._snapAnimationFrameId = null;
+        this._snapCancelFrame = null;
         this._isSnappingModel = false;
         this._snapResolve = null;
 
@@ -348,9 +348,9 @@ class MMDInteraction {
             if (this.checkLocked()) return;
             if (isYuiGuideDragLocked()) return;
 
-            if (this._snapAnimationFrameId) {
-                cancelAnimationFrame(this._snapAnimationFrameId);
-                this._snapAnimationFrameId = null;
+            if (this._snapCancelFrame) {
+                this._snapCancelFrame();
+                this._snapCancelFrame = null;
                 if (this._snapResolve) {
                     this._snapResolve(false);
                     this._snapResolve = null;
@@ -363,6 +363,10 @@ class MMDInteraction {
 
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
+                if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                    this.manager.core._boostInteractiveFPS();
+                }
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 this._rememberPanDragPointer(e, { captureOffset: true });
                 this._rememberDragHintPanPointer(e, { start: true });
@@ -375,6 +379,9 @@ class MMDInteraction {
                 if (!this._hitTestModel(e.clientX, e.clientY)) return;
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                    this.manager.core._boostInteractiveFPS();
+                }
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
                 e.preventDefault();
@@ -528,6 +535,13 @@ class MMDInteraction {
 
             // 只有鼠标在模型上才响应滚轮
             if (!this._hitTestModel(e.clientX, e.clientY)) return;
+
+            // 真正命中模型的缩放才升频：同步 boost（不等 300ms governor 轮询）
+            // 消除从空闲地板起步的首段 30fps 顿挫；时间戳供 governor 续期
+            this.manager._lastInteractionBoostTs = performance.now();
+            if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                this.manager.core._boostInteractiveFPS();
+            }
 
             e.preventDefault();
             const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;
@@ -929,9 +943,9 @@ class MMDInteraction {
             return Promise.resolve(false);
         }
 
-        if (this._snapAnimationFrameId) {
-            cancelAnimationFrame(this._snapAnimationFrameId);
-            this._snapAnimationFrameId = null;
+        if (this._snapCancelFrame) {
+            this._snapCancelFrame();
+            this._snapCancelFrame = null;
             if (this._snapResolve) {
                 this._snapResolve(false);
                 this._snapResolve = null;
@@ -958,17 +972,17 @@ class MMDInteraction {
                 );
 
                 if (progress < 1) {
-                    this._snapAnimationFrameId = requestAnimationFrame(animate);
+                    this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     mesh.position.copy(targetPosition);
                     this._isSnappingModel = false;
-                    this._snapAnimationFrameId = null;
+                    this._snapCancelFrame = null;
                     this._snapResolve = null;
                     resolve(true);
                 }
             };
 
-            this._snapAnimationFrameId = requestAnimationFrame(animate);
+            this._snapCancelFrame = this._scheduleSnapFrame(animate);
         });
     }
 
@@ -1080,12 +1094,23 @@ class MMDInteraction {
         }, 500);
     }
 
+    // 排一帧回弹动画：Electron Pet 里渲染后端切到定时器驱动时走同周期定时器
+    // （frame-pacing.requestPacedFrame），否则 rAF。返回取消函数（存到 _snapCancelFrame）。
+    _scheduleSnapFrame(callback) {
+        const pacing = window.nekoFramePacing;
+        if (pacing && typeof pacing.requestPacedFrame === 'function') {
+            return pacing.requestPacedFrame(callback);
+        }
+        const id = requestAnimationFrame(callback);
+        return () => cancelAnimationFrame(id);
+    }
+
     dispose() {
         this.cleanupDragAndZoom();
 
-        if (this._snapAnimationFrameId) {
-            cancelAnimationFrame(this._snapAnimationFrameId);
-            this._snapAnimationFrameId = null;
+        if (this._snapCancelFrame) {
+            this._snapCancelFrame();
+            this._snapCancelFrame = null;
         }
         if (this._snapResolve) {
             this._snapResolve(false);

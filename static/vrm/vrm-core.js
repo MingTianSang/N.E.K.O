@@ -477,6 +477,10 @@ class VRMCore {
         this._ensureThreeReady();
         const THREE = window.THREE;
         const embed = options && options.embed === true;
+        const resizeMode = String(options?.resizeMode || 'host-window');
+        if (!['fixed', 'host-window'].includes(resizeMode)) {
+            throw new Error(`不支持的 VRM resizeMode: ${resizeMode}`);
+        }
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -517,7 +521,11 @@ class VRMCore {
             width = window.innerWidth;
             height = window.innerHeight;
         }
-        this.manager.camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 2000);
+        // A 30° lens is unnecessarily tight for full-body companion motion:
+        // raised hands, ears and wide gestures can leave the viewport even when
+        // the torso is still visible. Start wider and let the interaction module
+        // expand further only when the animated bounds actually need it.
+        this.manager.camera = new THREE.PerspectiveCamera(34, width / height, 0.05, 2000);
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 
@@ -594,6 +602,11 @@ class VRMCore {
             this.manager.controls.target.set(0, 1, 0);
             this.manager.controls.enableDamping = true;
             this.manager.controls.dampingFactor = 0.1;
+            // OrbitControls 只在 update() 真正移动了相机时才发 change 事件：
+            // 打时间戳供空闲低频 governor 判定（覆盖拖拽平移 + 阻尼收敛期）
+            this.manager.controls.addEventListener('change', () => {
+                this.manager._lastCameraChangeAt = performance.now();
+            });
             this.manager.controls.update();
         }
 
@@ -648,6 +661,12 @@ class VRMCore {
         bottomLight.castShadow = false;
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
+
+        // Embedded mini-game renderers are resized by the official Avatar host.
+        // Keeping the engine listener-free prevents a second window policy from
+        // racing container/fixed sizing. The main application keeps the existing
+        // host-window behavior because it remains the default.
+        if (resizeMode === 'fixed') return;
 
         // 使用 Core 模块专用的 handlers 数组
         if (!this.manager._coreWindowHandlers) {
@@ -717,6 +736,7 @@ class VRMCore {
 
     async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
+        const embed = options.embed === true;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
             throw new Error(errorMsg);
@@ -861,7 +881,8 @@ class VRMCore {
 
             // 获取保存的用户偏好设置
             let preferences = null;
-            try {
+            if (!embed) {
+                try {
                 // 添加超时保护（5秒超时）
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -946,8 +967,9 @@ class VRMCore {
                         return false;
                     });
                 }
-            } catch (error) {
-                console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                } catch (error) {
+                    console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                }
             }
 
             if (preferences) {
@@ -1047,7 +1069,7 @@ class VRMCore {
             
             const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
-            if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
+            if (!embed && !hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
                 // 始终从 vrm.scene 获取当前位置，确保 z 值有效
                 // （旧版偏好设置可能只有 x 和 y，没有 z 值）
@@ -1100,7 +1122,7 @@ class VRMCore {
                         // 桌面端：使用更平衡的计算方式
                         if (modelHeight > 0 && Number.isFinite(modelHeight)) {
                             // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍
-                            const targetScreenHeight = screenHeight * 0.45;
+                            const targetScreenHeight = screenHeight * 0.40;
                             
                             // 检查相机是否存在
                             if (this.manager.camera && this.manager.camera.fov) {
@@ -1176,7 +1198,7 @@ class VRMCore {
                     const screenHeight = window.innerHeight;
                     const screenWidth = window.innerWidth;
 
-                    const targetScreenHeight = screenHeight * 0.45;
+                    const targetScreenHeight = screenHeight * 0.40;
                     const fov = this.manager.camera.fov * (Math.PI / 180);
                     const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 

@@ -10,14 +10,14 @@ if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
 
-def _ensure_yui_origin_unpacked():
-    # Some tests read static/yui-origin/* directly (Live2D model). The model is
-    # shipped as assets/yui-origin.tar.gz; auto-unpack so pytest works without
+def _ensure_builtin_live2d_unpacked(model_name):
+    # Some tests read static/<model>/* directly (Live2D model). The models are
+    # shipped as assets/<model>.tar.gz; auto-unpack so pytest works without
     # requiring build_frontend to have been run.
-    archive = _Path(_project_root) / "assets" / "yui-origin.tar.gz"
+    archive = _Path(_project_root) / "assets" / f"{model_name}.tar.gz"
     target_root = _Path(_project_root) / "static"
-    target_dir = target_root / "yui-origin"
-    marker = target_dir / "yui-origin.moc3"
+    target_dir = target_root / model_name
+    marker = target_dir / f"{model_name}.moc3"
     if not archive.exists():
         return
     if marker.exists() and marker.stat().st_mtime >= archive.stat().st_mtime:
@@ -39,7 +39,8 @@ def _ensure_yui_origin_unpacked():
     marker.touch()
 
 
-_ensure_yui_origin_unpacked()
+for _builtin_live2d_model in ("yui-origin", "yui-lolita"):
+    _ensure_builtin_live2d_unpacked(_builtin_live2d_model)
 
 # Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
 # Without this, every pytest session — including ones that intentionally inject
@@ -62,6 +63,14 @@ from utils import logger_config as _logger_config_module
 _logger_config_module.RobustLoggerConfig._get_documents_directory = (
     lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
 )
+
+# 同理，但针对运行根本身：get_config_manager() 的 migrate 默认为 True，
+# 谁先 import 那 7 个模块级单例之一，谁就在真实运行根上跑完整条迁移链。
+# 必须在任何产品模块被 import 之前装好（见 tests/real_root_isolation.py）。
+from utils.config_manager import ConfigManager as _ConfigManagerForIsolation
+from tests import real_root_isolation as _real_root_isolation
+
+_real_root_isolation.install(_ConfigManagerForIsolation)
 
 import asyncio
 import asyncio.runners
@@ -107,6 +116,7 @@ import threading
 import time
 import json
 import logging
+import re
 import socket
 from unittest.mock import patch
 from pathlib import Path
@@ -126,6 +136,25 @@ SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
 _RUNTIME_TEST_PORT_RETRY_LIMIT = 10
 
+# Ports the runtime fixtures bind, in the order they get a slot in a worker's band.
+_RUNTIME_TEST_PORT_SLOTS = ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT")
+# Deterministic per-worker bands live BELOW the Windows ephemeral range
+# (49152-65535), so an unrelated process asking the OS for "any free port"
+# cannot be handed a slot this run has reserved.
+_XDIST_PORT_BAND_BASE = 21000
+# Highest worker index the deterministic scheme covers. A band is exactly this
+# many workers wide, so retry band N starts where band N-1's last worker ends
+# and no worker's candidate can alias another's -- at ANY index below the cap.
+#
+# The previous span (128, "room for 64 workers") aliased the moment a 64th
+# worker existed: gw64 attempt 0 landed on gw0 attempt 1. It went unnoticed
+# because the check I wrote iterated range(64) -- the implementation's own
+# assumption used as the test's bound, which can only ever agree with it
+# (CodeRabbit, #3022). Above the cap there is no safe slot, so the allocator
+# says so instead of aliasing.
+_XDIST_PORT_MAX_WORKERS = 256
+_XDIST_PORT_BAND_ATTEMPTS = 8
+
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
     "assistApiKeyQwen": "ASSIST_API_KEY_QWEN",
@@ -139,6 +168,40 @@ KEY_MAPPING = {
     "assistApiKeyMimo": "ASSIST_API_KEY_MIMO",
     "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
+
+# 全进程时钟守卫：运行期比对，与 patch 的写法无关（见 tests/clock_guard.py）
+# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
+# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效（改回全局 patch 也不再转红）。
+from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+
+# 存储根环境变量守卫（见 tests/storage_root_env_guard.py）：NEKO_STORAGE_SELECTED_ROOT
+# 一旦泄漏到进程环境，后面每个"临时" ConfigManager 都会无视 patch 过的目录、直接写进
+# 开发机的真实运行根（2026-09-01 就这样把六个角色从 characters.json 里抹掉了）。
+# 同 clock_guard：pytest 按名字发现 hook，这个导入没有显式调用点但不是死代码。
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
+)
+
+
+@pytest.fixture
+def real_root_resolution():
+    """Restore ConfigManager's genuine directory resolution for this test.
+
+    tests/conftest.py stubs it session-wide so no unpatched ConfigManager can
+    reach the user's real runtime root. Tests whose SUBJECT is that resolution
+    ask for this fixture; they patch sys.platform / Path.home / the environment
+    themselves and run inside tmp_path, so the real methods stay off the
+    developer's directories.
+    """
+    from utils.config_manager import ConfigManager
+
+    from tests import real_root_isolation
+
+    with real_root_isolation.real_resolution(ConfigManager):
+        yield
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -246,6 +309,76 @@ def _find_free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _port_is_bindable(port: int) -> bool:
+    """Whether 127.0.0.1:``port`` can be bound right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _xdist_worker_index() -> int | None:
+    """``gw7`` -> 7. None when not running under an xdist worker."""
+    match = re.fullmatch(r"gw(\d+)", os.environ.get("PYTEST_XDIST_WORKER", ""))
+    return int(match.group(1)) if match else None
+
+
+def _xdist_band_port(port_name: str) -> int | None:
+    """A port reserved for this worker by arithmetic rather than by probing.
+
+    ``_find_free_local_port`` asks the OS for an ephemeral port and closes the
+    probe socket before anything binds it, so two workers probing at the same
+    moment can be handed the same port -- and on Windows SO_REUSEADDR lets the
+    second server bind it anyway, which is how a worker ends up silently talking
+    to another worker's server.
+
+    Deriving the port from the worker index removes the window instead of making
+    it narrower: two workers cannot compute the same slot.
+
+    An occupied slot retries in the next band rather than giving up immediately,
+    because the fallback path is the uncoordinated probe this function exists to
+    avoid -- sending two workers there at once re-creates exactly the collision
+    it prevents (Codex, #3022). Every retry is still a multiple of the band span
+    plus this worker's own index, so no attempt by one worker can ever land on
+    an attempt by another. None means all bands were occupied, which leaves the
+    caller no better option than probing.
+    """
+    index = _xdist_worker_index()
+    if index is None or port_name not in _RUNTIME_TEST_PORT_SLOTS:
+        return None
+    offset = _RUNTIME_TEST_PORT_SLOTS.index(port_name)
+    for port in _xdist_band_candidates(index, offset):
+        if _port_is_bindable(port):
+            return port
+    return None
+
+
+def _xdist_band_candidates(index: int, offset: int) -> list[int]:
+    """Every port worker ``index`` may use for slot ``offset``, in order.
+
+    Exposed so the regression test can enumerate the real candidates instead of
+    re-deriving the arithmetic -- a test that recomputes the formula agrees with
+    the implementation by construction and cannot catch an aliasing bug in it.
+
+    Empty above ``_XDIST_PORT_MAX_WORKERS``: no slot exists that is guaranteed
+    not to belong to another worker, and handing back an aliased one would be
+    worse than falling through to the probe.
+    """
+    if index >= _XDIST_PORT_MAX_WORKERS:
+        return []
+    slots = len(_RUNTIME_TEST_PORT_SLOTS)
+    span = _XDIST_PORT_MAX_WORKERS * slots
+    ports = []
+    for attempt in range(_XDIST_PORT_BAND_ATTEMPTS):
+        port = _XDIST_PORT_BAND_BASE + attempt * span + index * slots + offset
+        if port > 65535:
+            break
+        ports.append(port)
+    return ports
+
+
 def _set_runtime_test_port(port_name: str, port_value: int) -> None:
     os.environ[f"NEKO_{port_name}"] = str(port_value)
 
@@ -262,6 +395,32 @@ def _set_runtime_test_port(port_name: str, port_value: int) -> None:
 def _resolve_runtime_test_port(port_name: str) -> int:
     env_name = f"NEKO_{port_name}"
     raw_value = os.environ.get(env_name)
+    if raw_value and os.environ.get("PYTEST_XDIST_WORKER"):
+        # Under xdist the controller imports this conftest during collection,
+        # allocates the pair, and writes it into its own os.environ — which
+        # execnet then hands to every worker. Honouring the inherited value
+        # gives all N workers the SAME port, so two workers running a
+        # `mock_memory_server` test at the same time bind the same address.
+        # On Windows SO_REUSEADDR lets the second bind succeed instead of
+        # failing, so the collision is silent: the readiness probe is answered
+        # by whichever server got there first and the suite stays green while
+        # one worker talks to another worker's server.
+        #
+        # A worker therefore always allocates its own pair. Pinning a single
+        # port by env var has no coherent meaning across N workers anyway; the
+        # variable keeps working for single-process runs, which is what it was
+        # added for.
+        logger.debug(
+            "Ignoring inherited %s=%r in xdist worker %s; allocating a private port",
+            env_name,
+            raw_value,
+            os.environ.get("PYTEST_XDIST_WORKER"),
+        )
+        raw_value = None
+    if not raw_value:
+        banded = _xdist_band_port(port_name)
+        if banded is not None:
+            return banded
     if raw_value:
         try:
             port_value = int(raw_value)

@@ -27,14 +27,16 @@ Parts are an ordered list of dicts.  Each part has a ``type`` discriminator:
 
 * ``{"type": "text",  "text": str}``
 * ``{"type": "image", "data": bytes, "mime": str}``  (inline)
-* ``{"type": "image", "url":  str,   "mime": str}``  (remote)
+* ``{"type": "image", "url":  str,   "mime": str}``  (URL reference;
+  model injection accepts URLs returned by ``ctx.images.upload()``)
 * ``{"type": "audio", "data": bytes, "mime": str}``
 * ``{"type": "audio", "url":  str,   "mime": str}``
 * ``{"type": "video", "url":  str,   "mime": str}``
 * ``{"type": "ui_action", "action": str, ...}``       – frontend-only side
   effects (media playback, allowlist updates, …).  ``action`` values today:
   ``"media_play_url"`` (with ``url`` / ``media_type`` / ``name`` /
-  ``artist``) and ``"media_allowlist_add"`` (with ``domains``).
+  ``artist``) and ``"media_allowlist_add"`` (with ``domains`` and optional
+  exact ``http_urls``).
 
 The wire format encodes inline ``data: bytes`` as base64 in
 ``binary_base64`` so the message_plane PUB JSON serialiser can carry it.
@@ -245,7 +247,7 @@ def translate_push_message(
             _warn(
                 "message_type='music_allowlist_add'",
                 "parts=[{'type': 'ui_action', 'action': 'media_allowlist_add', "
-                "'domains': [...]}]",
+                "'domains': [...], 'http_urls': [...]}]",
             )
         else:
             _warn(
@@ -355,13 +357,14 @@ def translate_push_message(
         elif message_type == "music_allowlist_add":
             if parts is None:
                 md_local = md or {}
-                final_parts.append(
-                    {
-                        "type": "ui_action",
-                        "action": "media_allowlist_add",
-                        "domains": list(md_local.get("domains") or []),
-                    }
-                )
+                ui_part = {
+                    "type": "ui_action",
+                    "action": "media_allowlist_add",
+                    "domains": list(md_local.get("domains") or []),
+                }
+                if md_local.get("http_urls"):
+                    ui_part["http_urls"] = list(md_local["http_urls"])
+                final_parts.append(ui_part)
             if visibility is None:
                 final_visibility = []
             if ai_behavior is None:
@@ -376,10 +379,12 @@ def translate_push_message(
         "schema": SCHEMA_VERSION,
         "source": source,
         "priority": priority,
-        # Optional coalescing key for ProactiveDeliveryManager (OPT-IN):
-        # queued proactive cues sharing the SAME explicit key collapse to the
-        # newest. Empty → never coalesce (unique per cue). Set distinct keys
-        # per cue CATEGORY so distinct important cues don't drop each other.
+        # Optional coalescing key (OPT-IN): queued cues sharing the SAME
+        # explicit key collapse to the newest, on BOTH delivery paths — the
+        # ProactiveDeliveryManager (ai_behavior="respond") and the direct
+        # enqueue-only queue (ai_behavior="read"). Empty → never coalesce
+        # (unique per cue). Set distinct keys per cue CATEGORY so distinct
+        # important cues don't drop each other.
         "coalesce_key": coalesce_key if isinstance(coalesce_key, str) else "",
         "visibility": final_visibility,
         "ai_behavior": final_ai_behavior,

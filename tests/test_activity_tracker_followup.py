@@ -1572,7 +1572,7 @@ def test_context_prompt_pending_cleared_on_leaving_target_state():
 
 @pytest.mark.unit
 def test_context_prompt_is_consumed_without_push_during_internal_game(monkeypatch):
-    """内置游戏路由活跃时，activity gaming 信号不能再触发屏幕分享选择框。"""
+    """Do not prompt for screen sharing while an internal game route is active."""
     tracker = _make_tracker_for_break_tests()
     tracker._context_prompt_pending = {'context': 'play', 'set_at': 1000.0}
     pushed = []

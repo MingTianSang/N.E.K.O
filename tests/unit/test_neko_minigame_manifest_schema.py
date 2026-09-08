@@ -44,6 +44,48 @@ def test_valid_runtime_contract_manifest_passes(validator: Draft202012Validator)
     validator.validate(manifest())
 
 
+def test_command_contracts_have_an_independent_large_string_bound(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:review": {
+            "request": {
+                "type": "object",
+                "properties": {
+                    "image_data_url": {"type": "string", "maxLength": 1_800_000},
+                },
+                "required": ["image_data_url"],
+            },
+            "response": {"type": "object"},
+        },
+    }
+    validator.validate(value)
+
+    ordinary_contract = deepcopy(value)
+    ordinary_contract["contracts"]["events"]["score"] = {
+        "type": "string",
+        "maxLength": 4097,
+    }
+    assert_invalid(validator, ordinary_contract)
+
+    oversized_command_contract = deepcopy(value)
+    oversized_command_contract["contracts"]["commands"]["round:review"]["request"][
+        "properties"
+    ]["image_data_url"]["maxLength"] = 1_800_001
+    assert_invalid(validator, oversized_command_contract)
+
+
+def test_command_contract_requires_request_and_response(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:start": {"request": {"type": "object"}},
+    }
+    assert_invalid(validator, value)
+
+
 def test_array_contract_requires_items(validator: Draft202012Validator) -> None:
     value = manifest()
     value["contracts"]["events"]["score"] = {"type": "array"}
@@ -72,18 +114,6 @@ def test_quick_lines_requires_dialogue(validator: Draft202012Validator) -> None:
     }
     assert_invalid(validator, value)
     value["optionalCapabilities"].append("dialogue")
-    validator.validate(value)
-
-
-def test_window_control_is_an_optional_pre_route_capability(
-    validator: Draft202012Validator,
-) -> None:
-    value = {
-        "id": "window-control-test",
-        "version": "1.0.0",
-        "requiredCapabilities": ["logging"],
-        "optionalCapabilities": ["window-control"],
-    }
     validator.validate(value)
 
 

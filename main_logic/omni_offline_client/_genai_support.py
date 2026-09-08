@@ -29,6 +29,7 @@ from ._shared import (
     logger,
     strip_thinking_segments,
 )
+from ._lifecycle import _slop_reduced_for_genai, _suspend_dialog_slop
 
 _genai = None
 
@@ -72,6 +73,82 @@ class _GenaiToolsUnsupported(Exception):
     """Raised by the genai SDK path when tool support is unavailable
     (SDK missing, model rejected, etc.) so the caller can fall back to
     the OpenAI-compat path with tools silently disabled."""
+
+
+# Gemini 的 thought_signature 在两条路径上形态不同：native SDK 给 ``Part
+# .thought_signature`` 的裸 bytes，OpenAI-compat 端点给
+# ``tool_calls[].extra_content.google.thought_signature`` 的 base64 字符串。
+# 统一工具调用历史（两条路径共用的 dict）一律按后者存：JSON 可序列化、能
+# 直接落盘、且换一条路线继续同一段历史时也能原样回传。
+_EXTRA_CONTENT_VENDOR_KEY = "google"
+_THOUGHT_SIGNATURE_KEY = "thought_signature"
+
+
+def _extra_content_from_thought_signature(signature: Any) -> Optional[dict]:
+    """Wrap a native ``Part.thought_signature`` into the shared history shape.
+
+    Returns ``None`` when the part carries no signature, so ordinary
+    non-thinking turns never grow an ``extra_content`` key."""
+    if not signature:
+        return None
+    if isinstance(signature, str):
+        encoded = signature  # 已是 base64（部分 SDK 版本直接给 str）
+    else:
+        import base64 as _b64
+        try:
+            encoded = _b64.b64encode(bytes(signature)).decode("ascii")
+        except (TypeError, ValueError) as e:
+            logger.debug("genai: unusable thought_signature dropped: %s", e)
+            return None
+    return {_EXTRA_CONTENT_VENDOR_KEY: {_THOUGHT_SIGNATURE_KEY: encoded}}
+
+
+def _thought_signature_from_extra_content(extra_content: Any) -> Optional[bytes]:
+    """Inverse of ``_extra_content_from_thought_signature``: pull the base64
+    signature out of a history entry and decode it back to the bytes the
+    native SDK wants. ``None`` when absent or unparseable."""
+    if not isinstance(extra_content, dict):
+        return None
+    vendor = extra_content.get(_EXTRA_CONTENT_VENDOR_KEY)
+    if not isinstance(vendor, dict):
+        return None
+    encoded = vendor.get(_THOUGHT_SIGNATURE_KEY)
+    if not encoded or not isinstance(encoded, str):
+        return None
+    import base64 as _b64
+    # 只有我们自己写的那半边保证是标准字母表 + padding；另一半是 compat
+    # 端点原样存下来的串，字母表和 padding 由 Google 说了算。这里两种字母表
+    # 都收、缺 padding 也补，别让一个纯编码约定差异把签名静默丢掉——那等于
+    # 把本要修的 400 又放回来。真正的垃圾串仍被 validate=True 挡住。
+    normalized = encoded.replace("-", "+").replace("_", "/")
+    normalized += "=" * (-len(normalized) % 4)
+    try:
+        return _b64.b64decode(normalized, validate=True)
+    except (ValueError, TypeError) as e:
+        logger.warning("genai: malformed thought_signature in history dropped: %s", e)
+        return None
+
+
+def _genai_function_call_part(types, *, call_id: str, name: str, args: dict, signature: Optional[bytes]):
+    """Build the ``Part(function_call=...)`` for a replayed tool call, carrying
+    ``thought_signature`` when history has one.
+
+    Gemini rejects a follow-up request whose function-call history lost the
+    signature (400 INVALID_ARGUMENT), so this is what makes multi-round tool
+    calling work at all on thinking models. Falls back to a signature-less
+    part if the installed SDK's ``Part`` doesn't accept the field — an old
+    SDK is better served by the pre-existing (broken-for-Gemini-3) behaviour
+    than by a hard crash."""
+    fc = types.FunctionCall(id=call_id, name=name, args=args)
+    if signature:
+        try:
+            return types.Part(function_call=fc, thought_signature=signature)
+        except Exception as e:  # pragma: no cover — old google-genai only
+            logger.warning(
+                "genai: Part rejected thought_signature (%s); replaying without it",
+                e,
+            )
+    return types.Part(function_call=fc)
 
 def _genai_messages_to_contents(
     messages: list,
@@ -138,11 +215,17 @@ def _genai_messages_to_contents(
                             args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
                         except json.JSONDecodeError:
                             args = {"_raw": fn.get("arguments") or ""}
-                        parts.append(types.Part(function_call=types.FunctionCall(
-                            id=tc.get("id") or "",
+                        parts.append(_genai_function_call_part(
+                            types,
+                            call_id=tc.get("id") or "",
                             name=fn.get("name") or "",
                             args=args,
-                        )))
+                            # thought_signature 必须跟着它那条 function_call
+                            # 一起回放，否则 Gemini 思考模型下一轮直接 400。
+                            signature=_thought_signature_from_extra_content(
+                                tc.get("extra_content")
+                            ),
+                        ))
                     contents.append(types.Content(role="model", parts=parts))
                 else:
                     parts = _genai_parts_from_content(msg.get("content", ""))
@@ -242,8 +325,7 @@ def _genai_parts_from_content(content: Any) -> list:
 
 def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     """Decide whether to route this Gemini-flavoured offline call through
-    the native google-genai SDK (which supports tool calling) instead of
-    the OpenAI-compat endpoint (which silently drops ``tools``).
+    the native google-genai SDK instead of the OpenAI-compat endpoint.
 
     Returns True only when:
       1. ``google-genai`` is importable in the running env, AND
@@ -251,10 +333,11 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
          the model name contains "gemini" AND base_url is empty/None
          (i.e. caller wants direct genai with no proxy).
 
-    Explicitly excluded: lanlan.app's international free proxy uses
-    Gemini under the hood but exposes only the OpenAI-compat surface, so
-    its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
-    work there until the proxy is upgraded — see TODO in core.py.
+    This is a transport choice, not a capability one: both paths carry
+    ``tools`` to the model, so callers never have to ask which one they
+    landed on before handing over a tool definition. lanlan's free proxy
+    exposes only the OpenAI-compat surface and therefore stays on the
+    OpenAI path — it forwards tools like any other compat endpoint.
     """
     # 先做便宜的字符串判断：只有路由确实指向 native Gemini 时才去 import SDK。
     # 这样常规 OpenAI-compat 端点（含 greeting）构造 client 时不会触发 genai
@@ -275,6 +358,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
 
 
 class _GenaiMixin:
+    def _ensure_genai_client(self) -> None:
+        """Build the genai client if nothing holds one right now.
+
+        Called at every point that dereferences it, not once up front: a tool
+        that hands back a picture makes the host call
+        ``prepare_for_tool_images``, whose ``switch_model`` drops the client
+        because the vision slot may carry its own key and endpoint. Anything
+        that cached the client above the tool loop would then be holding None.
+        """
+        if self._genai_client is not None:
+            return
+        try:
+            self._genai_client = _genai.Client(api_key=self.api_key or None)
+        except Exception as e:
+            raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
+
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
         ``LLMStreamChunk``-shaped objects so the caller can be agnostic
@@ -292,16 +391,12 @@ class _GenaiMixin:
         cannot handle tools — caller falls back to OpenAI-compat."""
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
-
-        # Lazy client init — re-use across turns.
-        if self._genai_client is None:
-            try:
-                self._genai_client = _genai.Client(api_key=self.api_key or None)
-            except Exception as e:
-                raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
 
         # Build tools once per session (registry is identity-stable
         # across iterations within one stream_text call).
@@ -317,8 +412,17 @@ class _GenaiMixin:
         if tools_payload:
             gen_config_kw["tools"] = tools_payload
 
+        # 跨迭代累计真正执行过的 tool call 数（与 OpenAI 路径对偶）：0 与
+        # 非 0 在封顶日志里是两种性质。
+        executed_tool_calls = 0
+        # 是否因"零执行轮且已经流过文本"提前跳出循环：封顶日志据此别谎称
+        # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
+        zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
-            system_instruction, contents = _genai_messages_to_contents(messages)
+            self._ensure_genai_client()
+            system_instruction, contents = _genai_messages_to_contents(
+                _slop_reduced_for_genai(messages)
+            )
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
                 cfg_kw["system_instruction"] = system_instruction
@@ -353,8 +457,18 @@ class _GenaiMixin:
                 raise
 
             # Per-iteration accumulators.
-            collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)
+            # list of (id, name, args_dict, raw_args_str, extra_content|None)
+            collected_tool_calls: list = []
+            # 是否见过任何 function_call part（含名字为空、随后被 drop 的）：
+            # "进入 tool 轮"的判据必须用它而不是 collected——全被 drop 时
+            # collected 为空，但这轮确实不是普通文本轮。
+            saw_tool_call_fragment = False
             had_text = False
+            # 本轮真的有非空文本 yield 给用户（≠ had_text：模型吐了 text
+            # part 但被 leak filter 整段抑制时，用户其实什么都没看到）。
+            # 零执行轮的"要不要再试一轮"只看这个——OpenAI 路径那边天然
+            # 是这个语义（它的 streamed_text_buffer 累的就是过滤后的文本）。
+            visible_text = False
             # 累积本轮已经 yield 给用户的 text，下面写 assistant 历史时
             # 用作 ``content`` —— 否则下一轮 LLM 看到 ``content=""`` 会
             # 不知道自己已经说过这部分话，可能重复或改口。
@@ -368,7 +482,15 @@ class _GenaiMixin:
             iter_block_reason: Optional[str] = None
 
             try:
+                # 与 OpenAI 路径对偶：上一轮注入的工具图，等本轮 SDK 真的
+                # 吐出东西才算送到。
+                tool_frames_published = False
                 async for chunk in stream:
+                    if not tool_frames_published:
+                        tool_frames_published = True
+                        self._publish_pending_tool_frames(
+                            tool_bus_frames, turn_id=tool_frames_turn_id
+                        )
                     # prompt_feedback.block_reason：Gemini 整段 input 被 safety
                     # 拦掉时填这个，candidate 可能根本没出现。
                     pf = getattr(chunk, "prompt_feedback", None)
@@ -397,6 +519,7 @@ class _GenaiMixin:
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
                         if fn_call is not None:
+                            saw_tool_call_fragment = True
                             tc_name = (getattr(fn_call, "name", "") or "").strip()
                             if not tc_name:
                                 # 与 OpenAI 路径对偶：空 name 的 function_call 是
@@ -414,11 +537,17 @@ class _GenaiMixin:
                                 raw_args = json.dumps(args, ensure_ascii=False)
                             except (TypeError, ValueError):
                                 raw_args = "{}"
+                            # thought_signature 挂在 Part 上（不在 FunctionCall
+                            # 里），必须在这里就抓走存进历史：下一轮回放这条
+                            # function_call 时 Gemini 思考模型要求原样带回。
                             collected_tool_calls.append((
                                 getattr(fn_call, "id", "") or "",
                                 tc_name,
                                 args,
                                 raw_args,
+                                _extra_content_from_thought_signature(
+                                    getattr(part, "thought_signature", None)
+                                ),
                             ))
                         elif text:
                             if tool_leak_filter is not None:
@@ -426,6 +555,8 @@ class _GenaiMixin:
                                     text, tool_leak_filter, provider=tool_leak_provider,
                                 )
                             had_text = True
+                            if text:
+                                visible_text = True
                             streamed_text_buffer += text
                             chunk_out = LLMStreamChunk(content=text)
                             if tool_leak_filter is not None:
@@ -487,27 +618,81 @@ class _GenaiMixin:
                     getattr(self, "_last_prompt_tokens", None),
                 )
 
-            if collected_tool_calls and self.on_tool_call is not None:
-                # Execute tools, append a unified assistant + tool history (dict shape
-                # accepted by both paths), then continue tool-iteration loop.
-                tool_calls_dict = [
-                    {
-                        "id": tc_id or f"call_{i}",
-                        "type": "function",
-                        "function": {"name": tc_name, "arguments": tc_raw},
-                    }
-                    for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
-                ]
+            if saw_tool_call_fragment and self.on_tool_call is not None:
+                # ⚠️ 顺序不变量（与 OpenAI 路径 _tools.py 对偶，那边是先
+                # finalize/yield tail、后 notify）：leak filter 扣住的那截
+                # pre-tool 文本必须在 round-start 回调**之前**吐完。回调体
+                # 是缓冲型调用方的 reply_chunks.clear()，先 notify 再 yield
+                # tail 等于把被扣住的半截文本吐进一个刚清空的缓冲区，它照样
+                # 会外发——leak filter 白扣了。
+                #
+                # 本轮已确认是 tool 轮（哪怕所有 function_call 都因空 name
+                # 被 drop）：round-start 挂在 collected 非空的分支里会漏掉全
+                # drop 的那条路径——那正是 pre-tool 文本会被当成整条回复外发
+                # 的场景。
+                #
+                # tail 是否进 streamed_text_buffer 按分支分：collected 非空
+                # 时本轮会写一条 assistant turn 入史，tail 属于那条 turn 的
+                # content；全 drop 时没有 assistant turn，tail 只 yield 给
+                # 用户。
                 if tool_leak_filter is not None:
                     tail, event = tool_leak_filter.finalize()
                     if event:
                         log_tool_leak_filtered(event, provider=tool_leak_provider)
                     if tail:
-                        streamed_text_buffer += tail
+                        if collected_tool_calls:
+                            streamed_text_buffer += tail
+                        # tail 是真的流给用户的（全 drop 的那条路径不进
+                        # buffer，但用户照样看得见），零执行轮的判据要算上。
+                        visible_text = True
                         tail_chunk = LLMStreamChunk(content=tail)
                         setattr(tail_chunk, "_tool_leak_filtered", True)
                         yield tail_chunk
                     tool_leak_filter.reset()
+                await self._notify_tool_round_start()
+            if (
+                saw_tool_call_fragment
+                and not collected_tool_calls
+                and self.on_tool_call is not None
+            ):
+                # 零执行轮（function_call 分片全因空 name 被 drop）：messages
+                # 一个字都没变，重来一轮不会有新信息，只会让模型把同样的
+                # pre-tool 文本再流一遍给用户。cap=3 的主程序上实测是
+                # "我查一下我查一下我查一下最终回答"。
+                #
+                # 所以只在**本轮什么都没流给用户**时才允许再试一轮（重试
+                # 无用户可见代价，且 SDK 抖动确实可能下一轮就正常）；已经
+                # 流过文本就直接跳出循环去 forced-finalize——#2597 引入这条
+                # 分支的目的（不要早 return，要走到 forced-finalize + 封顶
+                # 日志）由 break 完整保留，被放大的只是重试本身。
+                #
+                # 判据是 visible_text 而不是 had_text：模型只吐了 tool-call
+                # 标记文本、被 leak filter 整段抑制时 had_text 也是真，可用户
+                # 一个字都没看到——那种轮次白白放弃重试，下一轮本来可能给出
+                # 合法调用（Codex P2）。
+                #
+                # 装了 round-start 回调的调用方（QQ 召回）是缓冲型的：那个
+                # 回调体就是 reply_chunks.clear()，而它在上面几行已经跑过，
+                # 本轮的 pre-tool 文本**根本没送到用户手里**。对它们"重放"
+                # 无从谈起，break 只是白白丢掉一次本可恢复的工具调用——那正
+                # 是召回轮，代价是这条回复没有记忆结果（Codex）。
+                if visible_text and getattr(self, "on_tool_round_start", None) is None:
+                    zero_exec_break = True
+                    break
+                continue
+            if collected_tool_calls and self.on_tool_call is not None:
+                # Execute tools, append a unified assistant + tool history (dict shape
+                # accepted by both paths), then continue tool-iteration loop.
+                tool_calls_dict = []
+                for i, (tc_id, tc_name, _args, tc_raw, tc_extra) in enumerate(collected_tool_calls):
+                    entry = {
+                        "id": tc_id or f"call_{i}",
+                        "type": "function",
+                        "function": {"name": tc_name, "arguments": tc_raw},
+                    }
+                    if tc_extra:
+                        entry["extra_content"] = tc_extra
+                    tool_calls_dict.append(entry)
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
                 # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
@@ -520,7 +705,9 @@ class _GenaiMixin:
                     "content": strip_thinking_segments(streamed_text_buffer),
                     "tool_calls": tool_calls_dict,
                 })
-                for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
+                executed_tool_calls += len(collected_tool_calls)
+                image_results = []
+                for i, (tc_id, tc_name, tc_args, tc_raw, _tc_extra) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
                         arguments=tc_args,
@@ -528,7 +715,8 @@ class _GenaiMixin:
                         raw_arguments=tc_raw,
                     )
                     try:
-                        result = await self.on_tool_call(tool_call)
+                        with _suspend_dialog_slop():
+                            result = await self.on_tool_call(tool_call)
                     except Exception as e:
                         logger.exception("OmniOfflineClient(genai): on_tool_call '%s' raised", tc_name)
                         result = ToolResult(
@@ -536,12 +724,26 @@ class _GenaiMixin:
                             output={"error": f"{type(e).__name__}: {e}"},
                             is_error=True, error_message=str(e),
                         )
-                    messages.append({
+                    tool_result_message = {
                         "role": "tool",
                         "tool_call_id": tool_call.call_id,
                         "name": tc_name,
                         "content": result.output_as_json_string(),
-                    })
+                    }
+                    messages.append(tool_result_message)
+                    if getattr(result, "images", None):
+                        image_results.append((result, tool_result_message))
+                # Symmetric with the OpenAI-compat path: every tool reply
+                # first, then multimodal user turns. ``_genai_parts_from_content``
+                # maps ``image_url`` data URLs onto ``inline_data`` parts.
+                for result, tool_result_message in image_results:
+                    self._append_tool_result_images(
+                        messages,
+                        result,
+                        slots=tool_image_slots,
+                        tool_result_message=tool_result_message,
+                        bus_frames=tool_bus_frames,
+                    )
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进
                 # assistant turn 的 content 字段）。
@@ -554,10 +756,37 @@ class _GenaiMixin:
                 # model a chance to follow up after seeing tool results.
                 continue
             return
-        logger.warning(
-            "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
-            self.max_tool_iterations,
-        )
+        if executed_tool_calls == 0:
+            # 与 OpenAI 路径对偶：进过 tool 轮却一次都没执行成（function_call
+            # 分片全部因空 name 被 drop），单列一条最值得排查的日志。
+            logger.warning(
+                "OmniOfflineClient(genai): %s with 0 executed tool calls "
+                "(dropped nameless function_call parts); forcing final answer "
+                "without tools",
+                "zero-execution round after streaming text" if zero_exec_break
+                else f"tool iteration cap {self.max_tool_iterations} reached",
+            )
+        elif zero_exec_break:
+            # 前面几轮真的执行过 tool，最后一轮零执行且已流过文本：循环没被
+            # 耗尽，别打成 runaway 封顶。
+            logger.warning(
+                "OmniOfflineClient(genai): zero-execution round after streaming "
+                "text (dropped nameless function_call parts) with %d executed "
+                "tool calls so far; forcing final answer without tools",
+                executed_tool_calls,
+            )
+        elif self.max_tool_iterations == 1:
+            # cap=1 的设计内单轮预算（QQ 插件）：正常召回轮必然耗尽循环，
+            # 降为 INFO，与 OpenAI 路径对偶。
+            logger.info(
+                "OmniOfflineClient(genai): single tool round budget spent; "
+                "forcing final answer without tools",
+            )
+        else:
+            logger.warning(
+                "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
+                self.max_tool_iterations,
+            )
         # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
         # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
         # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /
@@ -565,10 +794,16 @@ class _GenaiMixin:
         # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
         # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
-        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        final_system_instruction, final_contents = _genai_messages_to_contents(
+            _slop_reduced_for_genai(messages)
+        )
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
+        # Same reason as inside the loop: the forced finalize is reached after
+        # the tool iterations, so a switch_model that happened in one of them
+        # has already dropped the client.
+        self._ensure_genai_client()
         final_stream = await self._genai_client.aio.models.generate_content_stream(
             model=self.model,
             contents=final_contents,
@@ -578,7 +813,14 @@ class _GenaiMixin:
         final_block_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
         final_had_text = False
+        # 与 OpenAI 路径对偶：封顶后这一次同样带着尚未 release 的工具图。
+        tool_frames_published = False
         async for chunk in final_stream:
+            if not tool_frames_published:
+                tool_frames_published = True
+                self._publish_pending_tool_frames(
+                    tool_bus_frames, turn_id=tool_frames_turn_id
+                )
             # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
             # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
             # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期

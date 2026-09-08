@@ -1,6 +1,6 @@
 # Plugin SDK: `push_message` v2 (orthogonal axes + parts)
 
-**Status**: introduced this release · old fields scheduled to be removed in **v0.9**.
+**Current-source status (verified 2026-07-16)**: v2 is the canonical schema. Legacy fields are still translated and emit deprecation warnings. This page does not guarantee which future release will remove them.
 
 ## Summary
 
@@ -129,33 +129,55 @@ single unexpected field can never drop the whole message); the swallowing
 the image from `parts[].binary_base64`, never from `binary_data`.
 
 This is shared infrastructure: any plugin sending an image part depends on
-it. The whole class of bug disappears once the legacy `binary_data` wire
-field is removed in **v0.9** (see below).
+it. The whole class of bug can be removed only after the legacy
+`binary_data` wire field is no longer emitted; that cleanup has not happened
+in the source verified above.
 
-## Removed in v0.9
+## Immediate local submission result
 
-* All legacy `push_message` parameters listed above.
-* The legacy fields synthesised on the wire payload (`message_type`,
+`push_message` returns a `PushMessageResult`. Its `submitted` discriminator
+reports only whether the SDK's authoritative local submission path accepted
+responsibility for the payload. It is not an acknowledgement that the host
+consumed the message, a model generated a response, or playback completed.
+
+Rejected results also include `ok=False` for compatibility with legacy callers;
+new integrations should use `submitted` as the authoritative discriminator.
+
+Synchronous rejection uses one of three stable reasons: `backpressure`,
+`transport_error`, or `transport_unavailable`. The result deliberately omits
+internal transport names, message content, and raw exception text. Existing
+callers that ignore the return value keep their previous fire-and-forget
+behaviour; stateful callers may retain local state and apply their own retry and
+deduplication policy.
+
+## Recorded cleanup target (not a release guarantee)
+
+The current source still carries TODO/deprecation text that names v0.9 as a
+target. Treat that label as migration metadata, not as proof that a released
+v0.9 has removed the compatibility layer. The pending cleanup consists of:
+
+* Removing all legacy `push_message` parameters listed above.
+* Removing the legacy fields synthesised on the wire payload (`message_type`,
   `content`, `binary_data`, `binary_url`, `mime`, `description`, `unsafe`,
   `delivery`, `reply`).
-* `description` everywhere it currently lingers — has no semantic
+* Removing `description` everywhere it currently lingers — it has no semantic
   consumer in v2, only surfaces as a human label in legacy log lines and
   the `query_service` response.  Marked with `TODO(v0.9)` in
   `plugin/core/context.py` and
   `plugin/server/application/messages/query_service.py` so the cleanup PR
   can grep for the marker; plugin call sites are found by the static v1 checker.
-* The legacy event-bus event shape (`proactive_message` event type
+* Removing the legacy event-bus event shape (`proactive_message` event type
   itself stays, but its `media_parts` / `visibility` / `ai_behavior`
   fields become the only schema; `delivery_mode` becomes derived).
 
-## Touched files (this release)
+## Current implementation map
 
-* `plugin/sdk/shared/core/push_message_schema.py` (new)
+* `plugin/sdk/shared/core/push_message_schema.py`
 * `plugin/sdk/shared/core/context.py`, `types.py`
 * `plugin/sdk/plugin/base.py` (deleted `register_music_domains`)
 * `plugin/_types/protocols.py`, `_types/models.py`
 * `plugin/core/context.py`
 * `plugin/server/messaging/proactive_bridge.py`
-* `main_server.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
+* `app/main_server/character_runtime.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
 * `plugin/plugins/{bilibili_danmaku,memo_reminder,sts2_autoplay}/__init__.py` (migrated senders)
 * `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`

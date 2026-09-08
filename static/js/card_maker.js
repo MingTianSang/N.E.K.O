@@ -46,7 +46,9 @@
     const PREVIEW_FRAME_INTERVAL_MS = 1000 / PREVIEW_TARGET_FPS;
     let activeModelSourceScale = MODEL_PREVIEW_SOURCE_SCALE;
 
-    window.renderQuality = 'high';
+    window.renderQuality = new URLSearchParams(window.location.search).get('mode') === 'embed'
+        ? 'medium'
+        : 'high';
 
     // 贴纸状态
     const stickers = [];           // { id, src, x, y, w, h, rotation, layer, imgEl }
@@ -65,16 +67,25 @@
         'exclamation.png', 'happy_cat.png', 'icon_systray.ico',
         'paw_ui.png', 'reminder_icon.png', 'sad_cat.png',
         'send_icon.png', 'send_new_icon.png', 'surprise_cat.png',
-        { file: 'chat_sugar1.png', variants: ['chat_sugar1.png', 'chat_sugar3.png'] },
-        { file: 'chat_hammer1.png', variants: ['chat_hammer1.png', 'chat_hammer2.png'] },
-        'cat_moneny.png',
-        { file: 'cat_claw1.png', variants: ['cat_claw1.png', 'cat_claw2.png'] }
+        { file: 'lollipop-primary-icon.png', variants: ['lollipop-primary-icon.png', 'lollipop-tertiary-icon.png'] },
+        { file: 'hammer-primary-icon.png', variants: ['hammer-primary-icon.png', 'hammer-secondary-icon.png'] },
+        'fist-reward-drop.png',
+        { file: 'fist-primary-icon.png', variants: ['fist-primary-icon.png', 'fist-secondary-icon.png'] }
     ];
+    const AVATAR_TOOL_STICKER_PATH_BY_FILE = {
+        'lollipop-primary-icon.png': '/static/assets/avatar-tools/lollipop/primary-icon.png',
+        'lollipop-tertiary-icon.png': '/static/assets/avatar-tools/lollipop/tertiary-icon.png',
+        'hammer-primary-icon.png': '/static/assets/avatar-tools/hammer/primary-icon.png',
+        'hammer-secondary-icon.png': '/static/assets/avatar-tools/hammer/secondary-icon.png',
+        'fist-reward-drop.png': '/static/assets/avatar-tools/fist/reward-drop.png',
+        'fist-primary-icon.png': '/static/assets/avatar-tools/fist/primary-icon.png',
+        'fist-secondary-icon.png': '/static/assets/avatar-tools/fist/secondary-icon.png',
+    };
     const STICKER_VARIANT_GROUPS = [
-        ['chat_sugar1.png', 'chat_sugar3.png'],
-        ['chat_hammer1.png', 'chat_hammer2.png'],
-        ['cat_claw1.png', 'cat_claw2.png']
-    ].map(group => group.map(file => `/static/icons/${file}`));
+        ['lollipop-primary-icon.png', 'lollipop-tertiary-icon.png'],
+        ['hammer-primary-icon.png', 'hammer-secondary-icon.png'],
+        ['fist-primary-icon.png', 'fist-secondary-icon.png']
+    ].map(group => group.map(iconStickerPath));
 
     const STICKER_VARIANT_ICON = [
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">',
@@ -106,6 +117,12 @@
     // ====== maker 模式检测 ======
     const _urlParams = new URLSearchParams(window.location.search);
     const isMakerMode = _urlParams.get('mode') === 'maker';
+    const isEmbedMode = _urlParams.get('mode') === 'embed';
+    const EMBED_MODEL_HEIGHT_RATIO = 1.34;
+    const EMBED_MODEL_CENTER_X_RATIO = 0.22;
+    const EMBED_MODEL_CENTER_Y_RATIO = 0.67;
+    const embedModelLayout = window.NEKOCardMakerEmbedLayout;
+    const embedThreeFrameCache = new WeakMap();
     const autoSaveDefaultCardFace = _urlParams.get('auto_save_default') === '1';
     const closeAfterAutoSave = _urlParams.get('close_on_save') === '1';
     const fallbackDefaultOnClose = _urlParams.get('fallback_default_on_close') === '1';
@@ -118,10 +135,18 @@
     let pendingFallbackDefaultSave = false;
     let fallbackDefaultListenersRegistered = false;
 
+    function notifyEmbedHost(status) {
+        if (!isEmbedMode || window.parent === window) return;
+        window.parent.postMessage({
+            type: 'neko-card-maker-embed',
+            status
+        }, '*');
+    }
+
     initModelSaveFallbackDefaultCardFace();
 
     // ====== 初始化 ======
-    document.addEventListener('DOMContentLoaded', async () => {
+    async function initializeCardMaker() {
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
         showLoading(true);
@@ -155,6 +180,7 @@
         const params = new URLSearchParams(window.location.search);
         const name = params.get('name') || params.get('lanlan_name');
         if (name) {
+            notifyEmbedHost('loading');
             await onCharacterSelected(name);
             if (consumeFallbackCloseMark(name)) {
                 pendingFallbackDefaultSave = true;
@@ -168,11 +194,31 @@
             }
         } else {
             showLoading(false);
+            notifyEmbedHost('error');
         }
-    });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeCardMaker, { once: true });
+    } else {
+        void initializeCardMaker();
+    }
 
     // ====== 事件绑定 ======
     function bindEvents() {
+        if (isEmbedMode) {
+            let embedResizeFrame = null;
+            window.addEventListener('resize', () => {
+                if (embedResizeFrame !== null) {
+                    cancelAnimationFrame(embedResizeFrame);
+                }
+                embedResizeFrame = requestAnimationFrame(() => {
+                    embedResizeFrame = null;
+                    syncEmbedModelViewport();
+                });
+            });
+        }
+
         // 构图滑块（实时预览由循环驱动，滑块仅更新参数）
         offsetXInput.addEventListener('input', () => {
             composition.offsetX = clamp(Number(offsetXInput.value), MODEL_OFFSET_X_MIN, MODEL_OFFSET_X_MAX);
@@ -482,11 +528,12 @@
         isModelLoaded = false;
         showLoading(true);
         resetComposition();
-
         try {
             // 获取该角色的页面配置（包含模型类型和路径）
-            const resp = await fetch(`/api/config/page_config?lanlan_name=${encodeURIComponent(name)}`);
-            const cfg = await resp.json();
+            const prefetchedConfig = window.__NEKO_CARD_MAKER_CONFIG_PROMISE__;
+            const cfg = prefetchedConfig
+                ? await prefetchedConfig
+                : await fetch(`/api/config/page_config?lanlan_name=${encodeURIComponent(name)}`).then(resp => resp.json());
             if (!cfg || !cfg.success) {
                 throw new Error(cfg?.error || '获取角色配置失败');
             }
@@ -520,6 +567,7 @@
             console.error('[CardExport] 加载角色模型失败:', e);
             showLoading(false);
             updatePrimaryActionAvailability();
+            notifyEmbedHost('error');
         }
     }
 
@@ -563,33 +611,53 @@
             // 确保模型加载后鼠标跟踪仍然禁用
             disableMouseTracking();
 
-            // 启动持续预览循环
-            startPreviewLoop();
+            // 普通制卡模式持续复制到 2D 卡面；嵌入模式直接展示原生渲染层。
+            if (!isEmbedMode) {
+                startPreviewLoop();
+                refreshPreview();
+            }
+            notifyEmbedHost('ready');
         } catch (e) {
             console.error('[CardExport] 模型加载异常:', e);
             showLoading(false);
             updatePrimaryActionAvailability();
+            notifyEmbedHost('error');
         }
     }
 
     async function loadLive2DModel(modelPath) {
+        if (!window.live2dManager && typeof Live2DManager === 'function') {
+            window.live2dManager = new Live2DManager();
+        }
         if (!window.live2dManager) {
             throw new Error('Live2D 管理器未就绪');
         }
         // 初始化 PIXI（如果尚未初始化），启用 preserveDrawingBuffer 以便截图
         if (!window.live2dManager.pixi_app) {
             await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container', {
-                preserveDrawingBuffer: true,
-                resolution: MODEL_PREVIEW_SOURCE_SCALE,
+                preserveDrawingBuffer: !isEmbedMode,
+                resolution: isEmbedMode
+                    ? Math.max(1, Math.min(1.5, window.devicePixelRatio || 1))
+                    : MODEL_PREVIEW_SOURCE_SCALE,
                 autoDensity: true
             });
         }
         resizeModelRendererForCard('live2d');
-        await window.live2dManager.loadModel(modelPath);
+        await window.live2dManager.loadModel(modelPath, isEmbedMode ? {
+            minimalEmbed: true,
+            dragEnabled: false,
+            wheelEnabled: false,
+            touchZoomEnabled: false,
+            loadEmotionMapping: false,
+            suppressPersistentExpressions: true,
+            suppressInitialIdle: true
+        } : {});
 
-        // 将模型居中（默认布局放在右下角，导出页面需要居中）
+        // 制卡页居中；嵌入页使用适合社区锻造页的左侧半身构图。
         const model = window.live2dManager.currentModel;
-        if (model) {
+        if (model && isEmbedMode) {
+            frameLive2DModelForEmbed(window.live2dManager);
+        } else if (model) {
             const screen = window.live2dManager.pixi_app.renderer.screen;
             model.anchor.set(0.5, 0.5);
             model.x = screen.width / 2;
@@ -617,10 +685,53 @@
         if (lighting) {
             window.lanlan_config.lighting = lighting;
         }
-        await window.vrmManager.loadModel(modelPath);
-        // 重置相机：让模型居中填满画布（忽略主页面保存的相机位置）
+        await window.vrmManager.loadModel(modelPath, {
+            embed: isEmbedMode,
+            addShadow: !isEmbedMode
+        });
+        if (isEmbedMode) {
+            // The forge preview is intentionally static, like the Live2D
+            // minimal embed. Freeze the first idle pose so animated bones do
+            // not become a moving layout reference during window resizes.
+            window.vrmManager.seekVRMAAnimation?.(0, { paused: true });
+        }
+        // 制卡页居中；嵌入页使用与 Live2D 对称的左侧半身构图。
         resizeModelRendererForCard('vrm');
-        centerThreeCamera(window.vrmManager);
+        if (isEmbedMode) frameVRMModelForEmbed(window.vrmManager);
+        else centerThreeCamera(window.vrmManager);
+    }
+
+    async function loadMMDIdlePoseForEmbed(mgr) {
+        let idleAnimation = '';
+        try {
+            const response = await fetch('/api/characters');
+            if (response.ok) {
+                const characters = await response.json();
+                const character = characters?.['猫娘']?.[currentCharaName];
+                const configured = Array.isArray(character?.mmd_idle_animations)
+                    ? character.mmd_idle_animations
+                    : [character?.mmd_idle_animation];
+                idleAnimation = configured.find(path => typeof path === 'string' && path.trim()) || '';
+            }
+        } catch (error) {
+            console.warn('[CardExport] 获取 MMD 待机姿势失败，使用内置姿势:', error);
+        }
+        const fallbackAnimation = '/static/mmd/animation/wait03.vmd';
+        const candidates = [idleAnimation, fallbackAnimation]
+            .filter((path, index, values) => path && values.indexOf(path) === index);
+        for (const path of candidates) {
+            try {
+                await mgr.loadAnimation(path, { immediate: true, fadeDuration: 0 });
+                // loadAnimation applies frame zero synchronously and leaves the
+                // action paused. Mark it paused explicitly so IK/Grant and the
+                // render loop do not turn the forge pose into a moving reference.
+                mgr.pauseAnimation?.();
+                mgr.currentModel?.mesh?.updateMatrixWorld?.(true);
+                return;
+            } catch (error) {
+                console.warn('[CardExport] MMD 待机姿势加载失败:', path, error);
+            }
+        }
     }
 
     async function loadMMDModel(modelPath) {
@@ -634,19 +745,18 @@
                 throw new Error('MMDManager 未定义');
             }
         }
-        if (!window.mmdManager.core?.renderer) {
+        if (!window.mmdManager.renderer) {
             await window.mmdManager.init('mmd-canvas', 'mmd-container');
         }
         resizeModelRendererForCard('mmd');
-        await window.mmdManager.loadModel(modelPath);
-        // 重置相机：让模型居中填满画布
-        const mmdProxy = {
-            scene: window.mmdManager.core?.scene,
-            camera: window.mmdManager.core?.camera,
-            renderer: window.mmdManager.core?.renderer
-        };
+        await window.mmdManager.loadModel(modelPath, { embed: isEmbedMode });
+        if (isEmbedMode) {
+            await loadMMDIdlePoseForEmbed(window.mmdManager);
+        }
+        // 制卡页居中；嵌入页使用与 Live2D/VRM 对称的左侧半身构图。
         resizeModelRendererForCard('mmd');
-        centerThreeCamera(mmdProxy);
+        if (isEmbedMode) frameMMDModelForEmbed(window.mmdManager);
+        else centerThreeCamera(window.mmdManager);
     }
 
     async function loadPNGTuberModel(cfg) {
@@ -655,6 +765,19 @@
         const pngtuberConfig = Object.assign({}, cfg?.pngtuber || {});
         if (!pngtuberConfig.idle_image && cfg?.model_path) {
             pngtuberConfig.idle_image = cfg.model_path;
+        }
+        if (isEmbedMode) {
+            // The forge preview is its own coordinate system. Never seed the
+            // PNGTuber runtime with offsets or scale saved by the desktop pet.
+            Object.assign(pngtuberConfig, {
+                scale: 1,
+                offset_x: 0,
+                offset_y: 0,
+                mobile_scale: 1,
+                mobile_offset_x: 0,
+                mobile_offset_y: 0,
+                position_anchor: 'center'
+            });
         }
         assertExportablePNGTuberConfig(pngtuberConfig);
         window.lanlan_config = window.lanlan_config || {};
@@ -703,11 +826,147 @@
         }
         resizeModelRendererForCard('pngtuber');
         await waitForPNGTuberDrawable(mgr);
+        if (isEmbedMode) framePNGTuberForEmbed(mgr);
+    }
+
+    function frameLive2DModelForEmbed(mgr) {
+        const renderer = mgr?.pixi_app?.renderer;
+        const model = mgr?.currentModel;
+        if (!renderer || !model) return;
+        const screen = renderer.screen;
+        const currentHeight = Math.max(1, Math.abs(Number(model.height) || 0));
+        const targetHeight = screen.height * EMBED_MODEL_HEIGHT_RATIO;
+        const factor = targetHeight / currentHeight;
+        if (Number.isFinite(factor) && factor > 0) {
+            model.scale.set(model.scale.x * factor, model.scale.y * factor);
+        }
+        model.anchor?.set?.(0.5, 0.5);
+        model.x = screen.width * EMBED_MODEL_CENTER_X_RATIO;
+        model.y = screen.height * EMBED_MODEL_CENTER_Y_RATIO;
+    }
+
+    function frameVRMModelForEmbed(mgr) {
+        const model = mgr?.currentModel?.vrm?.scene || mgr?.currentModel?.scene;
+        frameThreeModelForEmbed(mgr, model);
+    }
+
+    function frameMMDModelForEmbed(mgr) {
+        frameThreeModelForEmbed(mgr, mgr?.currentModel?.mesh);
+    }
+
+    function frameThreeModelForEmbed(mgr, model) {
+        const THREE = window.THREE;
+        if (!THREE || !model || !mgr?.camera || !mgr?.renderer || !embedModelLayout) return;
+        try {
+            let bounds = embedThreeFrameCache.get(model);
+            if (!bounds) {
+                model.updateMatrixWorld?.(true);
+                const box = new THREE.Box3().setFromObject(model);
+                if (box.isEmpty()) return;
+                const measuredCenter = box.getCenter(new THREE.Vector3());
+                const measuredSize = box.getSize(new THREE.Vector3());
+                bounds = {
+                    center: measuredCenter.clone(),
+                    size: measuredSize.clone()
+                };
+                embedThreeFrameCache.set(model, bounds);
+            }
+            // Reuse the first stable pose's bounds. Re-measuring a skinned
+            // model during resize makes the camera follow whichever animation
+            // frame happened to be active, which is the source of VRM/MMD
+            // model-specific drift.
+            const center = bounds.center;
+            const size = bounds.size;
+            const modelHeight = size.y > 0 ? size.y : 1.5;
+            const fov = mgr.camera.fov * (Math.PI / 180);
+            const viewport = mgr.renderer.domElement?.getBoundingClientRect?.();
+            const viewportWidth = Number(viewport?.width) || Number(mgr.renderer.domElement?.clientWidth) || window.innerWidth;
+            const viewportHeight = Number(viewport?.height) || Number(mgr.renderer.domElement?.clientHeight) || window.innerHeight;
+            const frame = embedModelLayout.resolvePerspectiveFrame(
+                viewportWidth,
+                viewportHeight,
+                size.x > 0 ? size.x : modelHeight * 0.35,
+                modelHeight,
+                fov
+            );
+            const cameraX = center.x - frame.ndcX * frame.halfViewWidth;
+            const cameraY = center.y - frame.ndcY * frame.halfViewHeight;
+            const target = new THREE.Vector3(
+                cameraX,
+                cameraY,
+                center.z
+            );
+            mgr.camera.up?.set?.(0, 1, 0);
+            mgr.camera.position.set(cameraX, cameraY, center.z + frame.distance);
+            mgr.camera.lookAt(target);
+            mgr.camera.updateProjectionMatrix();
+            mgr._cameraTarget?.copy?.(target);
+            if (mgr.controls) {
+                mgr.controls.target.copy(target);
+                mgr.controls.update();
+            }
+        } catch (e) {
+            console.warn('[CardExport] 嵌入构图失败:', e);
+        }
+    }
+
+    function framePNGTuberForEmbed(mgr) {
+        const source = getPNGTuberDrawableSource(mgr);
+        if (!source?.style || !embedModelLayout || !mgr?.config) return;
+        const viewportWidth = Math.max(1, window.innerWidth);
+        const viewportHeight = Math.max(1, window.innerHeight);
+        const sourceWidth = mgr.isLayeredActive?.()
+            ? Number(mgr.layeredCanvasLogicalWidth)
+            : Number(source.naturalWidth || source.width);
+        const sourceHeight = mgr.isLayeredActive?.()
+            ? Number(mgr.layeredCanvasLogicalHeight)
+            : Number(source.naturalHeight || source.height);
+        const contained = embedModelLayout.resolveContainedSize(
+            viewportWidth,
+            viewportHeight,
+            sourceWidth,
+            sourceHeight
+        );
+        const frame = embedModelLayout.resolveFrame(
+            viewportWidth,
+            viewportHeight,
+            contained.width,
+            contained.height
+        );
+        source.style.width = contained.width + 'px';
+        source.style.height = contained.height + 'px';
+        source.style.objectFit = 'contain';
+        source.style.objectPosition = 'center center';
+
+        const offsetX = frame.centerX - viewportWidth / 2;
+        const offsetY = frame.centerY - viewportHeight / 2;
+        Object.assign(mgr.config, {
+            scale: frame.scale,
+            offset_x: offsetX,
+            offset_y: offsetY,
+            mobile_scale: frame.scale,
+            mobile_offset_x: offsetX,
+            mobile_offset_y: offsetY,
+            position_anchor: 'center'
+        });
+        // PNGTuber animation calls applyTransform repeatedly. Put the forge
+        // placement into that authoritative path so breathing cannot restore
+        // desktop offsets after this function returns.
+        mgr.applyTransform?.();
     }
 
     function prepareHiddenModelViewport() {
         const viewport = $('#model-viewport');
         if (!viewport) return;
+        if (isEmbedMode) {
+            viewport.style.inset = '0';
+            viewport.style.left = '0';
+            viewport.style.top = '0';
+            viewport.style.width = '100vw';
+            viewport.style.height = '100vh';
+            viewport.style.opacity = '1';
+            return;
+        }
         viewport.style.inset = 'auto';
         viewport.style.left = '-10000px';
         viewport.style.top = '0';
@@ -716,8 +975,8 @@
     }
 
     function resizeModelRendererForCard(type = currentModelType, sourceScale = MODEL_PREVIEW_SOURCE_SCALE) {
-        const w = CARD_BASE_WIDTH;
-        const h = CARD_BASE_HEIGHT;
+        const w = isEmbedMode ? Math.max(1, window.innerWidth) : CARD_BASE_WIDTH;
+        const h = isEmbedMode ? Math.max(1, window.innerHeight) : CARD_BASE_HEIGHT;
         const ratio = sourceScale;
         activeModelSourceScale = sourceScale;
 
@@ -733,7 +992,9 @@
                 view.style.height = h + 'px';
             }
             const model = mgr.currentModel;
-            if (model) {
+            if (model && isEmbedMode) {
+                frameLive2DModelForEmbed(mgr);
+            } else if (model) {
                 model.anchor?.set?.(0.5, 0.5);
                 model.x = renderer.screen.width / 2;
                 model.y = renderer.screen.height / 2;
@@ -754,16 +1015,11 @@
                 source.style.height = h + 'px';
                 source.style.objectFit = 'contain';
             }
+            if (isEmbedMode) framePNGTuberForEmbed(mgr);
             return;
         }
 
-        const mgr = type === 'vrm'
-            ? window.vrmManager
-            : {
-                renderer: window.mmdManager?.core?.renderer,
-                camera: window.mmdManager?.core?.camera,
-                effect: window.mmdManager?.core?.effect || window.mmdManager?.effect
-            };
+        const mgr = type === 'vrm' ? window.vrmManager : window.mmdManager;
         const renderer = mgr?.renderer;
         if (!renderer) return;
         renderer.setPixelRatio?.(ratio);
@@ -777,6 +1033,17 @@
             mgr.camera.updateProjectionMatrix?.();
         }
         mgr.effect?.setSize?.(w, h);
+        if (isEmbedMode) {
+            if (type === 'vrm') frameVRMModelForEmbed(mgr);
+            else frameMMDModelForEmbed(mgr);
+        }
+    }
+
+    function syncEmbedModelViewport() {
+        if (!isEmbedMode || !isModelLoaded || !currentModelType) return;
+        prepareHiddenModelViewport();
+        resizeModelRendererForCard(currentModelType, activeModelSourceScale);
+        ensureRender();
     }
 
     function getZoomFactor(compositionOverride = composition) {
@@ -862,6 +1129,7 @@
             window.mmdManager.cursorFollow.setEnabled(false);
         }
         const pngtuberMgr = window.cardMakerPNGTuberManager;
+        pngtuberMgr?.setMouseTrackingEnabled?.(false);
         pngtuberMgr?.detachSpeechListeners?.();
         pngtuberMgr?.detachDragListeners?.();
         pngtuberMgr?.setSpeaking?.(false);
@@ -972,7 +1240,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas() {
+    function getModelCanvas(options = {}) {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -989,6 +1257,11 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
+            const mgr = window.cardMakerPNGTuberManager;
+            if (options.fullResolution && mgr?.isLayeredActive?.()) {
+                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
+                if (snapshot) return snapshot;
+            }
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1009,9 +1282,10 @@
                 mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'mmd') {
-            const core = window.mmdManager?.core;
-            if (core?.renderer && core?.scene && core?.camera) {
-                core.renderer.render(core.scene, core.camera);
+            const mgr = window.mmdManager;
+            if (mgr?.renderer && mgr?.scene && mgr?.camera) {
+                if (mgr.useOutlineEffect && mgr.effect) mgr.effect.render(mgr.scene, mgr.camera);
+                else mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'pngtuber') {
             const mgr = window.cardMakerPNGTuberManager;
@@ -1407,7 +1681,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas();
+        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {
@@ -1501,7 +1775,7 @@
     }
 
     function iconStickerPath(file) {
-        return `/static/icons/${file}`;
+        return AVATAR_TOOL_STICKER_PATH_BY_FILE[file] || `/static/icons/${file}`;
     }
 
     function getStickerLibraryVariants(itemConfig) {

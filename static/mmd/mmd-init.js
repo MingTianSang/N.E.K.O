@@ -365,21 +365,28 @@
         window._mmdModulesLoading = true;
         window._mmdModulesFailed = null;
         console.log('[MMD] 开始加载依赖模块');
+        const lightweightEmbed = window.__NEKO_CARD_MAKER_EMBED__ === true;
 
         // 核心模块（无相互依赖，可并行）
+        // vrm-lipsync-formant.js 是共享分析器（挂 window.FormantLipSyncAnalyzer），
+        // MMD 与 VRM 复用同一实现。mmd-animation 在 startLipSync 时才懒实例化
+        // 分析器，故与并行加载时序兼容；缺失时回退单通道路径。
         const parallelModules = [
+            '/static/vrm/vrm-lipsync-formant.js',
             '/static/mmd/mmd-core.js',
             '/static/mmd/mmd-expression.js',
             '/static/mmd/mmd-animation.js',
-            '/static/mmd/mmd-interaction.js',
-            '/static/mmd/mmd-cursor-follow.js',
+            ...(!lightweightEmbed ? [
+                '/static/mmd/mmd-interaction.js',
+                '/static/mmd/mmd-cursor-follow.js'
+            ] : []),
             '/static/mmd/mmd-manager.js'
         ];
 
         // UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons → debug）
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 HTML 静态 <script> 加载，此处不再重复加载
-        const sequentialModules = [
+        const sequentialModules = lightweightEmbed ? [] : [
             '/static/mmd/mmd-ui-buttons.js',
             '/static/mmd/mmd-ui-debug.js'
         ];
@@ -681,7 +688,7 @@ function _startMmdIdleRotation(urls) {
 
     scheduleFallback();
 
-    // 如果动画已经在播放（如 app-interpage.js 预先播放的第一个），
+    // 如果动画已经在播放（如 app-interpage 预先播放的第一个），
     // 立即注册 loop 监听器，不必等 20 秒回退定时器
     const mixer = window.mmdManager?.animationModule?.mixer;
     if (mixer) {

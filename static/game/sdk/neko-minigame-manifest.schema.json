@@ -424,12 +424,7 @@
       "uniqueItems": true,
       "items": {
         "type": "string",
-        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-        "description": "Protocol v1 capability identifier. Current public names include runtime, dialogue, quick-lines, logging, voice-input, avatar-renderer, audio, speech-output, context-read, memory, window-control, storage, leaderboard-local, and leaderboard-server. Unknown optional names remain valid for forward compatibility and are not granted by older hosts.",
-        "examples": [
-          "runtime",
-          "window-control"
-        ]
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
       }
     },
     "contracts": {
@@ -543,10 +538,127 @@
       ],
       "properties": {
         "request": {
-          "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
         },
         "response": {
+          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+        }
+      }
+    },
+    "commandContractSchemaOrEnumShorthand": {
+      "anyOf": [
+        {
           "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 1800000
+          }
+        },
+        {
+          "$ref": "#/$defs/commandStringSchema"
+        },
+        {
+          "$ref": "#/$defs/commandArraySchema"
+        },
+        {
+          "$ref": "#/$defs/commandObjectSchema"
+        }
+      ]
+    },
+    "commandStringSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "string"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        }
+      }
+    },
+    "commandArraySchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "items"
+      ],
+      "properties": {
+        "type": {
+          "const": "array"
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "items": {
+          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+        }
+      }
+    },
+    "commandObjectSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/contractPropertyName"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+          }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/contractPropertyName"
+          }
+        },
+        "additionalProperties": {
+          "type": "boolean",
+          "default": false
         }
       }
     },
@@ -596,7 +708,7 @@
         "maxLength": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 1800000
+          "maximum": 4096
         },
         "minItems": {
           "type": "integer",

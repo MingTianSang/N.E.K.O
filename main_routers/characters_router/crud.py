@@ -29,7 +29,12 @@ from ._shared import (
     logger,
     router,
 )
-from .notify import notify_memory_server_reload, release_memory_server_character, send_reload_page_notice
+from .notify import (
+    create_derived_task_claim_token,
+    notify_memory_server_reload,
+    release_memory_server_character,
+    send_reload_page_notice,
+)
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import json
@@ -37,6 +42,7 @@ import shutil
 import asyncio
 import copy
 import tempfile
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import Request
@@ -52,9 +58,21 @@ from ..shared_state import (
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    begin_character_recent_transaction,
+    character_config_mutation_lock,
     delete_character_memory_storage,
+    evict_character_runtime_caches,
+    fence_character_runtime_writes,
+    retire_character_runtime_caches,
+    unfence_character_runtime_writes,
+    finalize_character_recent_delete,
+    finalize_character_recent_rename,
     list_character_memory_paths,
     rename_character_memory_storage,
+    release_character_recent_transaction,
+    rollback_character_recent_delete,
+    rollback_character_recent_rename,
 )
 from utils.config_manager import (
     flatten_reserved,
@@ -62,14 +80,19 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.file_utils import atomic_write_json_async
+from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
     remove_pending as remove_new_character_greeting_pending,
     rename_pending as rename_new_character_greeting_pending,
 )
-from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable, is_cloudsave_disabled
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    assert_cloudsave_writable,
+    is_cloudsave_disabled,
+    is_cloudsave_disabled_due_to_local_state_unavailable,
+)
 
 
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
@@ -140,15 +163,29 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
 
 
-async def _clear_character_recent_history(config_manager, character_name: str) -> None:
+async def _clear_character_recent_history(
+    config_manager,
+    character_name: str,
+    *,
+    expected_generation: tuple[str, int] | None = None,
+) -> None:
     recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    if expected_generation is None:
+        expected_generation = capture_recent_generation(recent_path)
     assert_cloudsave_writable(
         config_manager,
         operation="save",
         target=f"memory/{character_name}/recent.json",
     )
-    await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
-    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
+    # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
+    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。底层原子写
+    # 会在 generation 校验成功后创建父目录，stale callback 不得提前重建它。
+    await asyncio.to_thread(
+        write_recent_payload,
+        recent_path,
+        [],
+        expected_generation=expected_generation,
+    )
 
 
 def _normalize_prompt_synced_field_value(value):
@@ -351,6 +388,63 @@ def _create_character_operation_backup_dir(config_manager, prefix: str):
     return tempfile.TemporaryDirectory(prefix=prefix, dir=str(backup_root))
 
 
+async def _await_thread_call_to_completion(func, *args, **kwargs):
+    """Return a worker result and whether cancellation arrived while it ran."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
+
+
+async def _await_cleanup_to_completion(coro):
+    """Finish rollback despite repeated cancellation requests."""
+    result, _ = await _await_coroutine_to_completion(coro)
+    return result
+
+
+async def _await_coroutine_to_completion(coro):
+    """Return a coroutine result and whether cancellation arrived while it ran."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
+
+
+async def _await_thread_mutation(func, *args, **kwargs):
+    """Finish a worker mutation before propagating caller cancellation."""
+    result, cancelled = await _await_thread_call_to_completion(func, *args, **kwargs)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+async def _resume_released_character_admission(
+    name: str,
+    claim_token: str,
+    *,
+    reason: str,
+) -> str:
+    """Resume one released identity and return a diagnostic on failure."""
+    try:
+        resumed = await notify_memory_server_reload(
+            reason=reason,
+            release_derived_task_claims={name: (claim_token,)},
+        )
+    except Exception as exc:
+        return f"notify_memory_server_reload failed: {exc}"
+    if not resumed:
+        return "notify_memory_server_reload failed: returned False"
+    return ""
+
+
 def _restore_snapshot_paths(records) -> None:
     for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
         target_path = record["target"]
@@ -373,9 +467,25 @@ def _restore_snapshot_paths(records) -> None:
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
-    if is_cloudsave_disabled():
+    # Built whether cloudsave is ON or merely off by preference. The
+    # tombstone stopped being a cloudsave artifact when the seed migration
+    # started reading it: it is the only durable record that a character's
+    # memory was deleted ON PURPOSE rather than never migrated, and without it
+    # a restart republishes the project seed and the deleted memory comes
+    # back. Skipping it for everyone with cloudsave off was a silent hole
+    # rather than a smaller feature -- nothing reported that the deletion had
+    # gone unrecorded.
+    #
+    # The ONE reason that still skips it is the local state being unavailable,
+    # which is a broken directory rather than a preference: reading or writing
+    # the tombstone there fails and takes the delete with it.
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
         return config_manager.build_default_character_tombstones_state()
 
+    # The sequence number still comes from cloudsave local state. That file is
+    # created on every install regardless (see ensure_local_state_directory),
+    # so reading it costs nothing here, and a later enable continues the same
+    # sequence instead of restarting it.
     cloud_state = config_manager.load_cloudsave_local_state()
     sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
     tombstone_state = config_manager.load_character_tombstones_state()
@@ -408,23 +518,103 @@ async def _rollback_character_operation(
     characters_snapshot: dict,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
+    recent_delete_result: dict | None = None,
+    recent_rename_result: dict | None = None,
+    recent_transaction: dict | None = None,
+    resume_derived_task_names: tuple[str, ...] = (),
+    release_derived_task_claims: dict[str, tuple[str, ...]] | None = None,
+    restored_live_character_names: tuple[str, ...] = (),
+    reretired_absent_character_names: tuple[str, ...] = (),
+    # Every name this rollback might touch, whether or not the operation got
+    # far enough to retire it. SEPARATE from the two tuples above on
+    # purpose: those say what was actually retired and drive the lifecycle
+    # calls, and a caller has to be free to pass them empty -- which it does
+    # whenever the storage op raised before retiring anything. Scoping the
+    # fence to them made it inert on exactly that path: measured, the stale
+    # flush destroyed the restored history with the fence "held".
+    fenced_character_names: tuple[str, ...] = (),
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
 
-    try:
-        await asyncio.to_thread(_restore_snapshot_paths, memory_snapshot_records)
-    except Exception as exc:
-        rollback_errors.append(f"memory restore failed: {exc}")
-
-    try:
-        await asyncio.to_thread(
-            config_manager.save_characters,
-            characters_snapshot,
-            bypass_write_fence=True,
+    # Retirement cannot cover this window, for the same reason a rename's
+    # merge needs the fence: it refuses to CREATE a directory but permits a
+    # write into one that already exists. The restore below recreates
+    # memory/<name>/ while the name is still retired, and the save that
+    # follows is a real await -- so a detached flush staged before the
+    # delete lands on the freshly restored file and overwrites it with the
+    # stale snapshot it was holding. Measured: three decisions restored,
+    # one left on disk. The mirror on rename rollback is the orphan the
+    # re-retirement below says it prevents, one await too late to do so.
+    #
+    # In a finally, and around BOTH steps. Releasing inside the else instead
+    # leaks the fence whenever save_characters raises, and a fence left up
+    # silences that character's sidecars for the life of the process --
+    # worse than the write it was installed to stop.
+    fenced_names = tuple(
+        dict.fromkeys(
+            (
+                *fenced_character_names,
+                *restored_live_character_names,
+                *reretired_absent_character_names,
+            )
         )
-    except Exception as exc:
-        rollback_errors.append(f"characters restore failed: {exc}")
+    )
+    fence_character_runtime_writes(*fenced_names)
+    try:
+        try:
+            await asyncio.to_thread(
+                _restore_snapshot_paths, memory_snapshot_records,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"memory restore failed: {exc}")
+
+        try:
+            await asyncio.to_thread(
+                config_manager.save_characters,
+                characters_snapshot,
+                bypass_write_fence=True,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"characters restore failed: {exc}")
+        else:
+            # The name is back in characters.json, so it is a LIVE identity again.
+            # The delete path retired it in every sidecar store before removing
+            # anything, and this restore goes through save_characters rather than
+            # the activation helper, so nothing else lifts that retirement: a
+            # character that had no memory directory yet would keep dropping its
+            # startup greeting and anti-repeat decisions until a restart, because
+            # a retired name never creates its directory.
+            #
+            # Scoped to names the caller says it actually restored, and only on the
+            # branch where the restore SUCCEEDED -- lifting retirement for a name
+            # that is genuinely gone would reinstate the orphan-directory
+            # resurrection the retirement exists to prevent.
+            evict_character_runtime_caches(*restored_live_character_names)
+            # The mirror: a name the operation made live, and the rollback un-made.
+            # A rename target was evicted (lifting any retirement an earlier delete
+            # of that same name installed); once the rename is undone it is not a
+            # live identity, so it goes back to retired or a late flush recreates its
+            # directory for a character that does not exist.
+            retire_character_runtime_caches(*reretired_absent_character_names)
+    finally:
+        unfence_character_runtime_writes(*fenced_names)
+
+    if recent_rename_result is not None:
+        try:
+            await asyncio.to_thread(
+                rollback_character_recent_rename, recent_rename_result,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent rename rollback failed: {exc}")
+    elif recent_delete_result is not None:
+        try:
+            await asyncio.to_thread(
+                rollback_character_recent_delete, recent_delete_result,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent delete rollback failed: {exc}")
+    release_character_recent_transaction(recent_transaction)
 
     if tombstone_snapshot is not None:
         try:
@@ -441,7 +631,11 @@ async def _rollback_character_operation(
         rollback_errors.append(f"initialize_character_data failed: {exc}")
 
     try:
-        reload_notified = await notify_memory_server_reload(reason=reason)
+        reload_notified = await notify_memory_server_reload(
+            reason=reason,
+            resume_derived_task_names=resume_derived_task_names,
+            release_derived_task_claims=release_derived_task_claims,
+        )
         if not reload_notified:
             rollback_errors.append("notify_memory_server_reload failed: returned False")
     except Exception as exc:
@@ -512,8 +706,6 @@ async def get_characters(request: Request):
 
 @router.post('/catgirl/{old_name}/rename')
 async def rename_catgirl(old_name: str, request: Request):
-    _config_manager = get_config_manager()
-    session_manager = get_session_manager()
     try:
         data = await request.json()
     except Exception as e:
@@ -527,6 +719,14 @@ async def rename_catgirl(old_name: str, request: Request):
     err = _validate_profile_name(new_name)
     if err:
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
+
+    async with character_config_mutation_lock:
+        return await _rename_catgirl_serialized(old_name, new_name)
+
+
+async def _rename_catgirl_serialized(old_name: str, new_name: str):
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
@@ -567,22 +767,6 @@ async def rename_catgirl(old_name: str, request: Request):
         target=f"characters/{old_name} -> {new_name}",
     )
 
-    released_memory_handle = await release_memory_server_character(
-        old_name,
-        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
-    )
-    if not released_memory_handle:
-        logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
-
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -597,13 +781,100 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets.append(old_meta)
     memory_targets.append(new_meta)
     memory_server_reloaded = False
+    memory_rename_result = None
+    recent_transaction = None
+    memory_snapshot_records = []
+    # Empty until the storage op that actually retires them has returned. The
+    # rollback block is shared with failures from well before that point, and
+    # evicting there is not a harmless no-op: it pops the cache and advances the
+    # sequence fence, destroying a concurrently recorded decision instead of
+    # delaying it.
+    retired_names: tuple[str, ...] = ()
+    reretire_names: tuple[str, ...] = ()
+    rename_committed = False
+    released_memory_handle = False
+    release_claim_token = create_derived_task_claim_token()
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
-        memory_snapshot_records = await asyncio.to_thread(
-            _snapshot_existing_paths, memory_targets, Path(temp_dir)
-        )
         try:
-            rename_character_memory_storage(_config_manager, old_name, new_name)
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        old_name,
+                        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+                        hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            old_name,
+                            release_claim_token,
+                            reason=f"角色重命名 release 失败补偿: {old_name} -> {new_name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s%s",
+                    old_name,
+                    new_name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止重命名，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
+            recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
+                begin_character_recent_transaction,
+                _config_manager,
+                old_name,
+                new_name,
+            )
+            if acquire_cancelled:
+                raise asyncio.CancelledError
+
+            memory_snapshot_records, snapshot_cancelled = await _await_thread_call_to_completion(
+                _snapshot_existing_paths, memory_targets, Path(temp_dir),
+            )
+            if snapshot_cancelled:
+                raise asyncio.CancelledError
+
+            # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
+            # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
+            memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
+                rename_character_memory_storage,
+                _config_manager,
+                old_name,
+                new_name,
+                keep_recent_locks=True,
+                recent_transaction=recent_transaction,
+            )
+            if rename_cancelled:
+                raise asyncio.CancelledError
+            retired_names = (old_name,)
+            # The storage op also EVICTED the target name, lifting any retirement
+            # a previous delete of that same name had installed. A rolled-back
+            # rename leaves that name not-live again -- the rename never happened
+            # and a target must be free to begin with -- so it has to go back to
+            # retired, or a late flush recreates memory/<new_name>/ for an
+            # identity that does not exist.
+            reretire_names = (new_name,)
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -611,7 +882,9 @@ async def rename_catgirl(old_name: str, request: Request):
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
 
             # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
             # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
@@ -626,26 +899,35 @@ async def rename_catgirl(old_name: str, request: Request):
             if old_face.exists():
                 if new_face.exists():
                     backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                    await asyncio.to_thread(new_face.rename, backup_face)
+                    await _await_thread_mutation(new_face.rename, backup_face)
                     logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-                await asyncio.to_thread(old_face.rename, new_face)
+                await _await_thread_mutation(old_face.rename, new_face)
                 logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
             if old_meta.exists():
                 if new_meta.exists():
                     backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    await _await_thread_mutation(new_meta.rename, backup_meta)
                     logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-                await asyncio.to_thread(old_meta.rename, new_meta)
+                await _await_thread_mutation(old_meta.rename, new_meta)
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
+                resume_derived_task_names=(new_name,),
             )
             if not memory_server_reloaded:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
                     characters_snapshot=characters_snapshot,
                     memory_snapshot_records=memory_snapshot_records,
+                    recent_rename_result=memory_rename_result,
+                    recent_transaction=recent_transaction,
+                    release_derived_task_claims={
+                        old_name: (release_claim_token,),
+                    },
+                    restored_live_character_names=retired_names,
+                    reretired_absent_character_names=reretire_names,
+                    fenced_character_names=(old_name, new_name),
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -664,28 +946,89 @@ async def rename_catgirl(old_name: str, request: Request):
                     status_code=500,
                 )
 
-        except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+            rename_committed = True
+            _, finalize_cancelled = await _await_thread_call_to_completion(
+                finalize_character_recent_rename, memory_rename_result,
             )
+            if finalize_cancelled:
+                raise asyncio.CancelledError
+
+        except asyncio.CancelledError:
+            if rename_committed:
+                if memory_rename_result is not None:
+                    release_character_recent_transaction(
+                        memory_rename_result.get("_recent_rename_transaction"),
+                    )
+            else:
+                await _await_cleanup_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
+                        reason=f"任务取消：角色重命名回滚 {old_name} -> {new_name}",
+                    )
+                )
+            raise
+        except MaintenanceModeError as exc:
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
+                        reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+                    )
+                )
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                reason=f"角色重命名回滚: {old_name} -> {new_name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
+                        reason=f"角色重命名回滚: {old_name} -> {new_name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
             error_message = f"重命名角色失败: {exc}"
             if rollback_error:
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
+        finally:
+            release_character_recent_transaction(recent_transaction)
 
     # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
@@ -964,56 +1307,70 @@ async def add_catgirl(request: Request):
     requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     data['档案名'] = str(profile_name).strip()
 
+    requested_name = data['档案名']
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
-    key = data['档案名']
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        key = _available_character_name(characters, requested_name)
 
-    # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
-    if key in characters.get('猫娘', {}):
-        base_name = key
-        counter = 1
-        while f"{base_name}({counter})" in characters.get('猫娘', {}):
-            counter += 1
-        key = f"{base_name}({counter})"
-        data['档案名'] = key
-        logger.info(f'猫娘名称冲突，已重命名为: {key}')
+        created_data = dict(data)
+        created_data['档案名'] = key
+        if key != requested_name:
+            logger.info(f'猫娘名称冲突，已重命名为: {key}')
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
 
-    if '猫娘' not in characters:
-        characters['猫娘'] = {}
-
-    # 创建猫娘数据，只保存非空字段
-    catgirl_data = {}
-    for k, v in data.items():
-        if k != '档案名':
-            if v:  # 只保存非空字段
+        # 创建猫娘数据，只保存非空字段
+        catgirl_data = {}
+        for k, v in created_data.items():
+            if k != '档案名' and v:
                 catgirl_data[k] = v
 
-    characters['猫娘'][key] = catgirl_data
-    _sync_catgirl_field_order(catgirl_data, requested_field_order)
-    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
-    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
-    default_free_voice_id = _get_new_catgirl_default_voice_id()
-    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-    await _config_manager.asave_characters(characters)
-    pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+        characters['猫娘'][key] = catgirl_data
+        _sync_catgirl_field_order(catgirl_data, requested_field_order)
+        # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+        # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+        default_free_voice_id = _get_new_catgirl_default_voice_id()
+        set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
+        publish_cancelled = await asave_characters_with_recent_activation(
+            _config_manager, characters, key,
+        )
+        pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
-    # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
-    init_one_catgirl = get_init_one_catgirl()
-    await init_one_catgirl(key, is_new=True)
+        # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(key, is_new=True)
 
-    memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
+        memory_server_reloaded = await notify_memory_server_reload(
+            reason=f"新角色: {key}",
+            resume_derived_task_names=(key,),
+        )
 
-    response: dict = {
-        "success": True,
-        "character_name": key,
-        "memory_server_reloaded": memory_server_reloaded,
-    }
-    if not pending_mark_ok:
-        response["partial_success"] = True
-        response["pending_mark_ok"] = False
-        response["pending_mark_failed"] = True
-        response["pending_mark_error"] = pending_mark_error
-    return response
+        response: dict = {
+            "success": True,
+            "character_name": key,
+            "memory_server_reloaded": memory_server_reloaded,
+        }
+        if not pending_mark_ok:
+            response["partial_success"] = True
+            response["pending_mark_ok"] = False
+            response["pending_mark_failed"] = True
+            response["pending_mark_error"] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
+        return response
+
+
+def _available_character_name(characters: dict, requested_name: str) -> str:
+    """Select the existing Windows-style collision suffix for a new profile."""
+    catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
+    catgirls = catgirls if isinstance(catgirls, dict) else {}
+    if requested_name not in catgirls:
+        return requested_name
+    counter = 1
+    while f"{requested_name}({counter})" in catgirls:
+        counter += 1
+    return f"{requested_name}({counter})"
 
 
 @router.put('/catgirl/{name}')
@@ -1200,6 +1557,11 @@ async def delete_catgirl(name: str):
 
 
 async def _delete_catgirl_by_name(name: str):
+    async with character_config_mutation_lock:
+        return await _delete_catgirl_by_name_serialized(name)
+
+
+async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -1254,6 +1616,21 @@ async def _delete_catgirl_by_name(name: str):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
+        # Every other end-of-identity path retires the sidecar stores; this
+        # branch returned without doing so, and a snapshot staged while the
+        # removal was in flight then flushed afterwards -- writing
+        # anti_repeat_effects.json straight into the memory ROOT for ".",
+        # and creating a phantom "a/b/" tree for a name carrying historical
+        # separators. facts_sync enumerates any directory under memory/ as a
+        # character, so the artifact outlives the deletion.
+        #
+        # Placement is load-bearing: this has to run AFTER the last point a
+        # rollback can fire. Both rollback calls above pass no
+        # restored_live_character_names, which is the only thing that lifts
+        # retirement, so retiring inside the try would return the name to
+        # characters.json retired and silently drop every later write.
+        retire_character_runtime_caches(name)
+
         return {
             "success": True,
             "unsafe_name_rescue": True,
@@ -1261,22 +1638,6 @@ async def _delete_catgirl_by_name(name: str):
             "card_face_deleted": False,
             "memory_server_reloaded": memory_server_reloaded,
         }
-
-    released_memory_handle = await release_memory_server_character(
-        name,
-        reason=f"角色删除前释放 SQLite 句柄: {name}",
-    )
-    if not released_memory_handle:
-        logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止删除，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
@@ -1286,36 +1647,132 @@ async def _delete_catgirl_by_name(name: str):
     memory_targets.append(meta_path)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
-        memory_snapshot_records = await asyncio.to_thread(
-            _snapshot_existing_paths, memory_targets, Path(temp_dir)
-        )
+        memory_snapshot_records = []
         tombstone_snapshot = None
+        recent_delete_result = None
+        recent_transaction = None
+        # Empty until delete_character_memory_storage has actually retired the
+        # name. The rollback block is shared with failures from before that
+        # point, and evicting there pops the cache and advances the sequence
+        # fence, destroying a concurrently recorded decision.
+        retired_names: tuple[str, ...] = ()
         memory_server_reloaded = False
+        delete_committed = False
+        released_memory_handle = False
+        release_claim_token = create_derived_task_claim_token()
         try:
-            if not is_cloudsave_disabled():
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        name,
+                        reason=f"角色删除前释放 SQLite 句柄: {name}",
+                        hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            name,
+                            release_claim_token,
+                            reason=f"角色删除 release 失败补偿: {name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色删除前释放记忆服务器句柄失败，已阻止删除: %s%s",
+                    name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止删除，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
+            recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
+                begin_character_recent_transaction,
+                _config_manager,
+                name,
+            )
+            if acquire_cancelled:
+                raise asyncio.CancelledError
+
+            memory_snapshot_records, snapshot_cancelled = await _await_thread_call_to_completion(
+                _snapshot_existing_paths, memory_targets, Path(temp_dir),
+            )
+            if snapshot_cancelled:
+                raise asyncio.CancelledError
+
+            # Captured wherever the write below happens, and skipped
+            # wherever it does not. A record written without a snapshot to
+            # restore would survive a failed delete -- leaving a tombstone for
+            # a character who still exists, which suppresses her seed and
+            # would propagate a deletion that never happened if cloudsave were
+            # enabled and uploaded later.
+            #
+            # The unavailable-local-state case reads nothing here for the same
+            # reason it writes nothing: the directory is broken.
+            if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
-            removed_memory_paths = await asyncio.to_thread(
-                delete_character_memory_storage, _config_manager, name
-            )
+            try:
+                delete_result, delete_cancelled = await _await_thread_call_to_completion(
+                    delete_character_memory_storage,
+                    _config_manager,
+                    name,
+                    capture_pending=True,
+                    keep_recent_locks=True,
+                    recent_transaction=recent_transaction,
+                )
+            except BaseException:
+                # It retires the name as its first act, so a raise partway
+                # through still leaves it retired. The rollback below restores
+                # the files and the config entry, which makes the name live
+                # again -- and a live name that is still retired drops every
+                # later sidecar write. Unlike rename this cannot live in the
+                # helper: the unsubscribe caller removes the config entry
+                # BEFORE calling it and never rolls back, so for that one the
+                # name really is gone and must stay retired.
+                retired_names = (name,)
+                raise
+            removed_memory_paths, recent_delete_result = delete_result
+            retired_names = (name,)
+            if delete_cancelled:
+                raise asyncio.CancelledError
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
             # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
             if face_path.exists():
-                await asyncio.to_thread(face_path.unlink)
+                await _await_thread_mutation(face_path.unlink)
             if meta_path.exists():
-                await asyncio.to_thread(meta_path.unlink)
+                await _await_thread_mutation(meta_path.unlink)
 
-            if not is_cloudsave_disabled():
-                await asyncio.to_thread(
+            if not is_cloudsave_disabled_due_to_local_state_unavailable():
+                await _await_thread_mutation(
                     _config_manager.save_character_tombstones_state,
                     _build_character_tombstones_state(_config_manager, name),
                 )
 
             # 删除角色配置
             del characters['猫娘'][name]
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
             # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
             remove_one_catgirl = get_remove_one_catgirl()
             await remove_one_catgirl(name)
@@ -1329,25 +1786,78 @@ async def _delete_catgirl_by_name(name: str):
                     mark_session_deleted_character_name(name)
                 except Exception as exc:
                     logger.warning("记录本会话工坊删除标记失败: %s", exc)
-        except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                reason=f"维护模式：删除角色回滚 {name}",
+            delete_committed = True
+            _, finalize_cancelled = await _await_thread_call_to_completion(
+                finalize_character_recent_delete, recent_delete_result,
             )
+            if finalize_cancelled:
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            if delete_committed:
+                release_character_recent_transaction(recent_delete_result)
+            else:
+                await _await_cleanup_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
+                        reason=f"任务取消：删除角色回滚 {name}",
+                    )
+                )
+            raise
+        except MaintenanceModeError as exc:
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
+                        reason=f"维护模式：删除角色回滚 {name}",
+                    )
+                )
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                reason=f"删除角色回滚: {name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
+                        reason=f"删除角色回滚: {name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("删除角色失败，已尝试回滚: %s", name)
             error_message = f"删除角色失败: {exc}"
             if rollback_error:
@@ -1360,6 +1870,8 @@ async def _delete_catgirl_by_name(name: str):
                 },
                 status_code=500,
             )
+        finally:
+            release_character_recent_transaction(recent_transaction)
 
     pending_remove_ok = True
     pending_remove_error = ""

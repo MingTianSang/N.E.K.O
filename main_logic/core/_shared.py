@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.logger_config import get_module_logger
 
 
@@ -37,8 +37,10 @@ from utils.logger_config import get_module_logger
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_HANDSHAKE_OVERRIDE_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
+_PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S = 5.0
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
@@ -56,7 +58,21 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "topic.hook": 1000,
     "topic.material": 1000,
     "realtime.prime": 1000,
+    # ⚠️ 用户 ban-topic 禁令块。日常语料远低于默认的 1000（实测真实中/日文
+    # 20 条满额也就 419~449 tokens），但**理论上界不是**：term 长度上限 40 字
+    # （_TERM_MAX_LEN）× 活跃条数上限 20（USER_DIRECTIVE_MAX_ACTIVE）在高 token
+    # 密度的假名上量到 1727。
+    # 越线的后果不是"少几条"那么轻：request_id 按**完整** term 集合算，于是
+    # 截断后的重试要么被去重、要么原样再追加同一份截断载荷，被截掉的那几条禁令
+    # **永远进不去**（codex）。登记一个覆盖理论上界的预算把这条 latent 路径掐掉。
+    # tests/unit/test_user_directives_midsession_inject.py 有守卫钉住
+    # 「最坏情况渲染块 ≤ 本预算」，改大上面两个常量任一个都会红。
+    "user_directives": 2000,
 }
+# ⚠️ 这张表只作用于 ``prime_context`` 那条回落路径，而那条只有
+# ``lifetime in {"current_session", "session_family"}`` 才走得到。纯
+# ``next_session`` 的 source（如 ``user_directives``）登记在这里是死配置，
+# 会让人误以为它还会经 realtime instructions 下发 —— 别加。
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
@@ -150,6 +166,15 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
     '_proactive_expected_sid', default=None,
 )
 
+# Startup greeting text that crossed the real frontend publish boundary in the
+# current proactive task.  ``prompt_ephemeral`` accumulates model output before
+# awaiting its delta callback, so its final committed text can contain a suffix
+# that was dropped after user preemption.  The per-task list lets the greeting
+# flow persist only chunks that ``send_lanlan_response`` actually published.
+_proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar('_proactive_published_text_chunks', default=None)
+)
+
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
@@ -170,7 +195,11 @@ def _load_locale_messages(locale_code: str) -> dict:
 
 
 def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
-    raw_lang = language or get_global_language()
+    # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
+    # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
+    # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
+    # （issue #2500）。显式传进来的 language 照旧优先。
+    raw_lang = language or get_global_language_full()
     try:
         lang_full = normalize_language_code(raw_lang, format='full')
     except Exception:
@@ -216,6 +245,28 @@ class ContextAppendResult:
     deduped: bool = False
     targets: tuple[str, ...] = ()
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FreshScreenshot:
+    """One Phase-2 screenshot fetch, tagged with where the image came from.
+
+    ``source`` is the caller's only way to tell apart two situations that a plain
+    base64 return conflated:
+
+    - ``'websocket'``: the frontend answered. ``avatar_position`` is its verdict
+      about THIS image. ``None`` means the frontend deliberately decided the image
+      must not be annotated (window capture, camera, avatar collapsed, multi-monitor);
+      the caller must not substitute a position from anywhere else.
+    - ``'backend_fallback'``: the frontend never answered and the backend grabbed
+      the screen itself. The frontend had no opinion about this image, so the
+      caller MAY fall back to the position that came with the original request.
+    - ``''``: nothing was captured.
+    """
+
+    b64: str = ""
+    source: str = ""
+    avatar_position: dict | None = None
 
 
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:

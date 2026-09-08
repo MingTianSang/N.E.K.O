@@ -14,12 +14,10 @@ declare namespace NekoMiniGame {
     | 'speech-output'
     | 'context-read'
     | 'memory'
-    | 'window-control'
     | 'storage'
     | 'leaderboard-local'
     | 'leaderboard-server'
     | (string & {});
-  type HostLanguage = 'en' | 'ja' | 'ko' | 'zh-CN' | 'zh-TW' | 'ru' | 'pt' | 'es';
   type ContractKind = 'event' | 'state' | 'control' | 'result' | 'command';
   type ContractSchemaType =
     | 'null'
@@ -97,11 +95,6 @@ declare namespace NekoMiniGame {
     registration: RegistrationIdentity;
   }
 
-  interface HostLocaleState {
-    readonly language: HostLanguage;
-    readonly revision: number;
-  }
-
   interface HostHandshakeRequest {
     sdkVersion: string;
     protocolVersions: readonly ['1'];
@@ -114,7 +107,6 @@ declare namespace NekoMiniGame {
     hostVersion?: string;
     registration?: RegistrationIdentity;
     grantedCapabilities?: readonly Capability[];
-    locale?: HostLocaleState;
     code?: string;
     message?: string;
   }
@@ -125,7 +117,6 @@ declare namespace NekoMiniGame {
       request: HostHandshakeRequest,
       options: { signal: AbortSignal; timeoutMs: number },
     ): HostHandshakeResponse | Promise<HostHandshakeResponse>;
-    subscribeHostLocale?(listener: (locale: HostLocaleState) => void): () => void;
     dispose?(options?: { preservePendingOperations?: readonly string[] }): void;
     [key: string]: unknown;
   }
@@ -161,53 +152,11 @@ declare namespace NekoMiniGame {
     timeoutMs?: number;
   }
 
-  interface VoiceHandoffOptions extends RequestOptions {
-    /** Continue the same deferred handoff only while ordinary-voice intent is unchanged. */
-    handoffIntentEpoch?: number;
-  }
-
-  type VoiceControlAction = 'query' | 'start' | 'stop' | 'toggle' | 'handoff';
-
-  /** Route-bound voice state returned by voice control operations and state events. */
-  interface VoiceControlState {
-    readonly type?: 'game_voice_control_state';
-    readonly message_id?: string;
-    readonly storage_nonce?: string;
-    readonly owner_id?: string;
-    readonly game_type?: string;
-    readonly session_id?: string;
-    readonly sdk_route_instance_id?: string;
-    readonly request_id?: string;
-    readonly action?: VoiceControlAction;
-    readonly ok?: boolean;
-    readonly reason?: string;
-    readonly timestamp?: number;
-    readonly active?: boolean;
-    readonly listening?: boolean;
-    readonly pending?: boolean;
-    readonly route_active?: boolean;
-    readonly ordinary_voice_active?: boolean;
-    readonly microphone_muted?: boolean;
-    /** Fence returned by a deferred handoff; pass it back as handoffIntentEpoch. */
-    readonly ordinary_voice_intent_epoch?: number;
-    readonly [key: string]: unknown;
-  }
-
   interface Capabilities {
     readonly granted: readonly Capability[];
     readonly unavailable: readonly Capability[];
     has(capability: Capability): boolean;
     require(capability: Capability): true;
-  }
-
-  interface Locale {
-    readonly current: HostLocaleState;
-    onChange(handler: (locale: HostLocaleState) => void): () => void;
-  }
-
-  interface WindowControl {
-    readonly pendingCount: number;
-    close(options?: RequestOptions): Promise<Response<{ readonly closed: boolean }>>;
   }
 
   type RuntimeState = 'idle' | 'starting' | 'running' | 'degraded' | 'inactive' | 'ending' | 'ended' | 'disposed';
@@ -514,16 +463,12 @@ declare namespace NekoMiniGame {
 
   interface VoiceInput {
     readonly connected: boolean;
-    request(
-      action: VoiceControlAction,
-      options?: RequestOptions | VoiceHandoffOptions,
-    ): Promise<VoiceControlState>;
-    query(options?: RequestOptions): Promise<VoiceControlState>;
-    start(options?: RequestOptions): Promise<VoiceControlState>;
-    stop(options?: RequestOptions): Promise<VoiceControlState>;
-    toggle(options?: RequestOptions): Promise<VoiceControlState>;
-    handoff(options?: VoiceHandoffOptions): Promise<VoiceControlState>;
-    onState(handler: (state: VoiceControlState) => void): () => void;
+    request(action: 'query' | 'start' | 'stop' | 'toggle', options?: RequestOptions): Promise<unknown>;
+    query(options?: RequestOptions): Promise<unknown>;
+    start(options?: RequestOptions): Promise<unknown>;
+    stop(options?: RequestOptions): Promise<unknown>;
+    toggle(options?: RequestOptions): Promise<unknown>;
+    onState(handler: (state: Readonly<Record<string, unknown>>) => void): () => void;
     onTranscript(handler: (transcript: VoiceTranscript) => void): () => void;
     onError(handler: (error: Readonly<Record<string, unknown>>) => void): () => void;
   }
@@ -680,7 +625,6 @@ declare namespace NekoMiniGame {
     readonly results: ResultPublisher;
     readonly context: ContextReader;
     readonly memory: Memory;
-    readonly window: WindowControl;
     readonly storage: Storage;
     readonly leaderboard: Leaderboard;
     readonly presentation: Presentation;
@@ -690,7 +634,6 @@ declare namespace NekoMiniGame {
     readonly speech: SpeechOutput;
     readonly audio: Audio;
     readonly avatar: Avatar;
-    readonly locale: Locale;
     readonly disposed: boolean;
     dispose(options?: { preserveRuntimeEnd?: boolean }): void;
   }

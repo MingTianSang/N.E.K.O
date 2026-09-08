@@ -12,37 +12,42 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""ASGI middleware: global inbound request-body size guard.
+"""ASGI middleware: inbound request-body size guard.
 
-This rejects oversized request bodies before they are fully buffered by the
-application layer (a router's ``request.json()`` / ``request.form()`` parse),
-uniformly across every router, and stays orthogonal to each router's
-business-level validation (e.g. ``memory_router.validate_chat_payload``).
+This rejects oversized request bodies *before* they reach the application
+layer (a router's ``request.json()`` / ``request.form()`` parse), uniformly
+across every router, and stays orthogonal to each router's business-level
+validation (e.g. ``memory_router.validate_chat_payload``).
 
 Design (see issue #1586, raised from the PR #1585 discussion):
 
-- Ordinary request bodies are capped by a small desktop-backend guard. Known
-  multipart upload endpoints (Live2D/VRM/MMD models, jukebox music,
-  character-card zips, ...) get a larger but still finite cap so legitimate
-  large uploads survive without letting arbitrary routers spoof multipart and
-  bypass the guard.
-- ``Content-Length`` is inspected first so obviously oversized requests can be
-  rejected before parsing. Bodies are also counted while the app reads from ASGI
-  ``receive`` so chunked / unknown-length requests cannot bypass the cap and
-  reach ``request.json()`` / ``request.form()`` unbounded.
+- Non-multipart requests are capped globally. ``multipart/form-data`` is the file
+  upload path (Live2D/VRM/MMD models, jukebox music, character-card zips, ...)
+  whose legitimate bodies routinely run to hundreds of MB or GB, so multipart
+  remains exempt unless the application explicitly configures a bounded route.
+- A configured multipart route is authorized and size-checked before FastAPI
+  calls ``request.form()``. The receive wrapper also enforces the limit when
+  ``Content-Length`` is absent or incorrect.
+- For the global non-multipart cap, only ``Content-Length`` is inspected. The
+  bounded multipart route additionally counts ASGI chunks as the parser reads
+  them, without buffering another copy in this middleware.
 - Only the ``http`` scope is handled; ``websocket`` / ``lifespan`` scopes are
   forwarded untouched (the Pet realtime WebSocket endpoints must not be
   affected).
 
 This app is a loopback-only desktop backend with no external trust boundary, so
-this guard is a memory / data-shape safeguard, not a security perimeter. The
-cap's job is to stop bare body-parsing endpoints from reading anomalously large
-bodies into memory before validating their shape.
+this guard is a memory / data-shape safeguard, not a security perimeter. A
+client can trivially bypass the cap by labelling its request ``multipart/*`` —
+but that only routes it back into the upload routers' own streaming guards, so
+an oversized body still never gets buffered whole. The cap's job is the bare
+``request.json()`` endpoints that would otherwise read an arbitrarily large
+body into memory before validating its shape.
 """
 from __future__ import annotations
 
 import json
-import re
+
+from fastapi import HTTPException
 
 # 16 MiB. Comfortably above every non-multipart endpoint's legitimate body
 # (the largest is the recent-chat payload's 2 MB business cap from PR #1585),
@@ -50,60 +55,30 @@ import re
 # into memory before it is parsed.
 DEFAULT_MAX_INBOUND_BODY_BYTES = 16 * 1024 * 1024
 
-# The largest current upload feature is jukebox import at 10 GiB. Add the normal
-# JSON cap as multipart envelope slack so that an exactly-at-limit file is not
-# rejected before the route's own validation sees it.
-DEFAULT_TRUSTED_MULTIPART_BODY_BYTES = 10 * 1024 * 1024 * 1024 + DEFAULT_MAX_INBOUND_BODY_BYTES
-
-_TRUSTED_MULTIPART_UPLOAD_EXACT_PATHS = frozenset(
-    {
-        "/api/avatar-drop/parse-document",
-        "/api/characters/audio/analyze_silence",
-        "/api/characters/audio/trim_silence",
-        "/api/characters/import-card",
-        "/api/characters/voice_clone",
-        "/api/jukebox/actions",
-        "/api/jukebox/import",
-        "/api/jukebox/pack-folder",
-        "/api/jukebox/songs",
-        "/api/live2d/upload_model",
-        "/api/model/mmd/upload",
-        "/api/model/mmd/upload_animation",
-        "/api/model/mmd/upload_zip",
-        "/api/model/pngtuber/upload_model",
-        "/api/model/vrm/upload",
-        "/api/model/vrm/upload_animation",
-        "/api/steam/workshop/upload-reference-audio",
-    }
-)
-_TRUSTED_MULTIPART_UPLOAD_PREFIXES = (
-    "/api/live2d/upload_file/",
-)
-_TRUSTED_MULTIPART_UPLOAD_PATTERNS = (
-    re.compile(r"^/api/characters/catgirl/[^/]+/(?:card-face|export-with-portrait)$"),
-)
-
-
-class _InboundBodyTooLarge(BaseException):
-    """Internal control flow for streamed body overflow."""
-
-    def __init__(self, max_body_bytes: int):
-        super().__init__(max_body_bytes)
-        self.max_body_bytes = max_body_bytes
-
 
 class InboundBodySizeLimitMiddleware:
-    """Reject oversized request bodies before full buffering."""
+    """Reject oversized request bodies before routers parse them."""
 
     def __init__(
         self,
         app,
         max_body_bytes: int = DEFAULT_MAX_INBOUND_BODY_BYTES,
-        trusted_multipart_body_bytes: int = DEFAULT_TRUSTED_MULTIPART_BODY_BYTES,
+        *,
+        multipart_path_prefix: str | None = None,
+        multipart_methods: tuple[str, ...] = (),
+        max_multipart_body_bytes: int | None = None,
+        multipart_preflight=None,
     ):
         self.app = app
         self.max_body_bytes = int(max_body_bytes)
-        self.trusted_multipart_body_bytes = int(trusted_multipart_body_bytes)
+        self.multipart_path_prefix = (multipart_path_prefix or "").rstrip("/")
+        self.multipart_methods = frozenset(method.upper() for method in multipart_methods)
+        self.max_multipart_body_bytes = (
+            int(max_multipart_body_bytes)
+            if max_multipart_body_bytes is not None
+            else None
+        )
+        self.multipart_preflight = multipart_preflight
 
     async def __call__(self, scope, receive, send):
         # websocket / lifespan scopes carry no Content-Length body to cap.
@@ -120,35 +95,84 @@ class InboundBodySizeLimitMiddleware:
             elif lowered == b"content-type":
                 content_type = value
 
-        request_limit = self._request_limit_bytes(scope, self._is_multipart(content_type))
-        if self._exceeds_content_length_limit(content_length, request_limit):
-            await self._reject(send, request_limit)
+        configured_route = self._matches_configured_route(scope)
+        bounded_multipart = configured_route and self._is_bounded_multipart(content_type)
+        # preflight 按路由触发，不按 content-type：这些路由的 handler 声明了
+        # Form/File 参数，FastAPI 会在进入 handler（也就是路由内部那套同样的
+        # 本地访问 / CSRF 校验）之前就把 body 解析掉。只对 multipart 跑 preflight
+        # 的话，跨域客户端换个 content-type 就能反复让服务器解析大 body 再被拒。
+        if configured_route and self.multipart_preflight is not None:
+            rejected = self.multipart_preflight(scope)
+            if rejected is not None:
+                await rejected(scope, receive, send)
+                return
+
+        maximum = self.max_multipart_body_bytes if bounded_multipart else self.max_body_bytes
+        if self._exceeds_limit(content_length, content_type, bounded_multipart=bounded_multipart):
+            await self._reject(send, maximum)
             return
 
-        wrapped_receive = self._limited_receive(receive, request_limit)
+        if not bounded_multipart:
+            await self.app(scope, receive, send)
+            return
+
+        consumed = 0
+        overflowed = False
+
+        async def limited_receive():
+            nonlocal consumed, overflowed
+            message = await receive()
+            if message.get("type") == "http.request":
+                consumed += len(message.get("body", b""))
+                if consumed > maximum:
+                    overflowed = True
+                    raise _InboundBodyTooLarge(maximum)
+            return message
+
+        async def limited_send(message):
+            if not overflowed:
+                await send(message)
+
         try:
-            await self.app(scope, wrapped_receive, send)
-        except _InboundBodyTooLarge as exc:
-            await self._reject(send, exc.max_body_bytes)
+            await self.app(scope, limited_receive, limited_send)
+        except _InboundBodyTooLarge:
+            pass
+        if overflowed:
+            await self._reject(send, maximum)
 
-    def _is_multipart(self, content_type: bytes) -> bool:
-        return content_type.strip().lower().startswith(b"multipart/")
+    def _matches_configured_route(self, scope) -> bool:
+        """Path/method match for the guarded routes, independent of content type."""
+        if (
+            not self.multipart_path_prefix
+            or scope.get("method", "").upper() not in self.multipart_methods
+        ):
+            return False
+        path = str(scope.get("path") or "").rstrip("/")
+        return path == self.multipart_path_prefix or path.startswith(
+            f"{self.multipart_path_prefix}/"
+        )
 
-    def _request_limit_bytes(self, scope, is_multipart: bool) -> int:
-        if is_multipart and self._is_trusted_multipart_upload_scope(scope):
-            return self.trusted_multipart_body_bytes
-        return self.max_body_bytes
+    def _is_bounded_multipart(self, content_type: bytes) -> bool:
+        """Whether the multipart-specific size policy applies to this body."""
+        return (
+            self.max_multipart_body_bytes is not None
+            and content_type.strip().lower().startswith(b"multipart/")
+        )
 
-    def _is_trusted_multipart_upload_scope(self, scope) -> bool:
-        path = str(scope.get("path") or "")
-        if path in _TRUSTED_MULTIPART_UPLOAD_EXACT_PATHS:
-            return True
-        if any(path.startswith(prefix) for prefix in _TRUSTED_MULTIPART_UPLOAD_PREFIXES):
-            return True
-        return any(pattern.match(path) for pattern in _TRUSTED_MULTIPART_UPLOAD_PATTERNS)
-
-    def _exceeds_content_length_limit(self, content_length: bytes | None, max_body_bytes: int) -> bool:
+    def _exceeds_limit(
+        self,
+        content_length: bytes | None,
+        content_type: bytes,
+        *,
+        bounded_multipart: bool = False,
+    ) -> bool:
         if content_length is None:
+            # No Content-Length (chunked / unknown): pass through rather than
+            # risk rejecting a valid streaming request.
+            return False
+        # Multipart uploads are exempt — the upload routers guard them with
+        # their own streaming, much-larger caps.
+        if content_type.strip().lower().startswith(b"multipart/") and not bounded_multipart:
             return False
         try:
             length = int(content_length)
@@ -156,28 +180,15 @@ class InboundBodySizeLimitMiddleware:
             # Malformed Content-Length: let the server / downstream handle it
             # instead of guessing here.
             return False
-        return length > max_body_bytes
+        maximum = self.max_multipart_body_bytes if bounded_multipart else self.max_body_bytes
+        return length > maximum
 
-    def _limited_receive(self, receive, max_body_bytes: int):
-        seen = 0
-
-        async def wrapped_receive():
-            nonlocal seen
-            message = await receive()
-            if message.get("type") == "http.request":
-                seen += len(message.get("body") or b"")
-                if seen > max_body_bytes:
-                    raise _InboundBodyTooLarge(max_body_bytes)
-            return message
-
-        return wrapped_receive
-
-    async def _reject(self, send, max_body_bytes: int) -> None:
+    async def _reject(self, send, maximum: int) -> None:
         body = json.dumps(
             {
                 "ok": False,
                 "error_code": "payload_too_large",
-                "max_bytes": max_body_bytes,
+                "max_bytes": maximum,
                 "error": "请求体超过全局体积上限。",
             },
             ensure_ascii=False,
@@ -196,3 +207,15 @@ class InboundBodySizeLimitMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
+class _InboundBodyTooLarge(HTTPException):
+    def __init__(self, maximum: int):
+        super().__init__(
+            status_code=413,
+            detail={
+                "ok": False,
+                "error_code": "payload_too_large",
+                "max_bytes": maximum,
+            },
+        )

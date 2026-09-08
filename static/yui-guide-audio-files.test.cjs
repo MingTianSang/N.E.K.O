@@ -2,12 +2,13 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
 const guideAudioRoot = path.join(__dirname, 'assets', 'tutorial', 'guide-audio');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const supportedRecordedLocales = ['zh', 'ja', 'en', 'ko', 'ru'];
 const guideFiles = [
     'tutorial/yui-guide/days/day1-home-guide.js',
@@ -198,7 +199,7 @@ test('day1 round scenes use timeline playback while specialized behavior delegat
         .map(scene => scene.id);
 
     // 修改原因：Day1 问候阶段和 Day2/Day4 日常开场一样，必须走显式 timeline 才能把胶囊高亮目标传给 spotlight。
-    assert.equal(timelineSceneIds.length, 9);
+    assert.equal(timelineSceneIds.length, 10);
     assert.equal(timelineSceneIds[0], 'day1_intro_activation');
     assert.equal(timelineSceneIds[1], 'day1_intro_greeting');
     assert.equal(timelineSceneIds[2], 'day1_capsule_drag_hint');
@@ -207,7 +208,8 @@ test('day1 round scenes use timeline playback while specialized behavior delegat
     assert.equal(timelineSceneIds[5], 'day1_screen_entry');
     assert.equal(timelineSceneIds[6], 'day1_screen_entry_invite');
     assert.equal(timelineSceneIds[7], 'day1_takeover_capture_cursor');
-    assert.equal(timelineSceneIds[8], 'day1_takeover_return_control');
+    assert.equal(timelineSceneIds[8], 'day1_avatar_zoom_hint');
+    assert.equal(timelineSceneIds[9], 'day1_takeover_return_control');
 });
 
 test('day1 activation delegates timing through timeline while greeting follows the daily capsule intro pattern', () => {
@@ -270,14 +272,15 @@ test('day2 round scenes use the interaction tools flow after day swap', () => {
         .filter(scene => scene.timelinePlayback === true)
         .map(scene => scene.id);
 
-    assert.equal(timelineSceneIds.length, 7);
+    assert.equal(timelineSceneIds.length, 8);
     assert.equal(timelineSceneIds[0], 'day2_tool_toggle_intro');
     assert.equal(timelineSceneIds[1], 'day2_avatar_tools');
     assert.equal(timelineSceneIds[2], 'day2_avatar_tools_props');
-    assert.equal(timelineSceneIds[3], 'day2_galgame_entry');
-    assert.equal(timelineSceneIds[4], 'day2_galgame_choices');
-    assert.equal(timelineSceneIds[5], 'day2_wrap');
-    assert.equal(timelineSceneIds[6], 'day2_wrap_ready');
+    assert.equal(timelineSceneIds[3], 'day2_tool_wheel_rotation');
+    assert.equal(timelineSceneIds[4], 'day2_galgame_entry');
+    assert.equal(timelineSceneIds[5], 'day2_galgame_choices');
+    assert.equal(timelineSceneIds[6], 'day2_wrap');
+    assert.equal(timelineSceneIds[7], 'day2_wrap_ready');
 });
 
 test('day3 personalization detail delegates narration and panel tour to SettingsTourFlow from timeline after day swap', () => {
@@ -483,7 +486,7 @@ test('day7 round scenes are opted into timeline playback after the petal cue pat
 });
 
 test('director merges audio maps from all registered daily guides', () => {
-    const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+    const directorSource = readDirectorSource(__dirname);
 
     assert.match(directorSource, /function collectGuideAudioFilesByKey\(\)/);
     assert.match(directorSource, /window\.YuiGuideDailyGuides/);

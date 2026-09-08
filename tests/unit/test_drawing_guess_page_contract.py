@@ -80,7 +80,6 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
             "speech-output",
             "avatar-renderer",
             "memory",
-            "window-control",
             "storage",
         ],
         "commandRoutes": {
@@ -141,18 +140,23 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
         "requiredCapabilities: ['runtime', 'logging', 'speech-output', "
         "'avatar-renderer', 'memory']"
     ) in script
-    assert "optionalCapabilities: ['voice-input', 'window-control', 'storage']" in script
+    assert "optionalCapabilities: ['voice-input', 'storage']" in script
     assert "commands: ROUND_COMMAND_CONTRACTS" in script
     assert "window.NekoMiniGame.connect" in script
     assert "client.runtime.configure" in script
     assert "client.runtime.start(routePayload(), { timeoutMs: 12000 })" in script
     assert "client.runtime.end(sdkRouteEndPayload(options)" in script
-    assert "state.sdkClient.runtime.reset({ newSession: true })" in script
+    assert "runtime.reset({ newSession: true })" not in script
     assert "client.events.on('runtime-output'" not in script
     assert "client.events.on('runtime-state'" in script
     assert "client.events.on('runtime-inactive'" in script
     assert "client.events.on('page-exit'" in script
     assert "client.logger.enableAfterRuntimeStart()" in script
+    assert "function logSdkBestEffort(client, level, category, event, message, details)" in script
+    assert script.count("logSdkBestEffort(") == 6
+    assert ".logger.info(" not in script
+    assert ".logger.warn(" not in script
+    assert ".logger.error(" not in script
     assert "heartbeat: { intervalMs: 2500, timeoutMs: 5000 }" in script
     assert "outputs: { intervalMs: 900, timeoutMs: 6000, limit: 50 }" not in script
     assert "outputs: false" in script
@@ -200,7 +204,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
     assert "client.events.on('page-exit', handleSdkPageExit)" in script
     assert "state.playerTextChain = Promise.resolve(state.playerTextChain)" in script
-    assert "client.window.close({ timeoutMs: 3000 })" in script
+    assert "client.window." not in script
     assert "window.nekoHost" not in script
     assert "try { window.close(); }" in script
     assert "window.location.assign('/')" in script
@@ -249,7 +253,7 @@ def test_drawing_guess_static_route_contract():
     assert "source: 'drawing_guess_demo'" not in script
     assert "client.avatar.getCurrentCharacter()" in script
     assert "client.avatar.getCharacter(requestedName)" in script
-    assert "client.avatar.listCharacters()" in script
+    assert "client.avatar.listCharacters()" not in script
     assert "fetch('/api/characters" not in script
     assert '<button id="start-button"' not in html
     assert '<button id="reload-character-button"' not in html
@@ -257,16 +261,10 @@ def test_drawing_guess_static_route_contract():
     assert "--dg-bg: #eef7ff;" in html
     assert "--dg-accent: #17a7ff;" in html
     assert "/static/icons/icon_systray.ico" in html
-    assert 'id="debug-trigger" class="dg-header-icon"' in html
-    assert 'id="debug-panel" class="dg-debug-panel"' in html
-    assert 'id="debug-character-select"' in html
-    assert 'id="debug-ai-round"' in html
-    assert 'id="debug-user-round"' in html
-    assert 'id="debug-rotate-rounds" type="checkbox" checked' in html
-    assert 'id="debug-ai-guess-countdown"' in html
-    assert 'id="debug-trigger-ai-guess"' in html
-    assert ".dg-header-icon.is-shaking" in html
-    assert ".dg-debug-panel" in html
+    assert 'id="debug-trigger"' not in html
+    assert 'id="debug-panel"' not in html
+    assert "debug_start_phase" not in script
+    assert 'id="canvas-badge"' in html
     assert "/static/icons/paw_ui.png" not in html
     assert "/static/icons/image_icon.svg" in html
     assert "/static/icons/chat_icon.png" in html
@@ -461,7 +459,7 @@ def test_drawing_guess_static_route_contract():
     assert "if (state.sdkPulsePromise === pulsePromise) state.sdkPulsePromise = null;" in script
     assert "state.canvasContextLastPayloadKind = 'clear';" in script
     assert "attemptedCanvasKind === 'clear'" in script
-    assert "cleanupRouteResources({ preserveCanvasRouteState: true });" in script
+    assert "preserveCanvasRouteState" not in script
     assert "game_canvas_context_request" not in script
     command_timeout_patterns = {
         "round start": (
@@ -523,32 +521,24 @@ def test_drawing_guess_static_route_contract():
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
     assert "function handleVoiceRouteButton" in script
-    assert "function handoffOrdinaryVoiceToSdk(client)" in script
-    assert "var handoffOptions = { timeoutMs: 12000 };" in script
-    assert "handoffOptions.handoffIntentEpoch = state.voiceHandoffIntentEpoch;" in script
-    assert "handoffRequest = client.voice.handoff(handoffOptions);" in script
-    assert "handoffOrdinaryVoiceToSdk(client).catch(function () {});" in script
+    assert "client.voice.query({ timeoutMs: 5000 })" in script
+    assert "client.voice.stop({ timeoutMs: 6500 })" in script
+    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.handoff(" not in script
+    assert "voiceHandoff" not in script
     assert "function handleSdkVoiceTranscript" in script
     assert "function submitPlayerText" in script
     assert "input_kind: 'user-voice'" in script
     assert "source: 'sdk_voice_input'" in script
     assert "game_voice_stt_gate" not in script
     assert "game_external_input" not in script
-    assert "externalInputTakeover: false" in script
-    assert "external_input_takeover: false" in script
+    assert "externalInputTakeover" not in script
+    assert "external_input_takeover" not in script
     assert "function speechRecognitionCtor" not in script
     assert "function startInternalVoiceRecognition" not in script
     assert "function stopInternalVoiceRecognition" not in script
     assert "function submitInternalVoiceTranscript" not in script
     assert "browser_speech_recognition" not in script
-    assert "debugGesture: []" in script
-    assert "function recordDebugGesture" in script
-    assert "state.debugGesture.join('') === 'LLRR'" in script
-    assert "function startDebugAiRound" in script
-    assert "function startDebugUserRound" in script
-    assert "debug_start_phase: 'word_picking'" in script
-    assert "function triggerDebugAiGuessNow" in script
-    assert "function updateDebugGuessCountdown" in script
     assert "state.aiGuessNextAt = Date.now() + delay;" in script
     assert "roundFlowToken: 0" in script
     assert "roundRequestControllers: new Set()" in script
@@ -569,11 +559,6 @@ def test_drawing_guess_static_route_contract():
     assert "if (state.sdkReconcilePromise) return state.sdkReconcilePromise;" in script
     assert "if (state.sdkStartPromise) return state.sdkStartPromise;" in script
     assert "if (!reconciled) throw sdkStartRecoveryBlockedError();" in script
-    assert "debugSwitchPromise: null" in script
-    assert "!state.debugRotateRounds && state.debugRoundMode === 'ai'" in script
-    assert "!state.debugRotateRounds && state.debugRoundMode === 'user'" in script
-    assert "els.debugTrigger.addEventListener('contextmenu'" in script
-    assert "els.debugRotateRounds.addEventListener('change'" in script
     assert 'value="saved"' not in html
     assert 'drawingGuess.tutorial.memorySaved' not in html
     assert "dg-tutorial-guide" in html
@@ -591,7 +576,10 @@ def test_drawing_guess_static_route_contract():
     )
     assert "memory_consent: state.memoryConsent" not in script
     assert "i18n_language: currentLanguage()" not in script
-    assert "client.locale.onChange(applySdkLocale)" in script
+    assert "client.locale." not in script
+    assert "function syncPageLocale()" in script
+    assert "(window.i18n && window.i18n.language)" in script
+    assert "window.addEventListener('localechange', syncPageLocale)" in script
     assert "hydrateSdkPreferences(client)" in script
     assert "'settings/model-views'" in script
     assert "'settings/side-split-ratio'" in script
@@ -603,7 +591,6 @@ def test_drawing_guess_static_route_contract():
         "window.i18next",
         "window.__nekoI18nLanguage",
         "window.NEKO_I18N_LANGUAGE",
-        "window.addEventListener('localechange'",
     ):
         assert direct_platform_marker not in script
     assert "gameStarted: state.phase !== 'tutorial'" in script
@@ -652,6 +639,9 @@ def test_drawing_guess_static_route_contract():
     assert "function hexToRgba" in script
     assert "function canvasDisplayPixelBounds" in script
     assert "canvasDisplayPixelBounds(els.canvas, els.canvasStage)" in script
+    assert "view.getComputedStyle(ancestor)" in script
+    assert "view && view.visualViewport" in script
+    assert "if (!displayBounds) return false;" in script
     assert "function floodFillCanvas" in script
     assert "state.brushMode === 'brush' && state.brushToolKind === 'bucket'" in script
     assert "function setBrushToolKind" in script
@@ -861,7 +851,10 @@ def test_drawing_guess_static_route_contract():
     assert "function screenRectToSvgBounds" in script
     assert "function measureSvgContentMetrics" in script
     assert "function clampCenterForBounds" in script
-    assert "var viewBoxRatio = 240 / 180;" in script
+    assert "svg.setAttribute('preserveAspectRatio', 'none')" in script
+    assert "'xMidYMid meet'" not in script
+    assert "stageRect.width / stageRect.height" in script
+    assert "var viewBoxRatio = 240 / 180;" not in script
     assert "transform 180ms" not in script
     assert "prefers-reduced-motion: reduce" in script
     assert "navigator.sendBeacon" not in script
@@ -884,7 +877,7 @@ def test_ai_drawing_keeps_compact_loading_badge_during_animation():
 @pytest.mark.unit
 def test_ai_drawing_plan_is_visible_while_visual_review_runs():
     script = _script()
-    round_flow = script.split("function startRound(options)", 1)[1].split(
+    round_flow = script.split("function startRound()", 1)[1].split(
         "function prepareUserDrawing", 1,
     )[0]
 
@@ -914,7 +907,7 @@ def test_ai_and_user_canvases_fill_the_same_stage_bounds():
 def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
 
-    assert "2026-07-11-drawing-guess-merge-doubao-speaker-id-model-type-3d-label-i18n" in script
+    assert "2026-09-08-drawing-guess" in script
 
 
 @pytest.mark.unit

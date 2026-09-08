@@ -15,11 +15,10 @@
   const MAX_PENDING_OPERATION_LIMIT = 64;
   const VIEWPORT_MODES = Object.freeze(['fixed', 'container', 'host-window']);
   const REQUIRED_CONTROLLER_METHODS = Object.freeze([
-    'setModel', 'setView', 'setSpeaking', 'focus', 'setEmotion',
-    'pause', 'resume', 'getState', 'resize', 'dispose',
+    'setModel', 'focus', 'setEmotion', 'pause', 'resume', 'getState', 'resize', 'dispose',
   ]);
   const live2dNativeBaselines = new WeakMap();
-  const rawControllerDisposals = new WeakMap();
+  const disposedRawControllers = new WeakSet();
 
   class NekoMiniGameAvatarHostError extends Error {
     constructor(code, message, details = {}) {
@@ -162,11 +161,9 @@
 
     const active = new Map();
     const pending = new Map();
-    const slotCleanups = new Map();
     const hostWindowStates = new Set();
     let hostWindowResizeHandler = null;
     let disposed = false;
-    let disposalPromise = null;
 
     function descriptorContainer(descriptor) {
       if (descriptor.container && typeof descriptor.container === 'object') {
@@ -201,30 +198,21 @@
       );
     }
 
-    function disposeRaw(raw, operation = 'dispose') {
-      if (!raw || (typeof raw !== 'object' && typeof raw !== 'function')
-          || rawControllerDisposals.has(raw)) {
-        return rawControllerDisposals.get(raw) || Promise.resolve();
+    function observeAsyncFailure(result, operation) {
+      if (result && typeof result.catch === 'function') {
+        result.catch((error) => windowImpl.console?.error?.(
+          `[NekoMiniGameAvatarHost] ${operation} failed`,
+          error,
+        ));
       }
-      let disposal;
-      try { disposal = Promise.resolve(raw.dispose?.()); }
-      catch (error) { disposal = Promise.reject(error); }
-      const observed = disposal.catch((error) => windowImpl.console?.error?.(
-        `[NekoMiniGameAvatarHost] ${operation} failed`,
-        error,
-      ));
-      rawControllerDisposals.set(raw, observed);
-      return observed;
     }
 
-    function queueSlotCleanup(slot, callback) {
-      const previous = slotCleanups.get(slot) || Promise.resolve();
-      const cleanup = previous.catch(() => undefined).then(callback);
-      const tracked = cleanup.finally(() => {
-        if (slotCleanups.get(slot) === tracked) slotCleanups.delete(slot);
-      });
-      slotCleanups.set(slot, tracked);
-      return tracked;
+    function disposeRaw(raw, operation = 'dispose') {
+      if (!raw || (typeof raw !== 'object' && typeof raw !== 'function')
+          || disposedRawControllers.has(raw)) return;
+      disposedRawControllers.add(raw);
+      try { observeAsyncFailure(raw.dispose?.(), operation); }
+      catch (error) { windowImpl.console?.error?.(`[NekoMiniGameAvatarHost] ${operation} failed`, error); }
     }
 
     function pendingMountDisposed(slot) {
@@ -273,13 +261,12 @@
         return Promise.reject(error);
       }
       state.pendingOperations += 1;
-      const run = state.rawOperationTail
+      const run = state.operationTail
         .catch(() => undefined)
         .then(() => {
           ensureState(state, operation);
           return callback();
         });
-      state.rawOperationTail = run.then(() => undefined, () => undefined);
       const cancellable = Promise.race([
         run,
         state.operationDisposal.then(() => {
@@ -289,6 +276,7 @@
       const tracked = cancellable.finally(() => {
         state.pendingOperations = Math.max(0, state.pendingOperations - 1);
       });
+      state.operationTail = tracked;
       return tracked;
     }
 
@@ -366,18 +354,13 @@
     }
 
     function disposeState(state) {
-      if (!state || state.disposed) return state?.cleanupPromise || Promise.resolve();
+      if (!state || state.disposed) return;
       state.disposed = true;
       state.resolveOperationDisposal?.();
       state.resolveOperationDisposal = null;
       active.delete(state.config.slot);
       detachResizeLifecycle(state);
-      const rawOperations = state.rawOperationTail.catch(() => undefined);
-      state.cleanupPromise = queueSlotCleanup(state.config.slot, async () => {
-        await rawOperations;
-        await disposeRaw(state.raw, `${state.config.slot}.dispose`);
-      });
-      return state.cleanupPromise;
+      disposeRaw(state.raw, `${state.config.slot}.dispose`);
     }
 
     function ensureState(state, operation) {
@@ -395,22 +378,40 @@
           });
         },
         setView(view) {
-          return enqueueStateOperation(state, 'setView', () => state.raw.setView(view));
+          return enqueueStateOperation(state, 'setView', () => {
+            if (typeof state.raw.setView !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setView', {
+                operation: 'setView',
+              });
+            }
+            return state.raw.setView(view);
+          });
         },
         setSpeaking(active) {
-          return enqueueStateOperation(state, 'setSpeaking', () => state.raw.setSpeaking(active));
+          return enqueueStateOperation(state, 'setSpeaking', () => {
+            if (typeof state.raw.setSpeaking !== 'function') {
+              fail('capability_unavailable', 'Avatar renderer does not support setSpeaking', {
+                operation: 'setSpeaking',
+              });
+            }
+            return state.raw.setSpeaking(active);
+          });
         },
         focus(point) {
-          return enqueueStateOperation(state, 'focus', () => state.raw.focus(point));
+          ensureState(state, 'focus');
+          return state.raw.focus(point);
         },
         setEmotion(name) {
-          return enqueueStateOperation(state, 'setEmotion', () => state.raw.setEmotion(name));
+          ensureState(state, 'setEmotion');
+          return state.raw.setEmotion(name);
         },
         pause() {
-          return enqueueStateOperation(state, 'pause', () => state.raw.pause());
+          ensureState(state, 'pause');
+          return state.raw.pause();
         },
         resume() {
-          return enqueueStateOperation(state, 'resume', () => state.raw.resume());
+          ensureState(state, 'resume');
+          return state.raw.resume();
         },
         getState() {
           ensureState(state, 'getState');
@@ -420,7 +421,7 @@
             viewport: state.viewport,
           });
         },
-        dispose() { return disposeState(state); },
+        dispose() { disposeState(state); },
       });
     }
 
@@ -432,30 +433,18 @@
       if (active.has(slot) || pending.has(slot)) {
         fail('busy', `Avatar slot "${slot}" is already mounted or mounting`);
       }
-      const otherRetiringSlots = Array.from(slotCleanups.keys())
-        .filter((candidate) => candidate !== slot).length;
-      if (active.size + pending.size + otherRetiringSlots >= rendererLimit) {
+      if (active.size + pending.size >= rendererLimit) {
         fail('busy', 'Avatar host renderer limit reached', { limit: rendererLimit });
       }
+      const viewport = measureViewport(config, descriptor);
       const abortController = typeof AbortControllerImpl === 'function' ? new AbortControllerImpl() : null;
       let resolveDisposal = null;
       const disposal = new Promise((resolve) => { resolveDisposal = resolve; });
-      let resolveRetirement = null;
-      const retirement = new Promise((resolve) => { resolveRetirement = resolve; });
-      const pendingState = {
-        abortController, disposal, resolveDisposal, retirement, resolveRetirement,
-      };
+      const pendingState = { abortController, disposal, resolveDisposal };
       pending.set(slot, pendingState);
       let raw = null;
       let state = null;
-      let retirementCleanup = Promise.resolve();
       try {
-        const priorCleanup = slotCleanups.get(slot);
-        if (priorCleanup) await racePendingMount(priorCleanup, pendingState, slot);
-        if (disposed || abortController?.signal?.aborted) {
-          fail('disposed', 'Avatar host was disposed while mounting', { slot });
-        }
-        const viewport = measureViewport(config, descriptor);
         const controllerCreation = Promise.resolve().then(() => descriptor.createController({
           config,
           viewport,
@@ -466,12 +455,12 @@
           raw = await racePendingMount(controllerCreation, pendingState, slot);
         } catch (error) {
           // A renderer factory is third-party code and may ignore AbortSignal.
-          // Keep its late controller inside the slot retirement barrier so host
-          // disposal and a later same-slot mount cannot race its cleanup.
-          retirementCleanup = queueSlotCleanup(slot, async () => {
-            const lateRaw = await controllerCreation.catch(() => null);
-            if (lateRaw) await disposeRaw(lateRaw, `${slot}.late-create`);
-          });
+          // If disposal wins the race, observe the late settlement and release
+          // any controller it eventually returns without keeping mount pending.
+          controllerCreation.then(
+            (lateRaw) => disposeRaw(lateRaw, `${slot}.late-create`),
+            () => undefined,
+          );
           throw error;
         }
         raw = ensureController(raw, slot);
@@ -492,17 +481,13 @@
           resizeFrameId: null,
           resizeInFlight: false,
           queuedResizeReason: '',
-          rawOperationTail: Promise.resolve(),
+          operationTail: Promise.resolve(),
           operationDisposal,
           resolveOperationDisposal,
           pendingOperations: 0,
         };
-        const initialModel = Promise.resolve().then(() => raw.setModel(config.model));
-        state.rawOperationTail = initialModel.then(() => undefined, () => undefined);
-        await racePendingMount(initialModel, pendingState, slot);
-        const initialResize = state.rawOperationTail.then(() => resizeState(state, 'mounted'));
-        state.rawOperationTail = initialResize.then(() => undefined, () => undefined);
-        await racePendingMount(initialResize, pendingState, slot);
+        await racePendingMount(raw.setModel(config.model), pendingState, slot);
+        await racePendingMount(resizeState(state, 'mounted'), pendingState, slot);
         if (disposed || abortController?.signal?.aborted) {
           fail('disposed', 'Avatar host was disposed while mounting', { slot });
         }
@@ -510,20 +495,11 @@
         attachResizeLifecycle(state);
         return publicController(state);
       } catch (error) {
-        if (state) retirementCleanup = disposeState(state);
-        else if (raw) retirementCleanup = queueSlotCleanup(
-          slot,
-          () => disposeRaw(raw, `${slot}.mount-failed`),
-        );
+        if (state) disposeState(state);
+        else disposeRaw(raw, `${slot}.mount-failed`);
         throw error;
       } finally {
         pending.delete(slot);
-        const settleRetirement = pendingState.resolveRetirement;
-        pendingState.resolveRetirement = null;
-        Promise.resolve(retirementCleanup).then(
-          () => settleRetirement?.(),
-          () => settleRetirement?.(),
-        );
       }
     }
 
@@ -532,11 +508,8 @@
       get pendingCount() { return pending.size; },
       mount,
       dispose() {
-        if (disposed) return disposalPromise || Promise.resolve();
+        if (disposed) return;
         disposed = true;
-        const pendingRetirements = Array.from(pending.values(), (pendingState) => (
-          pendingState.retirement
-        ));
         for (const pendingState of pending.values()) {
           pendingState.abortController?.abort?.();
           pendingState.resolveDisposal?.();
@@ -545,11 +518,6 @@
         for (const state of Array.from(active.values())) disposeState(state);
         hostWindowStates.clear();
         syncHostWindowListener();
-        disposalPromise = Promise.all([
-          ...pendingRetirements,
-          ...Array.from(slotCleanups.values()),
-        ]).then(() => undefined);
-        return disposalPromise;
       },
     });
   }

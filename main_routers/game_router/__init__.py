@@ -39,7 +39,6 @@ from utils.game_route_state import (  # noqa: F401  (re-exports: websocket_route
     _get_route_lock,
     _get_supersede_lock,
     _route_state_key,
-    is_game_external_input_takeover_active,
     is_game_route_active,
 )
 
@@ -189,7 +188,6 @@ from .balance import (  # noqa: F401
     _SOCCER_ANGER_PRESSURE_CAP_DEFAULT,
     _SOCCER_ANGER_PRESSURE_CAP_STRONG,
     _SOCCER_EMOTION_INERTIA,
-    _badminton_duel_difficulty_control_prompt,
     _build_soccer_balance_hint,
     _soccer_context_text_blob,
     _soccer_anger_pressure_cap_applicable,
@@ -321,6 +319,16 @@ from .session_pool import (  # noqa: F401
     _route_session_id,
     _parse_game_session_key,
     _close_and_remove_session,
+)
+from .author_prompt import (  # noqa: F401
+    _AUTHOR_PROMPT_MODE,
+    _AUTHOR_PROMPT_ROLES,
+    _AUTHOR_PROMPT_MAX_MESSAGES,
+    _AUTHOR_PROMPT_MAX_CONTENT_CHARS,
+    _AUTHOR_PROMPT_MAX_TOTAL_CHARS,
+    _normalize_author_managed_prompt,
+    _build_author_managed_messages,
+    _run_author_managed_game_chat,
 )
 from .postgame import (  # noqa: F401
     _POSTGAME_SKIP_REASONS,

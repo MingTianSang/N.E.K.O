@@ -1,7 +1,14 @@
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
+from tests.static_app_parts import read_js_parts
 
 from main_routers import pages_router
 from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
+
+from tests.node_harness import run_node_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -12,13 +19,29 @@ def _read_avatar_ui_buttons_source() -> str:
     return read_avatar_ui_buttons_source()
 
 
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node not found")
+    return run_node_script(
+        node_path,
+        script,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
 CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
+CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
+CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-chat-angry.mp3"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -43,17 +66,22 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_EAT_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._REACT_CHAT_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
     assert CAT1_PLAY_ASSET_PATH.is_file()
     assert CAT1_EAT_SOUND_PATH.is_file()
+    assert CAT1_CHAT_HISS_STICKER_PATH.is_file()
+    assert CAT1_CHAT_HISS_SOUND_PATH.is_file()
 
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
     source = _read_avatar_ui_buttons_source()
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
-    chat_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    chat_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
@@ -87,6 +115,15 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "data-neko-cat1-play-hidden" in source
     assert "idle_cat1_play_yarn_visibility" in source
     assert "targetScreenRect" in source
+    release_block = source.split("function _getNekoIdleCat1PlayYarnReleasePayload", 1)[1].split(
+        "function _postNekoIdleCat1PlayYarnVisibilityState",
+        1,
+    )[0]
+    assert "_NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX = 58" in source
+    assert "if (_isNekoIdleCat1NativeWaylandSelfBallRuntime()) return payload;" not in release_block
+    assert "const ballSize = _isNekoIdleCat1NativeWaylandSelfBallRuntime()" in release_block
+    assert "? _NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX" in release_block
+    assert "payload.targetScreenRect" in release_block
     assert "idle_cat1_play_yarn_visibility" in interpage_source
     assert "dispatchIdleCat1PlayYarnVisibility(event.data)" in interpage_source
     assert "neko:idle-cat1-play-yarn-visibility" in chat_source
@@ -130,31 +167,69 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "width:175%!important" in app_ui_source
 
 
-def test_cat1_play_action_can_replace_stretch_after_reaching_yarn():
+def test_cat1_walk_finish_keeps_legacy_probability_branch_outside_cat_mind():
     source = _read_avatar_ui_buttons_source()
 
-    assert "_NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25" in source
-    assert "_NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05" in source
-    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
-    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
     finish_block = source.split("function _finishNekoIdleCat1Walk", 1)[1].split(
         "function _finishNekoIdleCat1CompactTopEdgeWalk",
         1,
     )[0]
     assert "targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in finish_block
+    assert "CAT1_WALK_DONE_NEAR_CHAT" in finish_block
+    assert "CAT1_PLAY_YARN_WAKEUP" not in finish_block
     assert "Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY" in finish_block
-    assert "_playNekoIdleCat1PlayAction(button)" in finish_block
-    assert "return;" in finish_block
-    assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
-    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
-        "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate"
-    )
-    assert finish_block.index("_playNekoIdleCat1PlayAction(button)") < finish_block.index(
-        "_setNekoIdleCat1Classes(button, state);"
-    )
+    assert "state.walkFinishResolution = walkFinishResolution" in finish_block
+    assert "state.walkFinishResolution = 'stretch';" in finish_block
+    assert "if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && state.walkFinishResolution)" in finish_block
+    assert "_playNekoIdleCat1PlayAction(button, {" in finish_block
+    assert "source: 'cat1-journey-local'" in finish_block
+    assert "_playNekoIdleCat1StretchAction(button, {" in finish_block
+    assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate" not in finish_block
+
+    walk_start_block = source.split("function _startNekoIdleCat1Walk", 1)[1].split(
+        "function _scheduleNekoIdleCat1WalkStart",
+        1,
+    )[0]
+    assert "_resetNekoIdleCat1WalkFinishResolution(state);" in walk_start_block
 
 
-def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
+def test_cat1_stretch_action_has_an_independent_runner():
+    source = _read_avatar_ui_buttons_source()
+
+    state_block = source.split("function _getNekoIdleCat1StretchActionState(button)", 1)[1].split(
+        "function _isNekoIdleCat1StretchActionActive",
+        1,
+    )[0]
+    play_block = source.split("function _playNekoIdleCat1StretchAction(button, options = {})", 1)[1].split(
+        "function _getNekoIdleCat1PlayActionState",
+        1,
+    )[0]
+    cancel_block = source.split("function _cancelNekoIdleCat1StretchAction(button, options = {})", 1)[1].split(
+        "function _finishNekoIdleCat1StretchAction",
+        1,
+    )[0]
+    assert "active: false" in state_block
+    assert "token: 0" in state_block
+    assert "timer: 0" in state_block
+    assert "audio: null" in state_block
+    assert "_stopNekoIdleSoundAudio(state);" in cancel_block
+    assert "_getNekoIdleCat1StretchAssetUrl()" in play_block
+    assert "_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS" in play_block
+    assert "presentationOnTerminal" in play_block
+    assert "_isNekoIdleCat1EdgePeekActive(button)" in play_block
+    assert "_isNekoCatMindReturnPending(button)" in play_block
+    assert "_isNekoCatMindTransitionActive(button)" in play_block
+    assert "{ animate: true }" in play_block
+    assert "_setNekoIdleCat1Substate" not in play_block
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH" not in source
+    assert "function _settleNekoIdleReturnSubactionToIdle" not in source
+    assert "function _scheduleNekoIdleReturnSubactionSettle" not in source
+    assert "function _requestNekoIdleCat1HissStretchPresentation()" in play_block
+    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in play_block
+    assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in play_block
+
+
+def test_cat1_pair_move_is_adapter_only_small_move_runner():
     source = _read_avatar_ui_buttons_source()
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
@@ -162,18 +237,16 @@ def test_cat1_pair_move_event_can_play_instead_of_random_small_move():
         1,
     )[0]
     assert "journey.substate === journey.profile.walkingSubstate" in play_block
-    assert "journey.substate === journey.profile.finishingSubstate" in play_block
+    assert "journey.profile.finishingSubstate" not in play_block
 
     pair_move_start_block = source.split("function _startNekoIdleCat1PairMove(button)", 1)[1].split(
-        "function _scheduleNekoIdleCat1PairMove",
+        "function _refreshNekoIdleCat1Observer",
         1,
     )[0]
-    assert "Math.random() < _NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY" in pair_move_start_block
-    assert "_playNekoIdleCat1PlayAction(button)" in pair_move_start_block
-    assert "return true;" in pair_move_start_block
-    assert pair_move_start_block.index("_playNekoIdleCat1PlayAction(button)") < pair_move_start_block.index(
-        "const plan = _getNekoIdleCat1PairMovePlan(button);"
-    )
+    assert "const isCatMindRun = catMindRunOptions.source === 'cat_mind';" in pair_move_start_block
+    assert "if (!isCatMindRun) return false;" in pair_move_start_block
+    assert "_NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE" in pair_move_start_block
+    assert "_playNekoIdleCat1PlayAction(button)" not in pair_move_start_block
     finish_pair_move_block = source.split("function _finishNekoIdleCat1PairMove(button)", 1)[1].split(
         "function _stepNekoIdleCat1PairMove",
         1,
@@ -196,6 +269,79 @@ def test_cat1_minimized_side_target_separates_look_and_move_direction():
     assert "lookFacingRight: facingRight" in source
     assert "stretchFacingRight: stretchFacingRight" in source
     assert "moveFacingRight: moveFacingRight" in source
+
+
+def test_cat1_electron_multi_window_uses_real_desktop_chat_geometry():
+    source = _read_avatar_ui_buttons_source()
+
+    for function_name in (
+        "_getNekoIdleReactChatMinimizedRect",
+        "_getNekoIdleReactChatMinimizedShell",
+        "_getNekoIdleReactChatExpandedShell",
+    ):
+        block = source.split(f"function {function_name}", 1)[1].split("\n}\n", 1)[0]
+        assert "if (window.__NEKO_MULTI_WINDOW__ === true) return null;" in block
+
+
+def test_cat1_native_wayland_yarn_corrections_are_direction_and_state_specific():
+    source = _read_avatar_ui_buttons_source()
+    css = INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX = 34" in source
+    assert "function _isNekoIdleCat1NativeWaylandSelfBallRuntime()" in source
+    native_runtime_block = source.split(
+        "function _isNekoIdleCat1NativeWaylandRuntime",
+        1,
+    )[1].split("function _getNekoIdleReturnAssetUrl", 1)[0]
+    assert "window.__NEKO_MULTI_WINDOW__ === true" in native_runtime_block
+    assert "runtime.isWayland === true" in native_runtime_block
+    assert "runtime.isNiriWayland !== true" in source
+    assert "function _usesNekoIdleCat1NativeYarnVisualAnchor(chatRect)" in source
+    assert "Number.isFinite(width) && width > 0 && width <= 60" in source
+    assert "function _getNekoIdleCat1NativeYarnSide(container, chatRect)" in source
+
+    side_block = source.split(
+        "function _getNekoIdleCat1NativeYarnSide",
+        1,
+    )[1].split("function _getNekoIdleCat1NativeYarnVisualTargetLeft", 1)[0]
+    assert "const catCenterX = catLeft + catWidth / 2;" in side_block
+    assert "const yarnCenterX = yarnLeft + yarnWidth / 2;" in side_block
+    assert "catCenterX <= yarnCenterX" in side_block
+    assert "facingRight" not in side_block
+
+    visual_target_block = source.split(
+        "function _getNekoIdleCat1NativeYarnVisualTargetLeft",
+        1,
+    )[1].split("function _getNekoIdleCat1TargetMoveDirection", 1)[0]
+    assert "const leftSideCorrection = facingRight" in visual_target_block
+    assert "? _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX" in visual_target_block
+    assert ": 0;" in visual_target_block
+
+    # 右侧待机终点不动；待机素材与已正常的走路/伸懒腰素材使用同一 33px 视觉校准。
+    assert 'data-neko-cat1-native-yarn-visual-anchor="true"' in css
+    assert 'data-neko-cat1-native-yarn-side="right"' in css
+    assert 'data-neko-cat1-substate="idle"' in css
+    assert ":not(.is-cat1-playing):not(.is-cat1-eating):not(.is-cat1-stretching):not(.is-drag-action)" in css
+    assert "left: 33px;" in css
+    assert "left: calc(12.3046875% + 33px);" in css
+    assert "left: -17.96875%;" in css
+    assert ".is-cat1-walking:not(.is-cat1-facing-right)" in css
+    assert ".is-cat1-stretching:not(.is-cat1-facing-right)" in css
+    assert 'data-neko-cat1-native-yarn-side="left"' not in css
+
+    class_block = source.split("function _setNekoIdleCat1Classes", 1)[1].split(
+        "function _cancelNekoIdleCat1Frame",
+        1,
+    )[0]
+    assert "_getNekoIdleCat1NativeYarnSide(container, nativeYarnRect)" in class_block
+    assert "button.setAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR, nativeYarnSide);" in class_block
+    assert "button.removeAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR);" in class_block
+
+    side_target_block = source.split("function _getNekoIdleCat1SideTarget", 1)[1].split(
+        "function _getNekoIdleCat1CompactTopEdgeBounds",
+        1,
+    )[0]
+    assert "!_usesNekoIdleCat1NativeYarnVisualAnchor(chatRect)" in side_target_block
 
 
 def test_cat1_minimized_side_target_commits_approach_side_to_prevent_center_straddle():
@@ -275,20 +421,17 @@ def test_cat1_walk_uses_resolved_target_facing_instead_of_raw_chat_side():
     assert "state.facingRight = target.facingRight;" not in journey_sync_block
 
 
-def test_cat1_finishing_animation_rechecks_chat_target_after_settle():
+def test_cat1_independent_stretch_completion_rechecks_chat_target():
     source = _read_avatar_ui_buttons_source()
 
-    settle_block = source.split("function _settleNekoIdleReturnSubactionToIdle", 1)[1].split(
-        "function _scheduleNekoIdleReturnSubactionSettle",
+    completion_block = source.split("function _completeNekoIdleCat1JourneyStretch", 1)[1].split(
+        "function _finishNekoIdleCat1Walk",
         1,
     )[0]
-    assert "const shouldRecheckTargetAfterSettle = !!(state.target ||" in settle_block
-    assert "state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE" in settle_block
-    assert "state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in settle_block
-    assert "_getNekoIdleChatMinimizedRect() || _getNekoIdleChatCompactSurfaceRect()" in settle_block
-    assert "_scheduleNekoIdleCat1JourneySync(button);" in settle_block
-    assert settle_block.index("const shouldRecheckTargetAfterSettle") < settle_block.index("state.target = null;")
-    assert settle_block.index("_scheduleNekoIdleCat1JourneySync(button);") < settle_block.index("setTimeout(() => {")
+    assert "result !== _NEKO_CAT_MIND_ACTION_RESULTS.DONE" in completion_block
+    assert "_getNekoIdleChatMinimizedRect() || _getNekoIdleChatCompactSurfaceRect()" in completion_block
+    assert "_scheduleNekoIdleCat1JourneySync(button);" in completion_block
+    assert completion_block.index("_scheduleNekoIdleCat1JourneySync(button);") < completion_block.index("setTimeout(() => {")
 
 
 def test_cat1_hover_blocked_walk_starts_immediately_after_hover_playback():
@@ -324,7 +467,40 @@ def test_cat1_compact_top_edge_to_minimized_side_transition_forces_walk():
     assert journey_sync_block.index("const switchingFromCompactTopEdgeToMinimizedSide =") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
-def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
+def test_cat1_regular_walk_start_distance_uses_cat_and_yarn_centers():
+    source = _read_avatar_ui_buttons_source()
+    helper_source = "function _getNekoIdleRectCenterDistancePx" + source.split(
+        "function _getNekoIdleRectCenterDistancePx",
+        1,
+    )[1].split("function _makeNekoIdleCat1CurrentSideTarget", 1)[0]
+    script = f"""
+        const assert = require('node:assert/strict');
+        {helper_source}
+
+        const yarnRect = {{ left: 470, top: 300, width: 51, height: 51 }};
+        const overlappingCatRect = {{ left: 364.5, top: 264.5, width: 122, height: 122 }};
+        assert.equal(_getNekoIdleRectCenterDistancePx(overlappingCatRect, yarnRect), 70);
+        assert.equal(_getNekoIdleRectCenterDistancePx(overlappingCatRect, yarnRect) < 180, true);
+
+        for (const size of [96, 108, 122]) {{
+            const catRect = {{ left: 100 - size / 2, top: 100 - size / 2, width: size, height: size }};
+            const nearYarn = {{ left: 279 - 25.5, top: 100 - 25.5, width: 51, height: 51 }};
+            const farYarn = {{ left: 281 - 25.5, top: 100 - 25.5, width: 51, height: 51 }};
+            assert.equal(_getNekoIdleRectCenterDistancePx(catRect, nearYarn), 179);
+            assert.equal(_getNekoIdleRectCenterDistancePx(catRect, farYarn), 181);
+        }}
+
+        const diagonalCat = {{ left: 39, top: 39, width: 122, height: 122 }};
+        const diagonalYarn = {{ left: 182.5, top: 218.5, width: 51, height: 51 }};
+        const boundaryDistance = _getNekoIdleRectCenterDistancePx(diagonalCat, diagonalYarn);
+        assert.equal(boundaryDistance, 180);
+        assert.equal(boundaryDistance >= 180, true);
+    """
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_cat1_settled_minimized_side_uses_center_distance_for_regular_walk_delay_when_ball_moves():
     source = _read_avatar_ui_buttons_source()
 
     journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
@@ -332,12 +508,19 @@ def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
         1,
     )[0]
     assert "const followingMovedMinimizedSideTarget =" not in journey_sync_block
-    assert "target.distance >= profile.target.enterDistancePx" in journey_sync_block
+    assert "const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);" in journey_sync_block
+    assert "const walkStartDistancePx = Number.isFinite(centerDistancePx)" in journey_sync_block
+    assert ": target.distance;" in journey_sync_block
+    assert "walkStartDistancePx < profile.target.enterDistancePx" in journey_sync_block
+    assert "walkStartDistancePx >= profile.target.enterDistancePx" in journey_sync_block
+    assert "target.distance >= profile.target.enterDistancePx" not in journey_sync_block
     assert "if (switchingFromCompactTopEdgeToMinimizedSide) {" in journey_sync_block
     assert "if (switchingFromCompactTopEdgeToMinimizedSide ||" not in journey_sync_block
     assert "state.pendingWalkReady = true;" in journey_sync_block
     assert "state.pendingWalkDelayMs = 0;" in journey_sync_block
-    assert journey_sync_block.index("target.distance >= profile.target.enterDistancePx") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
+    assert "state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx" in journey_sync_block
+    assert "compactTopEdgeTarget && target.distance > profile.target.exitDistancePx" in journey_sync_block
+    assert journey_sync_block.index("walkStartDistancePx >= profile.target.enterDistancePx") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
 def test_cat1_settled_minimized_side_bypasses_small_desktop_move_filter():

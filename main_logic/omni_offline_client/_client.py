@@ -40,6 +40,15 @@ from ._streaming import _StreamingMixin
 from ._media import _MediaMixin
 from ._lifecycle import _LifecycleMixin
 
+from utils.http.url import same_endpoint
+
+
+# 端点同源判据收口到 utils.http.url：视觉槽的凭证继承与配置层「管理簿 Key 只能
+# 配该服务商自己的端点」问的是同一个问题。这里曾经手搓过一份，前后被评审挑出
+# 尾斜杠 / path 大小写 / userinfo / 畸形端口 / 默认端口 / 畸形 IPv6 六类边界；
+# 配置层后来又独立搓了第二份、把同样的坑重踩一遍。共用一份才是解法。
+_same_endpoint = same_endpoint
+
 
 class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin, _LifecycleMixin):
     """
@@ -107,18 +116,35 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         tool_definitions: Optional[List[ToolDefinition]] = None,
         max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
+        user_language_provider: Optional[Callable[[], Optional[str]]] = None,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
+        self._user_language_provider = user_language_provider
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
-        # 视觉模型独立配置（如果未指定则回退到主配置）
-        self.vision_base_url = vision_base_url if vision_base_url else base_url
-        self.vision_api_key = vision_api_key if vision_api_key else api_key
+        # 视觉模型独立配置：URL 与 Key 必须**成对**回退。
+        #
+        # 这两行原本各自独立判空，于是「视觉槽填了自己的 URL、Key 留空」时
+        # URL 停在视觉那一家的域名、Key 却继承了对话 provider 的凭证 —— 把用户
+        # 的付费 Key 发给了另一个厂商，既是路由错误也是凭证越界。留空 Key 让请求
+        # 不带 Authorization：本地无鉴权端点本就该如此，付费端点则会直接 401
+        # 报错，比静默把凭证送出去可诊断得多。
+        # 同源判定按归一化后的 URL 比：两个槽都指向同一家时，配置里常见的尾斜杠 /
+        # 大小写差异不该被当成「换了一家」而把继承掐掉（那会让原本能用的配置开始 401）。
+        _vision_url = vision_base_url or base_url
+        self.vision_base_url = _vision_url
+        # 「无凭证」统一表示成 None，与上面 self.api_key 的归一化对齐——
+        # 否则视觉侧会出现 '' 而主侧是 None，同一个状态两种写法。
+        if _same_endpoint(_vision_url, base_url):
+            self.vision_api_key = (vision_api_key or None) or self.api_key
+        else:
+            self.vision_api_key = vision_api_key or None
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
+        self._multimodal_submit_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
         # Called with True the first time a stream emits a reasoning / thinking
         # chunk (the text itself is filtered out before it reaches text/TTS —
@@ -201,6 +227,15 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # the wire-format snapshots are rebuilt from it on each request so
         # callers can mutate the list (register/unregister) between turns.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
+        # Fires once per LLM iteration that turns out to be a tool round —
+        # BEFORE any handler runs, and also on rounds where every collected
+        # call gets dropped (nameless streaming fragments) so zero handler
+        # invocations happen. Buffering callers (the QQ plugin accumulates
+        # deltas and sends one message at the end) hook this to discard
+        # pre-tool text ("let me check…"): anchoring that hygiene on the
+        # handler alone misses the zero-call rounds. Streaming callers
+        # (main program) don't need it — their text is already on screen.
+        self.on_tool_round_start: Optional[Callable[[], Awaitable[None]]] = None
         self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
         self.max_tool_iterations = max(1, int(max_tool_iterations))
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
@@ -209,10 +244,18 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
 
         # State management
         self._is_responding = False
+        self._response_generation = 0
+        self._active_response_generation: int | None = None
         self._conversation_history = []
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        # 插件 read 图片的独立暂存位。刻意不与 _pending_images 共用：两者共用时
+        # 任何淘汰策略都会伤到用户——丢最旧会丢掉用户刚暂存的帧，拒新会让插件占
+        # 满后挡住用户自己的图（两种都在 review 中试过并被正确驳回）。分开计额后
+        # 谁也花不了对方的预算，超额时裁的永远是自己那一侧最旧的一张。
+        # 与 _proactive_image_to_inject 同为「独立拥有的视觉暂存」模式。
+        self._pending_plugin_images = []
         # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
         # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
         # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，

@@ -25,6 +25,10 @@ logger = get_logger("server.application.plugins.query")
 _PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description", "plugin.short_description"}
 
 
+class _PluginRegistryUnavailableError(RuntimeError):
+    """The registry snapshot could not be read within its lock timeout."""
+
+
 def _normalize_mapping(
     raw: Mapping[object, object],
     *,
@@ -123,7 +127,7 @@ def _normalize_string_list(raw_value: object) -> list[str]:
 
 def _extract_llm_result_fields(raw_value: object, *, raw_schema: object = None) -> list[str]:
     fields = _normalize_string_list(raw_value)
-    if fields:
+    if isinstance(raw_value, list):
         return fields
     if isinstance(raw_schema, Mapping):
         properties_obj = raw_schema.get("properties")
@@ -313,12 +317,10 @@ def _build_entries_from_handlers(
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
 
-        if plugin_meta is not None:
-            entry_dict = resolve_i18n_refs(
-                entry_dict,
-                load_plugin_i18n_from_meta(plugin_meta),
-                locale=locale or _resolve_default_locale(),
-            )  # type: ignore[assignment]
+        # 这里刻意不解析 i18n：唯一的调用方（_list_plugins_payload）在拿到
+        # entries 之后，会用它自己那一份 plugin_i18n 和同一个 locale 把每个
+        # entry 再解析一遍。在循环里解析等于每个 entry 重新加载一次整个语言包
+        # ——302 个 entry 实测 554ms，其中 545ms 纯属重复。
         entries.append(entry_dict)
 
     return entries, seen
@@ -449,16 +451,28 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
     try:
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
         if not plugins_snapshot:
-            return result
+            # The cached API intentionally collapses a lock timeout into an
+            # empty mapping. Confirm emptiness under the public read lock so
+            # callers can distinguish a genuinely empty registry from lock
+            # contention instead of auto-disabling user plugins.
+            try:
+                with state.acquire_plugins_read_lock(timeout=2.0):
+                    plugins_snapshot = dict(state.plugins)
+            except TimeoutError as exc:
+                raise _PluginRegistryUnavailableError from exc
+            if not plugins_snapshot:
+                return result
         hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
         handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
+    except _PluginRegistryUnavailableError:
+        raise
     except IO_RUNTIME_ERRORS as exc:
         logger.warning(
             "failed to get state snapshots for plugin list: err_type={}, err={}",
             type(exc).__name__,
             str(exc),
         )
-        return result
+        raise _PluginRegistryUnavailableError from exc
 
     running_plugin_ids = set()
     for plugin_id, host_obj in hosts_snapshot.items():
@@ -482,6 +496,7 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
 
             plugin_meta = _normalize_mapping(plugin_meta_obj, context=f"plugins[{plugin_id}]")
             plugin_info = dict(plugin_meta)
+            plugin_info.pop("entries_preview", None)
             plugin_info["status"] = _resolve_plugin_status(
                 plugin_id=plugin_id,
                 plugin_meta=plugin_meta,
@@ -606,6 +621,12 @@ class PluginQueryService:
                 "plugins": normalized_plugins,
                 "message": "" if normalized_plugins else "no plugins registered",
             }
+        except _PluginRegistryUnavailableError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_REGISTRY_UNAVAILABLE",
+                message="Plugin registry is temporarily unavailable",
+                status_code=503,
+            ) from exc
         except ServerDomainError:
             raise
         except IO_RUNTIME_ERRORS as exc:

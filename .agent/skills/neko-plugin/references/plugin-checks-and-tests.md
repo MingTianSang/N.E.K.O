@@ -29,11 +29,9 @@ What `check` validates:
 - folder/id mismatch.
 - entry module path, entry file existence, entry class existence.
 - entry class has `@neko_plugin`.
-- entry class base matches the runtime shape (`NekoPluginBase` or `NekoAdapterPlugin`) as a warning.
+- entry class base matches plugin type (`NekoPluginBase`, `NekoAdapterPlugin`, `NekoExtensionBase`) as a warning.
 - startup/shutdown lifecycle hooks as warnings.
 - Python AST syntax for plugin `.py` files outside `vendor/`, venv, and caches.
-- best-effort static warnings for active `push_message` v1 fields, including legacy positional slots; the warning identifies the file, line, v0.9 removal target, and replacement.
-- a v1 warning is diagnostic evidence, not permission to bulk-edit plugin sources or insert TODO-only comments. Report or track it first; change a plugin call only when that plugin is explicitly in scope, because marker-only edits commonly conflict with maintainer work.
 - best-effort `@plugin_entry` AST checks:
   - entry id from literal `id` or the function name; invalid characters warn, empty ids error.
   - duplicate `@plugin_entry` ids warn across scanned plugin files.
@@ -43,6 +41,7 @@ What `check` validates:
 - UI permission strings are recognized.
 - `requirements.txt` is rejected for packages.
 - `pyproject.toml [project].dependencies` with external packages requires `vendor/`.
+- extension plugins cannot declare Python runtime dependencies.
 - optional support files: `README.md`, `tests/test_smoke.py`, `.vscode/*`, `.github/workflows/verify.yml`, `.gitignore`.
 
 `--strict` turns missing support files into errors. `--release` runs strict validation, plugin-local tests, package build, package inspection, and payload hash verification.
@@ -50,20 +49,19 @@ What `check` validates:
 Known blind spots:
 
 - `check` can discover decorated entries, but runtime-triggered `@plugin_entry` handlers must still be `async def`; add or run a trigger test when changing entries.
-- `check` does not cover the full decorator surface. Do not infer coverage for lifecycle, timer, message, custom event, hook, UI, or adapter decorators from the `@plugin_entry` checks.
+- `check` does not cover the full decorator surface. Do not infer coverage for lifecycle, timer, message, custom event, hook, UI, extension, or adapter decorators from the `@plugin_entry` checks.
 - `input_schema` shape is checked only when it is a literal dict, and the check is shallow; runtime parameter validation requires `params` or an inferred single model parameter.
 - Mutual-exclusion checks are static keyword-presence checks, not runtime value checks.
-- `push_message` v1 scanning is best-effort: it checks direct `.push_message(...)` calls and legacy positional slots, skips literal inactive values, and cannot prove behavior hidden behind aliases, `**kwargs`, or dynamic forwarding; an unrelated object with the same method name can still warn.
 - `auto_start=false` does not prevent parent-process import/static scanning; top-level side effects need code review or an import smoke test.
 - UI action permissions and action exposure require hosted UI/runtime checks, not only manifest validation.
 - `passive=true` is discovery/dispatch metadata, not a runtime disable switch.
 
 ### Dependency management
 
-Use the CLI for plugin runtime dependencies:
+Declare plugin runtime dependencies in plugin-local
+`pyproject.toml [project].dependencies`, then materialize them with:
 
 ```bash
-uv run neko-plugin add <plugin_id> 'httpx>=0.27'
 uv run neko-plugin sync <plugin_id> --clean
 ```
 
@@ -73,8 +71,7 @@ Do not add `requirements.txt`. Python runtime packages belong in plugin-local `p
 
 ```bash
 uv run neko-plugin build <plugin_id>
-uv run neko-plugin inspect <package.neko-plugin>
-uv run neko-plugin verify <package.neko-plugin>
+uv run neko-plugin check -r <plugin_id>
 ```
 
 Notes:
@@ -83,8 +80,8 @@ Notes:
 - `build` has no `--plugins-root` option.
 - single-plugin `build` only supports `[plugin].type = "plugin"`.
 - build validates source dependency layout and payload dependency layout.
-- `inspect` validates package layout, plugin payload layout, dependency layout, package type, and payload hash metadata.
-- `verify` is the focused payload-hash check.
+- `check -r` performs package inspection and payload-hash verification as part
+  of the supported release-readiness flow.
 
 Use `install` only with explicit temporary roots unless the user asked to install:
 
@@ -202,8 +199,8 @@ Plugin-facing by default:
 
 - `uv run neko-plugin check <plugin_id|plugin_path>`
 - `uv run neko-plugin check <plugin_id|plugin_path> --release`
-- `uv run neko-plugin add/sync <plugin_id> ...`
-- `uv run neko-plugin build/inspect/verify ...`
+- `uv run neko-plugin sync <plugin_id> --clean`
+- `uv run neko-plugin build <plugin_id>`
 - plugin-local tests under `plugin/plugins/<plugin_id>/tests`
 - targeted hosted TSX checks for `plugin/plugins/<plugin_id>`
 - targeted `plugin/tests/unit/plugins/test_<plugin_name>*.py`

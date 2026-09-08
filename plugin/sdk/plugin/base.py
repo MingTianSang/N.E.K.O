@@ -14,8 +14,15 @@ from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, 
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
-from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
+from plugin.sdk.shared.core.base_runtime import (
+    resolve_plugin_cache_dir,
+    resolve_plugin_data_dir,
+    resolve_plugin_dir,
+    resolve_plugin_runtime_config_path,
+    resolve_plugin_storage_dir,
+)
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
+from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
@@ -106,12 +113,31 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return str(getattr(self.ctx, "plugin_id", "plugin"))
 
     @property
+    def plugin_dir(self) -> Path:
+        """Return the installed plugin payload directory."""
+        return resolve_plugin_dir(self.ctx)
+
+    @property
     def config_dir(self) -> Path:
-        config_path = getattr(self.ctx, "config_path", None)
-        return Path(config_path).parent if config_path is not None else Path.cwd()
+        """Compatibility alias for :attr:`plugin_dir`."""
+        return self.plugin_dir
+
+    @property
+    def storage_dir(self) -> Path:
+        """Return the user storage directory assigned to this plugin."""
+        return resolve_plugin_storage_dir(self.ctx)
+
+    @property
+    def runtime_config_path(self) -> Path:
+        """Return the plugin's persistent runtime configuration path."""
+        return resolve_plugin_runtime_config_path(self.ctx)
 
     def data_path(self, *parts: str) -> Path:
         base = resolve_plugin_data_dir(self.ctx)
+        return base.joinpath(*parts) if parts else base
+
+    def cache_path(self, *parts: str) -> Path:
+        base = resolve_plugin_cache_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
     @property
@@ -156,7 +182,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         return await self.ctx.finish(**kwargs)
 
-    def push_message(self, **kwargs: Any) -> object:
+    def push_message(self, **kwargs: Any) -> PushMessageResult:
         """Stream a message from the plugin into the dialog channel.
 
         Role-aware text contract: ``text`` / ``summary`` / ``detail`` (and
@@ -165,6 +191,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         injection boundary, per session. See :meth:`finish` for the rationale
         and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
         full guide.
+
+        The returned receipt only reports immediate local submission.  It is
+        not a host-consumption, generation, or playback acknowledgement.
         """
         return self.ctx.push_message(**kwargs)
 
@@ -231,6 +260,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
         llm_fields = getattr(meta, "llm_result_fields", None)
         if llm_fields:
             meta_dict["llm_result_fields"] = list(llm_fields)
+        # 控制字段随注册一起过去，宿主才能按声明的预算调用、按声明的 schema 读结果。
+        for name in ("timeout", "model_validate", "persist"):
+            value = getattr(meta, name, None)
+            if value is not None:
+                meta_dict[name] = value
+        llm_schema = getattr(meta, "llm_result_schema", None)
+        if isinstance(llm_schema, Mapping):
+            meta_dict["llm_result_schema"] = dict(llm_schema)
         self._notify_host_comm({
             "type": "ENTRY_UPDATE",
             "action": "register",

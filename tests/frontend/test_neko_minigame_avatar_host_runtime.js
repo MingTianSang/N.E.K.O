@@ -57,6 +57,8 @@ async function main() {
           slot: config.slot,
           viewport,
           models: [],
+          views: [],
+          speaking: [],
           resizes: [],
           resizeAttempts: [],
           failNextResize: false,
@@ -65,8 +67,8 @@ async function main() {
         controllerStates.push(state);
         return {
           async setModel(model) { state.models.push(model); },
-          setView(view) { state.view = view; },
-          setSpeaking(active) { state.speaking = active; },
+          setView(view) { state.views.push(view); },
+          setSpeaking(active) { state.speaking.push(active); },
           focus(point) { state.focus = point; },
           setEmotion(name) { state.emotion = name; },
           pause() { state.paused = true; },
@@ -126,10 +128,6 @@ async function main() {
   assert(observers.length === 0, 'fixed controller installed a ResizeObserver');
   assert(controllerStates[0].resizes.at(-1).viewport.width === 200,
     'fixed viewport was not applied');
-  await fixed.setView({ scale: 190, x: 1, y: 28 });
-  await fixed.setSpeaking(true);
-  assert(controllerStates[0].view.scale === 190 && controllerStates[0].speaking === true,
-    'view or speaking state bypassed the serialized host controller');
 
   const container = await host.mount({
     ...base,
@@ -188,32 +186,34 @@ async function main() {
     'host-window resize was not delivered to the second controller');
 
   await fixed.setModel({ type: 'vrm', path: '/replacement.vrm' });
+  await fixed.setView({ scale: 190, x: 2, y: 28 });
+  await fixed.setSpeaking(true);
   assert(controllerStates[0].models.length === 2, 'model replacement was not forwarded');
+  assert(controllerStates[0].views.at(-1).scale === 190
+    && controllerStates[0].speaking.at(-1) === true,
+  'view or speaking state was not forwarded through the bounded operation queue');
   assert(controllerStates[0].resizes.at(-1).metadata.reason === 'model-changed',
     'model replacement did not trigger an idempotent refit');
 
-  const hostOneDisposal = hostOne.dispose();
+  hostOne.dispose();
   assert(listeners.get('resize')?.size === 1,
     'shared resize listener was removed while a host-window controller remained');
-  const hostTwoDisposal = hostTwo.dispose();
+  hostTwo.dispose();
   assert(!listeners.get('resize')?.size,
     'shared resize listener was not removed after the last host-window controller');
-  const containerDisposal = container.dispose();
+  container.dispose();
   assert(observers[0].disconnected, 'container ResizeObserver was not disconnected');
-  const fixedDisposal = fixed.dispose();
+  fixed.dispose();
   assert(host.activeCount === 0, 'explicit controller disposal did not clear host state');
-  await Promise.all([hostOneDisposal, hostTwoDisposal, containerDisposal, fixedDisposal]);
   assert(controllerStates.every((state) => state.disposed === 1),
     'raw avatar controllers were not disposed exactly once');
-  await host.dispose();
+  host.dispose();
 
   let releasePendingFactory;
   let pendingRawDisposed = 0;
   const pendingGate = new Promise((resolve) => { releasePendingFactory = resolve; });
   const pendingRaw = {
     async setModel() {},
-    setView() {},
-    setSpeaking() {},
     focus() {},
     setEmotion() {},
     pause() {},
@@ -259,7 +259,7 @@ async function main() {
     pendingLimitError = error;
   }
   assert(pendingLimitError?.code === 'busy', 'pending renderer did not consume the host bound');
-  const limitedHostDisposal = limitedHost.dispose();
+  limitedHost.dispose();
   const pendingDisposeError = await settleWithin(
     pendingMount,
     1000,
@@ -269,7 +269,7 @@ async function main() {
   assert(limitedHost.pendingCount === 0,
     'cancelled controller factory retained its pending mount slot');
   releasePendingFactory();
-  await limitedHostDisposal;
+  await new Promise((resolve) => setImmediate(resolve));
   assert(pendingRawDisposed === 1, 'controller resolved after disposal was not released exactly once');
 
   let releaseInitialModel;
@@ -282,8 +282,6 @@ async function main() {
         async createController() {
           return {
             async setModel() { await initialModelGate; },
-            setView() {},
-            setSpeaking() {},
             focus() {},
             setEmotion() {},
             pause() {},
@@ -306,7 +304,7 @@ async function main() {
     resize: { mode: 'fixed' },
   }).then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
-  const stalledModelHostDisposal = stalledModelHost.dispose();
+  stalledModelHost.dispose();
   const stalledMountError = await settleWithin(
     stalledMount,
     1000,
@@ -314,10 +312,10 @@ async function main() {
   );
   assert(stalledMountError?.code === 'disposed',
     'host disposal did not settle an initial model load that ignored cancellation');
-  assert(stalledModelHost.pendingCount === 0 && stalledRawDisposed === 0,
-    'cancelled initial model load disposed the controller before its mutation settled');
+  assert(stalledModelHost.pendingCount === 0 && stalledRawDisposed === 1,
+    'cancelled initial model load did not release its pending slot and raw controller');
   releaseInitialModel();
-  await stalledModelHostDisposal;
+  await new Promise((resolve) => setImmediate(resolve));
   assert(stalledRawDisposed === 1, 'late initial model completion disposed the raw controller twice');
 
   let releaseInitialResize;
@@ -330,8 +328,6 @@ async function main() {
         async createController() {
           return {
             async setModel() {},
-            setView() {},
-            setSpeaking() {},
             focus() {},
             setEmotion() {},
             pause() {},
@@ -354,7 +350,7 @@ async function main() {
     resize: { mode: 'fixed' },
   }).then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
-  const stalledResizeHostDisposal = stalledResizeHost.dispose();
+  stalledResizeHost.dispose();
   const stalledResizeError = await settleWithin(
     stalledResizeMount,
     1000,
@@ -362,10 +358,10 @@ async function main() {
   );
   assert(stalledResizeError?.code === 'disposed',
     'host disposal did not settle an initial resize that ignored cancellation');
-  assert(stalledResizeHost.pendingCount === 0 && stalledResizeRawDisposed === 0,
-    'cancelled initial resize disposed the controller before its mutation settled');
+  assert(stalledResizeHost.pendingCount === 0 && stalledResizeRawDisposed === 1,
+    'cancelled initial resize did not release its pending slot and raw controller');
   releaseInitialResize();
-  await stalledResizeHostDisposal;
+  await new Promise((resolve) => setImmediate(resolve));
   assert(stalledResizeRawDisposed === 1, 'late initial resize completion disposed the raw controller twice');
 
   let releaseBlockedModel;
@@ -383,8 +379,6 @@ async function main() {
               modelCalls += 1;
               if (modelCalls === 2) await blockedModelGate;
             },
-            setView() {},
-            setSpeaking() {},
             focus() {},
             setEmotion() {},
             pause() {},
@@ -417,7 +411,7 @@ async function main() {
     .then(() => null, (error) => error);
   assert(overflowError?.code === 'busy',
     'per-controller Avatar operation limit did not reject excess queued work');
-  const queuedDisposal = queuedController.dispose();
+  queuedController.dispose();
   const [blockedDisposeError, queuedDisposeError] = await settleWithin(
     Promise.all([blockedModel, queuedModel]),
     1000,
@@ -426,65 +420,9 @@ async function main() {
   assert(blockedDisposeError?.code === 'disposed' && queuedDisposeError?.code === 'disposed',
     'Avatar disposal did not settle active and queued operations when the renderer stayed blocked');
   releaseBlockedModel();
-  await queuedDisposal;
-  assert(queuedRawDisposed === 1, 'queued Avatar controller was not disposed exactly once');
-  await operationHost.dispose();
-
-  let releaseRetiringController;
-  const retiringGate = new Promise((resolve) => { releaseRetiringController = resolve; });
-  const replacementEvents = [];
-  let replacementControllerCount = 0;
-  const replacementHost = windowMock.NekoMiniGameAvatarHost.create({
-    slots: {
-      replacement: {
-        container: { clientWidth: 200, clientHeight: 300 },
-        async createController() {
-          const controllerNumber = ++replacementControllerCount;
-          replacementEvents.push(`create-${controllerNumber}`);
-          return {
-            async setModel() {},
-            setView() {},
-            setSpeaking() {},
-            focus() {},
-            setEmotion() {},
-            pause() {},
-            resume() {},
-            getState() { return {}; },
-            async resize() {},
-            async dispose() {
-              replacementEvents.push(`dispose-start-${controllerNumber}`);
-              if (controllerNumber === 1) await retiringGate;
-              replacementEvents.push(`dispose-end-${controllerNumber}`);
-            },
-          };
-        },
-      },
-    },
-    windowImpl: windowMock,
-    documentImpl: {},
-    ResizeObserverImpl: ResizeObserverMock,
-  });
-  const replacementConfig = {
-    ...base,
-    slot: 'replacement',
-    viewport: { mode: 'fixed', width: 200, height: 300 },
-    resize: { mode: 'fixed' },
-  };
-  const firstReplacement = await replacementHost.mount(replacementConfig);
-  const firstReplacementDisposal = firstReplacement.dispose();
-  const secondReplacementMount = replacementHost.mount(replacementConfig);
   await new Promise((resolve) => setImmediate(resolve));
-  assert(replacementControllerCount === 1
-    && replacementEvents.includes('dispose-start-1')
-    && !replacementEvents.includes('create-2'),
-  'same-slot replacement started before asynchronous renderer cleanup completed');
-  releaseRetiringController();
-  await firstReplacementDisposal;
-  const secondReplacement = await secondReplacementMount;
-  assert(replacementEvents.indexOf('dispose-end-1') < replacementEvents.indexOf('create-2'),
-    'same-slot replacement did not honor the renderer cleanup barrier');
-  await secondReplacement.dispose();
-  await replacementHost.dispose();
+  assert(queuedRawDisposed === 1, 'queued Avatar controller was not disposed exactly once');
+  operationHost.dispose();
 
   const model = {
     width: 100,

@@ -53,7 +53,6 @@ from utils.llm_client import (
 from config.prompts.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
     CHANNEL_DESC_QWENPAW,
-    CHANNEL_DESC_OPENFANG,
     CHANNEL_DESC_BROWSER_USE,
     CHANNEL_DESC_COMPUTER_USE,
     USER_PLUGIN_SYSTEM_PROMPT,
@@ -68,7 +67,6 @@ from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 from .openclaw_adapter import OpenClawAdapter
-from .openfang_adapter import OpenFangAdapter
 from .plugin_filter import (
     stage1_filter,
     annotate_keyword_hits,
@@ -138,7 +136,7 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "openfang" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
@@ -181,16 +179,6 @@ class UserPluginDecision:
 
 
 @dataclass
-class OpenFangDecision:
-    """OpenFang multi-agent execution decision"""
-    has_task: bool = False
-    can_execute: bool = False
-    task_description: str = ""
-    suggested_tools: Optional[List[str]] = None
-    reason: str = ""
-
-
-@dataclass
 class OpenClawDecision:
     """OpenClaw standalone-agent execution decision"""
     has_task: bool = False
@@ -204,20 +192,42 @@ class OpenClawDecision:
 class UnifiedChannelDecision:
     """Unified channel assessment result — each channel is a dict or None"""
     qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
-    openfang: Optional[Dict[str, Any]] = None
     browser_use: Optional[Dict[str, Any]] = None
     computer_use: Optional[Dict[str, Any]] = None
 
 
-# 优先级：qwenpaw > openfang > browser_use > computer_use
-_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+# 优先级：qwenpaw > browser_use > computer_use
+_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 _CHANNEL_TO_METHOD = {
     "qwenpaw": "openclaw",
-    "openfang": "openfang",
     "browser_use": "browser_use",
     "computer_use": "computer_use",
 }
 
+
+
+# ── 含糊指代词表 ────────────────────────────────────────────────
+# 提到模块级是为了**可断言**：函数内的局部 tuple 测试拿不到，缺一侧字形只能
+# 靠人眼发现。（同 utils/music_crawlers.py 的路由词表、prompts_soccer 的
+# anger-cap 词表。）
+# ⚠️ 中文侧简繁并列。这张表撞的是用户实际打出来的字，繁简不同码位。
+# 表里原本只零散有「上一個 / 這個 / 那個」三条繁体，其余十四条只有简体
+# ——是「补了一半就停」而不是有意只覆盖简体。漏命中的后果是不拼上下文，
+# 派给 agent 的任务描述缺指代对象，agent 更可能问「你指哪个」或做错事。
+VAGUE_REFERENCE_MARKERS = (
+    "这个", "這個", "那个", "那個", "一下",
+    "继续", "繼續", "继续弄", "繼續弄", "处理一下", "處理一下",
+    "帮我弄一下", "幫我弄一下", "就这个", "就這個",
+    "刚才那个", "剛才那個", "上一条", "上一條", "上一個",
+    "发给他", "發給他", "发给她", "發給她", "发给它", "發給它",
+    "打开它", "打開它", "打开这个", "打開這個",
+    "继续这个", "繼續這個", "继续那个", "繼續那個",
+    "继续做", "繼續做", "接着做", "接著做",
+    "this", "that", "this one", "that one", "it", "do it", "continue",
+    "go on", "keep going", "same one", "the same", "open it", "send it",
+    "これ", "それ", "これを", "それを", "続けて", "続ける", "やって", "やってね",
+    "이거", "저거", "이것", "그것", "계속", "계속해", "해줘", "그거 해줘",
+)
 
 class DirectTaskExecutor:
     """
@@ -225,12 +235,10 @@ class DirectTaskExecutor:
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
-                 openclaw: Optional[OpenClawAdapter] = None,
-                 openfang: Optional[OpenFangAdapter] = None):
+                 openclaw: Optional[OpenClawAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use
         self.openclaw = openclaw
-        self.openfang: Optional[OpenFangAdapter] = openfang
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -261,7 +269,6 @@ class DirectTaskExecutor:
             "browser_use": "browser_use",
             "openclaw": "openclaw",
             "qwenpaw": "openclaw",
-            "openfang": "openfang",
             "user_plugin": "user_plugin",
         }
 
@@ -427,7 +434,18 @@ class DirectTaskExecutor:
         finally:
             self._short_desc_prewarm_inflight -= pids
             # 把本批生成的（贵的）条目落盘，下次启动直接复用、不再现生成。
-            self._persist_generated_short_descriptions(generated)
+            # 这里刻意保留同步落盘（不改 await asyncio.to_thread），两个原因：
+            # 1) _persist_generated_short_descriptions 内部是「读盘—合并—写盘」，
+            #    全程没有锁；今天靠「整段同步、不让出事件循环」才保证两批并发
+            #    prewarm 不互相覆盖（见该函数里 re-read 那行注释）。挪进线程后，
+            #    两批会各自在自己的 worker 线程里 load→merge→write 交错，先写的
+            #    那批条目会被后写的整份 payload 盖掉。
+            # 2) 这是 finally，而本协程绝大部分时间挂在 llm.ainvoke 上——事件循环
+            #    收尾时它正是会被 cancel 的 pending task。在取消路径的 finally 里
+            #    await，落盘可能被直接跳过，白白丢掉花了 LLM 调用生成的条目。
+            # 代价可控：每批 prewarm 只写一次小 JSON，发生在插件加载期，不在
+            # analyze 热路径上。
+            self._persist_generated_short_descriptions(generated)  # noqa: ASYNC_BLOCK — 无锁读-改-写 + 取消路径 finally，加 await 会引入互相覆盖/漏落盘
 
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
         # return cached list when allowed
@@ -712,16 +730,6 @@ class DirectTaskExecutor:
             return ""
 
         normalized_latest = re.sub(r"[^\w\u4e00-\u9fff]+", " ", latest.lower()).strip()
-        vague_markers = (
-            "这个", "那个", "一下", "继续", "继续弄", "处理一下", "帮我弄一下",
-            "就这个", "刚才那个", "上一条", "发给他", "发给她", "发给它",
-            "打开它", "打开这个", "继续这个", "继续那个",
-            "this", "that", "this one", "that one", "it", "do it", "continue",
-            "go on", "keep going", "same one", "the same", "open it", "send it",
-            "上一個", "這個", "那個", "继续做", "接着做",
-            "これ", "それ", "これを", "それを", "続けて", "続ける", "やって", "やってね",
-            "이거", "저거", "이것", "그것", "계속", "계속해", "해줘", "그거 해줘",
-        )
         user_turns = [
             item.get("content", "").strip()
             for item in recent_context
@@ -747,7 +755,7 @@ class DirectTaskExecutor:
         )
         length_threshold = 3 if cjk_like_count * 2 >= len(length_source) else 6
         latest_is_vague = len(length_source) <= length_threshold or any(
-            _matches_vague_marker(marker) for marker in vague_markers
+            _matches_vague_marker(marker) for marker in VAGUE_REFERENCE_MARKERS
         )
         if not latest_is_vague:
             return latest
@@ -765,21 +773,43 @@ class DirectTaskExecutor:
     def _sanitize_correction_text(text: str) -> str:
         cleaned = str(text or "")
         cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+        # ⚠️ Every Chinese noun and copula below lists both orthographies.
+        # Simplified and Traditional are distinct code points, so a Simplified-only
+        # alternation lets a Traditional-typing user's secret through verbatim: the
+        # secret then rides into the downstream agent's task description in the
+        # clear. The copula group matters on its own — 令牌 / 口令 / cookie are
+        # spelled identically in both scripts, so `為` alone was enough to defeat
+        # redaction for them.
+        # Traditional-only forms are the Taiwan standard ones: 簡訊 (not 短信),
+        # 祕鑰 (not 秘鑰).
+        _CN_COPULA = r"(?:is|为|為|是)"
         patterns = [
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
-            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|为|是|=|:|：)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (
+                r"(?i)(password|passwd|pwd|密码|密碼|口令)\s*(?:is|为|為|是|=|:|：)\s*\S+",
+                r"\1=[REDACTED_PASSWORD]",
+            ),
             (r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [REDACTED_TOKEN]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
             (
-                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|为|是|=|:|：)\s*\S+",
+                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)"
+                r"|令牌|密钥|密鑰|秘钥|祕鑰)\s*(?:is|为|為|是|=|:|：)\s*\S+",
                 r"\1=[REDACTED_TOKEN]",
             ),
             (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=：]\s*\S+", r"\1=[REDACTED_COOKIE]"),
-            (r"(?i)(cookie)\s*(?:[:=：]|is|为|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*(?:[:=：]|is|为|為|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
             (
-                r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
+                # The CJK nouns are listed outside the \b group: \b is a word
+                # boundary between a word and a non-word character, and CJK is
+                # "word" on both sides, so `验证码是 483920` never satisfied the
+                # trailing \b — the Simplified side leaked this form too, not just
+                # Traditional. Only the latin aliases need the boundary.
+                r"(?i)((?:\b(?:otp|pin|verification(?:\s+code)?|sms\s*code"
+                r"|one[-\s]?time(?:\s+password|\s+code)?)\b"
+                r"|验证码|驗證碼|校验码|校驗碼|短信码|簡訊碼|动态码|動態碼)"
+                r"(?:\s*" + _CN_COPULA + r")?[\s:：=#-]{0,6})\d{4,8}\b",
                 r"\1[REDACTED_OTP]",
             ),
             (r"\b(?:\d{15}|\d{17}[0-9Xx])\b", "[REDACTED_ID]"),
@@ -1092,7 +1122,6 @@ class DirectTaskExecutor:
         conversation: str,
         *,
         qwenpaw_available: bool = False,
-        openfang_available: bool = False,
         browser_available: bool = False,
         cu_available: bool = False,
         latest_user_request: str = "",
@@ -1100,7 +1129,7 @@ class DirectTaskExecutor:
         recent_context: Optional[List[Dict[str, str]]] = None,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
-        """Assess all non-plugin channels (qwenpaw / openfang / browser / computer) in a single LLM call.
+        """Assess all non-plugin channels (qwenpaw / browser / computer) in a single LLM call.
 
         Assembles the prompt dynamically from the available flags and asks the LLM to pick
         the most suitable channel. If the LLM outputs multiple can_execute=true, the caller
@@ -1113,10 +1142,6 @@ class DirectTaskExecutor:
         if qwenpaw_available:
             available_keys.append("qwenpaw")
             channel_descs.append(_loc(CHANNEL_DESC_QWENPAW, lang))
-
-        if openfang_available:
-            available_keys.append("openfang")
-            channel_descs.append(_loc(CHANNEL_DESC_OPENFANG, lang))
 
         if browser_available:
             available_keys.append("browser_use")
@@ -1258,7 +1283,7 @@ class DirectTaskExecutor:
             return plugin, None
         return None, None
 
-    # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use / _assess_openfang
+    # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use
     # have been replaced by the unified _assess_unified_channels() method above.
 
     def _build_plugin_desc_lines(self, plugins: Any) -> list:
@@ -1794,7 +1819,7 @@ class DirectTaskExecutor:
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
-        Plugin is judged separately; qwenpaw/openfang/browser/computer are merged into one LLM call.
+        Plugin is judged separately; qwenpaw/browser/computer are merged into one LLM call.
         Actual execution is dispatched uniformly by agent_server.
 
         ``proactive`` marks a self-initiated turn (lanlan spoke with no fresh user
@@ -1899,15 +1924,14 @@ class DirectTaskExecutor:
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
-        openfang_enabled = agent_flags.get("openfang_enabled", False)
         openclaw_enabled = agent_flags.get("openclaw_enabled", False)
 
         logger.debug(
-            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s, of=%s}",
-            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled, openfang_enabled,
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled,
         )
 
-        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled and not openfang_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
@@ -1926,7 +1950,7 @@ class DirectTaskExecutor:
         # 「外部能力相关度」信号（显式对外操作 + 需要外部/实时信息两类合一），已在
         # main 侧做过两件事：(1) 按本轮 user 文本做 freshness 匹配（陈旧/异轮读数 →
         # None，绝不用上一轮信号刹本轮）；(2) 折进 complexity 取 max，所以高
-        # complexity 的硬推理轮（如 openfang 多步推理）即便 external 低也不会被刹。
+        # complexity 的硬推理轮（如多步推理请求）即便 external 低也不会被刹。
         # 这里只要：自信地低 + 零 LLM 确定性 shortcut（magic word 规则 + 插件关键词）
         # 也全静默，就跳过下面 1~2 次大模型评估。
         # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
@@ -1961,14 +1985,6 @@ class DirectTaskExecutor:
                 logger.info("[TaskExecutor] BrowserUse available: %s", browser_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check BrowserUse: %s", e)
-
-        of_available = False
-        if openfang_enabled and self.openfang:
-            try:
-                of_available = self.openfang.init_ok
-                logger.info("[TaskExecutor] OpenFang available: %s", of_available)
-            except Exception as e:
-                logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
 
         qwenpaw_available = False
         if openclaw_enabled and self.openclaw:
@@ -2031,13 +2047,12 @@ class DirectTaskExecutor:
         if user_plugin_enabled and plugins:
             parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
 
-        # 统一渠道评估（qwenpaw / openfang / browser / computer）
-        has_any_unified = qwenpaw_available or of_available or browser_available or cu_available
+        # 统一渠道评估（qwenpaw / browser / computer）
+        has_any_unified = qwenpaw_available or browser_available or cu_available
         if has_any_unified:
             parallel_tasks.append(('unified', self._assess_unified_channels(
                 conversation,
                 qwenpaw_available=qwenpaw_available,
-                openfang_available=of_available,
                 browser_available=browser_available,
                 cu_available=cu_available,
                 latest_user_request=latest_user_request,
@@ -2097,7 +2112,7 @@ class DirectTaskExecutor:
                 latest_user_request=latest_user_request,
             )
 
-        # 2. 统一渠道 — 按优先级 qwenpaw > openfang > browser_use > computer_use
+        # 2. 统一渠道 — 按优先级 qwenpaw > browser_use > computer_use
         if isinstance(unified, UnifiedChannelDecision):
             for ch_key in _CHANNEL_PRIORITY:
                 ch_info = getattr(unified, ch_key, None)

@@ -21,7 +21,6 @@
   const TRUSTED_HOST_VERSION = 'neko-trusted-same-origin-v1';
   const DEFAULT_HEARTBEAT_TIMEOUT_MS = 4500;
   const DEFAULT_LOG_ENABLE_TIMEOUT_MS = 3500;
-  const DEFAULT_ROUTE_END_LOG_FLUSH_TIMEOUT_MS = 1500;
   const DEFAULT_LOG_QUEUE_LIMIT = 256;
   const DEFAULT_LOG_CONCURRENCY = 2;
   const DEFAULT_LOG_PUMP_INTERVAL_MS = 25;
@@ -56,11 +55,6 @@
   const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
   const DEFAULT_SPEECH_SLOT_LIMIT = 4;
-  const DEFAULT_SPEECH_TAP_RECONNECT_LIMIT = 4;
-  const DEFAULT_SPEECH_TAP_RECONNECT_DELAY_MS = 400;
-  const DEFAULT_SPEECH_TAP_READY_TIMEOUT_MS = 5000;
-  const DEFAULT_SPEECH_TAP_REQUEST_READY_TIMEOUT_MS = 5000;
-  const DEFAULT_SPEECH_TAP_PING_INTERVAL_MS = 15000;
   // Leave headroom above the host's 12s microphone start/stop confirmation so
   // its explicit failure state wins instead of racing the transport timeout.
   const DEFAULT_VOICE_CONTROL_TIMEOUT_MS = 15000;
@@ -73,14 +67,6 @@
   const GAME_STORAGE_TOTAL_BYTES = 1024 * 1024;
   const HOST_LAUNCH_REGISTRY_LIMIT = 64;
   const HOST_REGISTRATION_CAPABILITY_LIMIT = 32;
-  const HOST_LOCALE_LISTENER_LIMIT = 32;
-  const HOST_LOCALE_STORAGE_KEYS = Object.freeze(['neko_i18n_language', 'i18nextLng']);
-  const HOST_LOCALE_IDENTITY_FIELDS = Object.freeze([
-    'i18n_language', 'i18nLanguage',
-    'language', 'lang', 'locale',
-    'user_language', 'userLanguage',
-    'current_language', 'currentLanguage',
-  ]);
   const AVATAR_CHARACTER_LIMIT = 256;
   const AVATAR_CHARACTER_NAME_CHARS = 128;
   const AVATAR_MODEL_PATH_CHARS = 2048;
@@ -163,50 +149,6 @@
   // measures on the same object, so this cannot reject what the SDK admitted.
   const TRUSTED_PAYLOAD_MAX_CONTENT_BYTES = 256 * 1024;
   const TRUSTED_PAYLOAD_OMIT = Symbol('trusted-payload-omit');
-
-  function normalizeHostLocaleLanguage(value) {
-    if (typeof value !== 'string') return null;
-    const raw = value.trim();
-    if (!raw || raw.length > 64) return null;
-    const normalized = raw.replace(/_/g, '-').toLowerCase();
-    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(normalized)) return null;
-    if (normalized === 'zh' || normalized === 'cn'
-      || normalized === 'zh-cn' || normalized === 'zh-sg'
-      || normalized.startsWith('zh-hans')) return 'zh-CN';
-    if (normalized === 'tw' || normalized === 'zh-tw'
-      || normalized === 'zh-hk' || normalized === 'zh-mo'
-      || normalized.startsWith('zh-hant')) return 'zh-TW';
-    if (normalized === 'jp' || normalized === 'ja' || normalized.startsWith('ja-')) return 'ja';
-    if (normalized === 'kr' || normalized === 'ko' || normalized.startsWith('ko-')) return 'ko';
-    for (const language of ['en', 'ru', 'pt', 'es']) {
-      if (normalized === language || normalized.startsWith(`${language}-`)) return language;
-    }
-    return null;
-  }
-
-  function resolveTrustedHostLocale(windowImpl) {
-    const candidates = [];
-    try { candidates.push(windowImpl?.i18next?.language); } catch (_) { /* hostile getter */ }
-    try { candidates.push(windowImpl?.__nekoI18nLanguage); } catch (_) { /* hostile getter */ }
-    try { candidates.push(windowImpl?.NEKO_I18N_LANGUAGE); } catch (_) { /* hostile getter */ }
-    try { candidates.push(windowImpl?.document?.documentElement?.lang); } catch (_) { /* hostile getter */ }
-    try {
-      const storage = windowImpl?.localStorage;
-      if (storage && typeof storage.getItem === 'function') {
-        for (const key of HOST_LOCALE_STORAGE_KEYS) candidates.push(storage.getItem(key));
-      }
-    } catch (_) { /* unavailable host storage */ }
-    for (const candidate of candidates) {
-      const language = normalizeHostLocaleLanguage(candidate);
-      if (language) return language;
-    }
-    return 'en';
-  }
-
-  function removeLocaleIdentityPayloadKeys(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-    for (const key of HOST_LOCALE_IDENTITY_FIELDS) delete value[key];
-  }
 
   function isMemoryPolicyPayloadKey(key) {
     const normalized = String(key || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
@@ -449,9 +391,6 @@
         avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
           ? rawProviders.avatarHostFactory
           : null,
-        windowClose: typeof rawProviders?.windowClose === 'function'
-          ? rawProviders.windowClose
-          : null,
       }));
     }
     return { registrations, capabilityProviders };
@@ -486,9 +425,8 @@
       }
       HOST_COMMAND_ROUTES.set(this, normalizedLaunchRegistration.commandRoutes);
       HOST_DECLARED_COMMANDS.set(this, new Set());
-      // Route policies remain in the bootstrap-owned WeakMap. Even the
-      // transport object handed to public game code cannot enumerate endpoint
-      // mappings from its registration record.
+      // Endpoint policies stay in the bootstrap-owned WeakMap rather than on
+      // the transport object exposed to same-origin game code.
       this._launchRegistration = Object.freeze({
         mode: normalizedLaunchRegistration.mode,
         gameId: normalizedLaunchRegistration.gameId,
@@ -510,10 +448,6 @@
         );
       }
       this.gameType = this._launchRegistration.gameId;
-      // Public SDK identifiers intentionally use the portable hyphenated
-      // manifest grammar. Existing built-in routes may still have a legacy
-      // underscore slug; only the trusted launch registration can provide
-      // that host-internal mapping.
       Object.defineProperty(this, 'routeGameType', {
         value: this._launchRegistration.routeGameType,
         enumerable: true,
@@ -542,9 +476,9 @@
       this._window = options.windowImpl || window;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      // Renderer providers are selected from the bootstrap-owned registry.
-      // A same-origin game may pass an `avatarHost` option to the factory, but
-      // it must never be able to mint or replace this privileged capability.
+      // Renderer providers are selected only from the bootstrap-owned registry.
+      // A same-origin game can call the factory, so its options cannot mint or
+      // replace the privileged Avatar capability.
       HOST_AVATAR_PROVIDERS.set(this, options.trustedAvatarHost || null);
       this._audioHost = options.audioHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
@@ -554,18 +488,9 @@
         quickLines: typeof capabilityProviders.quickLines === 'function'
           ? capabilityProviders.quickLines
           : null,
-        windowClose: typeof capabilityProviders.windowClose === 'function'
-          ? capabilityProviders.windowClose
-          : null,
       }));
       this._disposed = false;
-      this._hostLocale = {
-        language: resolveTrustedHostLocale(this._window),
-        revision: 1,
-        listeners: new Set(),
-        windowHandler: null,
-      };
-      this._hostLocale.windowHandler = () => this._refreshHostLocale();
+      this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
         active: false,
@@ -630,52 +555,6 @@
         onState: null,
         onError: null,
       };
-      this._speechOutputBridgeActive = false;
-      this._activeRouteIdentity = null;
-      this._speechAudioTap = {
-        socket: null,
-        route: null,
-        routeToken: 0,
-        socketToken: 0,
-        ready: false,
-        manualClose: false,
-        permanentFailure: false,
-        reconnectAttempts: 0,
-        reconnectLimit: boundedPositiveInteger(
-          options.speechTapReconnectLimit,
-          DEFAULT_SPEECH_TAP_RECONNECT_LIMIT,
-          16,
-        ),
-        reconnectDelayMs: boundedPositiveInteger(
-          options.speechTapReconnectDelayMs,
-          DEFAULT_SPEECH_TAP_RECONNECT_DELAY_MS,
-          30000,
-        ),
-        readyTimeoutMs: boundedPositiveInteger(
-          options.speechTapReadyTimeoutMs,
-          DEFAULT_SPEECH_TAP_READY_TIMEOUT_MS,
-          60000,
-        ),
-        requestReadyTimeoutMs: boundedPositiveInteger(
-          options.speechTapRequestReadyTimeoutMs,
-          DEFAULT_SPEECH_TAP_REQUEST_READY_TIMEOUT_MS,
-          15000,
-        ),
-        pingIntervalMs: boundedPositiveInteger(
-          options.speechTapPingIntervalMs,
-          DEFAULT_SPEECH_TAP_PING_INTERVAL_MS,
-          60000,
-        ),
-        reconnectTimer: null,
-        readyTimer: null,
-        pingTimer: null,
-        messageTail: Promise.resolve(),
-        blobQueue: [],
-        blobDrainPromise: null,
-        readyWaiters: new Set(),
-        ownerId: `speech-tap-${Date.now().toString(36)}-${randomIdSuffix(options.windowImpl || window)}`,
-        WebSocketImpl: options.WebSocketImpl || null,
-      };
       this._voiceControlBridge = {
         channel: null,
         storageHandler: null,
@@ -698,10 +577,8 @@
       };
       this._logger = {
         enabled: false,
-        enabledSessionId: '',
         enableInFlight: false,
         enablePromise: null,
-        enableController: null,
         enableGeneration: 0,
         enableTimeoutId: null,
         enableTimeoutResolve: null,
@@ -737,59 +614,6 @@
         flush: this.flushLogger.bind(this),
         reset: this.resetLogger.bind(this),
       });
-      this._window.addEventListener?.('localechange', this._hostLocale.windowHandler);
-    }
-
-    _hostLocaleSnapshot() {
-      return Object.freeze({
-        language: this._hostLocale.language,
-        revision: this._hostLocale.revision,
-      });
-    }
-
-    _refreshHostLocale() {
-      if (this._disposed) return;
-      const language = resolveTrustedHostLocale(this._window);
-      if (language === this._hostLocale.language) return;
-      if (this._hostLocale.revision >= Number.MAX_SAFE_INTEGER) return;
-      this._hostLocale.language = language;
-      this._hostLocale.revision += 1;
-      const snapshot = this._hostLocaleSnapshot();
-      for (const listener of Array.from(this._hostLocale.listeners)) {
-        try { listener(snapshot); }
-        catch (error) {
-          this._console.error?.(`[${this.displayName}Host] locale listener failed:`, error);
-        }
-      }
-    }
-
-    subscribeHostLocale(listener) {
-      if (this._disposed) {
-        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
-          operation: 'host_locale_subscribe',
-        });
-      }
-      if (typeof listener !== 'function') {
-        throw this._hostError('invalid_request', 'Host locale listener must be a function', {
-          operation: 'host_locale_subscribe',
-        });
-      }
-      if (this._hostLocale.listeners.size >= HOST_LOCALE_LISTENER_LIMIT) {
-        throw this._hostError('busy', 'Host locale listener limit reached', {
-          operation: 'host_locale_subscribe',
-        });
-      }
-      this._hostLocale.listeners.add(listener);
-      try { listener(this._hostLocaleSnapshot()); }
-      catch (error) {
-        this._console.error?.(`[${this.displayName}Host] locale listener failed:`, error);
-      }
-      let active = true;
-      return () => {
-        if (!active) return;
-        active = false;
-        this._hostLocale.listeners.delete(listener);
-      };
     }
 
     connectGame(request = {}) {
@@ -850,20 +674,9 @@
         'speech-output',
         'context-read',
         'memory',
-        ...(HOST_CAPABILITY_PROVIDERS.get(this)?.windowClose ? ['window-control'] : []),
         ...(this._canUseGameStorage() ? ['storage'] : []),
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
-        ...(
-          avatarProvider
-          && typeof avatarProvider.mount === 'function'
-          && typeof avatarProvider.listCharacters === 'function'
-          && (
-            typeof avatarProvider.getCharacter === 'function'
-            || typeof avatarProvider.getCurrentCharacter === 'function'
-          )
-            ? ['avatar-renderer']
-            : []
-        ),
+        ...(avatarProvider?.mount ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
@@ -883,7 +696,6 @@
           version: registration.version,
         },
         grantedCapabilities,
-        locale: this._hostLocaleSnapshot(),
       };
     }
 
@@ -1186,8 +998,10 @@
       }
       const provider = HOST_AVATAR_PROVIDERS.get(this);
       if (!provider || (
-        typeof provider.getCharacter !== 'function'
-        && typeof provider.getCurrentCharacter !== 'function'
+        requestedName
+          ? typeof provider.getCharacter !== 'function'
+          : typeof provider.getCharacter !== 'function'
+            && typeof provider.getCurrentCharacter !== 'function'
       )) {
         throw this._hostError('capability_unavailable', 'Avatar character provider is unavailable', {
           operation: 'avatar.getCharacter',
@@ -1195,8 +1009,8 @@
       }
       try {
         const value = requestedName
-          ? await provider.getCharacter(requestedName)
-          : await (provider.getCurrentCharacter?.() ?? provider.getCharacter(''));
+          ? await provider.getCharacter?.(requestedName)
+          : await (provider.getCurrentCharacter?.() ?? provider.getCharacter?.(''));
         return normalizeAvatarCharacterDescriptor(value);
       } catch (error) {
         if (error instanceof NekoMiniGameHostError) throw error;
@@ -1368,7 +1182,7 @@
     }
 
     resetSession({ newSession = false } = {}) {
-      this._retireActiveSpeechRoute('runtime_reset');
+      this._activeCommandRouteIdentity = null;
       if (newSession || !this._session.id) {
         this._cancelVoiceControlRequests('cancelled');
         // Same entropy as the constructor's generator: a reset that mints a
@@ -1383,24 +1197,19 @@
     }
 
     applyRouteState(state = {}) {
-      const previousSessionId = this.sessionId;
-      const previousLanlanName = this.routeLanlanName;
       const sessionId = String(state?.session_id || state?.sessionId || '').trim();
       const lanlanName = String(state?.lanlan_name || '').trim();
-      if (sessionId) this._session.id = sessionId;
-      if (lanlanName) this._session.lanlanName = lanlanName;
       if (
-        this._activeRouteIdentity
+        this._activeCommandRouteIdentity
         && (
-          (sessionId && sessionId !== this._activeRouteIdentity.sessionId)
-          || (lanlanName && lanlanName !== this._activeRouteIdentity.lanlanName)
-          || (previousSessionId !== this.sessionId && this.sessionId !== this._activeRouteIdentity.sessionId)
-          || (previousLanlanName !== this.routeLanlanName
-            && this.routeLanlanName !== this._activeRouteIdentity.lanlanName)
+          (sessionId && sessionId !== this._activeCommandRouteIdentity.sessionId)
+          || (lanlanName && lanlanName !== this._activeCommandRouteIdentity.lanlanName)
         )
       ) {
-        this._retireActiveSpeechRoute('route_identity_changed');
+        this._activeCommandRouteIdentity = null;
       }
+      if (sessionId) this._session.id = sessionId;
+      if (lanlanName) this._session.lanlanName = lanlanName;
       return { sessionId: this.sessionId, lanlanName: this.routeLanlanName };
     }
 
@@ -1427,15 +1236,9 @@
         });
       }
       removeMemoryPolicyPayloadKeys(trusted);
-      removeLocaleIdentityPayloadKeys(trusted);
-      for (const nestedKey of ['event', 'currentState', 'current_state']) {
-        const nested = trusted[nestedKey];
-        if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-          removeMemoryPolicyPayloadKeys(nested);
-          removeLocaleIdentityPayloadKeys(nested);
-        }
+      if (trusted.event && typeof trusted.event === 'object' && !Array.isArray(trusted.event)) {
+        removeMemoryPolicyPayloadKeys(trusted.event);
       }
-      this._refreshHostLocale();
       const memoryEnabled = (
         this._grantedCapabilities.has('memory')
         && this._memoryConsentEnabled === true
@@ -1443,13 +1246,10 @@
       return {
         ...trusted,
         session_id: this.sessionId,
-        // The backend route identity is host-owned just like the session. A
-        // game may use a portable manifest id while the built-in endpoint
-        // still has a legacy slug, but it must not be able to redirect a
-        // trusted runtime request by supplying its own game_type field.
+        // Public manifest ids may differ from legacy backend route slugs. The
+        // bootstrap-owned alias controls both the URL and payload identity.
         game_type: this.routeGameType,
         ...(this.routeLanlanName ? { lanlan_name: this.routeLanlanName } : {}),
-        i18n_language: this._hostLocale.language,
         game_memory_enabled: memoryEnabled,
         game_memory_player_interaction_enabled: memoryEnabled,
         game_memory_event_reply_enabled: memoryEnabled,
@@ -1535,39 +1335,6 @@
       ));
     }
 
-    requestWindowClose(options = {}) {
-      this._requireGrantedCapability('window-control', 'window_close');
-      if (this._disposed) {
-        return Promise.reject(this._hostError(
-          'disposed',
-          `${this.displayName} host adapter has been disposed`,
-          { operation: 'window_close' },
-        ));
-      }
-      if (options.signal?.aborted) {
-        return Promise.reject(this._hostError(
-          'cancelled',
-          'The window-close request was cancelled',
-          { operation: 'window_close' },
-        ));
-      }
-      const providers = HOST_CAPABILITY_PROVIDERS.get(this);
-      if (!providers?.windowClose) {
-        return Promise.reject(this._hostError(
-          'capability_unavailable',
-          'The trusted host window-control provider is unavailable',
-          { operation: 'window_close' },
-        ));
-      }
-      try {
-        // The bootstrap captured and bound this function before game code ran.
-        // Do not pass caller-controlled values across the privileged boundary.
-        return Promise.resolve(providers.windowClose());
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    }
-
     requestDialogue(payload, options = {}) {
       this._requireGrantedCapability('dialogue', 'dialogue');
       return this._post(this._gameEndpoint('chat'), this._trustedRuntimePayload(payload), {
@@ -1581,13 +1348,6 @@
       this._requireGrantedCapability('runtime', 'route_start');
       const trustedPayload = this._trustedRuntimePayload(payload);
       const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
-      if (
-        this._activeRouteIdentity
-        && requestedRouteInstanceId
-        && requestedRouteInstanceId !== this._activeRouteIdentity.routeInstanceId
-      ) {
-        this._stopSpeechAudioTap('route_generation_changed');
-      }
       const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
         timeoutMs: 60000,
         operation: 'route_start',
@@ -1599,30 +1359,28 @@
       const routeState = data?.state && typeof data.state === 'object' ? data.state : null;
       const routeActive = routeState?.game_route_active === true || data?.active === true;
       if (response.ok && data?.ok !== false && routeActive) {
-        const route = {
+        this._activeCommandRouteIdentity = Object.freeze({
           gameType: this.routeGameType,
           sessionId: String(routeState?.session_id || trustedPayload.session_id || '').trim(),
           lanlanName: String(routeState?.lanlan_name || trustedPayload.lanlan_name || '').trim(),
           routeInstanceId: requestedRouteInstanceId,
-        };
-        this._activeRouteIdentity = Object.freeze(route);
-        if (this._speechOutputBridgeActive) this._bindSpeechAudioTap(route);
+        });
       } else if (response.ok && data?.ok !== false) {
-        this._retireActiveSpeechRoute('route_start_inactive');
+        this._activeCommandRouteIdentity = null;
       }
       return response;
     }
 
-    _retireSpeechRouteIfRuntimeInactive(data, routeInstanceId, source) {
+    _retireCommandRouteIfRuntimeInactive(data, routeInstanceId) {
       const state = data?.state && typeof data.state === 'object' ? data.state : null;
       const explicitlyInactive = data?.active === false || state?.game_route_active === false;
-      if (!explicitlyInactive || !this._activeRouteIdentity) return false;
+      if (!explicitlyInactive || !this._activeCommandRouteIdentity) return false;
       const requestedGeneration = String(routeInstanceId || '').trim();
       if (
         requestedGeneration
-        && requestedGeneration !== this._activeRouteIdentity.routeInstanceId
+        && requestedGeneration !== this._activeCommandRouteIdentity.routeInstanceId
       ) return false;
-      this._retireActiveSpeechRoute(source || 'runtime_inactive');
+      this._activeCommandRouteIdentity = null;
       return true;
     }
 
@@ -1636,11 +1394,7 @@
       });
       try {
         const data = await response.clone().json();
-        this._retireSpeechRouteIfRuntimeInactive(
-          data,
-          trustedPayload.sdk_route_instance_id,
-          'route_heartbeat_inactive',
-        );
+        this._retireCommandRouteIfRuntimeInactive(data, trustedPayload.sdk_route_instance_id);
       } catch (_) { /* the public SDK still owns response validation */ }
       return response;
     }
@@ -1663,12 +1417,8 @@
       );
       try {
         const data = await response.clone().json();
-        this._retireSpeechRouteIfRuntimeInactive(
-          data,
-          sourceRoute.routeInstanceId,
-          'route_drain_inactive',
-        );
         this._dispatchGameControls(data?.outputs, sourceRoute);
+        this._retireCommandRouteIfRuntimeInactive(data, sourceRoute.routeInstanceId);
       } catch (_) { /* the SDK still owns response validation */ }
       return response;
     }
@@ -1755,10 +1505,10 @@
           { operation: 'game_command' },
         );
       }
-      const activeRouteIdentity = this._activeRouteIdentity;
+      const activeRouteIdentity = this._activeCommandRouteIdentity;
       const routeIdentityIsCurrent = () => (
         !!activeRouteIdentity
-        && this._activeRouteIdentity === activeRouteIdentity
+        && this._activeCommandRouteIdentity === activeRouteIdentity
         && activeRouteIdentity.gameType === this.routeGameType
         && activeRouteIdentity.sessionId === this.sessionId
         && activeRouteIdentity.lanlanName === this.routeLanlanName
@@ -1951,44 +1701,13 @@
       });
     }
 
-    async speak(payload, options = {}) {
+    speak(payload, options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_speak');
-      const trustedPayload = this._trustedRuntimePayload(payload);
-      const requestRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
-      if (requestRouteInstanceId) {
-        await this._awaitSpeechAudioTapReady(trustedPayload, options);
-        if (!this._speechAudioTapCanSuppress(trustedPayload)) {
-          throw this._hostError(
-            'capability_unavailable',
-            'The route-bound speech audio tap became unavailable before dispatch',
-            { operation: 'speech_output' },
-          );
-        }
-        trustedPayload.suppress_primary_audio = true;
-      } else {
-        // Opening-screen speech has no route generation and retains the public
-        // pre-route behavior. It must never suppress the primary project stream.
-        trustedPayload.suppress_primary_audio = false;
-      }
-      const requestSessionId = this.sessionId;
-      const response = await this._post(this._gameEndpoint('speak'), trustedPayload, {
+      return this._post(this._gameEndpoint('speak'), this._trustedRuntimePayload(payload), {
         timeoutMs: 60000,
         operation: 'speak',
         ...options,
       });
-      let data = null;
-      try { data = await response.clone().json(); }
-      catch (_) { /* the public SDK still owns response validation */ }
-      const requestIsCurrent = !this._disposed
-        && this.sessionId === requestSessionId
-        && (
-          !requestRouteInstanceId
-          || this._activeRouteIdentity?.routeInstanceId === requestRouteInstanceId
-        );
-      if (requestIsCurrent && data?.turn_end_emitted === true) {
-        this._dispatchSpeechTurnEnd(data);
-      }
-      return response;
     }
 
     requestSpeechOutput(payload, options = {}) {
@@ -2074,502 +1793,6 @@
       return this.withCsrfRetry((headers) => this.sendRealtimeContext(payload, { headers }));
     }
 
-    _speechAudioSink() {
-      const appState = this._window.appState;
-      const playback = this._window.appAudioPlayback;
-      const enqueue = typeof playback?.enqueueIncomingAudioBlob === 'function'
-        ? playback.enqueueIncomingAudioBlob
-        : this._window.enqueueIncomingAudioBlob;
-      if (!appState || !Array.isArray(appState.pendingAudioChunkMetaQueue) || typeof enqueue !== 'function') {
-        return null;
-      }
-      return {
-        appState,
-        enqueue: (blob) => enqueue.call(playback || this._window, blob),
-        scheduleMetaCheck: typeof playback?.schedulePendingAudioMetaStallCheck === 'function'
-          ? () => playback.schedulePendingAudioMetaStallCheck()
-          : (typeof this._window.schedulePendingAudioMetaStallCheck === 'function'
-            ? () => this._window.schedulePendingAudioMetaStallCheck()
-            : null),
-        resetDecoder: typeof this._window.resetOggOpusDecoder === 'function'
-          ? () => this._window.resetOggOpusDecoder()
-          : null,
-      };
-    }
-
-    _isSpeechAudioBlob(value) {
-      const BlobImpl = this._window.Blob || globalThis.Blob;
-      return typeof BlobImpl === 'function' && value instanceof BlobImpl;
-    }
-
-    _reportSpeechAudioTapError(error, source) {
-      try { this._speechPlaybackBridge.onError?.(error, source); }
-      catch (_) { /* a consumer error must not break host audio cleanup */ }
-    }
-
-    _settleSpeechAudioTapReadyWaiters(ok, reason = 'speech_audio_tap_unavailable', routeToken = null) {
-      const tap = this._speechAudioTap;
-      for (const waiter of Array.from(tap.readyWaiters)) {
-        if (routeToken != null && waiter.routeToken !== routeToken) continue;
-        tap.readyWaiters.delete(waiter);
-        if (waiter.timeoutId != null) this._window.clearTimeout(waiter.timeoutId);
-        waiter.signal?.removeEventListener?.('abort', waiter.abortHandler);
-        if (ok) {
-          waiter.resolve(true);
-          continue;
-        }
-        const code = reason === 'disposed'
-          ? 'disposed'
-          : (['route_end', 'runtime_reset', 'route_generation_changed', 'route_identity_changed']
-            .includes(reason) ? 'cancelled' : 'capability_unavailable');
-        waiter.reject(this._hostError(code, 'The route-bound speech audio tap is unavailable', {
-          operation: 'speech_output',
-        }));
-      }
-    }
-
-    _awaitSpeechAudioTapReady(payload = {}, options = {}) {
-      const tap = this._speechAudioTap;
-      const routeInstanceId = String(payload.sdk_route_instance_id || '').trim();
-      if (!routeInstanceId) return Promise.resolve(false);
-      const route = tap.route;
-      const routeMatches = !!(
-        this._activeRouteIdentity
-        && route
-        && route.routeInstanceId === routeInstanceId
-        && route.sessionId === this.sessionId
-        && route.lanlanName === this.routeLanlanName
-      );
-      if (!routeMatches || !this._speechOutputBridgeActive || !this._speechAudioSink()) {
-        return Promise.reject(this._hostError(
-          'capability_unavailable',
-          'The route-bound speech audio tap is unavailable',
-          { operation: 'speech_output' },
-        ));
-      }
-      if (this._speechAudioTapCanSuppress(payload)) return Promise.resolve(true);
-      if (tap.permanentFailure || (!tap.socket && tap.reconnectAttempts >= tap.reconnectLimit)) {
-        return Promise.reject(this._hostError(
-          'capability_unavailable',
-          'The route-bound speech audio tap failed to become ready',
-          { operation: 'speech_output' },
-        ));
-      }
-      const signal = options.signal || null;
-      if (signal?.aborted) {
-        return Promise.reject(this._hostError('cancelled', 'The speech request was cancelled', {
-          operation: 'speech_output',
-        }));
-      }
-      const routeToken = tap.routeToken;
-      return new Promise((resolve, reject) => {
-        const waiter = {
-          routeToken,
-          signal,
-          abortHandler: null,
-          timeoutId: null,
-          resolve,
-          reject,
-        };
-        waiter.abortHandler = () => {
-          if (!tap.readyWaiters.delete(waiter)) return;
-          if (waiter.timeoutId != null) this._window.clearTimeout(waiter.timeoutId);
-          reject(this._hostError('cancelled', 'The speech request was cancelled', {
-            operation: 'speech_output',
-          }));
-        };
-        signal?.addEventListener?.('abort', waiter.abortHandler, { once: true });
-        waiter.timeoutId = this._window.setTimeout(() => {
-          if (!tap.readyWaiters.delete(waiter)) return;
-          signal?.removeEventListener?.('abort', waiter.abortHandler);
-          reject(this._hostError(
-            'capability_unavailable',
-            'The route-bound speech audio tap did not become ready in time',
-            { operation: 'speech_output' },
-          ));
-        }, tap.requestReadyTimeoutMs);
-        tap.readyWaiters.add(waiter);
-        // The ready frame may have landed between the synchronous check above and
-        // waiter registration. Recheck after insertion so that edge cannot wait
-        // until timeout despite an already usable tap.
-        if (tap.routeToken === routeToken && this._speechAudioTapCanSuppress(payload)) {
-          this._settleSpeechAudioTapReadyWaiters(true, 'ready', routeToken);
-        }
-      });
-    }
-
-    _clearSpeechAudioTapTimers() {
-      const tap = this._speechAudioTap;
-      if (tap.reconnectTimer != null) this._window.clearTimeout(tap.reconnectTimer);
-      if (tap.readyTimer != null) this._window.clearTimeout(tap.readyTimer);
-      if (tap.pingTimer != null) this._window.clearInterval(tap.pingTimer);
-      tap.reconnectTimer = null;
-      tap.readyTimer = null;
-      tap.pingTimer = null;
-    }
-
-    _discardSpeechAudioTapHeaders({ socketToken = null } = {}) {
-      const queue = this._window.appState?.pendingAudioChunkMetaQueue;
-      if (!Array.isArray(queue)) return;
-      const ownerId = this._speechAudioTap.ownerId;
-      this._window.appState.pendingAudioChunkMetaQueue = queue.filter((entry) => !(
-        entry?.sdkSpeechTapOwner === ownerId
-        && (socketToken == null || entry.sdkSpeechTapSocketToken === socketToken)
-      ));
-    }
-
-    _stopSpeechAudioTap(reason = 'stopped') {
-      const tap = this._speechAudioTap;
-      this._settleSpeechAudioTapReadyWaiters(false, reason);
-      tap.routeToken += 1;
-      tap.ready = false;
-      tap.manualClose = true;
-      tap.permanentFailure = false;
-      this._clearSpeechAudioTapTimers();
-      const socket = tap.socket;
-      tap.socket = null;
-      tap.route = null;
-      tap.blobQueue = [];
-      tap.blobDrainPromise = null;
-      tap.messageTail = Promise.resolve();
-      this._discardSpeechAudioTapHeaders();
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        try { socket.close(1000, String(reason || 'stopped').slice(0, 120)); }
-        catch (_) { /* already closed */ }
-      }
-    }
-
-    _retireActiveSpeechRoute(reason = 'retired') {
-      this._activeRouteIdentity = null;
-      this._stopSpeechAudioTap(reason);
-    }
-
-    _speechAudioTapCanSuppress(payload = {}) {
-      const tap = this._speechAudioTap;
-      const route = tap.route;
-      const sinkAvailable = !!this._speechAudioSink();
-      if (!sinkAvailable) tap.ready = false;
-      return !!(
-        this._speechOutputBridgeActive
-        && tap.ready
-        && tap.socket
-        && tap.socket.readyState === 1
-        && route
-        && sinkAvailable
-        && route.gameType === this.routeGameType
-        && route.sessionId === this.sessionId
-        && route.lanlanName === this.routeLanlanName
-        && route.routeInstanceId
-        && route.routeInstanceId === String(payload.sdk_route_instance_id || '').trim()
-      );
-    }
-
-    _bindSpeechAudioTap(routeInput) {
-      const route = {
-        gameType: this.routeGameType,
-        sessionId: String(routeInput?.sessionId || '').trim(),
-        lanlanName: String(routeInput?.lanlanName || '').trim(),
-        routeInstanceId: String(routeInput?.routeInstanceId || '').trim(),
-      };
-      if (
-        !this._speechOutputBridgeActive
-        || !this._grantedCapabilities.has('speech-output')
-        || this._disposed
-        || !route.sessionId
-        || !route.lanlanName
-        || !route.routeInstanceId
-        || !this._speechAudioSink()
-      ) {
-        this._stopSpeechAudioTap('speech_tap_unavailable');
-        return false;
-      }
-      const WebSocketImpl = this._speechAudioTap.WebSocketImpl || this._window.WebSocket;
-      if (typeof WebSocketImpl !== 'function') {
-        this._stopSpeechAudioTap('speech_tap_websocket_unavailable');
-        return false;
-      }
-      const current = this._speechAudioTap.route;
-      if (
-        current
-        && current.gameType === route.gameType
-        && current.sessionId === route.sessionId
-        && current.lanlanName === route.lanlanName
-        && current.routeInstanceId === route.routeInstanceId
-        && this._speechAudioTap.socket
-      ) return true;
-
-      this._stopSpeechAudioTap('speech_tap_rebind');
-      const tap = this._speechAudioTap;
-      tap.route = Object.freeze(route);
-      tap.manualClose = false;
-      tap.permanentFailure = false;
-      tap.reconnectAttempts = 0;
-      return this._connectSpeechAudioTap();
-    }
-
-    _speechAudioTapUrl(route) {
-      const URLImpl = this._window.URL || globalThis.URL;
-      const url = new URLImpl(this._gameEndpoint('speech/ws'), this._window.location.origin);
-      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      url.searchParams.set('lanlan_name', route.lanlanName);
-      url.searchParams.set('session_id', route.sessionId);
-      url.searchParams.set('sdk_route_instance_id', route.routeInstanceId);
-      return url.toString();
-    }
-
-    _scheduleSpeechAudioTapReconnect(routeToken) {
-      const tap = this._speechAudioTap;
-      if (
-        tap.routeToken !== routeToken
-        || tap.manualClose
-        || tap.permanentFailure
-        || !tap.route
-        || tap.reconnectTimer != null
-        || tap.reconnectAttempts >= tap.reconnectLimit
-      ) {
-        if (
-          tap.routeToken === routeToken
-          && !tap.manualClose
-          && !tap.permanentFailure
-          && tap.reconnectAttempts >= tap.reconnectLimit
-        ) {
-          this._settleSpeechAudioTapReadyWaiters(
-            false,
-            'speech_audio_tap_reconnect_exhausted',
-            routeToken,
-          );
-        }
-        return false;
-      }
-      tap.reconnectAttempts += 1;
-      const delayMs = Math.min(
-        5000,
-        tap.reconnectDelayMs * Math.pow(2, Math.max(0, tap.reconnectAttempts - 1)),
-      );
-      tap.reconnectTimer = this._window.setTimeout(() => {
-        tap.reconnectTimer = null;
-        if (tap.routeToken === routeToken && !tap.manualClose && !tap.permanentFailure) {
-          this._connectSpeechAudioTap();
-        }
-      }, delayMs);
-      return true;
-    }
-
-    _connectSpeechAudioTap() {
-      const tap = this._speechAudioTap;
-      const route = tap.route;
-      const WebSocketImpl = tap.WebSocketImpl || this._window.WebSocket;
-      if (
-        this._disposed
-        || !this._speechOutputBridgeActive
-        || tap.manualClose
-        || tap.permanentFailure
-        || !route
-        || typeof WebSocketImpl !== 'function'
-        || !this._speechAudioSink()
-      ) return false;
-      if (tap.socket && (tap.socket.readyState === 0 || tap.socket.readyState === 1)) return true;
-
-      const routeToken = tap.routeToken;
-      const socketToken = ++tap.socketToken;
-      let socket;
-      try {
-        socket = new WebSocketImpl(this._speechAudioTapUrl(route));
-      } catch (error) {
-        this._reportSpeechAudioTapError(error, 'speech_audio_tap_connect');
-        this._scheduleSpeechAudioTapReconnect(routeToken);
-        return false;
-      }
-      tap.socket = socket;
-      tap.ready = false;
-      try { socket.binaryType = 'blob'; } catch (_) { /* optional in test/legacy sockets */ }
-      tap.readyTimer = this._window.setTimeout(() => {
-        if (tap.routeToken !== routeToken || tap.socket !== socket || tap.ready) return;
-        try { socket.close(1013, 'speech_tap_ready_timeout'); }
-        catch (_) { /* onclose or the next route transition performs cleanup */ }
-      }, tap.readyTimeoutMs);
-
-      socket.onopen = () => {
-        if (tap.routeToken !== routeToken || tap.socket !== socket) return;
-        if (tap.pingTimer != null) this._window.clearInterval(tap.pingTimer);
-        tap.pingTimer = this._window.setInterval(() => {
-          if (tap.routeToken !== routeToken || tap.socket !== socket || socket.readyState !== 1) return;
-          try { socket.send(JSON.stringify({ type: 'ping', session_id: route.sessionId })); }
-          catch (_) { /* socket close owns reconnect */ }
-        }, tap.pingIntervalMs);
-      };
-      socket.onmessage = (event) => {
-        if (tap.routeToken !== routeToken || tap.socket !== socket) return;
-        const acceptedWhileReady = tap.ready;
-        tap.messageTail = tap.messageTail
-          .catch(() => undefined)
-          .then(() => this._handleSpeechAudioTapMessage(
-            event?.data,
-            { routeToken, socketToken, acceptedWhileReady },
-          ))
-          .catch((error) => this._reportSpeechAudioTapError(error, 'speech_audio_tap_message'));
-      };
-      socket.onerror = (error) => {
-        if (tap.routeToken === routeToken && tap.socket === socket) {
-          this._reportSpeechAudioTapError(error, 'speech_audio_tap_socket');
-        }
-      };
-      socket.onclose = () => {
-        if (tap.routeToken !== routeToken || tap.socket !== socket) return;
-        tap.socket = null;
-        tap.ready = false;
-        if (tap.readyTimer != null) this._window.clearTimeout(tap.readyTimer);
-        if (tap.pingTimer != null) this._window.clearInterval(tap.pingTimer);
-        tap.readyTimer = null;
-        tap.pingTimer = null;
-        tap.messageTail = tap.messageTail
-          .catch(() => undefined)
-          .then(() => {
-            this._discardSpeechAudioTapHeaders({ socketToken });
-            this._scheduleSpeechAudioTapReconnect(routeToken);
-          });
-      };
-      return true;
-    }
-
-    async _handleSpeechAudioTapMessage(rawData, context) {
-      const tap = this._speechAudioTap;
-      if (tap.routeToken !== context.routeToken || !tap.route) return;
-      if (this._isSpeechAudioBlob(rawData)) {
-        // WebSocket callbacks can enqueue tap_ready, header and the first Blob in
-        // one task before messageTail handles the ready frame. The current ready
-        // state is therefore authoritative in addition to the enqueue-time bit.
-        if (!(context.acceptedWhileReady || tap.ready)) return;
-        tap.blobQueue.push({ blob: rawData, routeToken: context.routeToken });
-        await this._drainSpeechAudioTapBlobs();
-        return;
-      }
-      let data;
-      try { data = JSON.parse(String(rawData || '{}')); }
-      catch (_) { return; }
-      if (data?.type === 'speech_tap_ready') {
-        const identityMatches = data.ok === true
-          && String(data.game_type || '') === tap.route.gameType
-          && String(data.session_id || '') === tap.route.sessionId
-          && !!this._speechAudioSink();
-        if (tap.readyTimer != null) this._window.clearTimeout(tap.readyTimer);
-        tap.readyTimer = null;
-        tap.ready = identityMatches;
-        if (!identityMatches) {
-          tap.permanentFailure = true;
-          this._settleSpeechAudioTapReadyWaiters(
-            false,
-            'speech_audio_tap_rejected',
-            context.routeToken,
-          );
-          const socket = tap.socket;
-          try { socket?.close(1008, 'speech_tap_rejected'); }
-          catch (_) { /* no suppression is safer than a partially bound tap */ }
-        } else {
-          this._settleSpeechAudioTapReadyWaiters(true, 'ready', context.routeToken);
-        }
-        return;
-      }
-      if (data?.type === 'audio_chunk' && (context.acceptedWhileReady || tap.ready)) {
-        this._pushSpeechAudioTapHeader(data, context.socketToken);
-      }
-    }
-
-    _pushSpeechAudioTapHeader(response, socketToken) {
-      const sink = this._speechAudioSink();
-      if (!sink) return false;
-      const speechId = String(response?.speech_id || response?.speechId || '').trim();
-      if (!speechId) return false;
-      const appState = sink.appState;
-      let shouldSkip = false;
-      if (appState.interruptedSpeechId && speechId === appState.interruptedSpeechId) {
-        shouldSkip = true;
-      } else if (speechId !== appState.currentPlayingSpeechId) {
-        if (appState.pendingDecoderReset && sink.resetDecoder) {
-          appState.decoderResetPromise = Promise.resolve(sink.resetDecoder())
-            .catch(() => undefined)
-            .then(() => { appState.pendingDecoderReset = false; });
-        } else {
-          appState.pendingDecoderReset = false;
-        }
-        appState.currentPlayingSpeechId = speechId;
-        appState.interruptedSpeechId = null;
-      }
-      appState.pendingAudioChunkMetaQueue.push({
-        speechId,
-        turnId: String(response?.turn_id || response?.turnId || speechId),
-        shouldSkip,
-        epoch: appState.incomingAudioEpoch || 0,
-        receivedAt: Date.now(),
-        sdkSpeechTapOwner: this._speechAudioTap.ownerId,
-        sdkSpeechTapSocketToken: socketToken,
-      });
-      try { sink.scheduleMetaCheck?.(); }
-      catch (_) { /* playback queue processing remains authoritative */ }
-      return true;
-    }
-
-    _drainSpeechAudioTapBlobs() {
-      const tap = this._speechAudioTap;
-      if (tap.blobDrainPromise) return tap.blobDrainPromise;
-      // A sink may settle after reset/rebind. Capture both the route token and
-      // queue object so that an old asynchronous drain can finish its already
-      // handed-off Blob, but can never resume against a newer generation's
-      // replacement queue and race that generation's FIFO consumer.
-      const drainRouteToken = tap.routeToken;
-      const drainQueue = tap.blobQueue;
-      const drain = (async () => {
-        while (
-          tap.routeToken === drainRouteToken
-          && tap.blobQueue === drainQueue
-          && drainQueue.length
-        ) {
-          const entry = drainQueue.shift();
-          if (!entry || entry.routeToken !== drainRouteToken || !tap.route) continue;
-          const sink = this._speechAudioSink();
-          if (!sink) {
-            tap.ready = false;
-            continue;
-          }
-          try {
-            await Promise.resolve(sink.enqueue(entry.blob));
-          } catch (error) {
-            tap.ready = false;
-            tap.permanentFailure = true;
-            this._reportSpeechAudioTapError(error, 'speech_audio_sink');
-            try { tap.socket?.close(1011, 'speech_audio_sink_failed'); }
-            catch (_) { /* a later lifecycle transition clears the socket */ }
-          }
-        }
-      })();
-      const trackedDrain = drain.finally(() => {
-        if (tap.blobDrainPromise === trackedDrain) tap.blobDrainPromise = null;
-      });
-      tap.blobDrainPromise = trackedDrain;
-      return trackedDrain;
-    }
-
-    _dispatchSpeechTurnEnd(response) {
-      const turnId = String(response?.turn_id || response?.turnId || response?.speech_id || response?.speechId || '').trim();
-      if (!turnId || typeof this._window.CustomEvent !== 'function') return false;
-      try {
-        this._window.dispatchEvent(new this._window.CustomEvent('neko-assistant-turn-end', {
-          detail: {
-            turnId,
-            speechId: String(response?.speech_id || response?.speechId || turnId),
-            source: 'minigame_sdk_speech',
-          },
-        }));
-        return true;
-      } catch (_) {
-        return false;
-      }
-    }
-
     startSpeechPlaybackBridge(options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_playback_bridge');
       this.stopSpeechPlaybackBridge();
@@ -2646,7 +1869,6 @@
           operation: 'speech_output_bridge',
         });
       }
-      this._speechOutputBridgeActive = true;
       this.startSpeechPlaybackBridge(options);
       const storageKey = String(options.storageKey || 'neko_speech_playback_state');
       const messageType = String(options.messageType || 'speech_playback_state');
@@ -2656,13 +1878,10 @@
           this._speechPlaybackBridge.acceptState?.(stored, 'local_storage_initial');
         }
       } catch (_) { /* ignore malformed state from unrelated/older writers */ }
-      if (this._activeRouteIdentity) this._bindSpeechAudioTap(this._activeRouteIdentity);
       return true;
     }
 
     stopSpeechOutputBridge() {
-      this._speechOutputBridgeActive = false;
-      this._stopSpeechAudioTap('speech_output_bridge_stopped');
       this.stopSpeechPlaybackBridge();
     }
 
@@ -2678,11 +1897,7 @@
       bridge.onError = typeof options.onError === 'function' ? options.onError : null;
 
       const acceptMessage = (data, source) => {
-        if (!data || ![
-          'game_voice_control_state',
-          'game_voice_transcript',
-          'game_voice_control_error',
-        ].includes(data.type)) return;
+        if (!data || !['game_voice_control_state', 'game_voice_transcript'].includes(data.type)) return;
         const messageId = String(data.message_id || data.storage_nonce || '');
         if (messageId) {
           if (bridge.seenMessageIds.has(messageId)) return;
@@ -2694,27 +1909,6 @@
         }
         if (String(data.game_type || '') !== this.routeGameType) return;
         if (data.session_id && String(data.session_id) !== this.sessionId) return;
-        const messageRouteInstanceId = String(data.sdk_route_instance_id || '').trim();
-        const activeRouteInstanceId = String(this._activeRouteIdentity?.routeInstanceId || '').trim();
-        if (
-          messageRouteInstanceId
-          && activeRouteInstanceId
-          && messageRouteInstanceId !== activeRouteInstanceId
-        ) return;
-        const requestId = String(data.request_id || '');
-        const pending = requestId ? bridge.pending.get(requestId) : null;
-        if (
-          pending?.routeInstanceId
-          && messageRouteInstanceId !== pending.routeInstanceId
-        ) return;
-        if (data.type === 'game_voice_control_error') {
-          try {
-            bridge.onError?.(Object.freeze({ ...data }), source);
-          } catch (error) {
-            this._window.console?.error?.('[NekoMiniGameHost] voice error listener failed', error);
-          }
-          return;
-        }
         if (data.type === 'game_voice_transcript') {
           const text = String(data.text || '').trim();
           if (!text) return;
@@ -2726,6 +1920,12 @@
           return;
         }
         bridge.lastState = data;
+        const requestId = String(data.request_id || '');
+        const pending = requestId ? bridge.pending.get(requestId) : null;
+        if (
+          pending?.routeInstanceId
+          && String(data.sdk_route_instance_id || '') !== pending.routeInstanceId
+        ) return;
         if (pending && data.reason !== 'working') {
           this._window.clearTimeout(pending.timeoutId);
           bridge.pending.delete(requestId);
@@ -2836,18 +2036,13 @@
         }));
       }
       const normalizedAction = String(action || 'query');
-      if (!['query', 'start', 'stop', 'toggle', 'handoff'].includes(normalizedAction)) {
+      if (!['query', 'start', 'stop', 'toggle'].includes(normalizedAction)) {
         return Promise.reject(this._hostError('invalid_request', 'Unknown voice control action', {
           operation: 'voice_control',
         }));
       }
       const signal = options.signal || null;
       const routeInstanceId = String(options.sdkRouteInstanceId || '').trim();
-      const handoffIntentEpoch = Number(options.handoffIntentEpoch);
-      const hasHandoffIntentEpoch = normalizedAction === 'handoff'
-        && Object.prototype.hasOwnProperty.call(options, 'handoffIntentEpoch')
-        && Number.isSafeInteger(handoffIntentEpoch)
-        && handoffIntentEpoch >= 0;
       if (signal?.aborted) {
         return Promise.reject(this._hostError('cancelled', 'Voice control request was cancelled', {
           operation: 'voice_control',
@@ -2900,7 +2095,6 @@
           game_type: this.routeGameType,
           session_id: this.sessionId,
           ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
-          ...(hasHandoffIntentEpoch ? { ordinary_voice_intent_epoch: handoffIntentEpoch } : {}),
         });
         if (!posted) {
           this._window.clearTimeout(timeoutId);
@@ -3139,10 +2333,6 @@
 
     postLog(payload, mutationHeaders = {}) {
       this._requireGrantedCapability('logging', 'logging');
-      return this._enqueueLogPayload(payload, mutationHeaders);
-    }
-
-    _enqueueLogPayload(payload, mutationHeaders = {}) {
       let body = '';
       try {
         body = jsonBody(payload, mutationHeaders);
@@ -3309,13 +2499,7 @@
         preserve_message: false,
         preserve_details: false,
       };
-      // This is host-owned transport bookkeeping, not a new game API call.
-      // During page-exit preservation the public grants are intentionally
-      // cleared before an already-started log drain settles. Routing this
-      // summary back through postLog() would then throw capability_denied from
-      // a fetch-finally callback, preventing the pump/flush waiters from ever
-      // completing and leaking the preserved transport.
-      void this._enqueueLogPayload(payload, this._logger.mutationHeaders || {});
+      void this.postLog(payload, this._logger.mutationHeaders || {});
     }
 
     _resolveLogFlushWaiters() {
@@ -3364,14 +2548,11 @@
       transport.overflowContext = null;
     }
 
-    enableLog(payload, mutationHeaders = {}, options = {}) {
+    enableLog(payload, mutationHeaders = {}) {
       this._requireGrantedCapability('logging', 'logging');
       return this._post('/api/game/logs/enable', jsonBody(payload, mutationHeaders), {
         headers: mutationHeaders,
         keepalive: true,
-        operation: 'log_enable',
-        timeoutMs: options.timeoutMs,
-        signal: options.signal,
       });
     }
 
@@ -3698,10 +2879,9 @@
         });
     }
 
-    _enableLogWithHeaders(reason, mutationHeaders = {}, options = {}) {
+    _enableLogWithHeaders(reason, mutationHeaders = {}) {
       const logger = this._logger;
       const context = this._loggerContext();
-      const enableSessionId = context.sessionId;
       const debugLogMutationHeaders = { ...mutationHeaders };
       const payload = {
         session_id: context.sessionId,
@@ -3710,11 +2890,11 @@
         source: this.source,
         reason,
       };
-      return this.enableLog(payload, mutationHeaders, options)
+      return this.enableLog(payload, mutationHeaders)
         .then((response) => response.json().catch(() => ({ ok: false, reason: 'bad_json' })))
         .then((result) => {
           if (result?.ok) logger.mutationHeaders = debugLogMutationHeaders;
-          return { ...(result || {}), enabledSessionId: enableSessionId };
+          return result;
         });
     }
 
@@ -3733,15 +2913,10 @@
 
     resetLogger() {
       const logger = this._logger;
-      if (logger.enableController) {
-        try { logger.enableController.abort(); } catch (_) { /* already aborted */ }
-        logger.enableController = null;
-      }
       this._stopLoggerMaintenance();
       logger.aggregates.clear();
       logger.enableGeneration += 1;
       logger.enabled = false;
-      logger.enabledSessionId = '';
       logger.enableInFlight = false;
       logger.enablePromise = null;
       logger.mutationHeaders = null;
@@ -3759,61 +2934,49 @@
 
     enableLoggerAfterRouteStart() {
       const logger = this._logger;
-      if (logger.enabled && logger.enabledSessionId === this.sessionId) {
-        return Promise.resolve({ ok: true, skipped: 'already_enabled' });
-      }
-      if (logger.enabledSessionId !== this.sessionId) logger.enabled = false;
-      if (logger.enableInFlight && logger.enablePromise) return logger.enablePromise;
       const generation = logger.enableGeneration;
-      let readyHeaders = csrfTokenFromHeaders(logger.mutationHeaders || {})
-        ? { ...logger.mutationHeaders }
-        : null;
-      const security = this._window.nekoLocalMutationSecurity;
-      if (!readyHeaders && security && typeof security.peekCachedToken === 'function') {
-        try {
-          const token = security.peekCachedToken();
-          if (token) {
-            readyHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
-          }
-        } catch (_) { /* continue with asynchronous credential lookup */ }
+      if (this._hasLoggerSendCredentials()) {
+        const security = this._window.nekoLocalMutationSecurity;
+        if (!logger.mutationHeaders && security && typeof security.peekCachedToken === 'function') {
+          try {
+            const token = security.peekCachedToken();
+            if (token) {
+              logger.mutationHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Token': token };
+            }
+          } catch (_) { /* continue with asynchronous credential lookup */ }
+        }
+        if (csrfTokenFromHeaders(logger.mutationHeaders || {})) {
+          logger.enabled = true;
+          return Promise.resolve({ ok: true, reason: 'route_start_credentials_ready' });
+        }
       }
+      if (logger.enableInFlight && logger.enablePromise) return logger.enablePromise;
       logger.enableInFlight = true;
-      const AbortControllerImpl = this._window.AbortController || globalThis.AbortController;
-      const enableController = typeof AbortControllerImpl === 'function' ? new AbortControllerImpl() : null;
-      const headersPromise = readyHeaders
-        ? Promise.resolve(readyHeaders)
-        : this.getMutationHeaders();
       return this._startLoggerEnablePromise(
-        headersPromise.then((headers) => {
+        this.getMutationHeaders().then((headers) => {
           if (logger.enableGeneration !== generation) return { ok: false, reason: 'stale_enable_result' };
           const debugLogMutationHeaders = { ...(headers || {}) };
           if (!csrfTokenFromHeaders(debugLogMutationHeaders)) {
             return { ok: false, reason: 'missing_csrf_token' };
           }
-          // Credentials only prove that logs *can* be sent. The backend still
-          // needs an active session entry before /api/game/logs accepts them.
-          // Route-start logging therefore uses the same explicit enable
-          // endpoint as manual logging instead of toggling the local gate only.
-          return this._enableLogWithHeaders('route_start', debugLogMutationHeaders, {
-            signal: enableController?.signal,
-            timeoutMs: logger.enableTimeoutMs,
-          })
-            .then((result) => ({ ...(result || {}), enableReason: 'route_start' }));
+          logger.mutationHeaders = debugLogMutationHeaders;
+          return { ok: true, enableReason: 'route_start_send_gate' };
         }),
         generation,
-        enableController,
       );
     }
 
-    _startLoggerEnablePromise(workPromise, generation, enableController = null) {
+    _startLoggerEnablePromise(workPromise, generation) {
       const logger = this._logger;
-      logger.enableController = enableController;
       const isCurrentGeneration = () => logger.enableGeneration === generation;
       // The generation only tracks TEARDOWN (resetLogger/dispose bump it), but an
       // attempt can stop being the live one in two further ways: its own timeout
-      // fires, or a retry supersedes it. The request is aborted on teardown and
-      // timeout, while this token also prevents any already-settled continuation
-      // from flipping logger.enabled or clobbering the replacement attempt.
+      // fires, or a retry supersedes it. The work promise keeps running in both
+      // cases -- the POST carries no explicit timeout, so it falls back to the
+      // 30s default and can land ~26s after a 3.5s enable timeout -- and would
+      // then flip logger.enabled after the caller was told enabling failed,
+      // silently starting to transmit console output, or clobber the retry that
+      // replaced it. One token retires the attempt for all three reasons.
       const attemptToken = {};
       logger.enableAttempt = attemptToken;
       const isCurrentAttempt = () => isCurrentGeneration() && logger.enableAttempt === attemptToken;
@@ -3830,7 +2993,6 @@
             logger.enableTimeoutResolve = null;
           }
           retireAttempt();
-          try { enableController?.abort(); } catch (_) { /* already aborted */ }
           resolve({ ok: false, reason: 'enable_timeout' });
         }, logger.enableTimeoutMs);
         logger.enableTimeoutId = timeoutId;
@@ -3864,7 +3026,6 @@
             logger.enableTimeoutId = null;
             logger.enableTimeoutResolve = null;
           }
-          if (logger.enableController === enableController) logger.enableController = null;
         });
       logger.enablePromise = enablePromise;
       return enablePromise;
@@ -3872,13 +3033,9 @@
 
     _onLoggerEnabled(result) {
       const logger = this._logger;
-      if (result?.ok && String(result.enabledSessionId || '') !== this.sessionId) {
-        return { ok: false, reason: 'stale_enable_session' };
-      }
       if (result?.ok) {
         logger.enabled = true;
         const context = this._loggerContext();
-        logger.enabledSessionId = String(result.enabledSessionId || context.sessionId);
         this._console.log(`[${this.displayName}] [SessionLog] 小游戏场次诊断日志已启用`, {
           sessionId: context.sessionId,
           reason: result.enableReason || result.reason || 'unknown',
@@ -3900,25 +3057,16 @@
 
     enableLogger(reason = 'keyboard') {
       const logger = this._logger;
-      if (logger.enabled && logger.enabledSessionId === this.sessionId) {
-        return Promise.resolve({ ok: true, skipped: 'already_enabled' });
-      }
-      if (logger.enabledSessionId !== this.sessionId) logger.enabled = false;
+      if (logger.enabled) return Promise.resolve({ ok: true, skipped: 'already_enabled' });
       if (logger.enableInFlight && logger.enablePromise) return logger.enablePromise;
       logger.enableInFlight = true;
       const generation = logger.enableGeneration;
-      const AbortControllerImpl = this._window.AbortController || globalThis.AbortController;
-      const enableController = typeof AbortControllerImpl === 'function' ? new AbortControllerImpl() : null;
       const withEnableReason = (result) => ({ ...(result || {}), enableReason: reason });
       return this._startLoggerEnablePromise(
         this.getMutationHeaders()
-          .then((headers) => this._enableLogWithHeaders(reason, headers || {}, {
-            signal: enableController?.signal,
-            timeoutMs: logger.enableTimeoutMs,
-          }))
+          .then((headers) => this._enableLogWithHeaders(reason, headers || {}))
           .then(withEnableReason),
         generation,
-        enableController,
       );
     }
 
@@ -4049,6 +3197,8 @@
 
     async end(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_end');
+      const endingCommandRoute = this._activeCommandRouteIdentity;
+      if (options.useBeacon) this._activeCommandRouteIdentity = null;
       let parsedPayload = payload;
       if (typeof payload === 'string') {
         try {
@@ -4065,67 +3215,12 @@
           operation: 'route_end',
         });
       }
-      const requestTimeoutMs = boundedPositiveInteger(options.timeoutMs, 8000, 30000);
-      const requestStartedAt = Date.now();
-      if (options.signal?.aborted) {
-        throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, {
-          operation: 'route_end',
-        });
-      }
-      const endingSpeechRoute = this._activeRouteIdentity;
-      // An unloading document cannot safely keep accepting route audio while its
-      // end beacon races page teardown. Explicit end is different: the backend
-      // can reject or time out and the SDK then keeps the route in degraded state,
-      // so its tap remains usable until acceptance is known.
-      if (options.useBeacon) this._retireActiveSpeechRoute('route_end');
       let body = JSON.stringify(this._trustedRuntimePayload(parsedPayload));
-      const finalLogFlush = this.flushLogger({ final: true });
-      if (options.useBeacon) {
-        // Unload cannot wait for a continuation. flushLogger has already tried
-        // sendBeacon synchronously and otherwise started its keepalive fetch.
-        void finalLogFlush;
-      } else {
-        // For an explicit end, give queued logs a bounded head start before the
-        // backend marks the diagnostic session ended. Never make route cleanup
-        // depend on a slow or unavailable logging endpoint.
-        let flushTimeoutId = null;
-        let flushAbortHandler = null;
-        try {
-          const flushRace = [
-            finalLogFlush,
-            new Promise((resolve) => {
-              flushTimeoutId = this._window.setTimeout(
-                () => resolve({ ok: false, reason: 'route_end_flush_timeout' }),
-                Math.min(DEFAULT_ROUTE_END_LOG_FLUSH_TIMEOUT_MS, requestTimeoutMs),
-              );
-            }),
-          ];
-          if (options.signal && typeof options.signal.addEventListener === 'function') {
-            flushRace.push(new Promise((resolve) => {
-              flushAbortHandler = () => resolve({ ok: false, reason: 'route_end_cancelled' });
-              if (options.signal.aborted) flushAbortHandler();
-              else options.signal.addEventListener('abort', flushAbortHandler, { once: true });
-            }));
-          }
-          await Promise.race(flushRace);
-        } finally {
-          if (flushTimeoutId != null) this._window.clearTimeout(flushTimeoutId);
-          if (flushAbortHandler) options.signal?.removeEventListener?.('abort', flushAbortHandler);
-        }
-      }
+      void this.flushLogger({ final: true });
       if (options.signal?.aborted) {
         throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, {
           operation: 'route_end',
         });
-      }
-      const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
-      const remainingRequestTimeoutMs = requestTimeoutMs - elapsedMs;
-      if (remainingRequestTimeoutMs <= 0) {
-        throw this._hostError(
-          'timeout',
-          `${this.displayName} host request timed out after ${requestTimeoutMs}ms`,
-          { operation: 'route_end' },
-        );
       }
       const sendEndBeacon = () => {
         if (!options.useBeacon || !this._navigator.sendBeacon) return false;
@@ -4202,9 +3297,9 @@
         // which silently dropped the `timeoutMs` the SDK does forward and the
         // .d.ts does advertise. Clamped rather than passed through: end carries
         // keepalive and is deliberately preserved across dispose, so a game must
-        // not be able to stretch it to minutes. Any invalid value starts from
-        // today's 8000ms budget, less time already spent on the final-log flush.
-        timeoutMs: remainingRequestTimeoutMs,
+        // not be able to stretch it to minutes. Any invalid value degrades to
+        // exactly today's 8000.
+        timeoutMs: boundedPositiveInteger(options.timeoutMs, 8000, 30000),
         signal: options.signal,
       });
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
@@ -4212,10 +3307,10 @@
       if (response.ok) {
         if (
           projected?.ok !== false
-          && endingSpeechRoute
-          && this._activeRouteIdentity === endingSpeechRoute
+          && endingCommandRoute
+          && this._activeCommandRouteIdentity === endingCommandRoute
         ) {
-          this._retireActiveSpeechRoute('route_end');
+          this._activeCommandRouteIdentity = null;
         }
         return projected;
       }
@@ -4236,16 +3331,6 @@
     dispose(options = {}) {
       if (this._disposed) return;
       this._disposed = true;
-      if (this._hostLocale.windowHandler) {
-        this._window.removeEventListener?.('localechange', this._hostLocale.windowHandler);
-        this._hostLocale.windowHandler = null;
-      }
-      this._hostLocale.listeners.clear();
-      const preserveLogTransport = options.preserveLogTransport === true;
-      // Capture the drain promise before capabilities/logger state are reset.
-      // It resolves when every already-queued keepalive log has settled, then
-      // performs the normal transport teardown so preservation cannot leak.
-      const preservedLogDrain = preserveLogTransport ? this.flushLogger() : null;
       for (const controller of this._pendingStorageLockControllers) {
         try { controller.abort(); } catch (_) { /* already aborted */ }
       }
@@ -4253,8 +3338,8 @@
       const preserveOperations = new Set(options.preservePendingOperations || []);
       this.cancelPendingRequests('disposed', { preserveOperations });
       this.stopAllSpeechRecognition();
-      this._activeRouteIdentity = null;
-      this.stopSpeechOutputBridge();
+      this._activeCommandRouteIdentity = null;
+      this.stopSpeechPlaybackBridge();
       this.stopVoiceControlBridge('disposed');
       this._grantedCapabilities.clear();
       HOST_DECLARED_COMMANDS.set(this, new Set());
@@ -4266,11 +3351,7 @@
       try { this._audioHost?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] audio host dispose failed:`, error); }
       this._disposeLogger();
-      if (preservedLogDrain) {
-        void preservedLogDrain.finally(() => this._disposeLogTransport());
-      } else {
-        this._disposeLogTransport();
-      }
+      this._disposeLogTransport();
     }
   }
 
@@ -4279,15 +3360,16 @@
     const capabilityProviders = HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null;
     let trustedAvatarHost = null;
     if (typeof capabilityProviders?.avatarHostFactory === 'function') {
+      const windowImpl = options.windowImpl || window;
       trustedAvatarHost = capabilityProviders.avatarHostFactory(Object.freeze({
-        windowImpl: options.windowImpl || window,
-        documentImpl: (options.windowImpl || window).document,
-        fetchImpl: options.fetchImpl || (options.windowImpl || window).fetch?.bind(options.windowImpl || window),
+        windowImpl,
+        documentImpl: windowImpl.document,
+        fetchImpl: options.fetchImpl || windowImpl.fetch?.bind(windowImpl),
       }));
     }
     return new NekoMiniGameSameOriginHost({
       ...options,
-      // Deliberately overwrite any caller-provided values after the spread.
+      // Deliberately overwrite any caller-provided renderer after the spread.
       avatarHost: undefined,
       trustedAvatarHost,
       launchRegistration: HOST_BOOTSTRAP.registrations.get(gameType) || null,

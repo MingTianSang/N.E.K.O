@@ -8,8 +8,6 @@ function assert(condition, message) {
 
 async function main() {
   const calls = [];
-  const hostLocaleSubscribers = new Set();
-  let hostLocaleUnsubscribeCount = 0;
   let voiceOptions = null;
   let voiceStopped = 0;
   let disposed = 0;
@@ -19,15 +17,12 @@ async function main() {
   let mountedAvatarConfig = null;
   const handshakeRequests = [];
   const protocolMessages = [];
+  const commandRequests = [];
   const voiceRequests = [];
   let controlBridgeOptions = null;
   let controlBridgeStopped = 0;
   let protocolPendingMode = false;
   const protocolPending = new Set();
-  const commandRequests = [];
-  let commandPendingMode = false;
-  let commandResponseOverride = null;
-  const commandPending = new Set();
   let dialoguePendingMode = false;
   let authorDialogueControl = { stance: 'press' };
   const dialoguePending = new Set();
@@ -60,18 +55,6 @@ async function main() {
           ...request.manifest.requiredCapabilities,
           ...request.manifest.optionalCapabilities,
         ],
-        locale: { language: 'zh-TW', revision: 7 },
-      };
-    },
-    subscribeHostLocale(listener) {
-      hostLocaleSubscribers.add(listener);
-      listener({ language: 'zh-TW', revision: 7 });
-      let active = true;
-      return () => {
-        if (!active) return;
-        active = false;
-        hostLocaleSubscribers.delete(listener);
-        hostLocaleUnsubscribeCount += 1;
       };
     },
     configureLogger: (options) => calls.push(['configure', options]),
@@ -142,26 +125,9 @@ async function main() {
       }
       return { ok: true, accepted: true };
     },
-    executeGameCommand(name, envelope, options = {}) {
+    executeGameCommand: async (name, envelope, options = {}) => {
       commandRequests.push({ name, envelope, options });
-      if (!commandPendingMode) {
-        return Promise.resolve(commandResponseOverride || {
-          ok: true,
-          echo: envelope.payload.text,
-        });
-      }
-      return new Promise((resolve, reject) => {
-        const entry = { resolve, reject, signal: options.signal };
-        commandPending.add(entry);
-        const rejectOnAbort = () => {
-          commandPending.delete(entry);
-          const error = new Error('aborted');
-          error.name = 'AbortError';
-          reject(error);
-        };
-        if (options.signal?.aborted) rejectOnAbort();
-        else options.signal?.addEventListener('abort', rejectOnAbort, { once: true });
-      });
+      return { ok: true, echo: envelope.payload.text };
     },
     startGameControlBridge(options) {
       controlBridgeOptions = options;
@@ -178,9 +144,6 @@ async function main() {
         ok: true,
         action,
         sdk_route_instance_id: options.sdkRouteInstanceId || '',
-        ...(action === 'handoff' && Number.isSafeInteger(options.handoffIntentEpoch)
-          ? { ordinary_voice_intent_epoch: options.handoffIntentEpoch }
-          : {}),
       };
     },
     stopVoiceControlBridge() { voiceStopped += 1; },
@@ -189,7 +152,7 @@ async function main() {
         name: name || 'SDK Neko',
         model: { type: 'mmd', path: '/models/sdk-neko.pmx' },
         rendererAvailable: true,
-        prompt: 'must-not-cross-sdk-boundary',
+        privatePrompt: 'must-not-cross-sdk-boundary',
       };
     },
     async listAvatarCharacters() { return ['SDK Neko', 'Second Neko']; },
@@ -279,10 +242,7 @@ async function main() {
         'round:input': {
           request: {
             type: 'object',
-            properties: {
-              text: { type: 'string', minLength: 1, maxLength: 1800000 },
-              note: { type: 'string', maxLength: 1800000 },
-            },
+            properties: { text: { type: 'string', minLength: 1, maxLength: 1800000 } },
             required: ['text'],
           },
           response: {
@@ -314,50 +274,6 @@ async function main() {
     'host handshake did not include the supported protocol');
   assert(game.host.version === 'test-host-1.2.3', 'negotiated host version was not exposed');
   assert(game.host.registration.mode === 'registered', 'registered identity was not exposed');
-  assert(Object.isFrozen(game.locale) && Object.isFrozen(game.locale.current),
-    'host locale facade or its initial snapshot was mutable');
-  assert(game.locale.current.language === 'zh-TW' && game.locale.current.revision === 7,
-    'the negotiated host locale was not exposed');
-  assert(hostLocaleSubscribers.size === 1,
-    'the SDK did not subscribe to late trusted-host locale updates');
-  const localeEvents = [];
-  const unsubscribeLocale = game.locale.onChange((value) => localeEvents.push(value));
-  const publishHostLocale = (value) => {
-    for (const listener of Array.from(hostLocaleSubscribers)) listener(value);
-  };
-  publishHostLocale({ language: 'en', revision: 7 });
-  publishHostLocale({ language: 'ru', revision: 6 });
-  publishHostLocale({ language: 'x'.repeat(17), revision: 8 });
-  publishHostLocale({ language: 'en-US', revision: 8 });
-  publishHostLocale({ language: 'en', revision: Number.MAX_SAFE_INTEGER + 1 });
-  assert(localeEvents.length === 0
-    && game.locale.current.language === 'zh-TW'
-    && game.locale.current.revision === 7,
-  'invalid, duplicate, or out-of-order host locale updates were accepted');
-  publishHostLocale({ language: 'ja', revision: 8 });
-  assert(localeEvents.length === 1
-    && localeEvents[0] === game.locale.current
-    && Object.isFrozen(localeEvents[0]),
-  'a valid late host locale update was not delivered as the immutable current snapshot');
-  publishHostLocale({ language: 'ja', revision: 9 });
-  assert(localeEvents.length === 1 && game.locale.current.revision === 9,
-    'a duplicate language emitted an event or failed to advance the trusted revision');
-  publishHostLocale({ language: 'zh-CN', revision: 9 });
-  assert(localeEvents.length === 1 && game.locale.current.language === 'ja',
-    'an update that reused the current revision changed the locale');
-  publishHostLocale({ language: 'zh-CN', revision: 10 });
-  assert(localeEvents.length === 2 && game.locale.current.language === 'zh-CN',
-    'a newer host locale update was not delivered');
-  unsubscribeLocale();
-  publishHostLocale({ language: 'es', revision: 11 });
-  assert(localeEvents.length === 2 && game.locale.current.language === 'es',
-    'locale listener unsubscribe stopped state refresh or still delivered callbacks');
-  const boundedLocaleListeners = Array.from({ length: 32 }, () => game.locale.onChange(() => {}));
-  let localeListenerLimitError = null;
-  try { game.locale.onChange(() => {}); }
-  catch (error) { localeListenerLimitError = error; }
-  assert(localeListenerLimitError?.code === 'busy', 'host locale listener growth was not bounded');
-  boundedLocaleListeners.forEach((unsubscribe) => unsubscribe());
   assert(Object.isFrozen(game.manifest.contracts.events['round-started']),
     'manifest contract schemas were not immutable');
   assert(game.controls.connected, 'declared control bridge was not connected');
@@ -526,78 +442,19 @@ async function main() {
   assert(started.data.payload.mode === 'default', 'runtime start did not use the host transport');
   const routeInstanceId = started.data.payload.sdk_route_instance_id;
   assert(game.runtime.session.routeInstanceId === routeInstanceId,
-    'runtime did not expose the active route generation for legacy custom RPC fencing');
-  assert(game.commands.declared.join(',') === 'round:input',
-    'declared game commands were not exposed');
+    'runtime did not expose the active route generation');
   const commandResult = await game.commands.execute('round:input', { text: 'hello' });
-  assert(commandResult.ok && commandResult.data.echo === 'hello' && Object.isFrozen(commandResult.data),
-    'game command response was not validated and frozen');
+  assert(commandResult.ok === true
+    && commandResult.data.echo === 'hello'
+    && Object.isFrozen(commandResult.data),
+  'game command response was not validated and frozen');
   assert(commandRequests.at(-1).envelope.sessionId === 'sdk-test-session'
-    && commandRequests.at(-1).envelope.routeInstanceId === routeInstanceId
-    && commandRequests.at(-1).envelope.sdk_route_instance_id === routeInstanceId,
-  'game command did not bind the active route identity');
-  const commandCountBeforeInvalid = commandRequests.length;
-  let invalidCommandRequestError = null;
-  try { await game.commands.execute('round:input', { text: 'hello', undeclared: true }); }
-  catch (error) { invalidCommandRequestError = error; }
-  assert(invalidCommandRequestError?.code === 'invalid_contract'
-    && commandRequests.length === commandCountBeforeInvalid,
-  'an invalid command request reached the host');
-  commandResponseOverride = { ok: true, echo: 7 };
-  let invalidCommandResponseError = null;
-  try { await game.commands.execute('round:input', { text: 'bad response' }); }
-  catch (error) { invalidCommandResponseError = error; }
-  commandResponseOverride = null;
-  assert(invalidCommandResponseError?.code === 'invalid_contract',
-    'an invalid command response escaped SDK schema validation');
-  const largeCommandText = 'x'.repeat(300 * 1024);
-  const largeCommandResult = await game.commands.execute('round:input', { text: largeCommandText });
-  assert(largeCommandResult.data.echo.length === largeCommandText.length,
-    'the independent command budget still used the ordinary 256 KiB contract limit');
-  let oversizedCommandError = null;
-  try {
-    await game.commands.execute('round:input', {
-      text: 'x'.repeat(1100 * 1024),
-      note: 'y'.repeat(1100 * 1024),
-    });
-  } catch (error) { oversizedCommandError = error; }
-  assert(oversizedCommandError?.code === 'invalid_contract',
-    'a command request larger than 2 MiB escaped its independent payload bound');
-  let undeclaredCommandError = null;
-  try { await game.commands.execute('round:missing', { text: 'no' }); }
-  catch (error) { undeclaredCommandError = error; }
-  assert(undeclaredCommandError?.code === 'invalid_contract',
-    'an undeclared game command reached the host');
-  let commandTimeoutLimitError = null;
-  try {
-    await game.commands.execute('round:input', { text: 'too long' }, { timeoutMs: 360001 });
-  } catch (error) { commandTimeoutLimitError = error; }
-  assert(commandTimeoutLimitError?.code === 'invalid_request',
-    'a command timeout beyond six minutes was accepted');
-  commandPendingMode = true;
-  const commandAbortController = new AbortController();
-  const abortedCommand = game.commands.execute(
-    'round:input',
-    { text: 'abort me' },
-    { signal: commandAbortController.signal },
-  ).then(() => null, (error) => error);
-  await new Promise((resolve) => setImmediate(resolve));
-  commandAbortController.abort();
-  const abortedCommandError = await abortedCommand;
-  assert(abortedCommandError?.code === 'cancelled'
-    && game.commands.pendingCount === 0
-    && commandPending.size === 0,
-  'an aborted game command did not cancel and release its pending slot');
-  const timedOutCommandError = await game.commands.execute(
-    'round:input',
-    { text: 'time out' },
-    { timeoutMs: 250 },
-  ).then(() => null, (error) => error);
-  assert(timedOutCommandError?.code === 'timeout'
-    && game.commands.pendingCount === 0
-    && commandPending.size === 0,
-  'a timed-out game command did not abort and release its pending slot');
-  commandPendingMode = false;
+    && commandRequests.at(-1).envelope.routeInstanceId === routeInstanceId,
+  'game command was not bound to the active runtime identity');
+  const wideCommandText = 'x'.repeat(300 * 1024);
+  const wideCommandResult = await game.commands.execute('round:input', { text: wideCommandText });
+  assert(wideCommandResult.data.echo.length === wideCommandText.length,
+    'the command payload budget still used the ordinary 256 KiB contract limit');
   // Validation and delivery, now that a route actually exists.
   controlBridgeOptions.onControl({
     protocolVersion: '1',
@@ -676,27 +533,6 @@ async function main() {
   assert(voiceState.action === 'toggle', 'voice toggle did not use the host transport');
   assert(voiceRequests.at(-1).options.sdkRouteInstanceId === routeInstanceId,
     'voice control was not bound to the active route generation');
-  const handoffState = await game.voice.handoff({ timeoutMs: 8765, handoffIntentEpoch: 17 });
-  assert(handoffState.action === 'handoff', 'voice handoff did not use the host transport');
-  assert(handoffState.ordinary_voice_intent_epoch === 17,
-    'voice handoff did not expose the returned ordinary-voice intent fence');
-  assert(voiceRequests.at(-1).action === 'handoff'
-    && voiceRequests.at(-1).options.timeoutMs === 8765
-    && voiceRequests.at(-1).options.handoffIntentEpoch === 17
-    && voiceRequests.at(-1).options.sdkRouteInstanceId === routeInstanceId,
-  'voice handoff did not preserve its options and active route generation');
-  const sdkTypes = fs.readFileSync(
-    path.resolve(__dirname, '../../static/game/sdk/neko-minigame-sdk.d.ts'),
-    'utf8',
-  );
-  assert(sdkTypes.includes('interface VoiceHandoffOptions extends RequestOptions')
-    && sdkTypes.includes('handoffIntentEpoch?: number;')
-    && sdkTypes.includes('interface VoiceControlState')
-    && sdkTypes.includes('readonly ordinary_voice_intent_epoch?: number;')
-    && sdkTypes.includes('handoff(options?: VoiceHandoffOptions): Promise<VoiceControlState>;')
-    && sdkTypes.includes('onState(handler: (state: VoiceControlState) => void): () => void;')
-    && !sdkTypes.includes('handoff(options?: VoiceHandoffOptions): Promise<unknown>;'),
-  'the public SDK types omitted the typed voice state or ordinary-voice intent fence');
   const dialogue = await game.dialogue.request({ event: 'checkpoint' });
   assert(dialogue.data.payload.event === 'checkpoint', 'dialogue request did not use the host transport');
   assert(dialogue.data.payload.session_id === 'sdk-test-session',
@@ -864,16 +700,16 @@ async function main() {
   const currentAvatarCharacter = await game.avatar.getCurrentCharacter();
   const namedAvatarCharacter = await game.avatar.getCharacter('Second Neko');
   const avatarCharacters = await game.avatar.listCharacters();
-  assert(Object.isFrozen(currentAvatarCharacter)
-    && Object.isFrozen(currentAvatarCharacter.model)
-    && currentAvatarCharacter.name === 'SDK Neko'
+  assert(currentAvatarCharacter.name === 'SDK Neko'
     && currentAvatarCharacter.model.type === 'mmd'
-    && currentAvatarCharacter.prompt === undefined,
-  'Avatar character descriptor was not projected and frozen');
+    && currentAvatarCharacter.privatePrompt === undefined
+    && Object.isFrozen(currentAvatarCharacter)
+    && Object.isFrozen(currentAvatarCharacter.model),
+  'avatar discovery did not project and freeze the host descriptor');
   assert(namedAvatarCharacter.name === 'Second Neko'
     && Object.isFrozen(avatarCharacters)
     && avatarCharacters.join(',') === 'SDK Neko,Second Neko',
-  'Avatar character facade did not use the host provider');
+  'avatar discovery facade did not use the host transport');
   const boundedAvatars = [avatar];
   for (let index = 1; index < 8; index += 1) {
     boundedAvatars.push(await game.avatar.mount({
@@ -933,26 +769,6 @@ async function main() {
   assert(listenerLimitError?.code === 'busy', 'listener growth was not bounded');
   stateListeners.forEach((unsubscribe) => unsubscribe());
 
-  commandPendingMode = true;
-  const pendingCommandRequests = Array.from({ length: 8 }, (_, index) => (
-    game.commands.execute('round:input', { text: `pending-${index}` })
-      .then(() => null, (error) => error)
-  ));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert(game.commands.pendingCount === 8 && commandPending.size === 8,
-    'game command pending requests were not tracked');
-  let commandBusyError = null;
-  try { await game.commands.execute('round:input', { text: 'ninth' }); }
-  catch (error) { commandBusyError = error; }
-  assert(commandBusyError?.code === 'busy', 'game command pending request growth was not bounded');
-  await game.runtime.end({ reason: 'command-cancel-test' });
-  const pendingCommandErrors = await Promise.all(pendingCommandRequests);
-  assert(pendingCommandErrors.every((error) => error?.code === 'cancelled'),
-    'runtime end did not cancel in-flight game commands');
-  assert(game.commands.pendingCount === 0 && commandPending.size === 0,
-    'cancelled game commands remained resident');
-  commandPendingMode = false;
-
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })
@@ -974,56 +790,11 @@ async function main() {
   assert(voiceStopped === 0, 'SDK duplicated transport-owned voice cleanup');
   assert(controlBridgeStopped === 0, 'SDK duplicated transport-owned control cleanup');
   assert(disposed === 1, 'dispose did not release the injected transport');
-  const disposedLocaleSnapshot = game.locale.current;
-  assert(hostLocaleSubscribers.size === 0 && hostLocaleUnsubscribeCount === 1,
-    'client disposal did not tear down the host locale subscription');
-  publishHostLocale({ language: 'ru', revision: 12 });
-  assert(game.locale.current === disposedLocaleSnapshot,
-    'a disposed client accepted a late host locale update');
   assert(avatarDisposed === 8, 'dispose did not release active avatar controllers');
   let disposedError = null;
   try { await game.voice.toggle(); }
   catch (error) { disposedError = error; }
   assert(disposedError?.code === 'disposed', 'calls after dispose did not fail predictably');
-
-  for (const [localeValue, description] of [
-    [null, 'explicit null snapshot'],
-    [{ language: 'x'.repeat(17), revision: 1 }, 'over-long language'],
-    [{ language: 'en-US', revision: 1 }, 'unsupported language alias'],
-    [{ language: 'en', revision: '1' }, 'non-numeric revision'],
-    [{ language: 'en', revision: Number.MAX_SAFE_INTEGER + 1 }, 'unsafe revision'],
-  ]) {
-    let invalidLocaleDisposed = 0;
-    let invalidLocaleError = null;
-    try {
-      await window.NekoMiniGame.connect({
-        id: `invalid-locale-${description.replace(/\s+/g, '-')}`,
-        version: '1.0.0',
-        requiredCapabilities: ['logging'],
-      }, {
-        transport: {
-          logger,
-          async connectGame(request) {
-            return {
-              accepted: true,
-              protocolVersion: '1',
-              hostVersion: 'invalid-locale-host',
-              registration: {
-                mode: 'development',
-                gameId: request.manifest.id,
-                version: request.manifest.version,
-              },
-              grantedCapabilities: ['logging'],
-              locale: localeValue,
-            };
-          },
-          dispose() { invalidLocaleDisposed += 1; },
-        },
-      });
-    } catch (error) { invalidLocaleError = error; }
-    assert(invalidLocaleError?.code === 'invalid_handshake' && invalidLocaleDisposed === 1,
-      `a host handshake accepted an ${description} locale snapshot`);
-  }
 
   let partialVoiceCleanup = 0;
   const optionalVoiceUnavailable = await window.NekoMiniGame.connect({
@@ -1188,9 +959,6 @@ async function main() {
   });
   assert(developmentGame.host.registration.mode === 'development',
     'host-approved development identity was not preserved');
-  assert(developmentGame.locale.current.language === 'en'
-    && developmentGame.locale.current.revision === 0,
-  'a legacy host without locale metadata did not receive the safe English fallback');
   developmentGame.dispose();
 
   let hostProtocolError = null;

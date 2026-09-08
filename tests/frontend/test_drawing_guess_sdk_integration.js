@@ -21,23 +21,11 @@ async function main() {
   const bootstrapPath = path.join(sdkDir, 'neko-minigame-same-origin-bootstrap.js');
   const sdkPath = path.join(sdkDir, 'neko-minigame-sdk.js');
   const calls = [];
-  let speechTapReadyDelivered = false;
-  let speechDispatchedBeforeTapReady = false;
   let trustedAvatarFactoryCalls = 0;
   let trustedAvatarMounts = 0;
   let forgedAvatarMounts = 0;
-  let trustedWindowCloseCalls = 0;
-  let forgedWindowCloseCalls = 0;
   let controllerVoiceActive = false;
   const voiceControlRequests = [];
-  const trustedNekoHost = {
-    closeWindow() {
-      assert(this === trustedNekoHost,
-        'the captured window-close provider lost its trusted receiver');
-      trustedWindowCloseCalls += 1;
-      return { ok: true };
-    },
-  };
   const localStorageValues = new Map();
   const localStorageMock = {
     get length() { return localStorageValues.size; },
@@ -77,7 +65,6 @@ async function main() {
       });
     }
     if (String(url).endsWith('/speak')) {
-      if (!speechTapReadyDelivered) speechDispatchedBeforeTapReady = true;
       return jsonResponse({
         ok: true,
         audio_sent: true,
@@ -95,43 +82,6 @@ async function main() {
     return jsonResponse({ ok: true });
   };
 
-  const speechTapSockets = [];
-  class SpeechTapWebSocketMock {
-    constructor(url) {
-      this.url = String(url);
-      this.readyState = 0;
-      this.closed = false;
-      this.sent = [];
-      speechTapSockets.push(this);
-      // The host installs handlers after construction. Deliver readiness on a
-      // later task so the integration exercises its bounded first-speech wait.
-      setTimeout(() => {
-        if (this.closed) return;
-        this.readyState = 1;
-        this.onopen?.({ type: 'open' });
-        const parsed = new URL(this.url);
-        speechTapReadyDelivered = true;
-        this.onmessage?.({
-          data: JSON.stringify({
-            type: 'speech_tap_ready',
-            ok: true,
-            game_type: 'drawing_guess',
-            session_id: parsed.searchParams.get('session_id'),
-          }),
-        });
-      }, 0);
-    }
-    send(data) { this.sent.push(data); }
-    close(code = 1000, reason = '') {
-      if (this.closed) return;
-      this.closed = true;
-      this.readyState = 3;
-      this.closeCode = code;
-      this.closeReason = reason;
-      this.onclose?.({ code, reason });
-    }
-  }
-
   const launchNode = {
     textContent: JSON.stringify({
       registrations: {
@@ -143,7 +93,7 @@ async function main() {
           version: '0.1.0',
           allowedCapabilities: [
             'runtime', 'logging', 'voice-input', 'speech-output', 'avatar-renderer', 'memory',
-            'window-control', 'storage',
+            'storage',
           ],
           commandRoutes: {
             'round:start': {
@@ -271,8 +221,6 @@ async function main() {
         return values;
       },
     },
-    WebSocket: SpeechTapWebSocketMock,
-    nekoHost: trustedNekoHost,
     appState: {
       pendingAudioChunkMetaQueue: [],
     },
@@ -332,16 +280,6 @@ async function main() {
 
   vm.runInThisContext(fs.readFileSync(bootstrapPath, 'utf8'), { filename: bootstrapPath });
   await windowMock.nekoMiniGameSameOriginHostReady;
-  trustedNekoHost.closeWindow = () => {
-    forgedWindowCloseCalls += 1;
-    return { ok: true };
-  };
-  windowMock.nekoHost = {
-    closeWindow() {
-      forgedWindowCloseCalls += 1;
-      return { ok: true };
-    },
-  };
   vm.runInThisContext(fs.readFileSync(sdkPath, 'utf8'), { filename: sdkPath });
 
   const createHost = await windowMock.nekoMiniGameSameOriginHostReady;
@@ -363,12 +301,6 @@ async function main() {
       getCharacter() { return null; },
       listCharacters() { return []; },
     },
-    capabilityProviders: {
-      windowClose() {
-        forgedWindowCloseCalls += 1;
-        return { ok: true };
-      },
-    },
   });
   const game = await windowMock.NekoMiniGame.connect({
     id: 'drawing-guess',
@@ -377,7 +309,7 @@ async function main() {
     requiredCapabilities: [
       'runtime', 'logging', 'speech-output', 'avatar-renderer', 'memory',
     ],
-    optionalCapabilities: ['voice-input', 'window-control', 'storage'],
+    optionalCapabilities: ['voice-input', 'storage'],
     contracts: {
       commands: {
         'round:start': {
@@ -418,7 +350,7 @@ async function main() {
   }, { transport, windowImpl: windowMock, documentImpl: windowMock.document });
 
   assert(game.capabilities.granted.join(',')
-    === 'runtime,logging,speech-output,avatar-renderer,memory,voice-input,window-control,storage',
+    === 'runtime,logging,speech-output,avatar-renderer,memory,voice-input,storage',
     `unexpected drawing capability grant: ${game.capabilities.granted.join(',')}`);
   assert(trustedAvatarFactoryCalls === 1 && forgedAvatarMounts === 0,
     'the game replaced the bootstrap-owned Avatar provider');
@@ -429,19 +361,8 @@ async function main() {
   assert(game.host.registration.gameId === 'drawing-guess'
     && game.host.registration.mode === 'development',
   'the public handshake exposed the wrong drawing identity');
-  assert(Object.isFrozen(game.locale)
-    && Object.isFrozen(game.locale.current)
-    && game.locale.current.language === 'zh-CN',
-  'the drawing client did not expose the trusted zh-CN host locale');
-
-  const windowClose = await game.window.close({ timeoutMs: 1000 });
-  assert(windowClose.ok === true
-    && windowClose.data.closed === true
-    && Object.isFrozen(game.window)
-    && Object.isFrozen(windowClose.data)
-    && trustedWindowCloseCalls === 1
-    && forgedWindowCloseCalls === 0,
-  'drawing window.close did not use the provider captured before game code');
+  assert(game.locale === undefined && game.window === undefined,
+    'drawing integration reintroduced removed locale/window SDK facades');
 
   const storageKey = 'settings/integration-probe';
   const storageValue = { colorHistory: ['#112233', '#abcdef'] };
@@ -478,7 +399,6 @@ async function main() {
     event: {
       kind: 'forged-memory-policy',
       game_memory_enabled: false,
-      i18n_language: 'ru',
     },
   }, { timeoutMs: 1000 });
   assert(started.ok && game.runtime.state === 'running',
@@ -490,14 +410,13 @@ async function main() {
     `the public id did not use the trusted route alias: ${startCall?.url}`);
   assert(startCall.body.session_id === 'drawing-sdk-session'
     && startCall.body.sdk_route_instance_id
+    && startCall.body.game_type === 'drawing_guess'
     && startCall.body.game_memory_enabled === true
     && startCall.body.game_memory_archive_enabled === true
     && startCall.body.externalInputTakeover === false
     && startCall.body.external_input_takeover === false
-    && startCall.body.i18n_language === 'zh-CN'
     && startCall.body.event.kind === 'forged-memory-policy'
-    && !Object.hasOwn(startCall.body.event, 'game_memory_enabled')
-    && !Object.hasOwn(startCall.body.event, 'i18n_language'),
+    && !Object.hasOwn(startCall.body.event, 'game_memory_enabled'),
   'the integrated host did not inject trusted route identity');
 
   const voiceStates = [];
@@ -532,21 +451,8 @@ async function main() {
     && voiceTranscripts[0].text === '这是语音输入'
     && voiceTranscripts[0].requestId === 'drawing-voice-transcript-1',
   'drawing voice transcript was not normalized through the SDK bridge');
-  windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
-    detail: {
-      type: 'game_voice_control_error',
-      message_id: 'drawing-voice-error-message',
-      game_type: 'drawing_guess',
-      session_id: 'drawing-sdk-session',
-      sdk_route_instance_id: startCall.body.sdk_route_instance_id,
-      code: 'not-allowed',
-      reason: 'not-allowed',
-    },
-  }));
-  assert(voiceErrors.length === 1
-    && voiceErrors[0].error.code === 'not-allowed'
-    && voiceErrors[0].source === 'same_document',
-  'drawing voice control errors did not reach voice.onError');
+  assert(voiceErrors.length === 0,
+    'the retained query/start/stop/toggle voice bridge emitted a spurious error');
   const voiceStopped = await game.voice.stop({ timeoutMs: 1000 });
   assert(voiceStopped.ok === true && voiceStopped.active === false,
     'drawing voice.stop did not release the active SDK route microphone');
@@ -584,12 +490,9 @@ async function main() {
     sdk_route_instance_id: 'forged-generation',
     game_memory_enabled: false,
     game_memory_archive_enabled: false,
-    i18n_language: 'ru',
-    language: 'ru',
     event: {
       kind: 'forged-command-policy',
       game_memory_enabled: false,
-      i18n_language: 'ru',
     },
   }, { timeoutMs: 1200 });
   assert(commandResult.ok === true
@@ -608,12 +511,9 @@ async function main() {
     && commandCall.body.sdk_route_instance_id !== 'forged-generation'
     && commandCall.body.game_memory_enabled === true
     && commandCall.body.game_memory_archive_enabled === true
-    && commandCall.body.i18n_language === 'zh-CN'
-    && !Object.hasOwn(commandCall.body, 'language')
     && commandCall.body.event.kind === 'forged-command-policy'
-    && !Object.hasOwn(commandCall.body.event, 'game_memory_enabled')
-    && !Object.hasOwn(commandCall.body.event, 'i18n_language'),
-  'the host did not overwrite forged command identity, memory policy, or locale');
+    && !Object.hasOwn(commandCall.body.event, 'game_memory_enabled'),
+  'the host did not overwrite forged command identity or memory policy');
 
   const reviewImage = 'data:image/jpeg;base64,YWktZHJhd2luZw==';
   const reviewResult = await game.commands.execute('round:ai-draw-review', {
@@ -629,8 +529,7 @@ async function main() {
     && reviewCall.body.game_type === 'drawing_guess'
     && reviewCall.body.session_id === 'drawing-sdk-session'
     && reviewCall.body.lanlan_name === 'SDK Neko'
-    && reviewCall.body.sdk_route_instance_id === startCall.body.sdk_route_instance_id
-    && reviewCall.body.i18n_language === 'zh-CN',
+    && reviewCall.body.sdk_route_instance_id === startCall.body.sdk_route_instance_id,
   'the drawing review image did not use its declared SDK route and trusted identity');
 
   const speechStates = [];
@@ -652,13 +551,8 @@ async function main() {
     && speakCall.body.session_id === 'drawing-sdk-session'
     && speakCall.body.game_type === 'drawing_guess'
     && speakCall.body.sdk_route_instance_id === startCall.body.sdk_route_instance_id
-    && speakCall.body.suppress_primary_audio === true
     && speakCall.body.wait_for_audio_completion === true,
   'speech output did not retain the trusted active route identity');
-  assert(!speechDispatchedBeforeTapReady
-    && speechTapSockets[0]?.url.includes('/api/game/drawing_guess/speech/ws?')
-    && speechTapSockets[0]?.url.includes(`sdk_route_instance_id=${startCall.body.sdk_route_instance_id}`),
-  'drawing speech was dispatched before its trusted route-bound audio tap was ready');
   windowMock.dispatchEvent({
     type: 'neko-speech-playback-state',
     detail: {
@@ -682,12 +576,11 @@ async function main() {
     phase: 'running',
   });
   await game.logger.flush();
-  const firstLogEnable = calls.find((call) => call.url === '/api/game/logs/enable');
   const firstLog = calls.find((call) => call.url === '/api/game/logs');
-  assert(firstLogEnable?.body.session_id === 'drawing-sdk-session'
-    && firstLogEnable.body.game_type === 'drawing_guess'
-    && firstLog?.body.event === 'integration_started',
-  'drawing logging did not use the trusted route alias or enabled backend session');
+  assert(firstLog?.body.session_id === 'drawing-sdk-session'
+    && firstLog.body.game_type === 'drawing_guess'
+    && firstLog.body.event === 'integration_started',
+  'drawing logging did not use the trusted route alias or active session');
 
   const ended = await game.runtime.end({ reason: 'integration-test' }, { timeoutMs: 1000 });
   assert(ended.ok && game.runtime.state === 'ended',
@@ -704,10 +597,7 @@ async function main() {
   assert(sameSessionRestart.ok && game.runtime.session.id === 'drawing-sdk-session',
     'same-session runtime restart did not preserve its identity');
   const sameSessionLogEnabled = await game.logger.enableAfterRuntimeStart();
-  const sameSessionLogEnableCalls = calls.filter((call) => call.url === '/api/game/logs/enable');
-  assert(sameSessionLogEnabled?.ok === true
-    && sameSessionLogEnableCalls.length === 2
-    && sameSessionLogEnableCalls[1].body.session_id === 'drawing-sdk-session',
+  assert(sameSessionLogEnabled?.ok === true,
   'runtime end left the same-session backend logging gate incorrectly enabled');
   await game.runtime.end({ reason: 'integration-same-session-restart' }, { timeoutMs: 1000 });
 
@@ -732,16 +622,10 @@ async function main() {
   const resetStartCall = routeStartCalls[routeStartCalls.length - 1];
   assert(resetStartCall.body.session_id === resetSession.id
     && resetStartCall.body.game_memory_enabled === false
-    && resetStartCall.body.game_memory_archive_enabled === false
-    && resetStartCall.body.i18n_language === 'zh-CN',
-  'the reset runtime accepted forged memory enablement or lost the trusted locale');
+    && resetStartCall.body.game_memory_archive_enabled === false,
+  'the reset runtime accepted forged memory enablement');
   const secondLogEnabled = await game.logger.enableAfterRuntimeStart();
   assert(secondLogEnabled?.ok === true, 'new runtime session reused the old local logging gate');
-  const logEnableCalls = calls.filter((call) => call.url === '/api/game/logs/enable');
-  assert(logEnableCalls.length === 3
-    && logEnableCalls[2].body.session_id === resetSession.id
-    && logEnableCalls[2].body.session_id !== logEnableCalls[0].body.session_id,
-  'new runtime session did not create its own backend logging session');
   await game.runtime.end({ reason: 'integration-restart-test' }, { timeoutMs: 1000 });
   game.dispose();
   assert(launchNode.removed === true, 'the trusted drawing launch registration was not consumed');

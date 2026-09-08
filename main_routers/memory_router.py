@@ -27,21 +27,47 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import os
 import re
 import json
+from contextlib import suppress
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from utils.character_name import validate_character_name
+from pydantic import BaseModel, Field
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
+    is_legacy_vector_store_dir,
     character_memory_exists,
-    rename_character_memory_storage,
+    iter_character_memory_roots,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.file_utils import atomic_write_json_async
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
+# merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
+# 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
+from utils.recent_file import (
+    RecentFileDeletedError,
+    capture_recent_generation,
+    get_recent_pending_unlocked,
+    read_recent_text_unlocked,
+    recent_file_access,
+    set_recent_pending_unlocked,
+    write_recent_payload_unlocked,
+)
 from fastapi.responses import JSONResponse
+from memory.external_markdown_import import (
+    ExternalMemoryImportError,
+    MAX_TOTAL_BYTES,
+    batch_daily_fragments,
+    build_import_candidates,
+    collect_markdown_files,
+)
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -51,6 +77,250 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+REPETITION_INSIGHT_LANGUAGES = frozenset(
+    {"en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"}
+)
+
+
+class RepetitionInsightsRequest(BaseModel):
+    character_name: str
+    language: str
+    assistant_message_limit: int = Field(default=100, ge=3, le=100)
+    # Kept only for compatibility with older clients. Message-scoped reports
+    # no longer use this value.
+    effect_days: Literal[7, 30, 90] = 30
+
+
+class RepetitionEffectsResetRequest(BaseModel):
+    character_name: str
+
+
+def _empty_repetition_effects(days: int) -> dict:
+    return {
+        "schema_version": "anti-repeat-effects/v1",
+        "source_available": False,
+        "started_at": 0.0,
+        "period_days": days,
+        "totals": {
+            "soft_hint_injected": 0,
+            "detected": 0,
+            "regen_triggered": 0,
+            "regen_guard_passed": 0,
+            "blocked_delivery": 0,
+            "break_reminder_suppressed": 0,
+            "abandoned_user_interaction": 0,
+            "unattributed": 0,
+        },
+        "reason_counts": {
+            "bm25": 0,
+            "literal_similarity": 0,
+            "unanswered_repeat": 0,
+        },
+        "bm25": {
+            "pair_count": 0,
+            "average_before": 0.0,
+            "average_after": 0.0,
+            "reduction_ratio": 0.0,
+        },
+        "patterns": [],
+    }
+
+
+def _empty_message_scoped_repetition_effects(limit: int) -> dict:
+    effects = _empty_repetition_effects(30)
+    effects.pop("period_days", None)
+    effects.update(
+        {
+            "scope_type": "assistant_messages",
+            "assistant_message_limit": limit,
+            "linked_message_count": 0,
+        }
+    )
+    return effects
+
+
+def _is_safe_containment_phrase(language: str, phrase: str) -> bool:
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) >= 4
+    return len(phrase) >= 4 and len(phrase.split()) >= 2
+
+
+def _is_runtime_detector_signature(language: str, phrase: str, reasons: object) -> bool:
+    if not isinstance(reasons, dict) or not any(
+        int(reasons.get(reason, 0)) > 0 for reason in ("bm25", "unanswered_repeat")
+    ):
+        return False
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) in {2, 3}
+    return len(phrase) >= 2 and len(phrase.split()) == 1
+
+
+def _repetition_association_language(language: str) -> str:
+    """Use one comparison key for legacy Simplified Chinese effect records."""
+    return "zh-CN" if language in {"zh", "zh-CN"} else language
+
+
+def _phrases_contain_each_other(language: str, left: str, right: str) -> bool:
+    left_tokens = left.split()
+    right_tokens = right.split()
+    use_token_boundaries = language in {"en", "es", "pt", "ru"} or (
+        language == "ko" and len(left_tokens) > 1 and len(right_tokens) > 1
+    )
+    if not use_token_boundaries:
+        return left in right or right in left
+
+    shorter, longer = sorted((left_tokens, right_tokens), key=len)
+    width = len(shorter)
+    return any(
+        longer[start : start + width] == shorter
+        for start in range(len(longer) - width + 1)
+    )
+
+
+def _aggregate_repetition_associations(associations: list[dict]) -> list[dict]:
+    """Fold per-pattern associations into one row per candidate.
+
+    The panel only ever reduces these to four totals plus an "any at all?"
+    test (``static/js/memory_browser.js`` at 1208 and 1461); no consumer reads
+    the per-pattern fields. Shipping one row per (candidate, pattern) pair made
+    the payload the PRODUCT of two capped lists -- 200 candidates against up to
+    1920 window patterns -- measured at 5,366 rows / 1.62 MiB at that cap, and
+    24,036 rows / 7.94 MiB for a character whose n-grams all contain one
+    another. Folding bounds it by the candidate count instead, and every
+    displayed number stays identical because the panel was summing anyway.
+
+    Capping the list instead would have been wrong: a truncated array turns
+    those sums into silently WRONG totals on the card, which is worse than a
+    large payload.
+
+    Nothing becomes unrecoverable. Associations are derived per request from
+    the mined candidates and the effects sidecar; no store and no export keeps
+    them, so restoring per-pattern detail later is a server-side change and a
+    re-run, not a migration.
+    """
+    folded: dict[tuple[str, str], dict] = {}
+    for association in associations:
+        key = (association["language"], association["normalized_phrase"])
+        row = folded.get(key)
+        if row is None:
+            row = {
+                "normalized_phrase": association["normalized_phrase"],
+                "language": association["language"],
+                # "exact" wins over "contained": the card's meaning is "the
+                # runtime has handled this phrase", and an exact hit is the
+                # stronger claim.
+                "association_type": association["association_type"],
+                "effect_pattern_count": 0,
+                "detected_count": 0,
+                "regen_triggered_count": 0,
+                "regen_guard_passed_count": 0,
+                "blocked_count": 0,
+                "residual_occurrence_count": association[
+                    "residual_occurrence_count"
+                ],
+                "residual_message_count": association["residual_message_count"],
+            }
+            folded[key] = row
+        if association["association_type"] == "exact":
+            row["association_type"] = "exact"
+        row["effect_pattern_count"] += 1
+        for field in (
+            "detected_count",
+            "regen_triggered_count",
+            "regen_guard_passed_count",
+            "blocked_count",
+        ):
+            row[field] += association[field]
+    return list(folded.values())
+
+
+def _associate_repetition_effects(
+    candidates: list,
+    patterns: list,
+) -> list[dict]:
+    associations: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        language = candidate.get("language")
+        candidate_phrase = candidate.get("normalized_phrase")
+        if not isinstance(language, str) or not isinstance(candidate_phrase, str):
+            continue
+        association_language = _repetition_association_language(language)
+        for pattern in patterns:
+            if not isinstance(pattern, dict):
+                continue
+            pattern_language = pattern.get("language")
+            if (
+                not isinstance(pattern_language, str)
+                or _repetition_association_language(pattern_language)
+                != association_language
+            ):
+                continue
+            effect_phrase = pattern.get("normalized_phrase")
+            if not isinstance(effect_phrase, str):
+                continue
+            association_type = None
+            if effect_phrase == candidate_phrase:
+                association_type = "exact"
+            elif (
+                _is_safe_containment_phrase(language, candidate_phrase)
+                and (
+                    _is_safe_containment_phrase(language, effect_phrase)
+                    or _is_runtime_detector_signature(
+                        language,
+                        effect_phrase,
+                        pattern.get("reasons"),
+                    )
+                )
+                and _phrases_contain_each_other(
+                    association_language,
+                    candidate_phrase,
+                    effect_phrase,
+                )
+            ):
+                association_type = "contained"
+            if association_type is None:
+                continue
+            associations.append(
+                {
+                    "normalized_phrase": candidate_phrase,
+                    "language": language,
+                    "effect_normalized_phrase": effect_phrase,
+                    "association_type": association_type,
+                    "detected_count": int(pattern.get("detected_count", 0)),
+                    "regen_triggered_count": int(
+                        pattern.get("regen_triggered_count", 0)
+                    ),
+                    "regen_guard_passed_count": int(
+                        pattern.get("regen_guard_passed_count", 0)
+                    ),
+                    "blocked_count": int(pattern.get("blocked_count", 0)),
+                    "residual_occurrence_count": int(
+                        candidate.get("occurrence_count", 0)
+                    ),
+                    "residual_message_count": int(candidate.get("message_count", 0)),
+                }
+            )
+    return associations
+
+
+async def _await_browser_save_transaction(coro):
+    """Finish a committed browser save before propagating request cancellation."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        try:
+            result = operation.result()
+        except BaseException as exc:
+            raise asyncio.CancelledError from exc
+        return result, True
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -73,15 +343,30 @@ def iter_recent_memory_files(base_dir: Path) -> list[str]:
 
     logical_names: set[str] = set()
 
+    # REAL entries only, on both branches. ``is_file()`` and ``is_dir()``
+    # follow links, and this list is what the insights selector and the
+    # memory browser both enumerate from -- so a link in the memory root
+    # was offered as a character and its target read from outside the root.
+    # Filtering only the caller's own directory scan left this path to
+    # re-admit it, by BOTH shapes: a linked directory and a linked
+    # recent_<name>.json.
     for flat_file in base_dir.glob('recent_*.json'):
-        if flat_file.is_file():
+        if flat_file.is_file() and not flat_file.is_symlink():
             logical_names.add(flat_file.name)
 
     for child in base_dir.iterdir():
-        if not child.is_dir():
+        if not child.is_dir() or child.is_symlink():
+            continue
+        # And not another character's vector store. This is the SECOND door
+        # into the same candidate set: filtering only the selector's own
+        # directory scan left "semantic_memory_Alice/recent.json" to come
+        # back through here as "recent_semantic_memory_Alice.json" -- the
+        # exact re-admission the symlink note above already warns about, one
+        # shape later.
+        if is_legacy_vector_store_dir(base_dir, child.name):
             continue
         recent_file = child / 'recent.json'
-        if recent_file.is_file():
+        if recent_file.is_file() and not recent_file.is_symlink():
             logical_names.add(build_recent_filename(child.name))
 
     return sorted(logical_names)
@@ -301,6 +586,530 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 logger = get_module_logger(__name__, "Main")
 
 
+@router.post('/repetition_insights')
+async def repetition_insights(request: RepetitionInsightsRequest):
+    """Run an explicit, local-only review of persisted assistant text."""
+    # The same cap the INTERNAL analysis route enforces. Without it an
+    # over-long name passed here, failed there with 400, and got remapped
+    # to "local memory analysis unavailable" -- a 503 that sends the user
+    # hunting a memory-server fault that does not exist.
+    validation = validate_character_name(
+        request.character_name,
+        allow_dots=True,
+        max_units=PROFILE_NAME_MAX_UNITS,
+    )
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    if request.language not in REPETITION_INSIGHT_LANGUAGES:
+        return JSONResponse(
+            {"success": False, "error": "unsupported analysis language"},
+            status_code=422,
+        )
+
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.config_manager import get_config_manager
+        from utils.internal_http_client import get_internal_http_client
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        # The configured KEY, not the normalized request name: they differ
+        # when a hand-edited characters.json carries padding, and reading
+        # the normalized form there lands on an unrelated orphan directory.
+        configured_key = _configured_character_key(
+            configured_characters, character_name
+        )
+        if configured_key is None and not character_memory_exists(
+            config_manager, character_name
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+        if configured_key is not None:
+            character_name = configured_key
+        if _default_memory_dir_escapes_root(config_manager, character_name):
+            # Reported as absent rather than as a link: what is on the
+            # far end is not this panel's to describe either.
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+
+        response = await get_internal_http_client().post(
+            "http://127.0.0.1:"
+            f"{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(character_name, safe='')}/repetition_insights",
+            json={
+                "language": request.language,
+                "assistant_message_limit": request.assistant_message_limit,
+            },
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            status_code = response.status_code
+            if status_code not in {404, 422, 503}:
+                status_code = 503
+            return JSONResponse(
+                {"success": False, "error": "local memory analysis unavailable"},
+                status_code=status_code,
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("invalid local memory analysis response")
+        response_ids = payload.pop("_anti_repeat_response_ids", None)
+        message_scoped = isinstance(response_ids, list)
+        # The local budget can narrow the window, so the requested limit is what
+        # the user asked for while `analyzed_message_count` is what was actually
+        # mined. The effect scope must be labelled with the latter, or the panel
+        # says "the latest 100 replies" over an aggregate covering ten.
+        payload_summary = payload.get("summary")
+        analyzed_limit = request.assistant_message_limit
+        if isinstance(payload_summary, dict):
+            analyzed = payload_summary.get("analyzed_message_count")
+            if isinstance(analyzed, int) and analyzed > 0:
+                analyzed_limit = analyzed
+        effects = (
+            _empty_message_scoped_repetition_effects(analyzed_limit)
+            if message_scoped
+            else _empty_repetition_effects(request.effect_days)
+        )
+        try:
+            from memory.anti_repeat_effects import get_anti_repeat_effect_store
+
+            effect_store = get_anti_repeat_effect_store()
+            if message_scoped:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects_for_responses,
+                    character_name,
+                    response_ids,
+                    analyzed_limit,
+                )
+            else:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects,
+                    character_name,
+                    request.effect_days,
+                )
+            if isinstance(queried_effects, dict):
+                effects = queried_effects
+            else:
+                effects["query_failed"] = True
+        except Exception as exc:
+            effects["query_failed"] = True
+            logger.warning(
+                "Local anti-repeat effects unavailable for %s: %s",
+                character_name,
+                type(exc).__name__,
+            )
+        candidates = payload.get("candidates")
+        patterns = effects.get("patterns")
+        payload["effectiveness"] = effects
+        payload["associations"] = _aggregate_repetition_associations(
+            _associate_repetition_effects(
+                candidates if isinstance(candidates, list) else [],
+                patterns if isinstance(patterns, list) else [],
+            )
+        )
+        return payload
+    except Exception as exc:
+        logger.warning(
+            "Local repetition analysis unavailable for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local memory analysis unavailable"},
+            status_code=503,
+        )
+
+
+@router.post('/repetition_effects/reset')
+async def reset_repetition_effects(request: RepetitionEffectsResetRequest):
+    """Clear only local anti-repeat aggregates for one existing character."""
+    validation = validate_character_name(request.character_name, allow_dots=True)
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    try:
+        from memory.anti_repeat_effects import get_anti_repeat_effect_store
+        from utils.config_manager import get_config_manager
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        # The configured KEY, not the normalized request name: they differ
+        # when a hand-edited characters.json carries padding, and reading
+        # the normalized form there lands on an unrelated orphan directory.
+        configured_key = _configured_character_key(
+            configured_characters, character_name
+        )
+        if configured_key is None and not character_memory_exists(
+            config_manager, character_name
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+        if configured_key is not None:
+            character_name = configured_key
+        await asyncio.to_thread(
+            get_anti_repeat_effect_store().clear_effects,
+            character_name,
+        )
+        logger.info("Cleared anti-repeat effects for character=%s", character_name)
+        return {
+            "success": True,
+            "character_name": character_name,
+            "cleared": True,
+        }
+    except Exception as exc:
+        logger.warning(
+            "Could not clear anti-repeat effects for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local anti-repeat effects unavailable"},
+            status_code=503,
+        )
+
+def _recent_browser_fingerprint(content: str) -> str:
+    """Return the optimistic-concurrency token for one browser snapshot."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _recent_browser_identity_token(path: Path) -> str:
+    """Return an opaque token binding an editor snapshot to one path identity."""
+    key, generation = capture_recent_generation(path)
+    material = f"{key}\0{generation}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _read_recent_browser_text_unlocked(path: Path) -> str:
+    """Build one editable disk-plus-pending snapshot while its lock is held."""
+    content = read_recent_text_unlocked(path)
+    pending = get_recent_pending_unlocked(path)
+    if not pending:
+        return content
+    payload = json.loads(content)
+    if not isinstance(payload, list):
+        raise ValueError(f"recent history is not a list: {path}")
+    if all(isinstance(message, dict) for message in pending):
+        pending_payload = list(pending)
+    else:
+        from utils.llm_client import messages_to_dict
+
+        pending_payload = messages_to_dict(pending)
+    return json.dumps(payload + pending_payload, ensure_ascii=False, indent=2)
+
+
+def _read_recent_browser_text(path: Path) -> str:
+    """Read one editable disk-plus-pending snapshot under the recent lock."""
+    with recent_file_access(path) as resolved_path:
+        return _read_recent_browser_text_unlocked(resolved_path)
+
+
+def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
+    """Read editable content and its opaque identity while holding one lock."""
+    with recent_file_access(path) as resolved_path:
+        return (
+            _read_recent_browser_text_unlocked(resolved_path),
+            _recent_browser_identity_token(Path(resolved_path)),
+        )
+
+
+def _write_recent_browser_payload(
+    path: Path,
+    payload: list[dict],
+    *,
+    expected_fingerprint: str | None,
+    expected_identity_token: str | None,
+    expected_generation: tuple[str, int],
+) -> tuple[bool, str, str]:
+    """Replace a browser snapshot unless disk or pending state changed since read."""
+    with recent_file_access(
+        path, expected_generation=expected_generation,
+    ) as resolved_path:
+        current_identity_token = _recent_browser_identity_token(Path(resolved_path))
+        current_text = _read_recent_browser_text_unlocked(resolved_path)
+        current_fingerprint = _recent_browser_fingerprint(current_text)
+        if (
+            expected_identity_token is not None
+            and expected_identity_token != current_identity_token
+        ) or (
+            expected_fingerprint is not None
+            and expected_fingerprint != current_fingerprint
+        ):
+            return False, current_fingerprint, current_identity_token
+        write_recent_payload_unlocked(resolved_path, payload)
+        set_recent_pending_unlocked(resolved_path, [])
+        saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        return (
+            True,
+            _recent_browser_fingerprint(saved_text),
+            current_identity_token,
+        )
+
+
+def _read_recent_browser_conflict_tokens(
+    path: Path,
+) -> tuple[str | None, str | None]:
+    """Best-effort current tokens for a generation-race conflict response."""
+    try:
+        content, identity_token = _read_recent_browser_snapshot(path)
+    except Exception:
+        return None, None
+    return _recent_browser_fingerprint(content), identity_token
+
+
+def _recent_browser_conflict_response(
+    fingerprint: str | None,
+    identity_token: str | None,
+) -> JSONResponse:
+    """Return the browser editor's uniform optimistic-concurrency conflict."""
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "RECENT_FILE_CONFLICT",
+            "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
+            "fingerprint": fingerprint,
+            "identity_token": identity_token,
+        },
+        status_code=409,
+    )
+
+
+def _default_memory_dir_escapes_root(config_manager, name: str) -> bool:
+    """Whether this character's DEFAULT directory resolves outside the root.
+
+    A CONFIGURED character skips the existence check entirely, so the
+    symlink filter in the selector never sees it -- configured names are
+    added before directory enumeration. The read-only lookup then builds
+    memory_dir/<name>/time_indexed.db and follows the link, and the panel
+    renders and exports assistant-shaped rows from a database outside the
+    memory root.
+
+    The sidecar stores are not reachable this way because they already
+    ask ``_is_within_memory_root``, which resolves both sides with
+    realpath. The read-only time index does not, because it has to honour
+    ``time_store`` -- where a character can be deliberately pointed
+    elsewhere. So the same rule is asked here instead, and only about the
+    DEFAULT path: an explicitly registered one is a choice, not a leak.
+
+    MEMBERSHIP in ``time_store`` is not that choice. ``get_character_data``
+    builds it as ``{name: memory_dir/name/time_indexed.db}`` for every
+    configured character, so treating a present key as an override made
+    this return False for exactly the case it exists to catch -- the
+    check never ran outside its own test, which supplied an empty store.
+    What counts is the path being DIFFERENT from the default one.
+
+    Compared without resolving links, deliberately: realpath on a linked
+    default path lands on the far end, which then reads as "somewhere
+    else on purpose" and waves through precisely the case in hand.
+    """
+    try:
+        time_store = config_manager.get_character_data()[6]
+    except Exception:
+        # Unreadable configuration is not evidence of a deliberate
+        # override, so fall through to the containment check.
+        time_store = {}
+    registered = time_store.get(name) if isinstance(time_store, dict) else None
+    if registered:
+        default = os.path.join(
+            str(config_manager.memory_dir), name, "time_indexed.db"
+        )
+        if os.path.normcase(os.path.abspath(str(registered))) != os.path.normcase(
+            os.path.abspath(default)
+        ):
+            return False
+    from memory import character_dir_is_within_memory_root
+
+    try:
+        if not character_dir_is_within_memory_root(
+            config_manager.memory_dir, name
+        ):
+            return True
+        # And the DATABASE under it. A real memory/<name>/ directory
+        # passes containment while holding "time_indexed.db -> /outside",
+        # and the read-only path follows a file link exactly as it would
+        # a directory one. Resolved rather than islink-tested, so an
+        # intermediate link is caught the same way.
+        character_dir = os.path.join(str(config_manager.memory_dir), name)
+        database = os.path.join(character_dir, "time_indexed.db")
+        return os.path.normcase(
+            os.path.dirname(os.path.realpath(database))
+        ) != os.path.normcase(os.path.realpath(character_dir))
+    except Exception:
+        # Cannot resolve it, so cannot vouch for it. Refusing costs a
+        # panel; waving it through is the direction that leaks, and this
+        # module treats that as the only unacceptable one.
+        return True
+
+
+def _configured_character_key(configured, character_name: str) -> str | None:
+    """The characters.json key this request name identifies, if any.
+
+    Both routes normalize what they are asked for, and the panel offers
+    what ``_insight_selectable_name`` returns, which is normalized too --
+    the frontend trims it again before posting. characters.json keys are
+    NOT normalized: nothing in this repo writes a padded one, but nothing
+    rejects a hand-edited config either. Such a key was offered as its
+    trimmed form and then failed the raw membership test, 404ing on a name
+    the panel had just listed -- the drift the selector docstring says
+    cannot happen.
+
+    Worse than the 404: an unrelated memory/<trimmed>/ left over from a
+    delete satisfied the existence arm instead, so the panel read that
+    orphan and the reset button cleared ITS aggregates rather than the
+    configured character's.
+
+    Exactly inverts the offering rule, so the two cannot drift again, and
+    an exact key always wins -- with both "Bob" and " Bob" configured, the
+    request for "Bob" means "Bob".
+    """
+    if character_name in configured:
+        return character_name
+    for key in configured:
+        if not isinstance(key, str) or not key:
+            continue
+        if _insight_selectable_name(key) == character_name:
+            return key
+    return None
+
+
+def _insight_selectable_name(name: str) -> str | None:
+    """Return the name the analysis route would accept, or None.
+
+    The selector and the route have to share one admission rule. Building
+    the list from any non-empty configured string offered names the route
+    then rejected with 422 -- a historical unsafe name such as "." is a
+    supported state that the delete route deliberately keeps a rescue path
+    for, so it really can still be in characters.json. The reserved-route
+    exception is intentional and shared with the route.
+    """
+    validation = validate_character_name(
+        name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS
+    )
+    if not validation.ok and validation.code != "reserved_route_name":
+        return None
+    return validation.normalized or None
+
+
+@router.get('/insight_characters')
+async def get_insight_characters():
+    """List the identities the repetition-insights route will accept.
+
+    The panel selector used to be built from the recent-memory file list,
+    which only knows characters that have a ``recent.json``. A configured
+    character, or one restored from a cloud snapshot carrying time-indexed
+    history without the optional recent file, was therefore missing from the
+    panel even though the analysis route supports it.
+
+    Reuses that route's own admission rule -- configured OR has character
+    memory on disk -- so the two cannot drift into offering a name the route
+    rejects, or hiding one it accepts.
+    """
+    from utils.config_manager import get_config_manager
+
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    configured = (
+        characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    )
+    names = {
+        selectable
+        for name in configured
+        if isinstance(name, str) and name
+        for selectable in (_insight_selectable_name(name),)
+        if selectable
+    }
+
+    # Raw, not selectable: this is compared against directory names on disk,
+    # which carry the character name as configured.
+    configured_names = {
+        name for name in configured if isinstance(name, str) and name
+    }
+
+    # Enumerate through the same roots the predicate reads, so a root added
+    # there cannot silently become invisible here.
+    candidates: set[str] = set()
+    for base_dir in iter_character_memory_roots(config_manager):
+        if not base_dir.exists():
+            continue
+        for child in base_dir.iterdir():
+            # A REAL directory. ``Path.is_dir()`` follows links, so a
+            # symlink in the memory root was offered as a character and
+            # ``character_memory_exists`` confirmed it -- the panel would
+            # then read, render and export assistant-shaped rows from
+            # whatever database the link points at, outside the memory root
+            # entirely. Measured with a link to a sibling directory.
+            #
+            # Fixed HERE rather than in the shared reader on purpose:
+            # ``_resolve_expected_db_path`` honours ``time_store``, which
+            # exists so a character CAN register a database outside
+            # memory_dir, and a blanket containment check there would break
+            # that. What is new on this branch is enumerating the root and
+            # offering what it finds, so that is what learns to be careful.
+            #
+            # And a REAL character directory, not merely a namesake. A legacy
+            # "semantic_memory_Alice/" vector store is one of the paths
+            # ``character_memory_exists`` checks for a character of that
+            # name, so it confirms itself: the selector offered
+            # "semantic_memory_Alice", and analysing it read
+            # memory/semantic_memory_Alice/time_indexed.db rather than
+            # Alice's, reporting no history for a character that has plenty.
+            #
+            # Configured characters keep their own path below and are not
+            # subject to this -- an empty configured character is still hers.
+            #
+            # And not another character's vector store. A legacy
+            # "semantic_memory_Alice/" is one of the paths
+            # ``character_memory_exists`` checks for a character of that
+            # name, so it confirms itself: the selector offered
+            # "semantic_memory_Alice", and analysing it read that vector
+            # store rather than Alice's history. Only the ENUMERATING side
+            # can tell the difference, because only it can see the owner.
+            if (
+                child.is_dir()
+                and not child.is_symlink()
+                and not is_legacy_vector_store_dir(base_dir, child.name)
+            ):
+                candidates.add(child.name)
+            # No legacy decoding here. The flat layout was retired in
+            # 2026-03 together with the startup migration that replaces it,
+            # and that migration now covers unconfigured owners as well --
+            # so by the time this runs, a legacy root file has already
+            # become memory/<name>/ and the directory branch above sees it.
+            # Decoding here made the READ path carry a second layout, and
+            # got it wrong: "time_indexed_Carol.db-wal" decoded to a
+            # character named "Carol.db-wal", which the existence check then
+            # confirmed, so the panel offered it.
+        for logical_name in iter_recent_memory_files(base_dir):
+            candidate = extract_catgirl_name_from_recent_filename(logical_name)
+            if candidate:
+                candidates.add(candidate)
+
+    for candidate in candidates - names:
+        selectable = _insight_selectable_name(candidate)
+        if selectable and character_memory_exists(config_manager, selectable):
+            names.add(selectable)
+
+    return {"characters": sorted(names)}
+
+
 @router.get('/recent_files')
 async def get_recent_files():
     """List all recent*.json filenames under the memory directory."""
@@ -337,14 +1146,22 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    # offload 同步 read 到线程池：recent.json 单文件可达数 MB
-    content = await asyncio.to_thread(_read_text_file, resolved_path)
-    return {"content": content}
-
-
-def _read_text_file(path: str, encoding: str = 'utf-8') -> str:
-    with open(path, 'r', encoding=encoding) as f:
-        return f.read()
+    # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
+    # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
+    try:
+        content, identity_token = await asyncio.to_thread(
+            _read_recent_browser_snapshot, resolved_path,
+        )
+    except RecentFileDeletedError:
+        return JSONResponse(
+            {"success": False, "error": "文件不存在"},
+            status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
+        )
+    return {
+        "content": content,
+        "fingerprint": _recent_browser_fingerprint(content),
+        "identity_token": identity_token,
+    }
 
 
 @router.post('/recent_file/save')
@@ -352,6 +1169,8 @@ async def save_recent_file(request: Request):
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
+    snapshot_fingerprint = data.get('fingerprint')
+    snapshot_identity_token = data.get('identity_token')
     
     # Validate filename
     is_valid, error_msg = validate_recent_filename(filename)
@@ -364,6 +1183,21 @@ async def save_recent_file(request: Request):
     if not is_valid:
         logger.warning(f"Invalid chat payload rejected: {error_msg}")
         return JSONResponse({"success": False, "error": error_msg}, status_code=400)
+    if snapshot_fingerprint is not None and not isinstance(snapshot_fingerprint, str):
+        return JSONResponse(
+            {"success": False, "error": "文件快照指纹格式不合法"},
+            status_code=400,
+        )
+    if snapshot_identity_token is not None and not isinstance(snapshot_identity_token, str):
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌格式不合法"},
+            status_code=400,
+        )
+    if snapshot_fingerprint is None or snapshot_identity_token is None:
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌缺失，请重新加载后再保存"},
+            status_code=409,
+        )
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
@@ -372,17 +1206,25 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
+    # 保存到读取时会解析到的同一布局；旧版 flat/project 文件不能被悄悄
+    # 改写到一个尚不存在的 runtime nested 路径，否则 CAS 比较失去对象。
+    resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
+        cm, filename,
+    )
+    if resolved_path is None:
+        if path_error_code != PATH_ERROR_NOT_FOUND:
+            return JSONResponse(
+                {"success": False, "error": _path_error},
+                status_code=path_error_status_code(path_error_code),
+            )
+        resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
+    admission_generation = capture_recent_generation(resolved_path)
     assert_cloudsave_writable(
         cm,
         operation="save",
         target=f"memory/{catgirl_name}/recent.json",
     )
 
-    resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
-    if resolved_path is None:
-        logger.warning(f"Recent file path resolution failed for filename: {filename!r} - {path_error}")
-        return JSONResponse({"success": False, "error": path_error}, status_code=400)
-    
     arr = []
     for msg in chat:
         t = msg.get('role')
@@ -400,8 +1242,30 @@ async def save_recent_file(request: Request):
                 **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
             }
         })
-    try:
-        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
+    async def _commit_browser_save():
+        try:
+            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _write_recent_browser_payload,
+                resolved_path,
+                arr,
+                expected_fingerprint=snapshot_fingerprint,
+                expected_identity_token=snapshot_identity_token,
+                expected_generation=admission_generation,
+            )
+        except RecentFileDeletedError:
+            saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _read_recent_browser_conflict_tokens,
+                resolved_path,
+            )
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
+            )
+        if not saved:
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
+            )
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -419,7 +1283,21 @@ async def save_recent_file(request: Request):
                 logger.warning(f"Failed to cancel correction task: {e}")
         
         # 返回成功并提示需要刷新上下文
-        return {"success": True, "need_refresh": True, "catgirl_name": catgirl_name}
+        return {
+            "success": True,
+            "need_refresh": True,
+            "catgirl_name": catgirl_name,
+            "fingerprint": saved_fingerprint,
+            "identity_token": saved_identity_token,
+        }
+
+    try:
+        result, save_cancelled = await _await_browser_save_transaction(
+            _commit_browser_save()
+        )
+        if save_cancelled:
+            raise asyncio.CancelledError
+        return result
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -456,30 +1334,36 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        if character_memory_exists(cm, old_name) or character_memory_exists(cm, new_name):
-            assert_cloudsave_writable(
-                cm,
-                operation="rename",
-                target=f"memory/{old_name} -> memory/{new_name}",
-            )
+        characters = await cm.aload_characters()
+        catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
 
-        result = rename_character_memory_storage(cm, old_name, new_name)
-        logger.info(
-            "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
-            old_name,
-            new_name,
-            result.get("changed", False),
-        )
-        return {
-            "success": True,
-            "changed": bool(result.get("changed", False)),
-            "exists_after": bool(result.get("exists_after", False)),
-        }
+        # 兼容旧客户端在 canonical rename 成功后重复调用本端点的幂等路径。
+        if old_name not in catgirls and new_name in catgirls:
+            if character_memory_exists(cm, old_name):
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": "角色配置已改名但旧记忆仍存在，请通过角色管理接口修复",
+                    },
+                    status_code=409,
+                )
+            return {
+                "success": True,
+                "changed": False,
+                "exists_after": character_memory_exists(cm, new_name),
+                "already_renamed": True,
+            }
+
+        # 单独移动 memory 会绕过角色改名事务的 task drain、配置发布和回滚。
+        # 统一委托 canonical route，避免旧派生任务沿 recent redirect 写进新角色。
+        from .characters_router.crud import rename_catgirl
+
+        return await rename_catgirl(old_name, request)
     except MaintenanceModeError:
         raise
-    except Exception as e:
+    except Exception as exc:
         logger.exception("更新猫娘名称失败")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(exc)}
 
 
 @router.get('/review_config')
@@ -727,6 +1611,212 @@ def _directory_size_safe(path: Path, *, max_entries: int = 50000) -> int:
         logger.debug(f"_directory_size_safe({path}): 汇总大小时出错: {exc}")
         return -1
     return total
+
+
+def _external_import_error(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse({"success": False, "error": message}, status_code=status_code)
+
+
+def _decode_external_archive(raw: object) -> bytes | None:
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise ExternalMemoryImportError("archive_b64 must be a base64 string")
+    value = raw.strip()
+    if value.startswith("data:") and "," in value:
+        value = value.split(",", 1)[1]
+    max_base64_chars = 4 * ((MAX_TOTAL_BYTES + 2) // 3)
+    if len(value) > max_base64_chars:
+        raise ExternalMemoryImportError("Archive upload is too large")
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ExternalMemoryImportError("archive_b64 is not valid base64") from exc
+
+
+def _prepare_external_import(payload: object) -> tuple[str, dict]:
+    if not isinstance(payload, dict):
+        raise ExternalMemoryImportError("Request body must be an object")
+    # Keep preview and commit aligned with memory_server.validate_lanlan_name.
+    validation = validate_character_name(
+        payload.get("character_name"), allow_dots=True, max_length=50,
+    )
+    if not validation.ok:
+        raise ExternalMemoryImportError("Invalid target character name")
+    archive_bytes = _decode_external_archive(payload.get("archive_b64"))
+    direct_files = payload.get("files")
+    if archive_bytes is not None and direct_files:
+        raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
+    sources = collect_markdown_files(
+        direct_files if isinstance(direct_files, list) else None,
+        archive_bytes=archive_bytes,
+    )
+    analysis = build_import_candidates(
+        sources,
+        source_format=str(payload.get("source_format") or "auto"),
+    )
+    return validation.normalized, analysis
+
+
+@router.post('/external_import/preview')
+async def preview_external_memory_import(request: Request):
+    """Parse OpenClaw/Hermes Markdown without writing memory files."""
+    try:
+        payload = await request.json()
+        character_name, analysis = await asyncio.to_thread(_prepare_external_import, payload)
+        from utils.tokenize import count_tokens
+        persona_cands = [item for item in analysis["candidates"] if item["target"] == "persona"]
+        counts = {
+            "persona": len(persona_cands),
+            "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
+            # daily 日记走 commit 阶段 LLM 抽取，preview 显示的是解析出的片段数（近似）。
+            "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
+        }
+        # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
+        # (neko / master) 分组，每组一次 LLM 往返；daily 日记按天（=source_file）
+        # 各一次 LLM 抽取；MEMORY.md facts 走纯写盘、不调 LLM。0 次调用 → 前端
+        # 回退到无预估文案。
+        persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
+        daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
+        daily_by_file: dict[str, list[str]] = {}
+        for item in daily_cands:
+            daily_by_file.setdefault(str(item.get("source_file") or ""), []).append(item["text"])
+
+        # count_tokens / 分批逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件
+        # 循环，与上面 _prepare_external_import 一致 offload 到线程池。daily 调用
+        # 次数用与 commit 侧同一个 batch_daily_fragments 算（超长天会拆多批），
+        # 保证 ETA 的调用计数与实际执行永不漂移。
+        def _eta_inputs():
+            from config import EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS
+            persona_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
+            daily_tokens = sum(count_tokens(item["text"]) for item in daily_cands)
+            daily_calls = sum(
+                len(batch_daily_fragments(texts, EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS))
+                for texts in daily_by_file.values()
+            )
+            return persona_tokens, daily_tokens, daily_calls
+
+        persona_candidate_tokens, daily_candidate_tokens, daily_extraction_calls = (
+            await asyncio.to_thread(_eta_inputs)
+        )
+        return {
+            "success": True,
+            "character_name": character_name,
+            "source_format": analysis["source_format"],
+            "files": analysis["files"],
+            "counts": counts,
+            "candidate_count": len(analysis["candidates"]),
+            "persona_fusion_calls": persona_fusion_calls,
+            "persona_candidate_tokens": persona_candidate_tokens,
+            "daily_extraction_calls": daily_extraction_calls,
+            "daily_candidate_tokens": daily_candidate_tokens,
+            "warning_count": len(analysis["warnings"]),
+            "warnings": analysis["warnings"][:20],
+            "candidates": analysis["candidates"][:100],
+            "truncated_preview": len(analysis["candidates"]) > 100,
+        }
+    except ExternalMemoryImportError as exc:
+        return _external_import_error(str(exc))
+    except Exception as exc:
+        logger.exception("External memory preview failed")
+        return _external_import_error(f"External memory preview failed: {exc}", 500)
+
+
+@router.post('/external_import/commit')
+async def commit_external_memory_import(request: Request):
+    """Merge OpenClaw/Hermes Markdown into a character's memory stores."""
+    try:
+        payload = await request.json()
+        character_name, analysis = await asyncio.to_thread(_prepare_external_import, payload)
+        if analysis["warnings"] and payload.get("acknowledge_warnings") is not True:
+            return _external_import_error(
+                "Suspicious instruction patterns were detected; preview and acknowledge warnings before import",
+                409,
+            )
+        from config import MEMORY_SERVER_PORT
+        from utils.config_manager import get_config_manager
+        from utils.internal_http_client import get_internal_http_client
+
+        assert_cloudsave_writable(
+            get_config_manager(),
+            operation="import",
+            target=f"memory/{character_name}/external-markdown",
+        )
+        client = get_internal_http_client()
+        memory_payload = {
+            "character_name": character_name,
+            "source_format": analysis["source_format"],
+            "imported_files": analysis["files"],
+            "candidates": analysis["candidates"],
+            "warning_count": len(analysis["warnings"]),
+        }
+        render_language = payload.get("render_language")
+        if is_supported_language_code(render_language):
+            memory_payload["render_language"] = normalize_language_code(
+                render_language,
+                format="full",
+            )
+        response = await client.post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_external_markdown",
+            # Never forward a browser locale as ``language``: that field declares
+            # a durable preference. ``render_language`` is a validated, render-only
+            # fallback; the memory server still resolves durable state at execution.
+            json=memory_payload,
+            # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
+            # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时
+            # (memory_browser.js, 270s) 再略大于此，保证后端先返回而非前端先断。
+            timeout=240.0,
+        )
+        if response.status_code != 200:
+            try:
+                upstream_error = response.json()
+                detail = upstream_error.get("detail") or upstream_error.get("error")
+            except Exception:
+                upstream_error = {}
+                detail = None
+            error_code = upstream_error.get("error_code")
+            if error_code in ("external_import_partial", "external_import_too_large"):
+                # 透传上游错误码 + partial 元数据（含已落盘的 added_persona）+ 状态码
+                # （partial=500 / too_large=413），否则前端拿不到对应分支的引导与
+                # memory_edited 广播（Codex P2）。
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": detail,
+                        "error_code": error_code,
+                        "partial_import": upstream_error.get("partial_import") or {},
+                    },
+                    status_code=response.status_code,
+                )
+            raise ExternalMemoryImportError(
+                str(detail or f"Memory service rejected the import (HTTP {response.status_code})")
+            )
+        result = response.json()
+        if result.get("status") != "success":
+            raise ExternalMemoryImportError("Memory service did not confirm the import")
+
+        logger.info(
+            "External memory import: character=%s format=%s persona=%s facts=%s duplicates=%s warnings=%s",
+            character_name,
+            result["source_format"],
+            result["added_persona"],
+            result["added_facts"],
+            result["skipped_duplicates"],
+            result["warning_count"],
+        )
+        return {
+            "success": True,
+            "need_refresh": True,
+            "memory_server_reloaded": True,
+            **result,
+        }
+    except MaintenanceModeError:
+        raise
+    except ExternalMemoryImportError as exc:
+        return _external_import_error(str(exc))
+    except Exception as exc:
+        logger.exception("External memory import failed")
+        return _external_import_error(f"External memory import failed: {exc}", 500)
 
 
 @router.get('/legacy/scan')

@@ -1,4 +1,4 @@
-# SDK Reference
+# Plugin Capabilities and SDK Reference
 
 All plugin development APIs are imported from `plugin.sdk.plugin`.
 
@@ -7,8 +7,13 @@ from plugin.sdk.plugin import (
     # Base
     NekoPluginBase, PluginMeta,
     # Decorators
-    neko_plugin, plugin_entry, lifecycle, timer_interval, message, on_event,
-    custom_event, hook, before_entry, after_entry, around_entry, replace_entry,
+    EntryKind, neko_plugin, plugin_entry, lifecycle, timer_interval, message,
+    on_event, custom_event, hook, before_entry, after_entry, around_entry,
+    replace_entry, quick_action, plugin, ui,
+    # LLM tools and activity
+    llm_tool, LlmToolMeta, OsActivitySnapshot, get_os_activity_snapshot,
+    # Plugin-local i18n and settings
+    PluginI18n, tr, PluginSettings, SettingsField,
     # Result types
     Ok, Err, Result, unwrap, unwrap_or,
     # Runtime helpers
@@ -20,6 +25,8 @@ from plugin.sdk.plugin import (
     get_plugin_logger,
 )
 ```
+
+`plugin.sdk.plugin` is the supported developer import surface. The root `plugin.sdk` package intentionally exposes only a conservative shared subset; do not assume every plugin-only helper is re-exported there.
 
 ## NekoPluginBase
 
@@ -38,11 +45,57 @@ class MyPlugin(NekoPluginBase):
 |----------|------|-------------|
 | `self.ctx` | `PluginContext` | The runtime context (injected by host) |
 | `self.plugin_id` | `str` | This plugin's unique identifier |
-| `self.config_dir` | `Path` | Directory containing `plugin.toml` |
+| `self.plugin_dir` | `Path` | Installed plugin directory containing code, manifest, and static assets |
+| `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
+| `self.storage_dir` | `Path` | User storage root assigned to this plugin |
+| `self.runtime_config_path` | `Path` | External runtime configuration file |
 | `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
 | `self.system_info` | `SystemInfo` | Host system metadata |
+
+### Everyday capabilities
+
+`NekoPluginBase` provides logging and configuration without extra setup:
+
+```python
+self.logger.info("Processing request: {}", request_id)
+timeout = await self.config.get_int("my_settings.timeout", default=30)
+```
+
+Logs appear in the Plugin Manager and are written to the host-managed log
+directory. The host owns log-file location and rotation. Runtime configuration
+updates use `await self.ctx.update_own_config(...)` or
+`await self.config.update(...)`; after updating, refresh any derived state in
+the same process.
+
+Choose storage by data shape:
+
+| Need | API |
+| --- | --- |
+| Small key-value state | `self.store` after enabling `[plugin.store]` |
+| Structured SQLite data | `self.db` after enabling `[plugin.database]` |
+| Arbitrary persistent files | `self.data_path(...)` |
+| Rebuildable files | `self.cache_path(...)` |
+
+```python
+from plugin.sdk.plugin import unwrap
+
+unwrap(await self.store.set("last_query", "weather"))
+
+async with unwrap(await self.db.session()) as session:
+    await session.execute(
+        "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, title TEXT)"
+    )
+    await session.commit()
+```
+
+For translated plugin text, configure `[plugin.i18n]`, add locale JSON files,
+and use `self.i18n.t(...)`:
+
+```python
+message = self.i18n.t("greeting", name="Alice")
+```
 
 ### Methods
 
@@ -58,28 +111,75 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 Push a message to the host system with the v2 schema.
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # [], ["chat"], ["hud"], or both
     ai_behavior="blind",       # "respond", "read", or "blind"
     parts=[{"type": "text", "text": "Task complete"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # Keep local state; retry and deduplication remain plugin policy.
+    self.logger.warning("message submission failed: %s", result["reason"])
 ```
 
-The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated and scheduled for removal in v0.9. See the [migration guide](./migration-v0.9#push-message-v2).
+`submitted=True` means only that the SDK's authoritative local submission path
+accepted responsibility for the payload. It does not acknowledge host
+consumption, model generation, or playback. Rejections use the stable reasons
+`backpressure`, `transport_error`, or `transport_unavailable`; the result never
+contains the message body or raw exception text. Rejected results also carry
+`ok=False` for compatibility with legacy callers; new code should use
+`submitted` as the authoritative discriminator.
+
+The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated but still translated in current source. Migrate now; this documentation does not guarantee an exact removal release. See the [migration guide](./migration-v0.9#push-message-v2).
+
+#### Media parts
+
+- Text and image parts are supported. A small image can be sent inline:
+
+  ```python
+  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
+  ```
+
+- For a non-trivial image, upload it through the host and send the returned part instead:
+
+  ```python
+  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
+  result = self.push_message(
+      source="my_feature",
+      visibility=["chat"],
+      ai_behavior="read",
+      parts=[image_part],
+  )
+  ```
+
+  Arbitrary external image URLs are not accepted for model delivery; use this temporary host upload. Inline images share the message-plane payload budget, while the uploaded part keeps the image bytes out of that envelope. `ctx.images.upload()` is unavailable in lifecycle handlers because the plugin command loop cannot service the upload response there; call it from a plugin entry, timer, message, or custom event handler.
+- `visibility` controls rendering in the user's chat or HUD; `ai_behavior` independently controls whether the model reads the message or responds.
+- Audio and video message parts are not currently delivered by the host. Do not report them as successfully played or shown.
+- A Hosted UI panel can render user-facing audio or video itself, but that does not deliver media through the native chat or model channel.
 
 #### `data_path(*parts) -> Path`
 
 Get a path under the plugin's `data/` directory.
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+Get a path under the plugin's disposable cache directory.
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
@@ -118,6 +218,16 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 #### `include_router(router, *, prefix) -> None`
 
 Mount a `PluginRouter` to organize a large or feature-split normal plugin.
+
+Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`, and this mount path does not automatically invoke `on_mount` / `on_unmount`.
+
+#### Hosted/static UI and list actions
+
+Hosted TSX uses the exported `ui` namespace plus manifest surfaces; see [Hosted UI](./hosted-ui). Legacy static UI uses `register_static_ui(...)`. List-row actions are managed with `set_list_actions(...)`, `register_list_action(...)`, `clear_list_actions()`, and `get_list_actions()`.
+
+#### LLM tool methods
+
+`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. See [LLM Tool Calling](./tool-calling).
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -268,10 +378,30 @@ events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 records = await self.bus.memory.get(bucket_id="default", limit=20)
-matches = await self.ctx.query_memory("default", "user preferences")
 ```
 
-The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
+The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations`, `memory`, and `frames` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
+
+These stores are shared, and reading them is not gated per plugin: any enabled plugin can read `conversations` and `frames`, including turns and pictures that came from the user or from another plugin. Nothing here widens what the host already sent to the model — a frame the session never sent never appears — but it does widen who can see it, from the model provider to every plugin the user has enabled. Treat installing a plugin as granting it that visibility, and say so in your own plugin's description if you read these.
+
+`bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
+
+### Frames
+
+`bus.frames` holds the last few frames the host already pushed to the model provider — exactly the bytes the provider received.
+
+```python
+frames = await self.bus.frames.get(max_count=4)
+latest = frames.sort(by="timestamp", reverse=True).limit(1)
+```
+
+A plugin cannot ask for a capture. A frame the session's own throttle or delivery-mode fence dropped was never sent to the provider, so it never appears here.
+
+**This is not a log and not a queue.** Frames are dropped by design at four points: the message-plane PUB socket is lossy for slow joiners and at its high-water mark, the host publish is non-blocking, the send queue is bounded and refuses frames as soon as it falls behind, and the store keeps only a handful (`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`, clamped to 2-8, default 4). Polling for "every frame", or expecting a frame you read once to still be there, will be wrong.
+
+Each record carries `image_base64` (one copy — there is no raw-bytes twin to read), `mime`, `source`, `captured_at`, `turn_id`, `generation`, `frame_id`, and `metadata`. `source` is the channel the host attributed the frame to: `screen`, `camera`, `plugin`, `callback`, `proactive`, `user`, or `unknown` once a turn was reshaped and the host could no longer say. `screen` and `camera` separate the two live channels only on the voice path; in text mode every frame the user shares — a shared screen, a camera still, a dragged-in photo — arrives through one queue that does not keep them apart, so it is reported as `user`. Filter for `user` if you want "something the user showed the character" in both modes. Dedupe on `frame_id`: `generation` orders ambient frames but does not advance for one-shot cue images, so two records can share one.
+
+Pictures a tool handed back are on this bus too, once the follow-up request that carried them was answered. They arrive with `source="plugin"` and a `metadata` of `{"tool_name": "..."}`. A tool may return up to 2 MiB of base64; anything over the delivery budget (500 KiB) is re-encoded by the host through the same profile every model-bound image goes through — JPEG, at most 1280x720 — so it fits under the message plane's record bound and reaches both the model and this bus. The record then says `mime: image/jpeg` even if the tool handed back a PNG, and the tool result carries a model-visible note that the picture was re-encoded. An image that still will not fit after that is dropped with its own warning rather than sent. Read `source` before you read the pixels: a `plugin` frame is media some plugin gave the model — possibly not yours — and is not a picture the user shared with the character.
 
 ### Priority levels
 

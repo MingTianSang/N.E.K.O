@@ -414,16 +414,17 @@ async function main() {
   const replacementMount = host.mount(mountConfig('MMD Neko', descriptors.get('MMD Neko').model));
   await new Promise((resolve) => setImmediate(resolve));
   assert(calls.some((entry) => entry[0] === 'vrm-dispose-start')
-    && calls.filter((entry) => entry[0] === 'mmd-model').length === mmdLoadsBeforeReplacement,
-  'rapid character replacement started before the previous renderer disposal completed');
+    && calls.filter((entry) => entry[0] === 'mmd-model').length === mmdLoadsBeforeReplacement + 1,
+  'rapid character replacement did not preserve the upstream non-blocking disposal behavior');
   releaseVrmDisposal();
   await gatedVrmDisposal;
   disposeGates.vrm = null;
   const replacementController = await replacementMount;
+  await new Promise((resolve) => setImmediate(resolve));
   const replacementSequence = calls.slice(replacementSequenceStart).map((entry) => entry[0]);
-  assert(replacementSequence.indexOf('vrm-dispose-end')
-    < replacementSequence.indexOf('mmd-model'),
-  'the replacement renderer crossed the per-slot asynchronous cleanup barrier');
+  assert(replacementSequence.indexOf('mmd-model')
+    < replacementSequence.indexOf('vrm-dispose-end'),
+  'the replacement renderer unexpectedly waited on retired asynchronous cleanup');
   await replacementController.dispose();
 
   assert(host.activeCount === 0, 'debug-style Avatar replacement leaked a controller');

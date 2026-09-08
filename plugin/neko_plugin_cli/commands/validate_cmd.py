@@ -6,7 +6,8 @@ import ast
 import json
 import math
 import re
-from pathlib import Path
+import stat
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from plugin.core.python_dependencies import (
     collect_project_python_requirements,
@@ -28,12 +29,31 @@ from plugin.sdk.shared.core.push_message_schema import (
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
-_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
-def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
+def validate_plugin_dir(
+    plugin_dir: Path,
+    *,
+    strict: bool = False,
+    require_matching_directory_name: bool = False,
+) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
+    config_example_path = plugin_dir / "config.example.toml"
+    config_example: dict[str, object] | None = None
+    if config_example_path.is_file():
+        try:
+            config_example = load_toml(config_example_path)
+        except Exception as exc:
+            issues.append(
+                (
+                    "error",
+                    "config.example.toml could not be read / "
+                    "无法读取 config.example.toml / "
+                    f"config.example.toml を読み取れません: {exc}",
+                )
+            )
+            return issues
     try:
         source = load_plugin_source(plugin_dir)
     except Exception:
@@ -50,17 +70,39 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
-
-    if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
-        issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
+    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+        issues.append(
+            (
+                "warning",
+                f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}' / "
+                f"plugin.id '{source.plugin_id}' 与目录名 '{plugin_dir.name}' 不一致 / "
+                f"plugin.id '{source.plugin_id}' がディレクトリ名 '{plugin_dir.name}' と一致しません",
+            )
+        )
+    if config_example is not None:
+        _check_config_example_schema(config_example, issues)
+    elif "plugin_runtime" in source.plugin_toml or source.plugin_id in source.plugin_toml:
+        issues.append(
+            (
+                "warning",
+                "legacy runtime configuration in plugin.toml is supported; "
+                "move mutable defaults to config.example.toml / "
+                "仍兼容 plugin.toml 中的旧运行配置；请将可变默认值移到 config.example.toml / "
+                "plugin.toml の従来の実行設定は互換対応です。可変の既定値を config.example.toml に移してください",
+            )
+        )
 
     entry = source.entry_point
     if not entry:
         issues.append(("error", "plugin.entry is missing"))
     else:
-        expected_prefix = f"plugin.plugins.{source.plugin_id}:"
-        if not entry.startswith(expected_prefix):
-            issues.append(("warning", f"plugin.entry should usually start with '{expected_prefix}', got '{entry}'"))
+        expected_module = f"plugin.plugins.{source.plugin_id}"
+        entry_module = entry.split(":", 1)[0].strip()
+        if entry_module != expected_module and not entry_module.startswith(expected_module + "."):
+            issues.append((
+                "warning",
+                f"plugin.entry should usually target '{expected_module}', got '{entry}'",
+            ))
         _check_entry_target(plugin_dir, source.plugin_id, entry, source.package_type, issues)
 
     if not plugin_table.get("sdk"):
@@ -82,8 +124,20 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     return issues
 
 
-def _market_repo_name(plugin_id: str) -> str:
-    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
+def _check_config_example_schema(
+    config: dict[str, object],
+    issues: list[tuple[str, str]],
+) -> None:
+    if "plugin" in config:
+        issues.append(
+            (
+                "error",
+                "config.example.toml must not contain [plugin] / "
+                "config.example.toml 不能包含 [plugin] / "
+                "config.example.toml に [plugin] を含めることはできません",
+            )
+        )
+    _check_runtime_table(config.get("plugin_runtime"), issues)
 
 
 def _check_plugin_toml_schema(
@@ -113,10 +167,12 @@ def _check_plugin_toml_schema(
         "ui",
         "store",
         "host",
+        "install",
         "safety",
         "config_profiles",
         "dependency",
         "dependencies",
+        "previous_ids",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -136,11 +192,13 @@ def _check_plugin_toml_schema(
     _check_optional_bool(plugin_table, "passive", "[plugin].passive", issues)
     _check_string_list(plugin_table.get("keywords"), "[plugin].keywords", issues, required=False)
     _check_plugin_dependency_id_list(plugin_table.get("dependencies"), "[plugin].dependencies", plugin_id, issues)
+    _check_previous_plugin_ids(plugin_table.get("previous_ids"), plugin_id, issues)
 
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
+    _check_install_table(plugin_dir, plugin_table.get("install"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
@@ -160,6 +218,11 @@ def _check_plugin_toml_schema(
 def _warn_unknown_keys(table: dict[str, object], allowed: set[str], label: str, issues: list[tuple[str, str]]) -> None:
     for key in sorted(set(table) - allowed):
         issues.append(("warning", f"{label}.{key} is not a recognized plugin.toml field"))
+
+
+def _error_unknown_keys(table: dict[str, object], allowed: set[str], label: str, issues: list[tuple[str, str]]) -> None:
+    for key in sorted(set(table) - allowed):
+        issues.append(("error", f"{label}.{key} is not a recognized plugin.toml field"))
 
 
 def _require_string(
@@ -184,6 +247,22 @@ def _check_optional_string(table: dict[str, object], key: str, label: str, issue
     value = table.get(key)
     if value is not None and not isinstance(value, str):
         issues.append(("error", f"{label} must be a string"))
+
+
+def _check_optional_i18n_string(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
+    value = table.get(key)
+    if value is None or isinstance(value, str):
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", f"{label} must be a string or $i18n table"))
+        return
+    _warn_unknown_keys(value, {"$i18n", "default"}, label, issues)
+    ref = value.get("$i18n")
+    if not isinstance(ref, str) or not ref.strip():
+        issues.append(("error", f"{label}.$i18n must be a non-empty string"))
+    default = value.get("default")
+    if default is not None and not isinstance(default, str):
+        issues.append(("error", f"{label}.default must be a string"))
 
 
 def _check_optional_bool(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
@@ -241,6 +320,33 @@ def _check_plugin_dependency_id_list(
             continue
         if dependency_id == plugin_id:
             issues.append(("error", f"{label}[{index}] must not reference the plugin itself"))
+
+
+def _check_previous_plugin_ids(
+    value: object,
+    plugin_id: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    label = "[plugin].previous_ids"
+    if value is None:
+        return
+    if not isinstance(value, list):
+        issues.append(("error", f"{label} must be a list of plugin id strings"))
+        return
+
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            issues.append(("error", f"{label}[{index}] must be a non-empty plugin id"))
+            continue
+        previous_id = item.strip()
+        if not re.fullmatch(r"^[A-Za-z0-9_-]+$", previous_id):
+            issues.append(("error", f"{label}[{index}] must be a plugin id, got '{previous_id}'"))
+        elif previous_id == plugin_id:
+            issues.append(("error", f"{label}[{index}] must not equal [plugin].id"))
+        elif previous_id in seen:
+            issues.append(("error", f"{label}[{index}] duplicates '{previous_id}'"))
+        seen.add(previous_id)
 
 
 def _check_optional_number(
@@ -317,6 +423,153 @@ def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, s
             issues.append(("warning", f"[plugin.i18n].locales_dir does not exist: {locales_dir}"))
 
 
+def _check_install_table(
+    plugin_dir: Path,
+    value: object,
+    issues: list[tuple[str, str]],
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.install] must be a table"))
+        return
+
+    _error_unknown_keys(
+        value,
+        {"enabled", "ui_i18n_dir", "tutorial_enabled", "kinds"},
+        "[plugin.install]",
+        issues,
+    )
+    enabled = value.get("enabled")
+    if not isinstance(enabled, bool):
+        issues.append(("error", "[plugin.install].enabled must be a boolean"))
+
+    tutorial_enabled = value.get("tutorial_enabled", False)
+    if not isinstance(tutorial_enabled, bool):
+        issues.append(("error", "[plugin.install].tutorial_enabled must be a boolean"))
+
+    kinds = value.get("kinds", {})
+    if not isinstance(kinds, dict):
+        issues.append(("error", "[plugin.install].kinds must be a table"))
+        kinds = {}
+    else:
+        for kind, declaration in kinds.items():
+            label = f"[plugin.install.kinds.{kind}]"
+            if not isinstance(kind, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", kind):
+                issues.append(
+                    (
+                        "error",
+                        f"[plugin.install].kinds key {kind!r} must match ^[a-z][a-z0-9_]*$",
+                    )
+                )
+            if not isinstance(declaration, dict):
+                issues.append(("error", f"{label} must be a table"))
+                continue
+            _error_unknown_keys(
+                declaration,
+                {"entry_id", "label", "queued_message", "entry_timeout"},
+                label,
+                issues,
+            )
+            for field in ("entry_id", "label", "queued_message"):
+                field_value = declaration.get(field)
+                field_label = f"{label}.{field}"
+                if not isinstance(field_value, str) or not field_value:
+                    issues.append(("error", f"{field_label} must be a non-empty string"))
+                elif field_value.strip() != field_value:
+                    issues.append(
+                        ("error", f"{field_label} must not contain leading/trailing whitespace")
+                    )
+            timeout = declaration.get("entry_timeout")
+            timeout_is_valid = not isinstance(timeout, bool) and isinstance(
+                timeout,
+                (int, float),
+            )
+            if timeout_is_valid:
+                try:
+                    timeout_number = float(timeout)
+                except (OverflowError, ValueError):
+                    timeout_is_valid = False
+                else:
+                    timeout_is_valid = math.isfinite(timeout_number) and timeout_number > 0
+            if not timeout_is_valid:
+                issues.append(
+                    (
+                        "error",
+                        f"{label}.entry_timeout must be a finite number greater than zero",
+                    )
+                )
+
+    ui_i18n_dir = value.get("ui_i18n_dir")
+    if ui_i18n_dir is not None:
+        _check_install_i18n_dir(plugin_dir, ui_i18n_dir, issues)
+
+    if enabled is False:
+        if kinds:
+            issues.append(("error", "disabled [plugin.install] must not define install kinds"))
+        if tutorial_enabled is True:
+            issues.append(("error", "disabled [plugin.install] must not enable tutorials"))
+        if ui_i18n_dir is not None:
+            issues.append(("error", "disabled [plugin.install] must not define ui_i18n_dir"))
+
+
+def _check_install_i18n_dir(
+    plugin_dir: Path,
+    value: object,
+    issues: list[tuple[str, str]],
+) -> None:
+    label = "[plugin.install].ui_i18n_dir"
+    if not isinstance(value, str) or not value or value.strip() != value:
+        issues.append(("error", f"{label} must be a non-empty relative path"))
+        return
+
+    relative = Path(value)
+    posix_path = PurePosixPath(value)
+    windows_path = PureWindowsPath(value)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
+    ):
+        issues.append(("error", f"{label} must stay within the plugin directory"))
+        return
+
+    try:
+        plugin_root = plugin_dir.resolve(strict=True)
+        candidate = (plugin_root / relative).resolve(strict=True)
+        candidate.relative_to(plugin_root)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        issues.append(
+            (
+                "error",
+                f"{label} must resolve to an existing directory inside the plugin directory",
+            )
+        )
+        return
+
+    current = plugin_root
+    for part in relative.parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except OSError:
+            break
+        file_attributes = getattr(metadata, "st_file_attributes", 0)
+        reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if current.is_symlink() or bool(file_attributes & reparse_attribute):
+            try:
+                current.resolve(strict=True).relative_to(plugin_root)
+            except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                issues.append(
+                    ("error", f"{label} must not escape through a link or reparse point")
+                )
+                return
+
+    if not candidate.is_dir():
+        issues.append(("error", f"{label} must point to an existing directory"))
+
+
 def _check_safety_table(value: object, issues: list[tuple[str, str]]) -> None:
     if value is None:
         return
@@ -387,8 +640,19 @@ def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str
     if not isinstance(value, dict):
         issues.append(("error", "[plugin.ui] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "panel", "guide", "docs", "warnings"}, "[plugin.ui]", issues)
+    _warn_unknown_keys(
+        value,
+        {"enabled", "expose_legacy_static_panel", "panel", "guide", "docs", "warnings"},
+        "[plugin.ui]",
+        issues,
+    )
     _check_optional_bool(value, "enabled", "[plugin.ui].enabled", issues)
+    _check_optional_bool(
+        value,
+        "expose_legacy_static_panel",
+        "[plugin.ui].expose_legacy_static_panel",
+        issues,
+    )
     for kind in ("panel", "guide", "docs"):
         raw = value.get(kind)
         if raw is None:
@@ -407,7 +671,7 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
         return
     _warn_unknown_keys(value, {"id", "title", "entry", "mode", "url", "ui_path", "open_in", "context", "permissions", "available"}, label, issues)
     _check_optional_string(value, "id", f"{label}.id", issues)
-    _check_optional_string(value, "title", f"{label}.title", issues)
+    _check_optional_i18n_string(value, "title", f"{label}.title", issues)
     entry = value.get("entry")
     url = value.get("url")
     if entry and url:

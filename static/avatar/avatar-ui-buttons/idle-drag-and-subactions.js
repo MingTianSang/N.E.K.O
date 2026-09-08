@@ -3,10 +3,8 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
     tier: _NEKO_IDLE_TIER_CAT1,
     idleSubstate: _NEKO_IDLE_CAT1_SUBSTATE_IDLE,
     walkingSubstate: _NEKO_IDLE_CAT1_SUBSTATE_WALKING,
-    finishingSubstate: _NEKO_IDLE_CAT1_SUBSTATE_STRETCH,
     classNames: Object.freeze({
         walking: 'is-cat1-walking',
-        finishing: 'is-cat1-stretching',
         facingRight: 'is-cat1-facing-right',
         paused: 'is-cat1-hover-paused',
         compactTopEdge: 'is-cat1-on-compact-top-edge'
@@ -19,7 +17,6 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
     assets: Object.freeze({
         idle: () => _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
         walking: _getNekoIdleCat1WalkingAssetUrl,
-        finishing: _getNekoIdleCat1StretchAssetUrl,
         interactive: _getNekoIdleCat1InteractiveAssetUrl
     }),
     target: Object.freeze({
@@ -32,10 +29,6 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
         distanceGrowthForMaxRatePx: _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX,
         minStepMs: _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS,
         maxStepMs: _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS
-    }),
-    settle: Object.freeze({
-        finalHoldMs: _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS,
-        resetFacingAfterMs: _NEKO_IDLE_RETURN_TRANSITION_MS
     }),
     startDelay: Object.freeze({
         choices: Object.freeze([
@@ -68,13 +61,17 @@ let _nekoIdleDesktopChatMinimizedState = {
     screenRect: null,
     updatedAt: 0,
     sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false,
     expandedRecent: false
 };
 let _nekoIdleDesktopCompactSurfaceState = {
     visible: false,
     screenRect: null,
     updatedAt: 0,
-    sourceUpdatedAt: 0
+    sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false
 };
 let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
 let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
@@ -88,44 +85,79 @@ function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
     return Date.now();
 }
 
-function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state) {
-    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
-    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        Number.isFinite(currentSourceUpdatedAt) &&
-        currentSourceUpdatedAt > 0 &&
-        incomingSourceUpdatedAt < currentSourceUpdatedAt;
+function _getNekoIdleDesktopStateLifecycleSequence(detail) {
+    const sequence = Number(detail && detail.lifecycleSequence);
+    return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
 }
 
-function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
+function _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) {
     const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
     const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        (!Number.isFinite(currentSourceUpdatedAt) ||
-            currentSourceUpdatedAt <= 0 ||
-            incomingSourceUpdatedAt >= currentSourceUpdatedAt);
+    if (!Number.isFinite(incomingSourceUpdatedAt) || incomingSourceUpdatedAt <= 0) return 0;
+    if (!Number.isFinite(currentSourceUpdatedAt) || currentSourceUpdatedAt <= 0) return 1;
+    if (incomingSourceUpdatedAt !== currentSourceUpdatedAt) {
+        return incomingSourceUpdatedAt < currentSourceUpdatedAt ? -1 : 1;
+    }
+    const incomingSequence = Number(lifecycleSequence);
+    const currentSequence = Number(state && state.lifecycleSequence);
+    if (Number.isSafeInteger(incomingSequence) && incomingSequence > 0 &&
+        Number.isSafeInteger(currentSequence) && currentSequence > 0 &&
+        incomingSequence !== currentSequence) {
+        return incomingSequence < currentSequence ? -1 : 1;
+    }
+    return 0;
 }
 
-function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
+function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, lifecycleSequence, lifecycleTerminal, state) {
+    const order = _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state);
+    if (order !== 0) return order < 0;
+    // Legacy/native producers may not carry a sequence. At equal timestamps,
+    // an accepted terminal remains authoritative until an explicitly newer
+    // sequence (or a later timestamp) proves that the target reopened.
+    return !!(state && state.lifecycleTerminal && lifecycleTerminal !== true);
+}
+
+function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, lifecycleSequence, state) {
+    return _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) >= 0;
+}
+
+function _makeNekoIdleDesktopChatMinimizedState(
+    minimized,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    expandedRecent,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(minimized && screenRect);
     return {
         minimized: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
         sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true,
         expandedRecent: !active && !!expandedRecent
     };
 }
 
-function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt) {
+function _makeNekoIdleDesktopCompactSurfaceState(
+    visible,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(visible && screenRect);
     return {
         visible: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
-        sourceUpdatedAt: sourceUpdatedAt
+        sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true
     };
 }
 
@@ -408,6 +440,9 @@ function _getNekoIdleReturnCurrentArtUrl(button, tier) {
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EatActionActive(button)) {
         return _NEKO_IDLE_CAT1_EAT_ASSET_URL;
     }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1StretchActionActive(button)) {
+        return _getNekoIdleCat1StretchAssetUrl();
+    }
     return normalizedTier === _NEKO_IDLE_TIER_CAT1
         ? _getNekoIdleCat1ArtSource(button)
         : _getNekoIdleReturnAssetUrl(normalizedTier);
@@ -484,6 +519,10 @@ function _clearNekoIdleCat1EdgePeek(containerOrButton) {
     _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
         button.classList.remove(className);
     });
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');
+    }
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);
 }
 
@@ -501,6 +540,33 @@ function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton) {
         return button.classList.contains(className);
     });
     return activeClass ? activeClass.replace('is-cat1-edge-peek-', '') : '';
+}
+
+function _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    const container = button
+        ? _getNekoIdleReturnContainerFromButton(button)
+        : containerOrButton;
+    return !!(container && typeof container.getAttribute === 'function' &&
+        container.getAttribute('data-neko-live2d-peek-anchor'));
+}
+
+function _isNekoIdleCat1MovementAnchored(containerOrButton) {
+    return _isNekoIdleCat1EdgePeekActive(containerOrButton) ||
+        _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton);
+}
+
+function _dispatchNekoIdleCat1EdgePeekAfterDragObservation(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);
+    if (!button || !edge) return false;
+    _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG, {
+        source: 'return-ball',
+        tier: button.getAttribute('data-neko-idle-tier'),
+        reason: 'drag-edge-peek',
+        edge: edge
+    });
+    return true;
 }
 
 function _isNekoIdleCat1EdgePeekEligible(containerOrButton) {
@@ -599,13 +665,14 @@ function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton) {
 
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const hiddenX = w * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
     const hiddenY = h * _NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO;
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
-    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
     const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
 
@@ -634,11 +701,12 @@ function _restoreNekoIdleCat1EdgePeekBeforeDrag(container) {
     if (!_isNekoIdleCat1EdgePeekEligible(container)) return;
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
-    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
     const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
     container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;
@@ -656,11 +724,12 @@ function _clearNekoIdleCat1EdgePeekForTierExit(container) {
 
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
-    const viewportW = Math.max(w, window.innerWidth || 0);
-    const viewportH = Math.max(h, window.innerHeight || 0);
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
+    const viewportW = Math.max(w, virtualViewport.width || 0);
+    const viewportH = Math.max(h, virtualViewport.height || 0);
     const rawLeft = parseFloat(container.style.left);
     const rawTop = parseFloat(container.style.top);
-    const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
     const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
     container.style.left = `${Math.round(_clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportW - w))}px`;
@@ -733,6 +802,12 @@ function _activateNekoIdleCat1RapidDragReaction(button, tier) {
     const rapidToken = state.rapidToken;
     _setNekoIdleReturnDragActionArt(button, normalizedTier);
     _playNekoIdleCat1RapidDragSound(normalizedTier);
+    _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.RAPID_DRAG, {
+        source: 'return-ball',
+        tier: normalizedTier,
+        timestamp: Date.now(),
+        reason: 'rapid-drag-detected'
+    });
     state.rapidTimer = setTimeout(() => {
         if (state.rapidToken !== rapidToken || !state.active || state.tier !== _NEKO_IDLE_TIER_CAT1) return;
         const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
@@ -892,8 +967,6 @@ function _setNekoIdleReturnDragActionArt(button, tier) {
 function _prepareNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
-    _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
-    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
     if (currentState &&
         currentState.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
@@ -904,17 +977,23 @@ function _prepareNekoIdleReturnDragActionForContainer(container) {
         tier: button.getAttribute('data-neko-idle-tier')
     });
     _setNekoIdleReturnDragPendingClasses(button, true);
-    _cancelNekoIdleCat1Journey(button, {
-        resetArt: false,
-        preserveObservers: true
-    });
 }
 
 function _startNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
-    _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
-    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1EatAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
+    _cancelNekoIdleCat1StretchAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
+    _cancelNekoIdleCat1PlayAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier === _NEKO_IDLE_TIER_NONE) return;
     const state = _getNekoIdleReturnDragActionState(button);
@@ -926,12 +1005,13 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
-        preserveObservers: true
+        preserveObservers: true,
+        reason: 'return-ball-drag-active'
     });
     _setNekoIdleReturnDragPendingClasses(button, false);
     _setNekoIdleReturnDragActionClasses(button, true);
     _setNekoIdleReturnDragActionArt(button, tier);
-    _playNekoIdleCat1DragSound(tier);
+    _playNekoIdleCat1DragSound(tier, { reason: 'return-ball-drag-active' });
     _logNekoIdleReturnDragDebug('active', {
         containerId: container && container.id,
         tier: tier,
@@ -1006,8 +1086,7 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         lastStepAt: 0,
         facingRight: false,
         targetKind: '',
-        settleTimer: 0,
-        settleToken: 0,
+        compactTopEdgeSettleToken: 0,
         pendingWalkTimer: 0,
         pendingWalkToken: 0,
         pendingWalkDelayMs: 0,
@@ -1015,6 +1094,10 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         walkSpeedRate: 1,
         walkPreviousDistance: 0,
         walkDistanceGrowthPx: 0,
+        // One minimized-side approach has one local tail only: play or stretch.
+        // Keep the resolution until a later, genuinely new walk starts so a
+        // duplicated finish callback cannot re-roll or append the other tail.
+        walkFinishResolution: '',
         actionSettled: false,
         pairMoveTimer: 0,
         pairMoveToken: 0,
@@ -1040,13 +1123,13 @@ function _getNekoIdleCat1Journey(button) {
 
 function _getNekoIdleCat1ArtSource(button) {
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    if (_isNekoIdleCat1StretchActionActive(button)) {
+        return _getNekoIdleCat1StretchAssetUrl();
+    }
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state) return profile.assets.idle();
     if (state.substate === profile.walkingSubstate) {
         return profile.assets.walking();
-    }
-    if (state.substate === profile.finishingSubstate) {
-        return profile.assets.finishing();
     }
     return profile.assets.idle();
 }
@@ -1141,14 +1224,15 @@ function _reassertNekoIdleCat1LayerForFollow(container) {
 function _getNekoIdleScreenRectFromCompactSurfaceRect(rect) {
     const normalized = _normalizeNekoIdleScreenRect(rect);
     if (!normalized) return null;
+    const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();
     const explicitLeft = Number(rect && rect.screenLeft);
     const explicitTop = Number(rect && rect.screenTop);
     const left = Number.isFinite(explicitLeft)
         ? explicitLeft
-        : (Number.isFinite(window.screenX) ? window.screenX : 0) + normalized.left;
+        : virtualOrigin.x + normalized.left;
     const top = Number.isFinite(explicitTop)
         ? explicitTop
-        : (Number.isFinite(window.screenY) ? window.screenY : 0) + normalized.top;
+        : virtualOrigin.y + normalized.top;
     return {
         left: Math.round(left),
         top: Math.round(top),
@@ -1229,9 +1313,7 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
     }
 
     const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect);
-    const catRect = typeof container.getBoundingClientRect === 'function'
-        ? container.getBoundingClientRect()
-        : null;
+    const catRect = _getNekoDesktopVirtualElementRect(container);
     if (!surfaceScreenRect || !catRect || catRect.width <= 0 || catRect.height <= 0) return false;
     const target = options.target || null;
     const anchorRatio = target && Number.isFinite(Number(target.anchorRatio))
@@ -1279,7 +1361,6 @@ function _setNekoIdleCat1Classes(button, state) {
     const targetKind = state && state.targetKind ? state.targetKind : '';
     const onCompactTopEdge = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
     button.classList.toggle(profile.classNames.walking, substate === profile.walkingSubstate);
-    button.classList.toggle(profile.classNames.finishing, substate === profile.finishingSubstate);
     button.classList.toggle(profile.classNames.facingRight, facingRight);
     button.classList.toggle(profile.classNames.paused, paused);
     button.classList.toggle(profile.classNames.compactTopEdge, onCompactTopEdge);
@@ -1288,6 +1369,23 @@ function _setNekoIdleCat1Classes(button, state) {
         button.setAttribute(profile.dataAttributes.targetKind, targetKind);
     } else {
         button.removeAttribute(profile.dataAttributes.targetKind);
+    }
+    const nativeYarnRect = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
+        ? _getNekoIdleChatMinimizedRect()
+        : null;
+    const nativeYarnVisualAnchor = _usesNekoIdleCat1NativeYarnVisualAnchor(nativeYarnRect);
+    const nativeYarnSide = nativeYarnVisualAnchor
+        ? _getNekoIdleCat1NativeYarnSide(container, nativeYarnRect)
+        : '';
+    if (nativeYarnVisualAnchor) {
+        button.setAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR, 'true');
+    } else {
+        button.removeAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR);
+    }
+    if (nativeYarnSide) {
+        button.setAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR, nativeYarnSide);
+    } else {
+        button.removeAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR);
     }
     const speedRate = substate === profile.walkingSubstate
         ? _formatNekoIdleCat1WalkSpeedRate(state && state.walkSpeedRate)
@@ -1322,7 +1420,6 @@ function _setNekoIdleCat1Classes(button, state) {
             container.removeAttribute(profile.dataAttributes.targetKind);
         }
         container.classList.toggle(profile.classNames.walking, substate === profile.walkingSubstate);
-        container.classList.toggle(profile.classNames.finishing, substate === profile.finishingSubstate);
         container.classList.toggle(profile.classNames.paused, paused);
         container.classList.toggle(profile.classNames.compactTopEdge, onCompactTopEdge);
         container.style.setProperty(
@@ -1376,13 +1473,9 @@ function _disconnectNekoIdleCat1Observer(state) {
     }
 }
 
-function _cancelNekoIdleReturnSubactionSettleTimer(state) {
+function _invalidateNekoIdleCat1CompactTopEdgeSettle(state) {
     if (!state) return;
-    if (state.settleTimer) {
-        clearTimeout(state.settleTimer);
-        state.settleTimer = 0;
-    }
-    state.settleToken = (state.settleToken || 0) + 1;
+    state.compactTopEdgeSettleToken = (state.compactTopEdgeSettleToken || 0) + 1;
 }
 
 function _cancelNekoIdleReturnPendingWalk(state) {
@@ -1396,7 +1489,69 @@ function _cancelNekoIdleReturnPendingWalk(state) {
     state.pendingWalkReady = false;
 }
 
-function _cancelNekoIdleCat1PairMove(state) {
+function _settleNekoIdleCat1CancelledWalkActivity(state, reason) {
+    if (!state || typeof _completeNekoIdleCat1WalkActivity !== 'function') return null;
+    const targetKind = state.targetKind || (state.target && state.target.kind) || '';
+    const activityFacts = _completeNekoIdleCat1WalkActivity(state);
+    if (!activityFacts) return null;
+    // CAT1_WALK_DONE_NEAR_CHAT is the existing physical-walk observation. A
+    // cancellation marker keeps the presentation terminal distinct while the
+    // already travelled path is still settled exactly once by Cat Mind.
+    if (Math.max(0, Number(activityFacts.pathDistancePx) || 0) > 0) {
+        _dispatchNekoCatIdleObservationSource(
+            _NEKO_CAT_IDLE_OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT,
+            Object.assign({
+                source: 'cat1-journey',
+                tier: state.profile && state.profile.tier,
+                timestamp: Date.now(),
+                reason: reason || 'cat1-walk-cancelled',
+                targetKind: targetKind,
+                completed: false,
+                cancelled: true
+            }, activityFacts)
+        );
+    }
+    return activityFacts;
+}
+
+function _queueNekoCatMindSmallMoveCancelledResult(state, plan, reason) {
+    if (!state || state.catMindActionId !== _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) return;
+    const actionId = state.catMindActionId;
+    const runId = state.catMindRunId;
+    const requestId = state.catMindRequestId;
+    const startedAt = state.catMindStartedAt;
+    const source = state.catMindSource;
+    const tier = state.catMindTier || (state.profile && state.profile.tier);
+    const activityFacts = typeof _getNekoIdleCat1PairMoveActivityFacts === 'function'
+        ? _getNekoIdleCat1PairMoveActivityFacts(plan, Date.now())
+        : {
+            activityId: plan && plan.activityId ? plan.activityId : runId,
+            distancePx: 0,
+            pathDistancePx: 0,
+            plannedDurationMs: Math.max(0, Number(plan && plan.durationMs) || 0)
+        };
+    const complete = () => {
+        if (state.catMindActionId !== actionId || state.catMindRunId !== runId) return;
+        _reportNekoCatMindStateActionResult(state, _getNekoCatMindCancelResult(reason, 'cat1-small-move-finished'), {
+            reason,
+            source,
+            tier,
+            runId,
+            requestId,
+            startedAt,
+            detail: Object.assign({
+                chatMode: plan && plan.chatMode ? plan.chatMode : '',
+                restored: true
+            }, activityFacts)
+        });
+    };
+    // The journey caller synchronously restores its art/classes after cancelling
+    // the plan. Queue the terminal result so that restoration is observable first.
+    if (typeof window !== 'undefined' && typeof window.queueMicrotask === 'function') window.queueMicrotask(complete);
+    else Promise.resolve().then(complete);
+}
+
+function _cancelNekoIdleCat1PairMove(state, options = {}) {
     if (!state) return;
     const activePlan = state.pairMovePlan;
     if (activePlan) {
@@ -1412,6 +1567,9 @@ function _cancelNekoIdleCat1PairMove(state) {
     }
     state.pairMoveToken = (state.pairMoveToken || 0) + 1;
     state.pairMovePlan = null;
+    if (activePlan) {
+        _queueNekoCatMindSmallMoveCancelledResult(state, activePlan, options.reason || 'cat1-small-move-cancelled');
+    }
 }
 
 function _interruptNekoIdleCat1PairMoveForRetarget(button, state) {
@@ -1437,6 +1595,11 @@ function _resetNekoIdleCat1WalkSpeed(state) {
     state.walkSpeedRate = 1;
     state.walkPreviousDistance = 0;
     state.walkDistanceGrowthPx = 0;
+}
+
+function _resetNekoIdleCat1WalkFinishResolution(state) {
+    if (!state) return;
+    state.walkFinishResolution = '';
 }
 
 function _getNekoIdleNowMs() {
@@ -1527,10 +1690,11 @@ function _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(container) {
 function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _clearNekoIdleCat1CompactTopEdgeDropTimers(state);
     _cancelNekoIdleCat1Frame(state);
+    _settleNekoIdleCat1CancelledWalkActivity(state, options.reason);
     _cancelNekoIdleCat1SyncFrame(state);
-    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _invalidateNekoIdleCat1CompactTopEdgeSettle(state);
     _cancelNekoIdleReturnPendingWalk(state);
-    _cancelNekoIdleCat1PairMove(state);
+    _cancelNekoIdleCat1PairMove(state, { reason: options.reason });
     _resetNekoIdleCat1WalkSpeed(state);
     _resetNekoIdleCat1CompactFollowState(state);
     if (!options.preserveObservers) {
@@ -1541,8 +1705,13 @@ function _cancelNekoIdleReturnSubactionState(state, options = {}) {
 function _cancelNekoIdleCat1Journey(button, options = {}) {
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state) return;
+    const doorWalk = typeof window !== 'undefined' ? window.NekoDesktopWindowDoorWalk : null;
+    if (doorWalk && typeof doorWalk.cancel === 'function') {
+        doorWalk.cancel(button, { recover: false });
+    }
     _cancelNekoIdleReturnSubactionState(state, {
-        preserveObservers: options.preserveObservers === true
+        preserveObservers: options.preserveObservers === true,
+        reason: options.reason
     });
     _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -1554,6 +1723,7 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     state.targetKind = '';
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
+    _resetNekoIdleCat1WalkFinishResolution(state);
     _resetNekoIdleCat1CompactFollowState(state);
     _setNekoIdleCat1Classes(button, state);
     if (options.resetArt) {
@@ -1572,7 +1742,8 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
 function _cancelNekoIdleCat1JourneyForContainer(container, options = {}) {
     _cancelNekoIdleCat1Journey(_getNekoIdleReturnButtonFromContainer(container), {
         resetArt: options.resetArt !== false,
-        preserveObservers: options.preserveObservers === true
+        preserveObservers: options.preserveObservers === true,
+        reason: options.reason
     });
 }
 
@@ -1743,7 +1914,7 @@ function _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs) {
 
     _clearNekoIdleCat1CompactTopEdgeDropTimers(state);
     _cancelNekoIdleCat1Frame(state);
-    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _invalidateNekoIdleCat1CompactTopEdgeSettle(state);
     _cancelNekoIdleReturnPendingWalk(state);
     _cancelNekoIdleCat1PairMove(state);
     state.substate = profile.idleSubstate;
@@ -1757,7 +1928,7 @@ function _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs) {
     _resetNekoIdleCat1WalkSpeed(state);
     _resetNekoIdleCat1CompactFollowState(state, { keepDropCooldown: true });
 
-    const rect = container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     if (rect && rect.width > 0 && rect.height > 0) {
         const nextPosition = _clampNekoIdleCat1Position(
             rect.left,
@@ -1782,6 +1953,12 @@ function _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs) {
         _setNekoIdleReturnArtSource(art, profile.assets.idle(), profile.tier, { animate: false });
     }
     _setNekoIdleCat1Classes(button, state);
+    _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.CAT1_COMPACT_TOP_EDGE_DROP, {
+        source: 'cat1-journey',
+        tier: profile.tier,
+        reason: 'drop-from-compact-top-edge',
+        targetKind: _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE
+    });
     state.compactTopEdgeDropCooldownTimer = setTimeout(() => {
         const latestState = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
         if (latestState !== state || !state.compactTopEdgeDropCooldownTimer) return;

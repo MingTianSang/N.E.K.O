@@ -74,29 +74,19 @@ async function main() {
   let markProtocolTwoStarted;
   let releaseDelayedDrain;
   let markDelayedDrainStarted;
-  let releaseDelayedCommand;
-  let markDelayedCommandStarted;
   let slowLogEnableGate = null;
   let releaseSlowLogEnable = null;
-  let slowLogEnableAborted = false;
-  let forceHeartbeatInactive = false;
-  let forceDrainInactive = false;
   const protocolTwoGate = new Promise((resolve) => { releaseProtocolTwo = resolve; });
   const protocolTwoStarted = new Promise((resolve) => { markProtocolTwoStarted = resolve; });
   const delayedDrainGate = new Promise((resolve) => { releaseDelayedDrain = resolve; });
   const delayedDrainStarted = new Promise((resolve) => { markDelayedDrainStarted = resolve; });
-  const delayedCommandGate = new Promise((resolve) => { releaseDelayedCommand = resolve; });
-  const delayedCommandStarted = new Promise((resolve) => { markDelayedCommandStarted = resolve; });
   const fetchImpl = async (url, init = {}) => {
     const pathName = String(url);
     if (pathName.startsWith('/api/config/page_config')) {
       return jsonResponse({ autostart_csrf_token: 'test-token' });
     }
     if (pathName === '/api/game/logs/enable') {
-      if (slowLogEnableGate) {
-        init.signal?.addEventListener('abort', () => { slowLogEnableAborted = true; }, { once: true });
-        await slowLogEnableGate;
-      }
+      if (slowLogEnableGate) await slowLogEnableGate;
       return jsonResponse({ ok: true, enabled: true });
     }
     const body = init.body ? JSON.parse(init.body) : {};
@@ -104,10 +94,6 @@ async function main() {
     if (pathName.endsWith('/protocol') && body.sequence === 2) {
       markProtocolTwoStarted();
       await protocolTwoGate;
-    }
-    if (pathName === '/api/game/example-game/round/input' && body.defer_response === true) {
-      markDelayedCommandStarted();
-      await delayedCommandGate;
     }
     if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
       // FastAPI and common proxies answer a rejected close with a non-2xx
@@ -127,22 +113,7 @@ async function main() {
         },
       });
     }
-    if (pathName.endsWith('/route/heartbeat') && forceHeartbeatInactive) {
-      return jsonResponse({
-        ok: true,
-        active: false,
-        state: { game_route_active: false },
-      });
-    }
     if (pathName.endsWith('/route/drain')) {
-      if (forceDrainInactive) {
-        return jsonResponse({
-          ok: true,
-          active: false,
-          state: { game_route_active: false },
-          outputs: [],
-        });
-      }
       const responseData = {
         ok: true,
         outputs: [{
@@ -168,20 +139,10 @@ async function main() {
       }
       return jsonResponse(responseData);
     }
-    if (pathName.endsWith('/speak')) {
-      return jsonResponse({
-        ok: true,
-        speech_id: String(body.request_id || 'speech-response'),
-        turn_end_emitted: body.emit_turn_end !== false,
-      });
-    }
     return jsonResponse({ ok: true, accepted: true });
   };
   const windowMock = {
     AbortController,
-    i18next: { language: 'zh_Hant-TW' },
-    __nekoI18nLanguage: 'pt_BR',
-    NEKO_I18N_LANGUAGE: 'ko-KR',
     console: { warn() {}, error() {}, log() {} },
     fetch: fetchImpl,
     navigator: {
@@ -217,7 +178,7 @@ async function main() {
   };
   const defaultCapabilities = [
     'runtime', 'dialogue', 'logging', 'voice-input', 'speech-output',
-    'context-read', 'memory', 'window-control', 'storage', 'leaderboard-local', 'quick-lines',
+    'context-read', 'memory', 'storage', 'leaderboard-local', 'quick-lines',
   ];
   const hostLaunchRegistrations = Object.fromEntries(
     [...[
@@ -229,36 +190,26 @@ async function main() {
       'logger-one',
       'logger-two',
       'log-timeout-game',
-      'drawing-guess',
-      'invalid-alias-game',
       'invalid-command-game',
     ], ...Array.from({ length: 70 }, (_unused, index) => `overflow-game-${index}`)]
       .map((gameId) => [gameId, {
       mode: gameId === 'example-game' ? 'registered' : 'development',
       gameId,
-      ...(gameId === 'drawing-guess' ? { routeGameType: 'drawing_guess' } : {}),
-      ...(gameId === 'invalid-alias-game' ? { routeGameType: '../invalid' } : {}),
+      publisherId: 'test-host',
+      version: '1.0.0',
+      allowedCapabilities: defaultCapabilities,
       ...(gameId === 'example-game' ? {
         commandRoutes: {
           'round:input': {
             path: 'round/input',
-            maxRequestBytes: 2 * 1024 * 1024,
-            maxTimeoutMs: 330000,
+            maxRequestBytes: 400 * 1024,
+            maxTimeoutMs: 1250,
           },
         },
       } : {}),
       ...(gameId === 'invalid-command-game' ? {
-        commandRoutes: {
-          'round:escape': {
-            path: '../escape',
-            maxRequestBytes: 1024,
-            maxTimeoutMs: 1000,
-          },
-        },
+        commandRoutes: { 'round:input': { path: '../admin' } },
       } : {}),
-      publisherId: 'test-host',
-      version: '1.0.0',
-      allowedCapabilities: defaultCapabilities,
       capabilityProviders: gameId === 'example-game' ? {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
       } : {},
@@ -277,7 +228,6 @@ async function main() {
   let launchBindingWasImmutable = false;
   windowMock.document = {
     currentScript: null,
-    documentElement: { lang: 'es-MX' },
     getElementById(id) { return id === 'neko-minigame-host-launch' ? launchNode : null; },
     createElement() {
       return { remove() { this.removed = true; } };
@@ -304,7 +254,6 @@ async function main() {
       },
     },
   };
-  windowMock.localStorage.setItem('neko_i18n_language', 'ru-RU');
   global.window = windowMock;
 
   const bootstrapPath = path.resolve(
@@ -352,17 +301,6 @@ async function main() {
   } catch (error) { missingRegistrationError = error; }
   assert(missingRegistrationError?.code === 'game_unregistered',
     'a game minted a registered host identity without a launch registration');
-  let invalidAliasRegistrationError = null;
-  try {
-    window.createNekoMiniGameSameOriginHost({
-      gameType: 'invalid-alias-game',
-      fetchImpl,
-      windowImpl: windowMock,
-      navigatorImpl: windowMock.navigator,
-    });
-  } catch (error) { invalidAliasRegistrationError = error; }
-  assert(invalidAliasRegistrationError?.code === 'game_unregistered',
-    'a launch registration with an invalid backend route alias was accepted');
   let invalidCommandRegistrationError = null;
   try {
     window.createNekoMiniGameSameOriginHost({
@@ -403,8 +341,8 @@ async function main() {
       version: '1.0.0',
       requiredCapabilities: ['runtime', 'logging'],
       optionalCapabilities: [
-        'dialogue', 'quick-lines', 'context-read', 'memory', 'window-control', 'storage',
-        'leaderboard-local', 'speech-output', 'voice-input',
+        'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
+        'voice-input',
       ],
       contracts: {
         commands: {
@@ -416,68 +354,6 @@ async function main() {
       },
     },
   });
-  assert(Object.isFrozen(handshake.locale)
-    && handshake.locale.language === 'zh-TW'
-    && handshake.locale.revision === 1,
-  'same-origin host did not normalize and freeze the trusted initial locale');
-  const hostLocaleEvents = [];
-  const unsubscribeHostLocale = host.subscribeHostLocale((value) => hostLocaleEvents.push(value));
-  assert(hostLocaleEvents.length === 1
-    && hostLocaleEvents[0].language === handshake.locale.language
-    && hostLocaleEvents[0].revision === handshake.locale.revision,
-    'host locale subscription did not start from the negotiated snapshot');
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange', {
-    detail: { language: 'ru', revision: 999 },
-  }));
-  assert(hostLocaleEvents.length === 1 && hostLocaleEvents[0].language === 'zh-TW',
-    'host locale trusted localechange event.detail instead of reading host state');
-  windowMock.i18next.language = 'ja_JP';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange', {
-    detail: { language: 'ru' },
-  }));
-  assert(hostLocaleEvents.length === 2
-    && hostLocaleEvents.at(-1).language === 'ja'
-    && hostLocaleEvents.at(-1).revision === 2
-    && Object.isFrozen(hostLocaleEvents.at(-1)),
-  'a late i18next locale was not normalized into a frozen monotonic update');
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.length === 2, 'an unchanged host locale emitted a duplicate update');
-  windowMock.i18next.language = 'unsupported';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'pt',
-    'the host did not fall back from i18next to __nekoI18nLanguage');
-  windowMock.__nekoI18nLanguage = '';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'ko',
-    'the host did not fall back to NEKO_I18N_LANGUAGE');
-  windowMock.NEKO_I18N_LANGUAGE = '';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'es',
-    'the host did not fall back to document.documentElement.lang');
-  windowMock.document.documentElement.lang = 'unsupported';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'ru',
-    'the host did not fall back to its persisted locale');
-  windowMock.localStorage.removeItem('neko_i18n_language');
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'en',
-    'the host did not use the bounded English fallback when every locale source was invalid');
-  windowMock.i18next.language = 'zh-CN';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange'));
-  assert(hostLocaleEvents.at(-1).language === 'zh-CN'
-    && hostLocaleEvents.at(-1).revision === 8,
-  'host locale revisions were not monotonic across trusted source changes');
-  unsubscribeHostLocale();
-  const boundedHostLocaleListeners = Array.from(
-    { length: 32 },
-    () => host.subscribeHostLocale(() => {}),
-  );
-  let hostLocaleListenerLimitError = null;
-  try { host.subscribeHostLocale(() => {}); }
-  catch (error) { hostLocaleListenerLimitError = error; }
-  assert(hostLocaleListenerLimitError?.code === 'busy',
-    'same-origin host locale listener growth was not bounded');
-  boundedHostLocaleListeners.forEach((unsubscribe) => unsubscribe());
   assert(handshake.grantedCapabilities.includes('context-read'),
     'same-origin host did not grant its context adapter');
   assert(handshake.grantedCapabilities.includes('memory'),
@@ -487,151 +363,6 @@ async function main() {
   assert(handshake.grantedCapabilities.includes('storage')
     && handshake.grantedCapabilities.includes('leaderboard-local'),
   'cross-window-safe local leaderboard capability was not granted');
-  assert(!handshake.grantedCapabilities.includes('window-control'),
-    'window-control was granted without a host API captured before game code');
-  let unavailableWindowCloseError = null;
-  try { await host.requestWindowClose(); }
-  catch (error) { unavailableWindowCloseError = error; }
-  assert(unavailableWindowCloseError?.code === 'capability_denied',
-    'a normal browser host served window control without a trusted provider');
-  assert(host.routeGameType === 'example-game',
-    'a registration without routeGameType did not default to its public game id');
-  assert(host.commandRoutes === undefined && host._launchRegistration.commandRoutes === undefined,
-    'trusted command route policies were exposed on the game transport');
-
-  const noCommandHost = createHost({
-    gameType: 'third-party-game',
-    sessionId: 'no-command-session',
-    commandRoutes: {
-      'round:missing': { path: 'attacker/owned' },
-    },
-    fetchImpl,
-    windowImpl: windowMock,
-    navigatorImpl: windowMock.navigator,
-  });
-  const noCommandHandshake = noCommandHost.connectGame({
-    protocolVersions: ['1'],
-    manifest: {
-      id: 'third-party-game',
-      version: '1.0.0',
-      requiredCapabilities: ['runtime', 'logging'],
-      contracts: {
-        commands: {
-          'round:missing': {
-            request: { type: 'object' },
-            response: { type: 'object' },
-          },
-        },
-      },
-    },
-  });
-  assert(noCommandHandshake.accepted === false
-    && noCommandHandshake.code === 'capability_unavailable',
-  'a manifest command without a trusted route mapping passed the handshake');
-  noCommandHost.dispose();
-
-  const aliasedRouteHost = createHost({
-    gameType: 'drawing-guess',
-    routeGameType: 'forged-game',
-    sessionId: 'drawing-session',
-    fetchImpl,
-    windowImpl: windowMock,
-    navigatorImpl: windowMock.navigator,
-  });
-  const aliasedHandshake = aliasedRouteHost.connectGame({
-    protocolVersions: ['1'],
-    manifest: {
-      id: 'drawing-guess',
-      version: '1.0.0',
-      requiredCapabilities: ['runtime', 'logging'],
-      optionalCapabilities: ['voice-input'],
-    },
-  });
-  assert(aliasedHandshake.accepted === true
-    && aliasedHandshake.registration.gameId === 'drawing-guess',
-  'the public SDK identity did not remain canonical across the route alias');
-  const routeAliasDescriptor = Object.getOwnPropertyDescriptor(aliasedRouteHost, 'routeGameType');
-  const routeAliasMutated = Reflect.set(aliasedRouteHost, 'routeGameType', 'forged-game');
-  assert(routeAliasDescriptor?.writable === false
-    && routeAliasDescriptor?.configurable === false
-    && routeAliasMutated === false
-    && aliasedRouteHost.routeGameType === 'drawing_guess',
-  'game code could mutate the host-owned backend route alias');
-  await aliasedRouteHost.start({ lanlan_name: 'Alias Neko', game_type: 'forged-game' });
-  const aliasedStart = calls.filter(
-    (call) => call.url === '/api/game/drawing_guess/route/start',
-  ).at(-1);
-  assert(aliasedStart?.body?.session_id === 'drawing-session'
-    && aliasedStart.body.game_type === 'drawing_guess',
-  'the trusted host did not own the registered legacy route identity');
-  await aliasedRouteHost.heartbeat({ game_type: 'forged-game' });
-  await aliasedRouteHost.drain({ game_type: 'forged-game' });
-  const aliasedHeartbeat = calls.filter(
-    (call) => call.url === '/api/game/drawing_guess/route/heartbeat',
-  ).at(-1);
-  const aliasedDrain = calls.filter(
-    (call) => call.url === '/api/game/drawing_guess/route/drain',
-  ).at(-1);
-  assert(aliasedHeartbeat?.body?.game_type === 'drawing_guess'
-    && aliasedDrain?.body?.game_type === 'drawing_guess',
-  'heartbeat or drain escaped the registered backend route alias');
-
-  let aliasedLogPayload = null;
-  aliasedRouteHost.configureLogger({ captureGlobalErrors: false });
-  aliasedRouteHost._logger.enabled = true;
-  aliasedRouteHost._recordOrSendLogPayload = (payload) => { aliasedLogPayload = payload; };
-  aliasedRouteHost.log('info', 'runtime', 'alias_probe', 'alias probe');
-  assert(aliasedLogPayload?.game_type === 'drawing_guess',
-    'logging escaped the registered backend route alias');
-
-  let aliasedVoiceRequest = null;
-  const aliasedVoiceController = (event) => {
-    if (event?.detail?.type !== 'game_voice_control_request') return;
-    aliasedVoiceRequest = event.detail;
-    windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
-      detail: {
-        type: 'game_voice_control_state',
-        game_type: 'drawing_guess',
-        session_id: 'drawing-session',
-        request_id: event.detail.request_id,
-        ok: true,
-        reason: 'alias-probe',
-      },
-    }));
-  };
-  windowMock.addEventListener('neko-game-voice-control-message', aliasedVoiceController);
-  aliasedRouteHost.startVoiceControlBridge({ BroadcastChannelImpl: null, onState() {} });
-  for (const action of ['query', 'start', 'stop', 'toggle']) {
-    const aliasedVoiceResponse = await aliasedRouteHost.requestVoiceControl(action, {
-      timeoutMs: 500,
-      handoffIntentEpoch: 17,
-    });
-    assert(aliasedVoiceRequest?.action === action
-      && aliasedVoiceRequest.game_type === 'drawing_guess'
-      && !Object.hasOwn(aliasedVoiceRequest, 'ordinary_voice_intent_epoch')
-      && aliasedVoiceResponse.reason === 'alias-probe',
-    `voice ${action} leaked the handoff-only intent fence or escaped the route alias`);
-  }
-  const aliasedHandoffResponse = await aliasedRouteHost.requestVoiceControl('handoff', {
-    timeoutMs: 500,
-    handoffIntentEpoch: 17,
-  });
-  assert(aliasedVoiceRequest?.action === 'handoff'
-    && aliasedVoiceRequest.game_type === 'drawing_guess'
-    && aliasedVoiceRequest.ordinary_voice_intent_epoch === 17
-    && aliasedHandoffResponse.reason === 'alias-probe',
-  'the trusted host rejected or rewrote the voice handoff action/intent fence');
-  aliasedRouteHost.stopVoiceControlBridge();
-  windowMock.removeEventListener('neko-game-voice-control-message', aliasedVoiceController);
-
-  await aliasedRouteHost.end({ game_type: 'forged-game' });
-  const aliasedEnd = calls.filter(
-    (call) => call.url === '/api/game/drawing_guess/end',
-  ).at(-1);
-  assert(aliasedEnd?.body?.game_type === 'drawing_guess',
-    'route end escaped the registered backend route alias');
-  aliasedRouteHost.dispose();
-
   let storageLockEntered = false;
   await host.runGameStorageExclusive('leaderboards/main', async () => {
     storageLockEntered = true;
@@ -679,25 +410,15 @@ async function main() {
     'already-cancelled direct memory consent request changed host state');
   const startResponse = await host.start({
     session_id: 'attacker-session',
-    sdk_route_instance_id: 'route-generation-1',
     lanlan_name: 'Attacker Neko',
-    i18n_language: 'ru',
-    i18nLanguage: 'ru',
-    language: 'ru',
-    lang: 'ru',
-    locale: 'ru',
-    user_language: 'ru',
-    currentLanguage: 'ru',
-    event: { kind: 'locale-forge', language: 'ru', locale: 'ru' },
-    currentState: { marker: 'kept', i18nLanguage: 'ru', lang: 'ru' },
-    current_state: { marker: 'also-kept', user_language: 'ru' },
+    sdk_route_instance_id: 'route-generation-1',
     game_memory_archive_enabled: false,
     legacyGameMemoryEnabled: false,
     legacy_game_memory_event_reply_enabled: false,
   });
   const startData = await startResponse.clone().json();
   host.applyRouteState(startData.state);
-  const startCall = calls.find((call) => call.url === '/api/game/example-game/route/start');
+  const startCall = calls.find((call) => call.url.endsWith('/route/start'));
   assert(startCall.body.session_id === 'client-session',
     'route start trusted an application-supplied session id');
   assert(startCall.body.game_memory_enabled === true,
@@ -710,24 +431,6 @@ async function main() {
   assert(!Object.hasOwn(startCall.body, 'legacyGameMemoryEnabled')
     && !Object.hasOwn(startCall.body, 'legacy_game_memory_event_reply_enabled'),
   'caller-controlled legacy memory aliases survived the trusted host boundary');
-  assert(startCall.body.i18n_language === 'zh-CN'
-    && !Object.hasOwn(startCall.body, 'i18nLanguage')
-    && !Object.hasOwn(startCall.body, 'language')
-    && !Object.hasOwn(startCall.body, 'lang')
-    && !Object.hasOwn(startCall.body, 'locale')
-    && !Object.hasOwn(startCall.body, 'user_language')
-    && !Object.hasOwn(startCall.body, 'currentLanguage'),
-  'route start trusted caller-controlled locale identity aliases');
-  assert(startCall.body.event.kind === 'locale-forge'
-    && !Object.hasOwn(startCall.body.event, 'language')
-    && !Object.hasOwn(startCall.body.event, 'locale')
-    && startCall.body.currentState.marker === 'kept'
-    && !Object.hasOwn(startCall.body.currentState, 'i18nLanguage')
-    && !Object.hasOwn(startCall.body.currentState, 'lang')
-    && startCall.body.current_state.marker === 'also-kept'
-    && !Object.hasOwn(startCall.body.current_state, 'user_language'),
-  'nested runtime locale aliases crossed the host boundary or ordinary state fields were lost');
-
   const commandEnvelope = (payload, routeInstanceId = 'route-generation-1') => ({
     protocolVersion: '1',
     sequence: 1,
@@ -736,133 +439,49 @@ async function main() {
     routeInstanceId,
     payload,
   });
-  const validCommandResponse = await host.executeGameCommand(
+  const commandResponse = await host.executeGameCommand(
     'round:input',
     commandEnvelope({
       text: 'hello',
       session_id: 'attacker-session',
-      sessionId: 'attacker-session',
       game_type: 'attacker-game',
-      gameType: 'attacker-game',
       lanlan_name: 'Attacker Neko',
-      lanlanName: 'Attacker Neko',
-      character_name: 'Attacker Neko',
-      characterName: 'Attacker Neko',
-      window_lanlan_name: 'Attacker Neko',
-      windowLanlanName: 'Attacker Neko',
       sdk_route_instance_id: 'attacker-generation',
-      sdkRouteInstanceId: 'attacker-generation',
-      sdk_route_instance_ids: ['attacker-generation'],
-      routeInstanceId: 'attacker-generation',
-      i18n_language: 'ru',
-      i18nLanguage: 'ru',
-      language: 'ru',
-      locale: 'ru',
-      event: { marker: 'kept', lang: 'ru' },
-      currentState: { marker: 'kept', current_language: 'ru' },
     }),
-    { timeoutMs: 310000 },
+    { timeoutMs: 5000 },
   );
-  assert((await validCommandResponse.json()).accepted === true,
+  assert((await commandResponse.json()).accepted === true,
     'a declared command did not receive its endpoint response');
-  const validCommandCall = calls.filter(
-    (call) => call.url === '/api/game/example-game/round/input',
-  ).at(-1);
-  assert(validCommandCall?.body?.text === 'hello'
-    && validCommandCall.body.session_id === 'server-session'
-    && validCommandCall.body.game_type === 'example-game'
-    && validCommandCall.body.lanlan_name === 'Server Neko'
-    && validCommandCall.body.sdk_route_instance_id === 'route-generation-1'
-    && validCommandCall.body.i18n_language === 'zh-CN'
-    && validCommandCall.body._csrf_token === 'test-token'
-    && validCommandCall.init.headers['X-CSRF-Token'] === 'test-token',
-  'the command route, CSRF contract, or trusted runtime identity was not host-owned');
-  assert(!Object.hasOwn(validCommandCall.body, 'sessionId')
-    && !Object.hasOwn(validCommandCall.body, 'gameType')
-    && !Object.hasOwn(validCommandCall.body, 'lanlanName')
-    && !Object.hasOwn(validCommandCall.body, 'character_name')
-    && !Object.hasOwn(validCommandCall.body, 'characterName')
-    && !Object.hasOwn(validCommandCall.body, 'window_lanlan_name')
-    && !Object.hasOwn(validCommandCall.body, 'windowLanlanName')
-    && !Object.hasOwn(validCommandCall.body, 'sdkRouteInstanceId')
-    && !Object.hasOwn(validCommandCall.body, 'sdk_route_instance_ids')
-    && !Object.hasOwn(validCommandCall.body, 'routeInstanceId'),
-  'caller-controlled command identity aliases crossed the host boundary');
-  assert(!Object.hasOwn(validCommandCall.body, 'i18nLanguage')
-    && !Object.hasOwn(validCommandCall.body, 'language')
-    && !Object.hasOwn(validCommandCall.body, 'locale')
-    && validCommandCall.body.event.marker === 'kept'
-    && !Object.hasOwn(validCommandCall.body.event, 'lang')
-    && validCommandCall.body.currentState.marker === 'kept'
-    && !Object.hasOwn(validCommandCall.body.currentState, 'current_language'),
-  'a command forged its locale identity or lost non-locale nested fields');
-
-  const wideCommandCallsBefore = calls.filter(
-    (call) => call.url === '/api/game/example-game/round/input',
-  ).length;
-  await host.executeGameCommand(
-    'round:input',
-    commandEnvelope({ image_data_url: `data:image/png;base64,${'a'.repeat(300 * 1024)}` }),
-  );
-  assert(calls.filter(
-    (call) => call.url === '/api/game/example-game/round/input',
-  ).length === wideCommandCallsBefore + 1,
-  'the independent command payload budget did not admit a payload above 256 KiB');
-
-  const commandCallsBeforeRejectedPayloads = calls.filter(
-    (call) => call.url === '/api/game/example-game/round/input',
-  ).length;
+  const commandCall = calls.filter((call) => call.url.endsWith('/round/input')).at(-1);
+  assert(commandCall?.url === '/api/game/example-game/round/input'
+    && commandCall.body.text === 'hello'
+    && commandCall.body.session_id === 'server-session'
+    && commandCall.body.game_type === 'example-game'
+    && commandCall.body.lanlan_name === 'Server Neko'
+    && commandCall.body.sdk_route_instance_id === 'route-generation-1',
+  'the command endpoint or trusted runtime identity was not host-owned');
   let oversizedCommandError = null;
+  const commandCallsBeforeOversize = calls.filter(
+    (call) => call.url.endsWith('/round/input'),
+  ).length;
   try {
     await host.executeGameCommand(
       'round:input',
-      commandEnvelope({ image_data_url: 'a'.repeat((2 * 1024 * 1024) + 1) }),
+      commandEnvelope({ text: 'x'.repeat((400 * 1024) + 1) }),
     );
   } catch (error) { oversizedCommandError = error; }
   assert(oversizedCommandError?.code === 'invalid_payload'
-    && calls.filter(
-      (call) => call.url === '/api/game/example-game/round/input',
-    ).length === commandCallsBeforeRejectedPayloads,
+    && calls.filter((call) => call.url.endsWith('/round/input')).length === commandCallsBeforeOversize,
   'a command above its host-owned request policy reached the backend');
-
-  let forgedGenerationError = null;
+  let staleCommandError = null;
   try {
     await host.executeGameCommand(
       'round:input',
-      commandEnvelope({ text: 'forged generation' }, 'attacker-generation'),
+      commandEnvelope({ text: 'stale' }, 'stale-generation'),
     );
-  } catch (error) { forgedGenerationError = error; }
-  assert(forgedGenerationError?.code === 'session_invalid'
-    && calls.filter(
-      (call) => call.url === '/api/game/example-game/round/input',
-    ).length === commandCallsBeforeRejectedPayloads,
-  'a directly forged command generation crossed the transport boundary');
-
-  let undeclaredCommandError = null;
-  try {
-    await host.executeGameCommand('round:undeclared', {
-      ...commandEnvelope({ text: 'undeclared' }),
-      type: 'round:undeclared',
-    });
-  } catch (error) { undeclaredCommandError = error; }
-  assert(undeclaredCommandError?.code === 'capability_denied',
-    'a command outside the manifest and host route intersection was accepted');
-
-  const delayedCommand = host.executeGameCommand(
-    'round:input',
-    commandEnvelope({ defer_response: true }),
-  );
-  await delayedCommandStarted;
-  host.applyRouteState({ session_id: 'replacement-session' });
-  releaseDelayedCommand();
-  let retiredCommandResponseError = null;
-  try { await delayedCommand; } catch (error) { retiredCommandResponseError = error; }
-  assert(retiredCommandResponseError?.code === 'session_invalid',
-    'a command response was accepted after its runtime identity retired');
-  const restartedResponse = await host.start({
-    sdk_route_instance_id: 'route-generation-2',
-  });
-  host.applyRouteState((await restartedResponse.clone().json()).state);
+  } catch (error) { staleCommandError = error; }
+  assert(staleCommandError?.code === 'session_invalid',
+    'a command escaped its active route-generation fence');
   const ungrantedHost = createHost({
     gameType: 'third-party-game',
     sessionId: 'ungranted-session',
@@ -891,8 +510,6 @@ async function main() {
     () => ungrantedHost.speak({ line: 'denied' }),
     () => ungrantedHost.submitVoiceTranscript({ transcript: 'denied' }),
     () => ungrantedHost.mountAvatar({}),
-    () => ungrantedHost.getAvatarCharacter(''),
-    () => ungrantedHost.listAvatarCharacters(),
     () => ungrantedHost.mountAudio({}),
     () => ungrantedHost.postLog({ event: 'denied' }),
   ];
@@ -1172,325 +789,6 @@ async function main() {
     'a newer speech playback state was incorrectly deduplicated');
   host.stopSpeechPlaybackBridge();
 
-  // Route-bound project speech is tapped by the trusted host itself. The game
-  // receives neither the raw WebSocket nor audio chunks, and the host must not
-  // suppress the primary stream until the route-specific tap says it is ready.
-  const speechTapSockets = [];
-  class SpeechTapWebSocketMock {
-    constructor(url) {
-      this.url = String(url);
-      this.readyState = 0;
-      this.sent = [];
-      this.closed = false;
-      speechTapSockets.push(this);
-    }
-    open() {
-      this.readyState = 1;
-      this.onopen?.({ type: 'open' });
-    }
-    receive(data) { this.onmessage?.({ data }); }
-    send(data) { this.sent.push(data); }
-    close(code = 1000, reason = '') {
-      if (this.readyState === 3) return;
-      this.readyState = 3;
-      this.closed = true;
-      this.closeCode = code;
-      this.closeReason = reason;
-      this.onclose?.({ code, reason });
-    }
-  }
-  const blobLabels = new WeakMap();
-  const deliveredSpeechBlobs = [];
-  let releaseFirstSpeechBlob;
-  const firstSpeechBlobGate = new Promise((resolve) => { releaseFirstSpeechBlob = resolve; });
-  let releaseOldGenerationBlob;
-  const oldGenerationBlobGate = new Promise((resolve) => { releaseOldGenerationBlob = resolve; });
-  let releaseNewGenerationFirstBlob;
-  const newGenerationFirstBlobGate = new Promise((resolve) => {
-    releaseNewGenerationFirstBlob = resolve;
-  });
-  windowMock.appState = {
-    interruptedSpeechId: null,
-    currentPlayingSpeechId: null,
-    pendingDecoderReset: false,
-    decoderResetPromise: null,
-    incomingAudioEpoch: 0,
-    pendingAudioChunkMetaQueue: [],
-  };
-  windowMock.appAudioPlayback = {
-    schedulePendingAudioMetaStallCheck() {},
-    async enqueueIncomingAudioBlob(blob) {
-      const meta = windowMock.appState.pendingAudioChunkMetaQueue.shift();
-      const label = blobLabels.get(blob) || 'unknown';
-      deliveredSpeechBlobs.push(`start:${meta?.speechId || 'missing'}:${label}`);
-      if (label === 'blob-1') await firstSpeechBlobGate;
-      if (label === 'old-generation-blocked') await oldGenerationBlobGate;
-      if (label === 'new-generation-first') await newGenerationFirstBlobGate;
-      deliveredSpeechBlobs.push(`end:${meta?.speechId || 'missing'}:${label}`);
-    },
-  };
-  const speechTurnEnds = [];
-  const speechTurnEndHandler = (event) => speechTurnEnds.push(event.detail);
-  windowMock.addEventListener('neko-assistant-turn-end', speechTurnEndHandler);
-  const speechTapErrors = [];
-  const speechTapHost = createHost({
-    gameType: 'drawing-guess',
-    sessionId: 'speech-tap-client-session',
-    fetchImpl,
-    windowImpl: windowMock,
-    navigatorImpl: windowMock.navigator,
-    WebSocketImpl: SpeechTapWebSocketMock,
-    speechTapReconnectLimit: 2,
-    speechTapReconnectDelayMs: 1,
-    speechTapReadyTimeoutMs: 100,
-    speechTapRequestReadyTimeoutMs: 100,
-    speechTapPingIntervalMs: 100,
-  });
-  speechTapHost.connectGame({
-    protocolVersions: ['1'],
-    manifest: {
-      id: 'drawing-guess',
-      version: '1.0.0',
-      requiredCapabilities: ['runtime', 'logging', 'speech-output'],
-      optionalCapabilities: [],
-    },
-  });
-  speechTapHost.startSpeechOutputBridge({
-    BroadcastChannelImpl: null,
-    onState() {},
-    onError(error, source) { speechTapErrors.push({ error, source }); },
-  });
-
-  await speechTapHost.requestSpeechOutput({
-    line: 'opening line',
-    request_id: 'pre-route-speech',
-    emit_turn_end: true,
-  });
-  const preRouteSpeechCall = calls.filter((call) => call.url.endsWith('/speak')).at(-1);
-  assert(preRouteSpeechCall.body.suppress_primary_audio === false,
-    'pre-route speech incorrectly suppressed the primary project stream');
-
-  async function startSpeechTapRoute(routeInstanceId) {
-    const response = await speechTapHost.start({
-      lanlan_name: 'Requested Neko',
-      sdk_route_instance_id: routeInstanceId,
-    });
-    const data = await response.clone().json();
-    speechTapHost.applyRuntimeState(data.state);
-    return speechTapSockets.at(-1);
-  }
-  async function settleSpeechTapMessages() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  function readySpeechTapSocket(socket) {
-    socket.open();
-    socket.receive(JSON.stringify({
-      type: 'speech_tap_ready',
-      ok: true,
-      game_type: 'drawing_guess',
-      session_id: 'server-session',
-    }));
-  }
-
-  const firstSpeechTapSocket = await startSpeechTapRoute('speech-generation-A');
-  assert(firstSpeechTapSocket.url.startsWith(
-    'ws://127.0.0.1:48911/api/game/drawing_guess/speech/ws?',
-  ) && firstSpeechTapSocket.url.includes('lanlan_name=Server+Neko')
-    && firstSpeechTapSocket.url.includes('session_id=server-session')
-    && firstSpeechTapSocket.url.includes('sdk_route_instance_id=speech-generation-A'),
-  'speech tap did not bind the trusted route alias, session, character, and generation');
-
-  const speakCallsBeforeReady = calls.filter((call) => call.url.endsWith('/speak')).length;
-  const firstRouteSpeech = speechTapHost.requestSpeechOutput({
-    line: 'first route line',
-    request_id: 'route-speech-A',
-    emit_turn_end: true,
-    sdk_route_instance_id: 'speech-generation-A',
-  });
-  await settleSpeechTapMessages();
-  assert(calls.filter((call) => call.url.endsWith('/speak')).length === speakCallsBeforeReady,
-    'route-bound speech was dispatched before tap_ready');
-
-  const firstBlob = new Blob(['first']);
-  const secondBlob = new Blob(['second']);
-  blobLabels.set(firstBlob, 'blob-1');
-  blobLabels.set(secondBlob, 'blob-2');
-  // All four messages intentionally arrive in the same task. The Blob callbacks
-  // capture ready=false before messageTail processes the ready frame, so the
-  // handler must also consult the then-current ready state.
-  readySpeechTapSocket(firstSpeechTapSocket);
-  firstSpeechTapSocket.receive(JSON.stringify({
-    type: 'audio_chunk', speech_id: 'chunk-A1', turn_id: 'turn-A',
-  }));
-  firstSpeechTapSocket.receive(firstBlob);
-  firstSpeechTapSocket.receive(JSON.stringify({
-    type: 'audio_chunk', speech_id: 'chunk-A2', turn_id: 'turn-A',
-  }));
-  firstSpeechTapSocket.receive(secondBlob);
-  await firstRouteSpeech;
-  const firstRouteSpeechCall = calls.filter((call) => call.url.endsWith('/speak')).at(-1);
-  assert(firstRouteSpeechCall.body.suppress_primary_audio === true,
-    'tap-ready route speech did not suppress the duplicate primary stream');
-  await settleSpeechTapMessages();
-  assert(deliveredSpeechBlobs.join(',') === 'start:chunk-A1:blob-1',
-    `speech Blob FIFO advanced before the first sink settled: ${deliveredSpeechBlobs.join(',')}`);
-  releaseFirstSpeechBlob();
-  await speechTapHost._speechAudioTap.messageTail;
-  assert(deliveredSpeechBlobs.join(',') === [
-    'start:chunk-A1:blob-1', 'end:chunk-A1:blob-1',
-    'start:chunk-A2:blob-2', 'end:chunk-A2:blob-2',
-  ].join(','), `speech Blob/header FIFO was reordered: ${deliveredSpeechBlobs.join(',')}`);
-  assert(speechTurnEnds.some((event) => event.turnId === 'route-speech-A'
-    && event.source === 'minigame_sdk_speech'),
-  'the trusted host did not dispatch turn-end for an acknowledged speech response');
-
-  const oldGenerationBlob = new Blob(['old-generation']);
-  blobLabels.set(oldGenerationBlob, 'old-generation-blocked');
-  firstSpeechTapSocket.receive(JSON.stringify({
-    type: 'audio_chunk', speech_id: 'chunk-A-blocked', turn_id: 'turn-A',
-  }));
-  firstSpeechTapSocket.receive(oldGenerationBlob);
-  await settleSpeechTapMessages();
-  assert(deliveredSpeechBlobs.at(-1) === 'start:chunk-A-blocked:old-generation-blocked',
-    'the old-generation sink gate was not reached before route replacement');
-
-  const staleSocketMessage = firstSpeechTapSocket.onmessage;
-  const secondSpeechTapSocket = await startSpeechTapRoute('speech-generation-B');
-  assert(firstSpeechTapSocket.closed && secondSpeechTapSocket !== firstSpeechTapSocket,
-    'a new route generation did not replace the old speech tap');
-  const deliveredBeforeStale = deliveredSpeechBlobs.length;
-  staleSocketMessage?.({ data: JSON.stringify({ type: 'audio_chunk', speech_id: 'stale-chunk' }) });
-  staleSocketMessage?.({ data: new Blob(['stale']) });
-  await settleSpeechTapMessages();
-  assert(deliveredSpeechBlobs.length === deliveredBeforeStale,
-    'a retired route generation delivered late raw speech data');
-
-  readySpeechTapSocket(secondSpeechTapSocket);
-  await settleSpeechTapMessages();
-  const newGenerationFirstBlob = new Blob(['new-generation-first']);
-  const newGenerationSecondBlob = new Blob(['new-generation-second']);
-  blobLabels.set(newGenerationFirstBlob, 'new-generation-first');
-  blobLabels.set(newGenerationSecondBlob, 'new-generation-second');
-  secondSpeechTapSocket.receive(JSON.stringify({
-    type: 'audio_chunk', speech_id: 'chunk-B1', turn_id: 'turn-B',
-  }));
-  secondSpeechTapSocket.receive(newGenerationFirstBlob);
-  secondSpeechTapSocket.receive(JSON.stringify({
-    type: 'audio_chunk', speech_id: 'chunk-B2', turn_id: 'turn-B',
-  }));
-  secondSpeechTapSocket.receive(newGenerationSecondBlob);
-  await settleSpeechTapMessages();
-  assert(deliveredSpeechBlobs.at(-1) === 'start:chunk-B1:new-generation-first',
-    'the new-generation FIFO did not pause at its first sink item');
-  releaseOldGenerationBlob();
-  await settleSpeechTapMessages();
-  assert(!deliveredSpeechBlobs.some((item) => item.includes('new-generation-second')),
-    'a retired asynchronous drain consumed data from the replacement generation');
-  releaseNewGenerationFirstBlob();
-  await speechTapHost._speechAudioTap.messageTail;
-  assert(deliveredSpeechBlobs.slice(-3).join(',') === [
-    'end:chunk-B1:new-generation-first',
-    'start:chunk-B2:new-generation-second',
-    'end:chunk-B2:new-generation-second',
-  ].join(','), 'the replacement generation did not retain its own Blob FIFO');
-  secondSpeechTapSocket.close(1006, 'transient-1');
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const reconnectOne = speechTapSockets.at(-1);
-  assert(reconnectOne !== secondSpeechTapSocket,
-    'speech tap did not perform its first bounded reconnect');
-  reconnectOne.close(1006, 'transient-2');
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const reconnectTwo = speechTapSockets.at(-1);
-  assert(reconnectTwo !== reconnectOne,
-    'speech tap did not perform its second bounded reconnect');
-  reconnectTwo.close(1006, 'transient-3');
-  const socketCountAtReconnectLimit = speechTapSockets.length;
-  await new Promise((resolve) => setTimeout(resolve, 15));
-  assert(speechTapSockets.length === socketCountAtReconnectLimit,
-    'speech tap exceeded its per-route reconnect limit');
-
-  const heartbeatSocket = await startSpeechTapRoute('speech-generation-heartbeat');
-  readySpeechTapSocket(heartbeatSocket);
-  await settleSpeechTapMessages();
-  forceHeartbeatInactive = true;
-  await speechTapHost.heartbeat({ sdk_route_instance_id: 'speech-generation-heartbeat' });
-  forceHeartbeatInactive = false;
-  const heartbeatSocketCount = speechTapSockets.length;
-  await new Promise((resolve) => setTimeout(resolve, 15));
-  assert(heartbeatSocket.closed
-    && speechTapHost._activeRouteIdentity === null
-    && speechTapSockets.length === heartbeatSocketCount,
-  'an inactive heartbeat left the speech tap alive or reconnecting');
-
-  const drainSocket = await startSpeechTapRoute('speech-generation-drain');
-  readySpeechTapSocket(drainSocket);
-  await settleSpeechTapMessages();
-  forceDrainInactive = true;
-  await speechTapHost.drain({ sdk_route_instance_id: 'speech-generation-drain' });
-  forceDrainInactive = false;
-  assert(drainSocket.closed && speechTapHost._activeRouteIdentity === null,
-    'an inactive drain response did not retire the speech tap');
-
-  const unavailableSocket = await startSpeechTapRoute('speech-generation-no-sink');
-  readySpeechTapSocket(unavailableSocket);
-  await settleSpeechTapMessages();
-  const savedAudioPlayback = windowMock.appAudioPlayback;
-  delete windowMock.appAudioPlayback;
-  const speakCallsBeforeMissingSink = calls.filter((call) => call.url.endsWith('/speak')).length;
-  let missingTapError = null;
-  try {
-    await speechTapHost.requestSpeechOutput({
-      line: 'must not disappear',
-      request_id: 'missing-tap',
-      sdk_route_instance_id: 'speech-generation-no-sink',
-    });
-  } catch (error) { missingTapError = error; }
-  windowMock.appAudioPlayback = savedAudioPlayback;
-  assert(missingTapError?.code === 'capability_unavailable'
-    && calls.filter((call) => call.url.endsWith('/speak')).length === speakCallsBeforeMissingSink,
-  'missing route audio tap did not fail stably before suppressing the primary stream');
-
-  const endSocket = await startSpeechTapRoute('speech-generation-end');
-  readySpeechTapSocket(endSocket);
-  await settleSpeechTapMessages();
-  const speakCallsBeforeRejectedEnd = calls.filter((call) => call.url.endsWith('/speak')).length;
-  const rejectedTapEnd = await speechTapHost.end({
-    sdk_route_instance_id: 'speech-generation-end',
-    force_end_http_error: true,
-  });
-  assert(rejectedTapEnd.ok === false && rejectedTapEnd.status === 409,
-    'a rejected route end was not surfaced to the speech host caller');
-  assert(!endSocket.closed
-    && speechTapHost._activeRouteIdentity?.routeInstanceId === 'speech-generation-end',
-  'a rejected route end retired the still-active speech tap');
-  await speechTapHost.requestSpeechOutput({
-    line: 'the original route is still active',
-    request_id: 'speech-after-rejected-end',
-    sdk_route_instance_id: 'speech-generation-end',
-  });
-  const speechAfterRejectedEnd = calls
-    .filter((call) => call.url.endsWith('/speak'))
-    .slice(speakCallsBeforeRejectedEnd)
-    .find((call) => call.body.request_id === 'speech-after-rejected-end');
-  assert(speechAfterRejectedEnd?.body.suppress_primary_audio === true,
-    'the speech tap was not reusable after a rejected route end');
-  await speechTapHost.end({ sdk_route_instance_id: 'speech-generation-end' });
-  assert(endSocket.closed && speechTapHost._activeRouteIdentity === null,
-    'route end did not close and retire the speech tap');
-  const resetSocket = await startSpeechTapRoute('speech-generation-reset');
-  speechTapHost.resetRuntime({ newSession: true });
-  assert(resetSocket.closed && speechTapHost._activeRouteIdentity === null,
-    'runtime reset did not close and retire the speech tap');
-  const disposeSocket = await startSpeechTapRoute('speech-generation-dispose');
-  speechTapHost.dispose();
-  assert(disposeSocket.closed && speechTapHost._speechAudioTap.blobQueue.length === 0,
-    'host disposal did not close the speech tap and discard queued raw data');
-  assert(speechTapErrors.length === 0,
-    `speech tap emitted unexpected host bridge errors: ${speechTapErrors.map((item) => item.source).join(',')}`);
-  windowMock.removeEventListener('neko-assistant-turn-end', speechTurnEndHandler);
-  delete windowMock.appState;
-  delete windowMock.appAudioPlayback;
-
   const controls = [];
   host.startGameControlBridge({ onControl: (control) => controls.push(control) });
   const delayedDrain = host.drain({
@@ -1527,11 +825,9 @@ async function main() {
     'millisecond control timestamps were changed during normalization');
 
   let sameDocumentState = null;
-  let sameDocumentVoiceError = null;
   host.startVoiceControlBridge({
     BroadcastChannelImpl: null,
     onState: (state, source) => { sameDocumentState = { state, source }; },
-    onError: (error, source) => { sameDocumentVoiceError = { error, source }; },
   });
   windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
     detail: {
@@ -1557,18 +853,6 @@ async function main() {
   assert(sameDocumentState?.state.route_active === false
     && sameDocumentState.state.reason === 'route_closed',
   'the trusted host dropped the closing route inactive voice state');
-  windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
-    detail: {
-      type: 'game_voice_control_error',
-      game_type: 'example-game',
-      session_id: 'server-session',
-      code: 'not-allowed',
-      reason: 'not-allowed',
-    },
-  }));
-  assert(sameDocumentVoiceError?.source === 'same_document'
-    && sameDocumentVoiceError.error.code === 'not-allowed',
-  'same-document voice control errors were not delivered to the SDK bridge');
   const sameDocumentController = (event) => {
     if (event?.detail?.type !== 'game_voice_control_request') return;
     windowMock.dispatchEvent(new windowMock.CustomEvent('neko-game-voice-control-message', {
@@ -1984,91 +1268,17 @@ async function main() {
     return realPost(url, body, options);
   };
   await host.end({ session_id: 'server-session' }, { timeoutMs: 1234 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url)
-    && call.timeoutMs > 0 && call.timeoutMs <= 1234),
+  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 1234),
     'runtime end ignored the caller-supplied timeout');
   endOptionCalls.length = 0;
   await host.end({ session_id: 'server-session' }, { timeoutMs: 999999 });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url)
-    && call.timeoutMs > 0 && call.timeoutMs <= 30000),
+  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 30000),
     'runtime end did not clamp an oversized caller timeout');
   endOptionCalls.length = 0;
   await host.end({ session_id: 'server-session' }, { timeoutMs: 'nonsense' });
-  assert(endOptionCalls.some((call) => /\/end$/.test(call.url)
-    && call.timeoutMs > 0 && call.timeoutMs <= 8000),
+  assert(endOptionCalls.some((call) => /\/end$/.test(call.url) && call.timeoutMs === 8000),
     'an invalid caller timeout did not degrade to the existing default');
   host._post = realPost;
-
-  // Final-log ordering consumes the same advertised deadline as route end;
-  // otherwise a 1s end could spend 1.5s flushing and then start a fresh 1s
-  // request. Use a deterministic clock to prove the remaining budget is sent.
-  {
-    const budgetHost = createHost({
-      gameType: 'example-game',
-      fetchImpl,
-      windowImpl: windowMock,
-      navigatorImpl: windowMock.navigator,
-    });
-    budgetHost.connectGame({
-      protocolVersions: ['1'],
-      manifest: {
-        id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging'], optionalCapabilities: [],
-      },
-    });
-    const realDateNow = Date.now;
-    let budgetNow = 10000;
-    let routedEndBudget = null;
-    Date.now = () => budgetNow;
-    budgetHost.flushLogger = async () => {
-      budgetNow += 400;
-      return { ok: true };
-    };
-    budgetHost._post = async (_url, _body, options) => {
-      routedEndBudget = options.timeoutMs;
-      return jsonResponse(RAW_END_RESPONSE);
-    };
-    try {
-      await budgetHost.end({ reason: 'budgeted-end' }, { timeoutMs: 1000 });
-    } finally {
-      Date.now = realDateNow;
-      budgetHost.dispose();
-    }
-    assert(routedEndBudget === 600,
-      'final-log flush time was not deducted from the route-end deadline');
-  }
-
-  {
-    const abortHost = createHost({
-      gameType: 'example-game',
-      fetchImpl,
-      windowImpl: windowMock,
-      navigatorImpl: windowMock.navigator,
-    });
-    abortHost.connectGame({
-      protocolVersions: ['1'],
-      manifest: {
-        id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging'], optionalCapabilities: [],
-      },
-    });
-    abortHost.flushLogger = () => new Promise(() => {});
-    let abortedEndReachedPost = false;
-    abortHost._post = async () => {
-      abortedEndReachedPost = true;
-      return jsonResponse(RAW_END_RESPONSE);
-    };
-    const endController = new AbortController();
-    const abortedEnd = abortHost.end(
-      { reason: 'cancel-during-flush' },
-      { timeoutMs: 1000, signal: endController.signal },
-    );
-    endController.abort();
-    const abortedEndError = await abortedEnd.then(() => null, (error) => error);
-    assert(abortedEndError?.code === 'cancelled' && abortedEndReachedPost === false,
-      'route end ignored cancellation while waiting for its final-log flush');
-    abortHost.dispose();
-  }
 
   const endResult = await host.end({ session_id: 'server-session' });
   for (const field of LEAKY_ARCHIVE_FIELDS) {
@@ -2168,8 +1378,6 @@ async function main() {
     'the slow logger enable did not time out as set up: ' + JSON.stringify(timedOutEnable));
   assert(timeoutLogHost._logger.enabled !== true,
     'logging was enabled even though the caller was told it timed out');
-  assert(slowLogEnableAborted === true,
-    'timed-out logger enable left its backend request running');
 
   releaseSlowLogEnable();
   await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2180,19 +1388,7 @@ async function main() {
 
   noLockHost.dispose();
   genericHost.dispose();
-  let disposedHostLocaleEvents = 0;
-  host.subscribeHostLocale(() => { disposedHostLocaleEvents += 1; });
-  const localeWindowListenersBeforeHostDispose = listeners.get('localechange')?.size || 0;
   host.dispose();
-  assert((listeners.get('localechange')?.size || 0)
-    === Math.max(0, localeWindowListenersBeforeHostDispose - 1),
-  'host disposal did not remove its localechange listener');
-  windowMock.i18next.language = 'ru';
-  windowMock.dispatchEvent(new windowMock.CustomEvent('localechange', {
-    detail: { language: 'ru', revision: 999 },
-  }));
-  assert(disposedHostLocaleEvents === 1 && host._hostLocale.listeners.size === 0,
-    'host disposal did not clear locale subscribers or accepted a late locale update');
   const endHost = createHost({
     gameType: 'example-game',
     sessionId: 'end-projection-session',
@@ -2381,180 +1577,6 @@ async function main() {
     'a page-exit body that cannot be shed under the quota still used keepalive, '
     + 'which fails before the request leaves the page');
   hugeSessionHost.dispose();
-
-  // Explicit route end gives queued logs a bounded head start, so the backend
-  // cannot mark the session ended before a healthy log transport completes.
-  {
-    let releaseOrderedLog;
-    let markOrderedLogStarted;
-    const orderedLogGate = new Promise((resolve) => { releaseOrderedLog = resolve; });
-    const orderedLogStarted = new Promise((resolve) => { markOrderedLogStarted = resolve; });
-    const orderedCalls = [];
-    const orderedFetch = async (url, init = {}) => {
-      const pathName = String(url);
-      orderedCalls.push(pathName);
-      if (pathName === '/api/game/logs') {
-        markOrderedLogStarted();
-        await orderedLogGate;
-        return jsonResponse({ ok: true });
-      }
-      if (/\/end$/.test(pathName)) return jsonResponse(RAW_END_RESPONSE);
-      return jsonResponse({ ok: true });
-    };
-    const orderedHost = createHost({
-      gameType: 'example-game',
-      sessionId: 'ordered-log-session',
-      fetchImpl: orderedFetch,
-      windowImpl: windowMock,
-      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
-    });
-    orderedHost.connectGame({
-      protocolVersions: ['1'],
-      manifest: {
-        id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging'], optionalCapabilities: [],
-      },
-    });
-    const orderedLog = orderedHost.postLog({
-      session_id: 'ordered-log-session', game_type: 'example-game',
-      level: 'info', category: 'runtime', event: 'before_end', message: 'before end',
-    }, { 'X-CSRF-Token': 'test-token' });
-    const orderedEnd = orderedHost.end({ reason: 'ordered-end' });
-    await orderedLogStarted;
-    assert(!orderedCalls.some((pathName) => /\/end$/.test(pathName)),
-      'explicit route end overtook a healthy final-log flush');
-    releaseOrderedLog();
-    await orderedLog;
-    await orderedEnd;
-    assert(orderedCalls.indexOf('/api/game/logs') < orderedCalls.findIndex((pathName) => /\/end$/.test(pathName)),
-      'explicit route end was sent before its queued log');
-    orderedHost.dispose();
-  }
-
-  // Page exit cannot await, but SDK disposal must not abort the keepalive log
-  // fallback that flushLogger started after sendBeacon declined it.
-  {
-    let releaseExitLog;
-    let markExitLogStarted;
-    let exitLogAborted = false;
-    const exitLogGate = new Promise((resolve) => { releaseExitLog = resolve; });
-    const exitLogStarted = new Promise((resolve) => { markExitLogStarted = resolve; });
-    const preservedFetch = async (url, init = {}) => {
-      const pathName = String(url);
-      if (pathName === '/api/game/logs') {
-        init.signal?.addEventListener('abort', () => { exitLogAborted = true; }, { once: true });
-        markExitLogStarted();
-        await exitLogGate;
-        return jsonResponse({ ok: true });
-      }
-      if (/\/end$/.test(pathName)) return jsonResponse(RAW_END_RESPONSE);
-      return jsonResponse({ ok: true });
-    };
-    const preservedHost = createHost({
-      gameType: 'example-game',
-      sessionId: 'preserved-log-session',
-      fetchImpl: preservedFetch,
-      windowImpl: windowMock,
-      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
-    });
-    preservedHost.connectGame({
-      protocolVersions: ['1'],
-      manifest: {
-        id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging'], optionalCapabilities: [],
-      },
-    });
-    const preservedLog = preservedHost.postLog({
-      session_id: 'preserved-log-session', game_type: 'example-game',
-      level: 'info', category: 'runtime', event: 'page_exit', message: 'page exit',
-    }, { 'X-CSRF-Token': 'test-token' });
-    await preservedHost.end({ reason: 'pagehide' }, { useBeacon: true });
-    await exitLogStarted;
-    preservedHost.dispose({
-      preservePendingOperations: ['route_end'],
-      preserveLogTransport: true,
-    });
-    await Promise.resolve();
-    assert(exitLogAborted === false,
-      'page-exit disposal aborted the keepalive final-log fallback');
-    releaseExitLog();
-    const preservedResult = await preservedLog;
-    assert(preservedResult?.ok === true && exitLogAborted === false,
-      'the preserved page-exit log did not settle successfully');
-  }
-
-  // Preservation must also drain the host-owned overflow summary. When the
-  // queue was full at dispose time, that summary is created only after an
-  // in-flight request settles -- after public capabilities have been cleared.
-  // Sending it through postLog() used to throw capability_denied inside the
-  // fetch-finally callback, leaving flush waiters and the transport resident.
-  {
-    let releaseOverflowLog;
-    let markOverflowLogStarted;
-    let overflowLogCalls = 0;
-    const overflowLogGate = new Promise((resolve) => { releaseOverflowLog = resolve; });
-    const overflowLogStarted = new Promise((resolve) => { markOverflowLogStarted = resolve; });
-    const overflowBodies = [];
-    const overflowFetch = async (url, init = {}) => {
-      const pathName = String(url);
-      if (pathName === '/api/game/logs') {
-        overflowLogCalls += 1;
-        overflowBodies.push(JSON.parse(init.body));
-        if (overflowLogCalls === 1) {
-          markOverflowLogStarted();
-          await overflowLogGate;
-        }
-        return jsonResponse({ ok: true });
-      }
-      if (/\/end$/.test(pathName)) return jsonResponse(RAW_END_RESPONSE);
-      return jsonResponse({ ok: true });
-    };
-    const overflowHost = createHost({
-      gameType: 'example-game',
-      sessionId: 'preserved-overflow-session',
-      fetchImpl: overflowFetch,
-      windowImpl: windowMock,
-      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
-      logQueueLimit: 1,
-      logConcurrency: 1,
-      logPumpIntervalMs: 1,
-    });
-    overflowHost.connectGame({
-      protocolVersions: ['1'],
-      manifest: {
-        id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging'], optionalCapabilities: [],
-      },
-    });
-    const firstOverflowLog = overflowHost.postLog({
-      session_id: 'preserved-overflow-session', game_type: 'example-game',
-      level: 'info', category: 'runtime', event: 'before_overflow', message: 'before overflow',
-    }, { 'X-CSRF-Token': 'test-token' });
-    overflowHost._pumpLogQueue({ force: true });
-    await overflowLogStarted;
-    const droppedOverflowLog = await overflowHost.postLog({
-      session_id: 'preserved-overflow-session', game_type: 'example-game',
-      level: 'info', category: 'runtime', event: 'overflow', message: 'overflow',
-    }, { 'X-CSRF-Token': 'test-token' });
-    assert(droppedOverflowLog?.reason === 'queue_overflow',
-      'the page-exit overflow probe did not fill the log queue');
-    await overflowHost.end({ reason: 'pagehide' }, { useBeacon: true });
-    overflowHost.dispose({
-      preservePendingOperations: ['route_end'],
-      preserveLogTransport: true,
-    });
-    releaseOverflowLog();
-    await firstOverflowLog;
-    for (let turn = 0; turn < 5 && !overflowHost._logTransport.disposed; turn += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    assert(overflowLogCalls === 2
-      && overflowBodies[1]?.event === 'log_queue_overflow',
-    'page-exit preservation dropped the delayed overflow summary');
-    assert(overflowHost._logTransport.disposed === true
-      && overflowHost._logTransport.flushWaiters.length === 0,
-    'page-exit overflow left the preserved log drain resident');
-  }
 
   // Two windows for the same game each scanned the namespace, each saw the
   // same pre-write key count, and each committed -- so the documented per-game

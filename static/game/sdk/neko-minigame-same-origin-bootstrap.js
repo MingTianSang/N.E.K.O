@@ -20,22 +20,6 @@
   const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_ADAPTER_URL = '/static/game/sdk/neko-minigame-same-origin-host.js';
 
-  function captureTrustedWindowClose(windowImpl) {
-    let host = null;
-    let closeWindow = null;
-    try {
-      host = windowImpl?.nekoHost;
-      closeWindow = host?.closeWindow;
-    } catch (_) {
-      return null;
-    }
-    if (typeof closeWindow !== 'function') return null;
-    // Bind both the original function and its receiver now. Game code runs
-    // only after this bootstrap, so later replacement of `window.nekoHost` (or
-    // of its closeWindow property) cannot replace the privileged operation.
-    return closeWindow.bind(host);
-  }
-
   function normalizeCommandRoutes(value) {
     if (value === undefined) return Object.freeze({});
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -72,7 +56,7 @@
     return Object.freeze(routes);
   }
 
-  function normalizeRegistrations(value, providerRegistry = {}, trustedWindowClose = null) {
+  function normalizeRegistrations(value, providerRegistry = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return Object.freeze({});
     const result = {};
     for (const [rawKey, rawRegistration] of Object.entries(value)) {
@@ -109,9 +93,6 @@
           : null,
         avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
           ? rawProviders.avatarHostFactory
-          : null,
-        windowClose: typeof trustedWindowClose === 'function'
-          ? trustedWindowClose
           : null,
       });
       result[gameId] = Object.freeze({
@@ -160,7 +141,6 @@
     });
   }
 
-  const trustedWindowClose = captureTrustedWindowClose(window);
   const documentImpl = window.document;
   const launchNode = documentImpl?.getElementById?.('neko-minigame-host-launch');
   let launchConfig = {};
@@ -173,7 +153,6 @@
   const registrations = normalizeRegistrations(
     launchConfig.registrations,
     launchNode?.nekoCapabilityProviders,
-    trustedWindowClose,
   );
   const adapterUrl = String(launchConfig.adapterUrl || DEFAULT_ADAPTER_URL);
 

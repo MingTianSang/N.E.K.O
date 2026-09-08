@@ -4,27 +4,27 @@ This directory contains the public mini-game runtime and trusted host helpers.
 Game code consumes `NekoMiniGame`; it must not call N.E.K.O REST endpoints,
 microphone bridges, logging endpoints, or Avatar engine managers directly.
 
-The browser SDK, trusted same-origin host adapter, bootstrap, and type contract
-live in this directory. Backend lifecycle and capability requests are handled by
-`main_routers/game_router`; games continue to own their schemas and validators.
+The host-side SDK companion lives in `main_logic/mini_game_sdk`. Structured LLM
+operations use its bounded isolated-attempt policy: invalid provider content may
+retry once with a new client, new isolation id, and a fresh message list; games
+continue to own their schemas and validators.
 
 ## Capability policy
 
 * `logging` is mandatory for every game and must be declared in
   `requiredCapabilities`.
 * `runtime`, `dialogue`, `quick-lines`, `voice-input`, `speech-output`, `audio`,
-  `avatar-renderer`, `window-control`, `leaderboard-local`, and
-  `leaderboard-server` are requested only when a game needs them.
+  `avatar-renderer`, `leaderboard-local`, and `leaderboard-server` are requested
+  only when a game needs them.
 * `quick-lines` is a separate optional capability layered on `dialogue`; a
   manifest that requests it must also request `dialogue`. The first-phase
   same-origin host grants it only when the host launch registration allows it
   and the bootstrap injected a quick-line provider. The common host contains no
   game names or dictionaries.
-* Once a game uses `voice-input`, `speech-output`, `audio`, `avatar-renderer`, or
-  `window-control`, it must use the official SDK implementation. A game cannot
+* Once a game uses `voice-input`, `speech-output`, `audio`, or
+  `avatar-renderer`, it must use the official SDK implementation. A game cannot
   replace those capabilities with its own microphone, project-voice/TTS route,
-  unmanaged Audio/WebAudio, Live2D, VRM, MMD, PNGTuber, or N.E.K.O window-host
-  integration.
+  unmanaged Audio/WebAudio, Live2D, or VRM integration.
 * Capabilities are granted at `connect()` time and remain fixed for the client
   lifetime.
 
@@ -49,7 +49,6 @@ const game = await NekoMiniGame.connect({
   requiredCapabilities: ['runtime', 'logging'],
   optionalCapabilities: [
     'dialogue', 'quick-lines', 'voice-input', 'speech-output', 'audio', 'avatar-renderer',
-    'window-control',
   ],
 }, {
   transport: trustedHostTransport,
@@ -62,9 +61,8 @@ a `registered` or explicit `development` identity, and grants only reviewed
 capabilities. Unknown or disabled formal games are rejected; a game cannot mark
 itself as a development build. Before any game bundle, the trusted page
 template emits a non-executable JSON script named
-`neko-minigame-host-launch`. A trusted inline setup may attach bounded provider
-factories to that DOM node before `neko-minigame-same-origin-bootstrap.js`
-loads; those helpers are removed from `window` before game code. The bootstrap synchronously consumes
+`neko-minigame-host-launch`, followed immediately by
+`neko-minigame-same-origin-bootstrap.js`. The bootstrap synchronously consumes
 and removes that host-owned node; game code receives a readiness promise and
 the resulting factory, but no callable registration producer. It then attaches
 a bounded non-writable, non-configurable handoff only to the adapter script
@@ -78,29 +76,12 @@ capability provider. A future marketplace/isolated host can produce the same
 launch registrations after registry, integrity and launch-ticket checks without
 changing game code.
 
-For a reviewed built-in game whose legacy backend slug is not a valid public
-manifest identifier, the host-owned registration may include `routeGameType`.
-This value is never exposed through the public SDK and is used only when the
-trusted adapter addresses host endpoints. For example, the public game id
-`drawing-guess` can map to the existing backend slug `drawing_guess` without
-relaxing the manifest schema or allowing game code to choose another route.
-
 Voice control is addressed by route identity alone: the host page accepts a
 voice command only when its `game_type`, `session_id` and `sdk_route_instance_id`
 match the live route, and the generation is required rather than optional, which
 is what keeps the built-in soccer/badminton routes (they mint none) out of it.
 None of those three are secrets -- `GET /api/game/route/active` returns them
 unauthenticated -- so a reloaded host page recovers voice control on its own.
-`game.voice.handoff()` is the conditional entry operation: it starts route-bound
-game voice only when an ordinary voice session is already active, ends that
-ordinary session after game recognition acquires the microphone, and otherwise
-returns an inactive state without prompting for microphone access. A completed
-handoff is one-way; stopping game voice does not reopen the ended session.
-If speech playback defers a handoff, the returned
-`ordinary_voice_intent_epoch` can be passed back as `handoffIntentEpoch` on a
-retry. The main-window owner rejects that retry if the user has requested a new
-ordinary voice session in the meantime, so delayed game work cannot steal the
-microphone back from an explicit user action.
 
 There is deliberately no bearer credential here. One existed briefly and was
 removed: every page sharing this origin is inside the same trust boundary
@@ -112,7 +93,7 @@ stronger than it is.
 
 ```html
 <script id="neko-minigame-host-launch" type="application/json">
-{"registrations":{"example-game":{"mode":"registered","gameId":"example-game","publisherId":"reviewed-publisher","version":"1.0.0","allowedCapabilities":["runtime","logging"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":262144,"maxTimeoutMs":30000}}}}}
+{"registrations":{"example-game":{"mode":"registered","gameId":"example-game","publisherId":"reviewed-publisher","version":"1.0.0","allowedCapabilities":["runtime","logging"]}}}
 </script>
 <script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js"></script>
 ```
@@ -129,56 +110,7 @@ capabilities use stable public error codes rather than transport-specific data.
 Games can inspect the immutable `game.host` result but never receive registry
 records, launch tickets, endpoints or credentials.
 
-## Window control
-
-Games that can run inside an N.E.K.O-managed window may request the optional
-`window-control` capability and close that window through the public facade:
-
-```js
-if (game.capabilities.has('window-control')) {
-  const response = await game.window.close();
-  if (!response.ok || !response.data.closed) {
-    // Use the normal browser close/navigation fallback.
-  }
-}
-```
-
-The same-origin bootstrap captures and binds the trusted
-`nekoHost.closeWindow` function before the game bundle runs. The adapter grants
-`window-control` only when that captured provider exists and the host launch
-registration allows it; later replacement of `window.nekoHost` cannot replace
-the captured operation. The SDK does not expose the host object or accept a
-caller-supplied close provider. In a normal browser, the capability is simply
-unavailable and the game remains responsible for its standard
-`window.close()`/navigation fallback.
-
-## Host locale
-
-The current host language is available without a capability grant through the
-read-only locale facade:
-
-```js
-applyLanguage(game.locale.current.language);
-const unsubscribeLocale = game.locale.onChange(({ language }) => {
-  applyLanguage(language);
-});
-```
-
-`game.locale.current` is a frozen `{ language, revision }` snapshot. Supported
-languages are `en`, `ja`, `ko`, `zh-CN`, `zh-TW`, `ru`, `pt`, and `es`; host
-updates carry a monotonic revision and duplicate or out-of-order updates are
-ignored. Games must not read `i18next`, N.E.K.O language globals, or raw
-`localStorage` to determine the language. The trusted host resolves those
-implementation details, normalizes aliases, and injects the authoritative
-`i18n_language` into runtime and command payloads, overriding caller-supplied
-language identity fields.
-
-Locale is host context rather than an optional feature, so manifests do not
-declare a locale capability. `game.dispose()` releases the host subscription;
-for compatibility, a legacy host that supplies no locale starts at `en` with
-revision `0`.
-
-## Declared event, state, control, result and command contracts
+## Declared event, state, control, command and result contracts
 
 Game-specific protocol names and payloads stay in the game manifest. The SDK
 provides only the validated envelope and delivery mechanism:
@@ -208,11 +140,11 @@ const game = await NekoMiniGame.connect({
     },
     controls: { stance: ['ready', 'paused'] },
     commands: {
-      'round:start': {
+      'round:review': {
         request: {
           type: 'object',
-          properties: { round: { type: 'integer', minimum: 1, maximum: 99 } },
-          required: ['round'],
+          properties: { image_data_url: { type: 'string', maxLength: 1800000 } },
+          required: ['image_data_url'],
         },
         response: {
           type: 'object',
@@ -236,10 +168,7 @@ const game = await NekoMiniGame.connect({
 await game.events.emit('round-started', { round: 1 });
 await game.state.update('score', { player: 2, opponent: 1 });
 await game.results.submit('match', { winner: 'player' });
-const round = await game.commands.execute('round:start', { round: 3 }, {
-  signal: roundAbortController.signal,
-  timeoutMs: 30000,
-});
+const review = await game.commands.execute('round:review', { image_data_url: screenshot });
 
 const unsubscribeStance = game.controls.on('stance', ({ payload }) => {
   applyGameStance(payload);
@@ -253,22 +182,13 @@ rejects undeclared names, invalid payloads, another session, incompatible
 protocols and replayed/out-of-order sequence numbers. `result` submits a typed
 game outcome and does not itself end the runtime.
 
-`command` is the manifest-declared request/response path for game-owned rules
-that need an immediate typed result. Both request and response are validated by
-the SDK. Commands require an active `runtime` route, carry its authoritative
-session and route generation, and are cancelled by route end, reset, disposal,
-or route inactivity. A response from a replaced generation is rejected before
-game code can observe it. Each client allows at most eight pending commands;
-command bodies and responses are bounded to 2 MiB and command timeouts to six
-minutes. Ordinary event/state/result payloads retain their 256 KiB limit.
-
-The same-origin adapter resolves command names only through the trusted launch
-registration's `commandRoutes`. Each policy contains a relative endpoint
-`path`, `maxRequestBytes`, and `maxTimeoutMs`; paths cannot be absolute, traverse
-directories, or include query/fragment syntax. Missing mappings reject the SDK
-handshake. The adapter injects route identity and CSRF data and never exposes
-the route table through the public client. A future isolated host may map the
-same declared names to IPC without changing game code.
+`command` is a typed request/response operation bound to the active runtime
+session and route generation. A trusted launch registration maps each declared
+command name to a relative host route and independently caps its request bytes
+and timeout; the mapping is not exposed to game code. The SDK and host retain
+global ceilings of 2 MiB and six minutes, while the SDK admits at most eight
+concurrent command requests. Games without `contracts.commands` do not require
+a command transport.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
@@ -317,9 +237,9 @@ rejected or failed start enters `degraded` state and keeps output polling
 available without sending heartbeats. `runtime.end()` and `game.dispose()` stop
 timers, remove the listener, and abort in-flight lifecycle requests. Games can
 inspect `game.runtime.state` and the immutable `game.runtime.session` snapshot.
-The snapshot's `routeInstanceId` lets a same-origin game bind a legacy custom
-RPC to its exact active route so the backend can reject a superseded window; the
-value becomes an empty string when the route is retired.
+The session snapshot includes `routeInstanceId` while a route generation is
+active, so integrations can correlate work without inventing their own route
+identity.
 
 After the host has resolved the session character, `context.read()`,
 `dialogue.quickLines()`, `speech.preload()`, `speech.speak()`, and
@@ -341,13 +261,9 @@ or ending route so the host session cannot be abandoned by local-only cleanup.
 
 When `pageExit` is enabled, the SDK emits `page-exit` once so the game can
 synchronously release game-owned resources, submits the configured end payload
-with beacon fallback, and disposes the client while preserving in-flight
-route-end and final-log requests. The lifecycle is bound to the non-cancellable
-`pagehide` event; `beforeunload` is deliberately not used because another
-listener can show a confirmation dialog and leave an already-disposed game on
-the page when navigation is cancelled. Games must not install a duplicate
-`pagehide` runtime handler. A game that supports BFCache restoration must
-reconnect its disposed client or reload on a persisted `pageshow`.
+with beacon fallback, and disposes the client while preserving the in-flight
+route-end request. Games must not install duplicate `pagehide` or
+`beforeunload` runtime handlers.
 
 Incoming host events use immutable envelopes with `protocolVersion`, monotonic
 `sequence`, `type`, `timestamp`, `sessionId`, and `payload`. Current built-in
@@ -375,8 +291,7 @@ Capability requests resolve to `{ ok, status, data }`; games do not receive raw
 `details.operation` identifies the public operation without exposing transport
 internals. Callers can pass an `AbortSignal` to request methods; managed runtime
 start/end requests also abort on reset, normal disposal, or a superseding
-lifecycle transition. Commands additionally re-check the runtime session and
-route generation after transport and response parsing complete.
+lifecycle transition.
 
 `dialogue.request()` is bounded to four pending requests, injects the trusted
 runtime session/character and returns bounded immutable JSON. The default mode
@@ -645,16 +560,6 @@ the project TTS route, provider and key selection, audio delivery, global voice
 volume, and playback-state bridge. Games never receive provider credentials,
 raw audio chunks, or host endpoints.
 
-For a trusted same-origin route, the host also binds a private speech-audio tap
-to the registered backend alias and the authoritative session, character, and
-route generation. Route-bound speech waits for that tap's bounded ready
-handshake before suppressing the primary audio stream; if the tap or page audio
-sink is unavailable, the request fails with `capability_unavailable` before TTS
-is dispatched. The host keeps audio headers and Blobs in one FIFO, forwards the
-acknowledged turn-end lifecycle event, limits reconnect attempts, and retires
-the tap on route inactivity, reset, accepted end, generation change, or host
-disposal. These transport details remain outside the game-visible SDK.
-
 The current project TTS worker protocol can emit legacy audio chunks without a
 speech identifier. The host therefore serializes accepted game speech per
 character and keeps at most four active-plus-waiting requests; excess work
@@ -704,12 +609,10 @@ character voice, language and exact text automatically reuses the host cache.
 The public game mounts an Avatar through `game.avatar`:
 
 ```js
-const current = await game.avatar.getCurrentCharacter();
-const names = await game.avatar.listCharacters();
-const selected = await game.avatar.getCharacter(names[0]);
 const avatar = await game.avatar.mount({
   slot: 'opponent',
-  model: selected.model,
+  characterName: 'Opponent Neko',
+  model: { type: 'mmd', path: '/models/opponent.pmx' },
   viewport: { mode: 'fixed', width: 200, height: 300 },
   fit: {
     mode: 'contain',
@@ -721,23 +624,20 @@ const avatar = await game.avatar.mount({
 });
 
 avatar.focus({ x: 320, y: 180 });
-avatar.setView({ scale: 190, x: 0, y: 28 });
 avatar.setEmotion('happy');
+avatar.setView({ scale: 190, x: 0, y: 28 });
 avatar.setSpeaking(true);
-await avatar.setModel({ type: 'mmd', path: '/models/opponent.pmx' });
+await avatar.setModel({ type: 'vrm', path: '/models/opponent.vrm' });
 avatar.dispose();
 ```
 
-Avatar models support `live2d`, `vrm`, `mmd`, and `pngtuber`. Character
-lookups return only a frozen `{ name, model, rendererAvailable }` descriptor;
-private character fields such as prompts, provider settings, and API keys never
-cross the trusted host boundary. The host resolves the current character and
-Live2D catalog path, and limits the public character list to 256 names.
-
-`setView()` preserves game-owned scale/translation controls while the trusted
-renderer performs the engine-specific refit. `setSpeaking()` accepts only a
-boolean. The trusted provider owns the shared speech analyser and maps speaking
-to Live2D mouth parameters, VRM/MMD lip-sync drivers, or PNGTuber speaking state.
+When the trusted host provides character discovery, games can call
+`avatar.listCharacters()`, `avatar.getCurrentCharacter()` and
+`avatar.getCharacter(name)` before mounting. Descriptors expose only the
+character name, approved model (`live2d`, `vrm`, `mmd` or `pngtuber`) and
+renderer availability. Discovery and the optional `setView`/`setSpeaking`
+controller operations are feature-detected; older hosts continue to work for
+games that do not call them.
 
 Viewport and resize modes have matching values:
 
@@ -763,26 +663,21 @@ engine controllers, and model resources.
 
 Games should dispose individual controllers when a slot is permanently removed
 and call `game.dispose()` when leaving the page. `game.dispose()` stops managed
-runtime monitoring; aborts in-flight lifecycle, protocol, command, context,
-dialogue, memory, window-control, storage, leaderboard and speech requests; and
-releases event listeners, presentation controllers and timers, the host locale
-subscription, speech metadata, audio controllers, and Avatar controllers before
-disposing the transport. Host disposal is idempotent,
+runtime monitoring; aborts in-flight lifecycle, protocol, context, dialogue,
+memory, storage, leaderboard and speech requests; and releases event listeners, presentation
+controllers and timers, speech metadata, audio controllers, and Avatar
+controllers before disposing the transport. Host disposal is idempotent,
 including page-exit and partially completed mount paths.
 
-`NekoMiniGameAvatarHost` and the built-in Drawing Guess Avatar provider are
-trusted host helpers, not public game APIs. They are captured by the launch
-bootstrap and removed before game code runs; caller-supplied `avatarHost`
-objects cannot replace a registered provider. The generic helper
+`NekoMiniGameAvatarHost` is a trusted host helper, not a public game API. It
 owns viewport measurement and resize lifecycle while N.E.K.O-owned engine
-adapters provide Live2D/VRM/MMD/PNGTuber loading, focus, view, emotion,
-pause/resume, speaking, refit, and resource disposal for registered slots.
+adapters provide Live2D/VRM/MMD/PNG-tuber loading, focus, emotion, pause/resume, refit, and
+resource disposal for registered slots.
 
 ## Public artifacts
 
 * `neko-minigame-sdk.js`: browser runtime and public entry.
 * `neko-minigame-sdk.d.ts`: JavaScript/TypeScript public types.
 * `neko-minigame-manifest.schema.json`: runtime manifest and contract schema.
-* `neko-minigame-avatar-host.js` and `neko-minigame-drawing-avatar-host.js`:
-  trusted N.E.K.O Avatar host helpers, not APIs exposed to untrusted games.
-  Audio capability handling lives in the same-origin host adapter.
+* `neko-minigame-avatar-host.js` and `neko-minigame-audio-host.js`: trusted
+  N.E.K.O host helpers, not APIs exposed to untrusted games.

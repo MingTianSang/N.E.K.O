@@ -143,6 +143,18 @@
         return normalizeAvatarId(avatarId) + '\u0000' + String(capability || '').trim();
     }
 
+    // 排一帧舞台动画（tween / 漂浮 / 呼吸 / 姿态时间线）：Electron Pet 里渲染后端切到定时器
+    // 驱动时走同周期定时器（frame-pacing.requestPacedFrame），否则 rAF。返回取消函数。
+    // 这些循环在演出期间持续排帧，裸 rAF 会单独把 Blink 主帧顶回显示器刷新率。
+    function scheduleStageFrame(callback) {
+        const pacing = window.nekoFramePacing;
+        if (pacing && typeof pacing.requestPacedFrame === 'function') {
+            return pacing.requestPacedFrame(callback);
+        }
+        const id = window.requestAnimationFrame(callback);
+        return () => window.cancelAnimationFrame(id);
+    }
+
     function now() {
         return (window.performance && typeof window.performance.now === 'function')
             ? window.performance.now()
@@ -395,7 +407,7 @@
                     return;
                 }
 
-                const tween = { rafId: 0, done: false };
+                const tween = { cancelFrame: null, done: false };
                 const tweenKey = sessionId + ':' + now() + ':' + Math.random();
                 this.tweens.set(tweenKey, tween);
                 const startedAt = now();
@@ -424,9 +436,9 @@
                         resolve(true);
                         return;
                     }
-                    tween.rafId = window.requestAnimationFrame(step);
+                    tween.cancelFrame = scheduleStageFrame(step);
                 };
-                tween.rafId = window.requestAnimationFrame(step);
+                tween.cancelFrame = scheduleStageFrame(step);
             });
         }
 
@@ -816,7 +828,7 @@
             const periodMs = Math.max(1200, Number(normalized.periodMs || 5200));
             const phase = Number.isFinite(Number(normalized.phase)) ? Number(normalized.phase) : 0;
             const startedAt = now();
-            const tween = { rafId: 0, done: false };
+            const tween = { cancelFrame: null, done: false };
             const tweenKey = sessionId + ':preset:idleFloat:' + startedAt + ':' + Math.random();
             this.tweens.set(tweenKey, tween);
 
@@ -834,9 +846,9 @@
                     y: base.y + amplitudeY * wave
                 });
                 this.applyFrame(sessionId);
-                tween.rafId = window.requestAnimationFrame(step);
+                tween.cancelFrame = scheduleStageFrame(step);
             };
-            tween.rafId = window.requestAnimationFrame(step);
+            tween.cancelFrame = scheduleStageFrame(step);
             return true;
         }
 
@@ -982,7 +994,7 @@
             const periodMs = Math.max(1600, Number(normalized.periodMs || 4200));
             const phase = Number.isFinite(Number(normalized.phase)) ? Number(normalized.phase) : 0;
             const startedAt = now();
-            const tween = { rafId: 0, done: false };
+            const tween = { cancelFrame: null, done: false };
             const tweenKey = sessionId + ':preset:breathe:' + startedAt + ':' + Math.random();
             this.tweens.set(tweenKey, tween);
 
@@ -1000,9 +1012,9 @@
                     scale: base.scale + scaleAmount * wave
                 });
                 this.applyFrame(sessionId);
-                tween.rafId = window.requestAnimationFrame(step);
+                tween.cancelFrame = scheduleStageFrame(step);
             };
-            tween.rafId = window.requestAnimationFrame(step);
+            tween.cancelFrame = scheduleStageFrame(step);
             return true;
         }
 
@@ -1085,8 +1097,9 @@
             this.tweens.forEach((tween, key) => {
                 if (!sessionId || key.indexOf(sessionId + ':') === 0) {
                     tween.done = true;
-                    if (tween.rafId) {
-                        window.cancelAnimationFrame(tween.rafId);
+                    if (tween.cancelFrame) {
+                        tween.cancelFrame();
+                        tween.cancelFrame = null;
                     }
                     this.tweens.delete(key);
                 }
@@ -1098,8 +1111,9 @@
             this.tweens.forEach((tween, key) => {
                 if (key.indexOf(prefix) === 0) {
                     tween.done = true;
-                    if (tween.rafId) {
-                        window.cancelAnimationFrame(tween.rafId);
+                    if (tween.cancelFrame) {
+                        tween.cancelFrame();
+                        tween.cancelFrame = null;
                     }
                     this.tweens.delete(key);
                 }
@@ -1301,6 +1315,10 @@
             this.profile = normalized.profile || {};
             this.styleSnapshot = null;
             this.ownerSessionId = '';
+            this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
+            this.committedFrameTransformActive = false;
+            this.committedFrameTransformContainer = null;
             this.lookAtSnapshot = null;
             this.lookAtSource = '';
             this.lookAtSessionId = '';
@@ -1535,6 +1553,13 @@
             return true;
         }
 
+        hasContainerTransform(container) {
+            const transform = container && container.style
+                ? String(container.style.transform || '').trim().toLowerCase()
+                : '';
+            return transform !== '' && transform !== 'none';
+        }
+
         isAvailable() {
             return !!(this.getManager() && this.getModel() && this.getContainer());
         }
@@ -1550,6 +1575,15 @@
 
         capture(session, options) {
             const normalized = options || {};
+            const container = this.getContainer();
+            if (this.committedFrameTransformContainer === container &&
+                !this.hasContainerTransform(container)) {
+                if (window._nekoAvatarPerformanceFrameContainer === container) {
+                    window._nekoAvatarPerformanceFrameContainer = null;
+                }
+                this.committedFrameTransformActive = false;
+                this.committedFrameTransformContainer = null;
+            }
             const params = this.lookAtParams || {};
             const requestedParamIds = []
                 .concat(Array.isArray(normalized.paramIds) ? normalized.paramIds : [])
@@ -1560,7 +1594,10 @@
             return {
                 kind: 'live2d',
                 sessionId: session && session.id ? session.id : '',
-                containerStyle: this.captureContainerStyle(this.getContainer()),
+                container: container,
+                containerStyle: this.captureContainerStyle(container),
+                committedFrameTransformActive: this.committedFrameTransformActive,
+                committedFrameTransformContainer: this.committedFrameTransformContainer,
                 params: this.captureParams(paramIds),
                 expression: this.captureExpression(),
                 lookAt: {
@@ -1596,9 +1633,36 @@
                 this.restoreParams(this.expressionParamSnapshot);
                 this.expressionParamSnapshot = null;
             }
-            this.restoreExpression(snapshot.expression);
-            this.restoreContainerStyle(snapshot.containerStyle);
+            const container = this.getContainer();
+            const snapshotContainer = snapshot.container || null;
+            const snapshotCommittedContainer = snapshot.committedFrameTransformContainer || null;
+            const ownedMarkerContainers = [
+                this.activeFrameTransformContainer,
+                this.committedFrameTransformContainer,
+                snapshotCommittedContainer
+            ].filter(Boolean);
+            if (ownedMarkerContainers.includes(window._nekoAvatarPerformanceFrameContainer)) {
+                window._nekoAvatarPerformanceFrameContainer = null;
+            }
 
+            this.restoreExpression(snapshot.expression);
+            if (container && snapshotContainer === container) {
+                this.restoreContainerStyle(snapshot.containerStyle);
+            }
+
+            this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
+            this.committedFrameTransformActive =
+                snapshot.committedFrameTransformActive === true &&
+                snapshotCommittedContainer === container &&
+                snapshotContainer === container &&
+                this.hasContainerTransform(container);
+            this.committedFrameTransformContainer = this.committedFrameTransformActive
+                ? container
+                : null;
+            if (this.committedFrameTransformActive) {
+                window._nekoAvatarPerformanceFrameContainer = container;
+            }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
             this.lookAtSnapshot = null;
@@ -1611,13 +1675,23 @@
             if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
                 return false;
             }
-            const committedStyle = this.captureContainerStyle(this.getContainer());
-            if (!committedStyle) {
+            const container = this.getContainer();
+            const committedStyle = this.captureContainerStyle(container);
+            if (!committedStyle ||
+                (this.activeFrameTransformContainer &&
+                    this.activeFrameTransformContainer !== container)) {
                 return false;
+            }
+            if (this.activeFrameTransformNonIdentity) {
+                this.committedFrameTransformActive = true;
+                this.committedFrameTransformContainer = container;
             }
             this.styleSnapshot = cloneJsonCompatible(committedStyle);
             if (session && session.snapshot && typeof session.snapshot === 'object') {
+                session.snapshot.container = container;
                 session.snapshot.containerStyle = cloneJsonCompatible(committedStyle);
+                session.snapshot.committedFrameTransformActive = this.committedFrameTransformActive;
+                session.snapshot.committedFrameTransformContainer = this.committedFrameTransformContainer;
             }
             return true;
         }
@@ -1625,6 +1699,8 @@
         acquireSession(session) {
             const container = this.getContainer();
             this.ownerSessionId = session && session.id ? session.id : '';
+            this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
             const manager = this.getManager();
             if (this.sessionHasCapability(session, 'motion') && manager && typeof manager.suspendTemporaryMotions === 'function') {
                 this.motionSuspendSource = 'avatar-performance-motion-' + (this.ownerSessionId || 'session');
@@ -1632,7 +1708,12 @@
                     manager.suspendTemporaryMotions(this.motionSuspendSource, this.getModel());
                 } catch (_) {}
             }
-            if (!this.sessionHasCapability(session, 'frame') || !container || this.styleSnapshot) {
+            const hasFrameCapability = this.sessionHasCapability(session, 'frame');
+            if (hasFrameCapability && container) {
+                this.activeFrameTransformContainer = container;
+                window._nekoAvatarPerformanceFrameContainer = container;
+            }
+            if (!hasFrameCapability || !container || this.styleSnapshot) {
                 return;
             }
             this.styleSnapshot = this.captureContainerStyle(container);
@@ -1645,8 +1726,28 @@
             if (session && this.ownerSessionId && session.id !== this.ownerSessionId) {
                 return;
             }
-            if (this.styleSnapshot) {
+            const container = this.getContainer();
+            const activeContainer = this.activeFrameTransformContainer;
+            const committedContainer = this.committedFrameTransformContainer;
+            this.activeFrameTransformNonIdentity = false;
+            this.activeFrameTransformContainer = null;
+            if (window._nekoAvatarPerformanceFrameContainer === activeContainer ||
+                window._nekoAvatarPerformanceFrameContainer === committedContainer) {
+                window._nekoAvatarPerformanceFrameContainer = null;
+            }
+            if (this.styleSnapshot && activeContainer && activeContainer === container) {
                 this.restoreContainerStyle(this.styleSnapshot);
+            }
+            const retainCommittedTransform =
+                this.committedFrameTransformActive &&
+                committedContainer &&
+                committedContainer === container &&
+                this.hasContainerTransform(container);
+            if (retainCommittedTransform) {
+                window._nekoAvatarPerformanceFrameContainer = committedContainer;
+            } else {
+                this.committedFrameTransformActive = false;
+                this.committedFrameTransformContainer = null;
             }
             this.styleSnapshot = null;
             this.ownerSessionId = '';
@@ -1674,13 +1775,34 @@
             const baseTransform = this.styleSnapshot && this.styleSnapshot.transform
                 ? this.styleSnapshot.transform
                 : '';
+            const x = Number(frame.x || 0);
+            const y = Number(frame.y || 0);
+            const scale = Number(frame.scale || 1);
+            const rotate = Number(frame.rotate || 0);
+            const serializedX = x.toFixed(2);
+            const serializedY = y.toFixed(2);
+            const serializedScale = scale.toFixed(4);
+            const serializedRotate = rotate.toFixed(3);
+            const effectiveX = Number(serializedX);
+            const effectiveY = Number(serializedY);
+            const effectiveScale = Number(serializedScale);
+            const effectiveRotate = Number(serializedRotate);
+            const normalizedEffectiveRotate = ((effectiveRotate % 360) + 360) % 360;
+            this.activeFrameTransformNonIdentity =
+                effectiveX !== 0 ||
+                effectiveY !== 0 ||
+                effectiveScale !== 1 ||
+                normalizedEffectiveRotate !== 0;
             const transform = [
                 baseTransform,
-                'translate3d(' + Number(frame.x || 0).toFixed(2) + 'px, ' + Number(frame.y || 0).toFixed(2) + 'px, 0)',
-                'scale(' + Number(frame.scale || 1).toFixed(4) + ')',
-                'rotate(' + Number(frame.rotate || 0).toFixed(3) + 'deg)'
+                'translate3d(' + serializedX + 'px, ' + serializedY + 'px, 0)',
+                'scale(' + serializedScale + ')',
+                'rotate(' + serializedRotate + 'deg)'
             ].filter(Boolean).join(' ');
             container.style.transform = transform;
+            if (this.activeFrameTransformContainer === container) {
+                window._nekoAvatarPerformanceFrameContainer = container;
+            }
             if (frame.opacity !== '') {
                 container.style.opacity = String(frame.opacity);
             }
@@ -1701,20 +1823,20 @@
                 const file = typeof candidate === 'object' ? this.getMotionFile(candidate) : '';
                 const explicitIndex = candidate && Number.isInteger(Number(candidate.index)) ? Number(candidate.index) : null;
 
-                if (groupName && explicitIndex !== null && model && typeof model.motion === 'function') {
+                if (groupName && explicitIndex !== null && typeof manager.playActionMotion === 'function') {
                     try {
-                        const played = await this.withPerformanceBypass(() => model.motion(groupName, explicitIndex));
+                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex));
                         if (played !== false) {
                             return true;
                         }
                     } catch (_) {}
                 }
 
-                if (file && model && typeof model.motion === 'function') {
+                if (file && typeof manager.playActionMotion === 'function') {
                     const runtimeRef = this.findMotionRuntimeReference(groupName, file);
                     if (runtimeRef) {
                         try {
-                            const played = await this.withPerformanceBypass(() => model.motion(runtimeRef.group, runtimeRef.index));
+                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index));
                             if (played !== false) {
                                 return true;
                             }
@@ -1974,6 +2096,7 @@
             if (!manager) {
                 return false;
             }
+            await this.clearExpression();
             const candidates = this.collectExpressionCandidates(expression, options);
             for (let index = 0; index < candidates.length; index += 1) {
                 const candidate = candidates[index];
@@ -2018,18 +2141,15 @@
         }
 
         async clearExpression() {
+            const manager = this.getManager();
+            const shouldClearManagerExpression = manager?._activeTransientExpression === true;
             if (this.expressionParamSnapshot) {
                 this.restoreParams(this.expressionParamSnapshot);
                 this.expressionParamSnapshot = null;
             }
-            const manager = this.getManager();
-            if (manager && typeof manager.resetTransientMotionAndExpressionState === 'function') {
-                await Promise.resolve(manager.resetTransientMotionAndExpressionState({
-                    preserveExpression: false,
-                    resetAllParameters: false
-                })).catch(() => {});
-            }
-            if (manager && typeof manager.applyPersistentExpressionsNative === 'function') {
+            if (shouldClearManagerExpression && typeof manager.clearExpression === 'function') {
+                await Promise.resolve(manager.clearExpression()).catch(() => {});
+            } else if (manager && typeof manager.applyPersistentExpressionsNative === 'function') {
                 await Promise.resolve(manager.applyPersistentExpressionsNative(true)).catch(() => {});
             }
             return true;
@@ -2236,7 +2356,7 @@
             const manager = context.manager;
             const source = 'avatar-performance-pose-' + (options && options.sessionId ? options.sessionId : 'session');
             const previousEyeBlinkSuspended = !!manager._suspendEyeBlinkOverride;
-            let frameId = 0;
+            let cancelFrame = null;
             let settled = false;
             let settleLoop = null;
             let usesTemporaryPoseOverride = false;
@@ -2247,9 +2367,9 @@
                     return;
                 }
                 settled = true;
-                if (frameId) {
-                    window.cancelAnimationFrame(frameId);
-                    frameId = 0;
+                if (cancelFrame) {
+                    cancelFrame();
+                    cancelFrame = null;
                 }
                 if (manager && normalized.suspendEyeBlink !== false) {
                     manager._suspendEyeBlinkOverride = previousEyeBlinkSuspended;
@@ -2386,10 +2506,10 @@
                             return;
                         }
                         if (!settled) {
-                            frameId = window.requestAnimationFrame(tick);
+                            cancelFrame = scheduleStageFrame(tick);
                         }
                     };
-                    frameId = window.requestAnimationFrame(tick);
+                    cancelFrame = scheduleStageFrame(tick);
                 });
                 return true;
             } catch (error) {

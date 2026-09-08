@@ -102,16 +102,12 @@ async function main() {
   let heartbeatCalls = 0;
   let drainCalls = 0;
   let disposed = 0;
-  let loggerResets = 0;
   const outputs = [
     { type: 'game_external_input', text: 'hello' },
     { type: 'game_llm_result', result: { line: 'hi', metadata: { source: 'host' } } },
   ];
   const transport = {
-    logger: {
-      ...logger(),
-      reset() { loggerResets += 1; },
-    },
+    logger: logger(),
     connectGame(request) {
       return {
         accepted: true,
@@ -212,8 +208,6 @@ async function main() {
 
   const resetState = game.runtime.reset({ newSession: true });
   assert(resetState.id === 'session-2', 'runtime reset did not rotate the host session');
-  assert(resetState.routeInstanceId === '', 'runtime reset returned a retired route generation');
-  assert(loggerResets === 1, 'new runtime session did not retire the previous logging gate');
   const started = await game.runtime.start({ mode: 'default' });
   assert(started.ok && started.data.ok, 'runtime start response was not normalized');
   const firstRouteInstanceId = started.data.payload.sdk_route_instance_id;
@@ -226,8 +220,8 @@ async function main() {
     'managed lifecycle did not own exactly one visibility listener');
   assert(environment.windowListeners.get('pagehide')?.size === 1,
     'managed lifecycle did not own exactly one pagehide listener');
-  assert(!environment.windowListeners.has('beforeunload'),
-    'managed lifecycle installed a cancellable beforeunload teardown listener');
+  assert(environment.windowListeners.get('beforeunload')?.size === 1,
+    'managed lifecycle did not own exactly one beforeunload listener');
   await Promise.resolve();
   await Promise.resolve();
   assert(environment.consoleErrors.some((args) => (
@@ -282,10 +276,7 @@ async function main() {
   assert(ended.data.payload.sdk_route_instance_ids?.length === 1
     && ended.data.payload.sdk_route_instance_ids[0] === firstRouteInstanceId,
   'runtime end did not include its bounded route generation candidates');
-  assert(game.runtime.session.routeInstanceId === '',
-    'runtime end left the retired route generation exposed to custom RPCs');
   assert(game.runtime.state === 'ended', 'runtime end did not enter ended');
-  assert(loggerResets === 2, 'successful runtime end did not retire the session logging gate');
   assert(environment.intervals.size === 0, 'runtime end did not release lifecycle timers');
   assert(!environment.documentListeners.has('visibilitychange'),
     'runtime end did not release the visibility listener');
@@ -445,8 +436,6 @@ async function main() {
   assert(inactiveEnvironment.windowListeners.size === 0
     && inactiveEnvironment.documentListeners.size === 0,
   'inactive heartbeat left lifecycle listeners resident');
-  assert(inactiveGame.runtime.session.routeInstanceId === '',
-    'inactive heartbeat left the retired route generation in the runtime session');
 
   // Losing the route through a heartbeat must retire its generation too.
   // Capabilities that are allowed before a route exists would otherwise keep
@@ -663,56 +652,10 @@ async function main() {
     'stale successful start completion left monitoring resident after end');
   staleSuccessGame.dispose();
 
-  // runtime.configure() installs pagehide while idle so later starts are
-  // covered. That idle listener must still dispose the client, but it must not
-  // emit an ID-less end capable of closing a legacy route with the same public
-  // session identity.
-  const idleExitEnvironment = createEnvironment();
-  let idleExitEndCalls = 0;
-  let idleExitDisposed = 0;
-  const idleExitTransport = {
-    ...transport,
-    logger: logger(),
-    resetRuntime() { return { sessionId: 'idle-exit', characterName: '' }; },
-    getRuntimeState() { return { sessionId: 'idle-exit', characterName: '' }; },
-    applyRuntimeState() { return { sessionId: 'idle-exit', characterName: '' }; },
-    async end() { idleExitEndCalls += 1; return { ok: true }; },
-    dispose() { idleExitDisposed += 1; },
-  };
-  const idleExitGame = await window.NekoMiniGame.connect({
-    id: 'lifecycle-idle-page-exit',
-    version: '1.0.0',
-    requiredCapabilities: ['runtime', 'logging'],
-  }, {
-    transport: idleExitTransport,
-    windowImpl: idleExitEnvironment.windowImpl,
-    documentImpl: idleExitEnvironment.documentImpl,
-  });
-  const idlePageExitEvents = [];
-  idleExitGame.events.on('page-exit', (event) => idlePageExitEvents.push(event));
-  idleExitGame.runtime.configure({
-    heartbeat: false,
-    outputs: false,
-    pageExit: true,
-  });
-  assert(idleExitEnvironment.windowListeners.get('pagehide')?.size === 1,
-    'idle runtime did not install page-exit disposal');
-  idleExitEnvironment.windowImpl.dispatch('pagehide');
-  await Promise.resolve();
-  assert(idlePageExitEvents.length === 1,
-    'idle page exit did not emit its cleanup event exactly once');
-  assert(idleExitEndCalls === 0,
-    'idle page exit sent an ID-less route end without a client route attempt');
-  assert(idleExitDisposed === 1 && idleExitGame.disposed,
-    'idle page exit did not dispose the SDK client');
-  assert(idleExitEnvironment.windowListeners.size === 0,
-    'idle page exit left managed listeners resident');
-
   const exitEnvironment = createEnvironment();
   let exitEndCalls = 0;
   let exitDisposed = 0;
   let exitPreserved = false;
-  let exitLogPreserved = false;
   const exitTransport = {
     ...transport,
     logger: logger(),
@@ -733,7 +676,6 @@ async function main() {
     dispose(options = {}) {
       exitDisposed += 1;
       exitPreserved = options.preservePendingOperations?.includes('route_end') === true;
-      exitLogPreserved = options.preserveLogTransport === true;
     },
   };
   const exitGame = await window.NekoMiniGame.connect({
@@ -757,20 +699,14 @@ async function main() {
   });
   assert(exitEnvironment.windowListeners.get('pagehide')?.size === 1,
     'page-exit lifecycle was not installed before runtime start');
-  assert(!exitEnvironment.windowListeners.has('beforeunload'),
-    'page-exit lifecycle installed a teardown that can run before cancelled navigation');
   await exitGame.runtime.start({});
-  exitEnvironment.windowImpl.dispatch('beforeunload');
-  await Promise.resolve();
-  assert(exitEndCalls === 0 && exitDisposed === 0 && !exitGame.disposed,
-    'a cancellable beforeunload event ended or disposed the active runtime');
   exitEnvironment.windowImpl.dispatch('pagehide');
+  exitEnvironment.windowImpl.dispatch('beforeunload');
   await Promise.resolve();
   await Promise.resolve();
   assert(pageExitEvents.length === 1, 'page exit was not emitted exactly once');
   assert(exitEndCalls === 1, 'page exit did not end the runtime exactly once');
-  assert(exitDisposed === 1 && exitPreserved && exitLogPreserved,
-    'page exit did not preserve route-end and final-log delivery during disposal');
+  assert(exitDisposed === 1 && exitPreserved, 'page exit did not preserve route-end during disposal');
   assert(exitGame.disposed, 'page exit did not dispose the SDK client');
   assert(exitEnvironment.intervals.size === 0 && exitEnvironment.windowListeners.size === 0,
     'page exit left managed timers or listeners resident');

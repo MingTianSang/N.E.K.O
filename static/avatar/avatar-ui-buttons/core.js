@@ -61,6 +61,136 @@ if (typeof window !== 'undefined') {
     window.getNekoYuiGuideLockIconMaxTop = getNekoYuiGuideLockIconMaxTop;
 }
 
+function _getNekoDesktopVirtualViewportOrigin() {
+    const fallbackX = Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0;
+    const fallbackY = Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : 0;
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const virtualBounds = cropState && cropState.enabled === true
+            ? cropState.virtualBounds
+            : null;
+        const virtualX = virtualBounds && virtualBounds.x != null
+            ? Number(virtualBounds.x)
+            : NaN;
+        const virtualY = virtualBounds && virtualBounds.y != null
+            ? Number(virtualBounds.y)
+            : NaN;
+        if (virtualBounds && Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+            return { x: virtualX, y: virtualY };
+        }
+        const offsetX = cropState && cropState.offsetX != null
+            ? Number(cropState.offsetX)
+            : NaN;
+        const offsetY = cropState && cropState.offsetY != null
+            ? Number(cropState.offsetY)
+            : NaN;
+        if (
+            cropState
+            && (cropState.active === true || cropState.enabled === true)
+            && Number.isFinite(offsetX)
+            && Number.isFinite(offsetY)
+        ) {
+            return { x: fallbackX - offsetX, y: fallbackY - offsetY };
+        }
+    } catch (_) {}
+    return { x: fallbackX, y: fallbackY };
+}
+
+function _getNekoDesktopVirtualViewportSize() {
+    const fallbackWidth = Math.max(1, Number(window.innerWidth) || 1);
+    const fallbackHeight = Math.max(1, Number(window.innerHeight) || 1);
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const virtualBounds = cropState && cropState.enabled === true
+            ? cropState.virtualBounds
+            : null;
+        const width = Number(virtualBounds && virtualBounds.width);
+        const height = Number(virtualBounds && virtualBounds.height);
+        if (Number.isFinite(width) && width > 0 &&
+            Number.isFinite(height) && height > 0) {
+            return { width, height };
+        }
+    } catch (_) {}
+    return { width: fallbackWidth, height: fallbackHeight };
+}
+
+function _getNekoDesktopVirtualRect(rect) {
+    if (!rect || typeof rect !== 'object') return null;
+    const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : Number(rect.x);
+    const top = Number.isFinite(Number(rect.top)) ? Number(rect.top) : Number(rect.y);
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (!Number.isFinite(left) || !Number.isFinite(top) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+        return null;
+    }
+
+    let virtualRect = null;
+    let fallbackOffsetX = 0;
+    let fallbackOffsetY = 0;
+    try {
+        const cropApi = window.__nekoNiriPetPhysicalCrop;
+        const cropState = cropApi && typeof cropApi.getState === 'function'
+            ? cropApi.getState()
+            : null;
+        const offsetX = cropState && cropState.offsetX != null
+            ? Number(cropState.offsetX)
+            : NaN;
+        const offsetY = cropState && cropState.offsetY != null
+            ? Number(cropState.offsetY)
+            : NaN;
+        if (
+            cropState
+            && (cropState.active === true || cropState.enabled === true)
+            && Number.isFinite(offsetX)
+            && Number.isFinite(offsetY)
+        ) {
+            fallbackOffsetX = offsetX;
+            fallbackOffsetY = offsetY;
+        }
+        virtualRect = cropApi && typeof cropApi.toVirtualRect === 'function'
+            ? cropApi.toVirtualRect({ x: left, y: top, width, height })
+            : null;
+    } catch (_) {
+        virtualRect = null;
+    }
+
+    const virtualLeft = virtualRect && virtualRect.x != null
+        ? Number(virtualRect.x)
+        : NaN;
+    const virtualTop = virtualRect && virtualRect.y != null
+        ? Number(virtualRect.y)
+        : NaN;
+    const normalizedLeft = Number.isFinite(virtualLeft) ? virtualLeft : left + fallbackOffsetX;
+    const normalizedTop = Number.isFinite(virtualTop) ? virtualTop : top + fallbackOffsetY;
+    return {
+        x: normalizedLeft,
+        y: normalizedTop,
+        left: normalizedLeft,
+        top: normalizedTop,
+        width,
+        height,
+        right: normalizedLeft + width,
+        bottom: normalizedTop + height
+    };
+}
+
+function _getNekoDesktopVirtualElementRect(element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+    try {
+        return _getNekoDesktopVirtualRect(element.getBoundingClientRect());
+    } catch (_) {
+        return null;
+    }
+}
+
 function _ensureFloatingButtonsAnimationStyles() {
     if (document.getElementById('neko-floating-buttons-animation-styles')) return;
     const style = document.createElement('style');
@@ -113,9 +243,12 @@ function _cleanupFloatingButtonsEntrance(container) {
 function _removeFloatingButtonsElement(el) {
     if (!el) return;
     if (el.matches && el.matches('[id$="-return-button-container"]')) {
+        _stopNekoIdleSleepSound({ reason: 'container-removed' });
+        _stopNekoIdleCat1AmbientSound({ reason: 'container-removed' });
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1Journey(returnButton);
@@ -244,6 +377,31 @@ const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, #pngtuber-btn-return';
+const _NEKO_CAT_IDLE_OBSERVATION_SOURCE_EVENT = 'neko:cat-mind:observation';
+const _NEKO_CAT_MIND_ACTION_REQUEST_EVENT = 'neko:cat-mind:action-request';
+const _NEKO_CAT_MIND_ACTION_RESULT_EVENT = 'neko:cat-mind:action-result';
+const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
+    CAT1_SOCIAL_PING: 'cat1_social_ping',
+    CAT1_EAT_SNACK: 'cat1_eat_snack',
+    CAT1_SMALL_MOVE: 'cat1_small_move',
+    CAT1_PLAY_YARN: 'cat1_play_yarn',
+    CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
+    CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
+});
+const _NEKO_CAT_MIND_ACTION_RESULTS = Object.freeze({
+    DONE: 'done', FAILED: 'failed', CANCELLED: 'cancelled', INTERRUPTED: 'interrupted'
+});
+const _NEKO_CAT_IDLE_OBSERVATION_TYPES = Object.freeze({
+    RAPID_DRAG: 'rapid_drag',
+    CAT_HOVER_REACTION: 'cat_hover_reaction',
+    CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat',
+    CAT1_STRETCH_DONE_NEAR_CHAT: 'cat1_stretch_done_near_chat',
+    CAT1_LOCAL_PLAY_DONE: 'cat1_local_play_done',
+    CAT1_LOCAL_PLAY_CANCELLED: 'cat1_local_play_cancelled',
+    CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
+    CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
+    EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag'
+});
 const _NEKO_GOODBYE_IDLE_APPEARANCE_CAT = 'cat';
 const _NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';
 const _NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
@@ -254,10 +412,25 @@ const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
 const _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map();
 const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
-const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
-const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -5;
+const _NEKO_IDLE_CAT1_CHAT_GAP_PX = 24;
 const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
-const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
+const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0;
+// GNOME Wayland 的自带毛球发布真实的 58px 可见区域。CAT1 与毛球素材仍使用
+// 各自的透明画布，因此这一条路径按素材坐标计算接触点，再应用实机截图校准。
+const _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX = 116;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX = 58;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_LEFT_PX = 5;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_RIGHT_PX = 90;
+const _NEKO_IDLE_CAT1_ASSET_SIZE_PX = 512;
+const _NEKO_IDLE_CAT1_IDLE_VISIBLE_LEFT_PX = 89;
+const _NEKO_IDLE_CAT1_IDLE_VISIBLE_RIGHT_PX = 394;
+// 猫位于毛球左侧（朝右）时，截图与同时间 trace 显示待机和侧身素材均少走约 34px。
+// 猫位于毛球右侧时容器终点保持不动，待机与侧身素材的 33px 校准由 CSS 按状态隔离。
+const _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX = 34;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR = 'data-neko-cat1-native-yarn-visual-anchor';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR = 'data-neko-cat1-native-yarn-side';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_LEFT = 'left';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_RIGHT = 'right';
 const _NEKO_IDLE_CAT1_MINIMIZED_BACKWARD_RETREAT_TOLERANCE_PX = 2;
 // 容器属性名：本次走路提交的接近侧（true=站毛球左侧/朝右，false=站毛球右侧/朝左）。
 const _NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP = '__nekoIdleCat1WalkApproachLookRight';
@@ -275,7 +448,7 @@ const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS = 360;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS = 900;
 const _NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS = 160;
 const _NEKO_IDLE_CAT1_COMPACT_MIRROR_SETTLE_HIDE_DELAY_MS = 180;
-const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
+const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 180;
 const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14;
 const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5;
@@ -304,8 +477,9 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50;
+// The settled-at-yarn branch predates Cat Mind: it is a local presentation
+// choice between the play GIF and stretch, never an autonomous candidate.
 const _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25;
-const _NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
@@ -419,6 +593,8 @@ const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif';
 const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3';
 const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
+const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL = '/static/assets/neko-idle/cat1-voice-chat-angry.mp3';
+const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_POP_VISIBLE_MS = 540;
@@ -469,6 +645,7 @@ const _nekoIdleCat1AmbientSoundState = {
     intervalStartedAt: 0,
     audio: null
 };
+let _nekoCatMindActionRunSequence = 0;
 const _nekoIdleCat1QuestionMarkKeyboardState = {
     button: null,
     progress: 0,
@@ -533,6 +710,7 @@ function _stopNekoIdleCat1ActionSounds() {
     _forEachNekoIdleReturnButton((button) => {
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1EatActionState);
         _stopNekoIdleSoundAudio(button.__nekoIdleCat1PlayActionState);
+        _stopNekoIdleSoundAudio(button.__nekoIdleCat1StretchActionState);
     });
 }
 let _nekoIdleThoughtBubblePopPreloadImage = null;

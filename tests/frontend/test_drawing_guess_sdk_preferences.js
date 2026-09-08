@@ -51,6 +51,36 @@ function storedResult() {
   };
 }
 
+function sampleDrawingPlan(accent = '#f4cf45') {
+  return {
+    version: 1,
+    width: 800,
+    height: 600,
+    background: '#fffdfa',
+    elements: [
+      {
+        type: 'ellipse',
+        cx: 400,
+        cy: 310,
+        rx: 190,
+        ry: 125,
+        fill: accent,
+        stroke: '#2f3b45',
+        stroke_width: 10,
+      },
+      {
+        type: 'polyline',
+        points: [[270, 310], [345, 365], [455, 365], [530, 310]],
+        fill: 'none',
+        stroke: '#2f3b45',
+        stroke_width: 8,
+        line_cap: 'round',
+        line_join: 'round',
+      },
+    ],
+  };
+}
+
 function makeStorageClient(storage, enabled = true) {
   return {
     disposed: false,
@@ -72,6 +102,58 @@ function loadHarness() {
   assert(closingIndex >= 0, 'drawing-guess IIFE closing marker must exist');
 
   let localStorageReads = 0;
+  const createdCanvases = [];
+  function makeCanvas() {
+    const operations = [];
+    const context = { operations };
+    [
+      'save', 'restore', 'beginPath', 'closePath', 'fill', 'stroke',
+      'clearRect', 'fillRect', 'moveTo', 'lineTo', 'quadraticCurveTo',
+      'arc', 'ellipse', 'rect', 'drawImage', 'setTransform',
+    ].forEach((name) => {
+      context[name] = (...args) => { operations.push({ name, args }); };
+    });
+    const canvas = {
+      tagName: 'CANVAS',
+      width: 0,
+      height: 0,
+      className: '',
+      dataset: {},
+      style: { setProperty() {}, removeProperty() {} },
+      classList: { add() {}, remove() {}, toggle() {} },
+      setAttribute() {},
+      addEventListener() {},
+      getContext(kind) { return kind === '2d' ? context : null; },
+      toDataURL(type, quality) {
+        operations.push({ name: 'toDataURL', args: [type, quality] });
+        return `data:${type || 'image/png'};base64,${this.width}x${this.height}`;
+      },
+      __context: context,
+    };
+    createdCanvases.push(canvas);
+    return canvas;
+  }
+  function escapeXml(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+  function serializeSvgNode(node) {
+    const attrs = Object.entries(node.__attrs || {})
+      .map(([key, value]) => ` ${key}="${escapeXml(value)}"`).join('');
+    const children = (node.children || []).map(serializeSvgNode).join('');
+    return children
+      ? `<${node.tagName}${attrs}>${children}</${node.tagName}>`
+      : `<${node.tagName}${attrs}/>`;
+  }
+  function makeSvgNode(tagName) {
+    return {
+      tagName,
+      __attrs: {},
+      children: [],
+      setAttribute(key, value) { this.__attrs[String(key)] = String(value); },
+      appendChild(child) { this.children.push(child); return child; },
+      get outerHTML() { return serializeSvgNode(this); },
+    };
+  }
   const sandbox = {
     console,
     Promise,
@@ -89,6 +171,12 @@ function loadHarness() {
     Error,
     TypeError,
     AbortController,
+    Path2D: class {
+      constructor(d) { this.d = d; }
+    },
+    XMLSerializer: class {
+      serializeToString(node) { return serializeSvgNode(node); }
+    },
     setTimeout,
     clearTimeout,
     setInterval,
@@ -101,7 +189,8 @@ function loadHarness() {
       getElementById() { return null; },
       querySelector() { return null; },
       querySelectorAll() { return []; },
-      createElement() {
+      createElement(tagName) {
+        if (String(tagName).toLowerCase() === 'canvas') return makeCanvas();
         return {
           addEventListener() {},
           appendChild() {},
@@ -110,6 +199,7 @@ function loadHarness() {
           style: { setProperty() {} },
         };
       },
+      createElementNS(_namespace, tagName) { return makeSvgNode(String(tagName)); },
     },
   };
   sandbox.window = sandbox;
@@ -134,15 +224,23 @@ function loadHarness() {
     saveModelViewSettings: saveModelViewSettings,
     saveColorHistory: saveColorHistory,
     configureSdkMemoryConsent: configureSdkMemoryConsent,
-    applySdkLocale: applySdkLocale,
+    normalizeAiDrawingPlan: normalizeAiDrawingPlan,
+    renderAiDrawingPlanToCanvas: renderAiDrawingPlanToCanvas,
+    captureAiDrawingReviewImage: captureAiDrawingReviewImage,
+    aiDrawingPlanToSvg: aiDrawingPlanToSvg,
+    normalizeAiDrawingSvg: normalizeAiDrawingSvg,
+    fitAiDrawingSvgToContent: fitAiDrawingSvgToContent,
+    canvasDisplayPixelBounds: canvasDisplayPixelBounds,
+    floodFillPixelBuffer: floodFillPixelBuffer,
+    prepareAiDrawing: prepareAiDrawing,
+    logSdkBestEffort: logSdkBestEffort,
     currentLanguage: currentLanguage,
     submitPlayerText: submitPlayerText,
     handleSdkVoiceState: handleSdkVoiceState,
     handleSpeechPlaybackState: handleSpeechPlaybackState,
     handleSdkPageExit: handleSdkPageExit,
     querySdkVoiceRouteState: querySdkVoiceRouteState,
-    handoffOrdinaryVoiceToSdk: handoffOrdinaryVoiceToSdk,
-    schedulePendingVoiceHandoffRetry: schedulePendingVoiceHandoffRetry,
+    stopSdkVoiceBestEffort: stopSdkVoiceBestEffort,
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
     startRoute: startRoute,
@@ -168,6 +266,10 @@ function loadHarness() {
       stopThinkingEventMessage = function () {};
       updateControls = function () {};
     },
+    installAiDrawingFitSpies: function (stage, metrics) {
+      els.aiDrawing = stage;
+      measureSvgContentMetrics = function () { return metrics; };
+    },
     installLocaleUiSpies: function () {
       var calls = { updateControls: 0, setPhase: 0, syncBrushToolButton: 0 };
       updateControls = function () { calls.updateControls += 1; };
@@ -186,6 +288,8 @@ function loadHarness() {
   return {
     api: sandbox.__DRAWING_GUESS_PREFERENCE_TEST__,
     source,
+    sandbox,
+    createdCanvases,
     localStorageReads: () => localStorageReads,
   };
 }
@@ -489,24 +593,6 @@ async function testMemoryConsentUsesSdkAndRejectsLockedMismatch() {
   assertEqual(lockedConfigureCalls, 0, 'locked mismatch must not call configureConsent');
 }
 
-async function testSdkLocaleUpdatesCachedLanguage() {
-  const harness = loadHarness();
-  const api = harness.api;
-  const uiCalls = api.installLocaleUiSpies();
-  api.state.locale = 'zh-CN';
-
-  api.applySdkLocale({ language: ' ja ' });
-
-  assertEqual(api.state.locale, 'ja', 'SDK locale should update the cached language');
-  assertEqual(api.currentLanguage(), 'ja', 'localized helpers should read the SDK locale cache');
-  assertEqual(uiCalls.updateControls, 1, 'locale change should refresh controls');
-  assertEqual(uiCalls.setPhase, 1, 'locale change should refresh phase copy');
-  assertEqual(uiCalls.syncBrushToolButton, 1, 'locale change should refresh brush labels');
-
-  api.applySdkLocale({ language: 'ja' });
-  assertEqual(uiCalls.updateControls, 1, 'an unchanged locale should not trigger another UI refresh');
-}
-
 async function testPlayerTextCommandsStaySerialized() {
   const harness = loadHarness();
   const api = harness.api;
@@ -600,498 +686,54 @@ async function testBackgroundVoiceQueryCannotClearANewerToggle() {
     'a stale background query must not overwrite the newer voice state');
 }
 
-async function testAutomaticVoiceHandoffUsesPendingFence() {
-  const harness = loadHarness();
-  const api = harness.api;
-  const handoff = deferred();
-  const calls = [];
-  const client = {
-    disposed: false,
-    runtime: { state: 'running' },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff(options) {
-        calls.push(options);
-        return handoff.promise;
-      },
-    },
-  };
-  api.installVoiceUiSpy();
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.voiceControlRequestSequence = 7;
-
-  const pendingHandoff = api.handoffOrdinaryVoiceToSdk(client);
-  api.handoffOrdinaryVoiceToSdk(client);
-
-  assertEqual(calls.length, 1,
-    'an automatic handoff already in flight must not dispatch a duplicate request');
-  assertEqual(calls[0].timeoutMs, 12000,
-    'automatic handoff must use the bounded voice-control timeout');
-  assertEqual(api.state.voiceControlRequestSequence, 8,
-    'automatic handoff must claim the next voice-control request sequence');
-  assertEqual(api.state.voiceControlPending, true,
-    'automatic handoff must hold the shared voice-control pending fence');
-
-  handoff.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
-  await pendingHandoff;
-  assertEqual(api.state.voiceRouteActive, true,
-    'a successful automatic handoff must publish the SDK voice state');
-  assertEqual(api.state.voiceControlPending, false,
-    'the owning automatic handoff must release the shared pending fence');
-}
-
-async function testStaleAutomaticVoiceHandoffCannotOverwriteNewerRequest() {
-  const harness = loadHarness();
-  const api = harness.api;
-  const handoff = deferred();
-  const client = {
-    disposed: false,
-    runtime: { state: 'running' },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: { handoff() { return handoff.promise; } },
-  };
-  api.installVoiceUiSpy();
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.voiceControlRequestSequence = 12;
-
-  const staleHandoff = api.handoffOrdinaryVoiceToSdk(client);
-  api.state.voiceControlRequestSequence = 14;
-  api.state.voiceControlPending = true;
-  api.state.voiceRouteActive = false;
-  handoff.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
-  await staleHandoff;
-
-  assertEqual(api.state.voiceRouteActive, false,
-    'a stale handoff completion must not overwrite a newer voice request state');
-  assertEqual(api.state.voiceControlPending, true,
-    'a stale handoff completion must not release a newer request pending fence');
-}
-
-async function waitForCondition(predicate, message) {
-  const deadline = Date.now() + 500;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error(message);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
-async function testPlaybackBlockedHandoffRetriesAfterPlaybackStops() {
-  for (const failureMode of ['speech_playback_active', 'speech_playback_started']) {
-    const harness = loadHarness();
-    const api = harness.api;
-    const events = [];
-    let handoffCalls = 0;
-    const handoffOptions = [];
-    const intentEpoch = failureMode === 'speech_playback_active' ? 31 : 32;
-    const client = {
-      disposed: false,
-      runtime: { state: 'running', session: { id: `tts-${intentEpoch}` } },
-      capabilities: { has(name) { return name === 'voice-input'; } },
-      voice: {
-        handoff(options) {
-          handoffCalls += 1;
-          handoffOptions.push(options);
-          if (handoffCalls === 1) {
-            return Promise.resolve({
-              ok: false,
-              active: false,
-              reason: failureMode,
-              ordinary_voice_intent_epoch: intentEpoch,
-            });
-          }
-          return Promise.resolve({ ok: true, active: true, reason: 'ordinary_voice_handed_off' });
-        },
-      },
-    };
-    api.installVoiceUiSpy(events);
-    api.state.sdkClient = client;
-    api.state.routeActive = true;
-    api.state.routeEnding = false;
-    api.state.speechPlaybackActive = true;
-
-    const firstResult = await api.handoffOrdinaryVoiceToSdk(client);
-
-    assertEqual(firstResult, false,
-      `${failureMode} should defer rather than complete automatic handoff`);
-    assertEqual(api.state.voiceHandoffRetryPending, true,
-      `${failureMode} did not mark automatic handoff for retry`);
-    assertEqual(api.state.voiceHandoffIntentEpoch, intentEpoch,
-      `${failureMode} did not retain the ordinary-voice intent fence`);
-    assertEqual(handoffCalls, 1,
-      `${failureMode} retried while TTS was still active`);
-    assert(!events.includes('drawingGuess.voice.controlFailed'),
-      `${failureMode} surfaced as a user-visible voice failure`);
-
-    api.handleSpeechPlaybackState({ active: false });
-    await waitForCondition(
-      () => handoffCalls === 2 && api.state.voiceControlPending === false,
-      `${failureMode} was not retried after TTS became inactive`,
-    );
-
-    assertEqual(api.state.voiceRouteActive, true,
-      `${failureMode} retry did not activate SDK voice`);
-    assertEqual(handoffOptions[1].handoffIntentEpoch, intentEpoch,
-      `${failureMode} retry did not bind the original ordinary-voice intent epoch`);
-    assertEqual(api.state.voiceHandoffRetryPending, false,
-      `${failureMode} retry state survived a successful handoff`);
-    assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-      `${failureMode} retry attempt count survived a successful handoff`);
-    assertEqual(api.state.voiceHandoffIntentEpoch, null,
-      `${failureMode} retry retained the completed ordinary-voice intent fence`);
-    assert(!events.includes('drawingGuess.voice.controlFailed'),
-      `${failureMode} retry emitted a stale failure notice`);
-  }
-}
-
-async function testPendingAudioWorkDoesNotRetryHandoffEarly() {
-  const harness = loadHarness();
-  const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running', session: { id: 'pending-audio-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.resolve({ ok: true, active: true });
-      },
-    },
-  };
-  api.installVoiceUiSpy([]);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffIntentEpoch = 41;
-
-  api.handleSpeechPlaybackState({
-    active: true,
-    pendingAudioWork: true,
-    remainingSeconds: 0,
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(api.state.speechPlaybackActive, true,
-    'queued TTS audio work was not treated as active playback');
-  assertEqual(handoffCalls, 0,
-    'queued TTS audio work triggered an early voice handoff retry');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'queued TTS audio work consumed a retry attempt without dispatching');
-  assertEqual(api.state.voiceHandoffRetryPending, true,
-    'queued TTS audio work discarded the pending handoff retry');
-}
-
-async function testPlaybackResumingBeforeRetryTimerDoesNotConsumeAttempt() {
-  const harness = loadHarness();
-  const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running', session: { id: 'playback-race-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.resolve({ ok: true, active: true });
-      },
-    },
-  };
-  api.installVoiceUiSpy([]);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.speechPlaybackActive = true;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffIntentEpoch = 42;
-
-  api.handleSpeechPlaybackState({ active: false });
-  api.handleSpeechPlaybackState({ active: true, pendingAudioWork: true });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(handoffCalls, 0,
-    'a false-to-true playback race dispatched the retry while TTS was active');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'a fenced retry timer consumed an attempt before dispatch');
-  assertEqual(api.state.voiceHandoffRetryPending, true,
-    'a fenced retry timer lost the retry needed after playback ends');
-}
-
-async function testNewOrdinaryVoiceIntentCancelsDeferredRetryQuietly() {
+async function testVoiceToggleUsesOfficialSdkControl() {
   const harness = loadHarness();
   const api = harness.api;
   const events = [];
-  const handoffOptions = [];
+  const toggleCalls = [];
   const client = {
     disposed: false,
-    runtime: { state: 'running', session: { id: 'intent-change-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff(options) {
-        handoffOptions.push(options);
-        if (handoffOptions.length === 1) {
-          return Promise.resolve({
-            ok: false,
-            active: false,
-            reason: 'speech_playback_active',
-            ordinary_voice_intent_epoch: 77,
-          });
-        }
-        return Promise.resolve({
-          ok: false,
-          active: false,
-          reason: 'ordinary_voice_handoff_cancelled',
-          ordinary_voice_intent_epoch: 78,
-        });
-      },
-    },
-  };
-  api.installVoiceUiSpy(events);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.speechPlaybackActive = true;
-
-  await api.handoffOrdinaryVoiceToSdk(client);
-  api.handleSpeechPlaybackState({ active: false });
-  await waitForCondition(
-    () => handoffOptions.length === 2 && api.state.voiceControlPending === false,
-    'deferred handoff did not reach the ordinary-intent cancellation response',
-  );
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(handoffOptions[1].handoffIntentEpoch, 77,
-    'deferred handoff was not fenced to the original ordinary-voice intent');
-  assertEqual(handoffOptions.length, 2,
-    'ordinary_voice_handoff_cancelled started another takeover attempt');
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'ordinary intent cancellation left a retry armed');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'ordinary intent cancellation did not clear retry attempts');
-  assertEqual(api.state.voiceHandoffIntentEpoch, null,
-    'ordinary intent cancellation retained the stale intent epoch');
-  assert(!events.includes('drawingGuess.voice.controlFailed'),
-    'ordinary intent cancellation surfaced as a voice failure');
-}
-
-async function testInitialPlaybackTransportFailureWithoutIntentDoesNotRetry() {
-  const harness = loadHarness();
-  const api = harness.api;
-  const events = [];
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running', session: { id: 'transport-failure-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.reject(Object.assign(
-          new Error('speech_playback_active'),
-          { code: 'speech_playback_active' },
-        ));
-      },
-    },
-  };
-  api.installVoiceUiSpy(events);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.speechPlaybackActive = true;
-
-  await api.handoffOrdinaryVoiceToSdk(client);
-  api.handleSpeechPlaybackState({ active: false });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(handoffCalls, 1,
-    'a transport failure without an intent epoch started an unfenced retry');
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'a transport failure without an intent epoch armed a retry');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'a transport failure without an intent epoch consumed retry attempts');
-  assert(!events.includes('drawingGuess.voice.controlFailed'),
-    'playback transport rejection surfaced as a user-visible failure');
-}
-
-async function testHandoffRetryMaxExhaustionClearsState() {
-  const harness = loadHarness();
-  const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running', session: { id: 'retry-max-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.resolve({ ok: true, active: true });
-      },
-    },
-  };
-  api.installVoiceUiSpy([]);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.speechPlaybackActive = false;
-  api.state.voiceControlPending = false;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffRetryAttempts = 2;
-  api.state.voiceHandoffIntentEpoch = 91;
-
-  assertEqual(api.schedulePendingVoiceHandoffRetry(), false,
-    'an exhausted handoff retry unexpectedly scheduled more work');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(handoffCalls, 0,
-    'an exhausted handoff retry dispatched another SDK request');
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'max retry exhaustion left a retry pending');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'max retry exhaustion retained the terminal attempt count');
-  assertEqual(api.state.voiceHandoffIntentEpoch, null,
-    'max retry exhaustion retained a stale ordinary-voice intent epoch');
-}
-
-async function testHandoffRetryWithoutRouteClearsState() {
-  const harness = loadHarness();
-  const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running', session: { id: 'missing-retry-route' } },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.resolve({ ok: true, active: true });
-      },
-    },
-  };
-  api.installVoiceUiSpy([]);
-  api.state.sdkClient = client;
-  api.state.routeActive = false;
-  api.state.routeEnding = false;
-  api.state.speechPlaybackActive = false;
-  api.state.voiceControlPending = false;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffRetryAttempts = 1;
-  api.state.voiceHandoffIntentEpoch = 92;
-
-  assertEqual(api.schedulePendingVoiceHandoffRetry(), false,
-    'a handoff retry without a live route unexpectedly scheduled work');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assertEqual(handoffCalls, 0,
-    'a handoff retry ran after its SDK route disappeared');
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'missing route left a handoff retry pending');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'missing route retained a handoff retry attempt count');
-  assertEqual(api.state.voiceHandoffIntentEpoch, null,
-    'missing route retained a stale ordinary-voice intent epoch');
-}
-
-async function testManualVoiceControlCancelsPendingHandoffRetry() {
-  const harness = loadHarness();
-  const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running' },
     capabilities: { has(name) { return name === 'voice-input'; } },
     voice: {
       connected: true,
-      toggle() { return Promise.resolve({ ok: true, active: true }); },
-      handoff() {
-        handoffCalls += 1;
+      toggle(options) {
+        toggleCalls.push(options);
         return Promise.resolve({ ok: true, active: true });
       },
     },
   };
-  api.installVoiceUiSpy([]);
+  api.installVoiceUiSpy(events);
   api.state.sdkClient = client;
   api.state.routeActive = true;
   api.state.routeEnding = false;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffRetryAttempts = 1;
-  api.state.voiceHandoffIntentEpoch = 55;
 
-  assertEqual(api.schedulePendingVoiceHandoffRetry(), true,
-    'test setup did not enqueue the pending automatic handoff retry');
   api.handleVoiceRouteButton();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'manual voice control did not cancel the pending automatic handoff retry');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'manual voice control did not reset the automatic retry attempt count');
-  assertEqual(api.state.voiceHandoffIntentEpoch, null,
-    'manual voice control retained the automatic retry intent fence');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assertEqual(handoffCalls, 0,
-    'an already-scheduled automatic handoff ran after manual voice control took ownership');
+  assertEqual(toggleCalls.length, 1, 'voice toggle did not use the SDK voice facade');
+  assertEqual(toggleCalls[0].timeoutMs, 12000, 'voice toggle lost its bounded timeout');
+  assertEqual(api.state.voiceRouteActive, true, 'successful SDK toggle did not update route voice state');
+  assertEqual(api.state.voiceControlPending, false, 'successful SDK toggle did not release its request fence');
+  assert(events.includes('drawingGuess.voice.connectedNotice'),
+    'successful SDK toggle did not publish the connected notice');
 }
 
-async function testRouteCleanupCancelsPendingHandoffRetry() {
+async function testRouteStartQueriesVoiceWithoutTakingOverMicrophone() {
   const harness = loadHarness();
   const api = harness.api;
-  let handoffCalls = 0;
-  const client = {
-    disposed: false,
-    runtime: { state: 'running' },
-    capabilities: { has(name) { return name === 'voice-input'; } },
-    voice: {
-      handoff() {
-        handoffCalls += 1;
-        return Promise.resolve({ ok: true, active: true });
-      },
-    },
-  };
-  api.installVoiceUiSpy([]);
-  api.state.sdkClient = client;
-  api.state.routeActive = true;
-  api.state.routeEnding = false;
-  api.state.voiceHandoffRetryPending = true;
-  api.state.voiceHandoffRetryAttempts = 1;
-  api.state.voiceHandoffIntentEpoch = 56;
-
-  assertEqual(api.schedulePendingVoiceHandoffRetry(), true,
-    'test setup did not enqueue the route-owned automatic handoff retry');
-  api.cleanupRouteResources();
-
-  assertEqual(api.state.voiceHandoffRetryPending, false,
-    'route cleanup did not cancel the pending automatic handoff retry');
-  assertEqual(api.state.voiceHandoffRetryAttempts, 0,
-    'route cleanup did not reset the automatic retry attempt count');
-  assertEqual(api.state.voiceHandoffIntentEpoch, null,
-    'route cleanup retained the automatic retry intent fence');
-  assertEqual(api.state.voiceControlPending, false,
-    'route cleanup left the voice-control fence pending');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assertEqual(handoffCalls, 0,
-    'an already-scheduled automatic handoff ran after route cleanup');
-}
-
-async function testRouteStartDoesNotWaitForAutomaticVoiceHandoff() {
-  const harness = loadHarness();
-  const api = harness.api;
-  const handoff = deferred();
-  let handoffCalls = 0;
+  let queryCalls = 0;
   const client = {
     disposed: false,
     runtime: {
       state: 'idle',
-      session: { id: 'drawing-handoff-session', routeInstanceId: 'drawing-handoff-route' },
+      session: { id: 'drawing-query-session', routeInstanceId: 'drawing-query-route' },
       start() {
         this.state = 'running';
         return Promise.resolve({ ok: true, data: { ok: true } });
       },
     },
     memory: {
-      consent: { configured: true, enabled: false, locked: true },
+      consent: { locked: true, configured: true, enabled: false },
     },
     capabilities: {
       granted: ['voice-input'],
@@ -1099,43 +741,461 @@ async function testRouteStartDoesNotWaitForAutomaticVoiceHandoff() {
     },
     logger: {
       enableAfterRuntimeStart() { return Promise.resolve({ ok: false }); },
-      info() {},
     },
     voice: {
-      handoff(options) {
-        handoffCalls += 1;
-        assertEqual(options.timeoutMs, 12000,
-          'route-start automatic handoff must use the bounded timeout');
-        return handoff.promise;
+      query(options) {
+        queryCalls += 1;
+        assertEqual(options.timeoutMs, 5000, 'route-start voice query lost its bounded timeout');
+        return Promise.resolve({ ok: true, active: false });
       },
     },
   };
   api.installRouteUiSpies();
   api.state.lanlanName = 'SDK Neko';
-  api.state.sessionId = 'drawing-handoff-session';
+  api.state.sessionId = 'drawing-query-session';
   api.state.sdkClient = client;
 
-  let routeStartTimeout = null;
-  const routeStarted = await Promise.race([
-    api.startRoute(),
-    new Promise((_resolve, reject) => {
-      routeStartTimeout = setTimeout(() => {
-        reject(new Error('route start waited for the optional voice handoff'));
-      }, 1000);
-    }),
-  ]);
-  clearTimeout(routeStartTimeout);
-
-  assertEqual(routeStarted, true,
-    'route start must resolve without awaiting the optional voice handoff Promise');
-  assertEqual(handoffCalls, 1,
-    'a successful route start must dispatch exactly one automatic voice handoff');
-  assertEqual(api.state.voiceControlPending, true,
-    'the still-pending background handoff must remain fenced after route start resolves');
-
-  handoff.resolve({ ok: true, active: false, reason: 'ordinary_voice_inactive' });
+  assertEqual(await api.startRoute(), true, 'route start failed before querying official voice state');
   await Promise.resolve();
-  await Promise.resolve();
+  assertEqual(queryCalls, 1, 'route start did not query the official voice owner');
+}
+
+async function testCanvasDrawingPlanIsBoundedRenderedAndSerializable() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const normalized = api.normalizeAiDrawingPlan(sampleDrawingPlan());
+
+  assert(normalized, 'a valid backend drawing plan was rejected by the browser renderer');
+  assertEqual(normalized.version, 1, 'the drawing plan version changed during normalization');
+  assertEqual(normalized.width, 800, 'the drawing plan width changed during normalization');
+  assertEqual(normalized.height, 600, 'the drawing plan height changed during normalization');
+  assertEqual(normalized.elements.length, 2, 'valid drawing primitives were dropped');
+
+  const canvas = harness.sandbox.document.createElement('canvas');
+  assertEqual(api.renderAiDrawingPlanToCanvas(normalized, canvas), true,
+    'the normalized plan did not render to local Canvas');
+  assertEqual(canvas.width, 800, 'the local drawing canvas used the wrong width');
+  assertEqual(canvas.height, 600, 'the local drawing canvas used the wrong height');
+  const operationNames = canvas.__context.operations.map((operation) => operation.name);
+  assert(operationNames.includes('clearRect') && operationNames.includes('fillRect'),
+    'Canvas rendering did not paint an opaque local background');
+  assert(operationNames.includes('ellipse') && operationNames.includes('moveTo')
+    && operationNames.includes('lineTo'),
+  'Canvas rendering did not execute the declared geometry');
+  assert(operationNames.includes('fill') && operationNames.includes('stroke'),
+    'Canvas rendering lost the declared paint operations');
+
+  const svg = api.aiDrawingPlanToSvg(normalized);
+  assert(svg.includes('<svg') && svg.includes('viewBox="0 0 800 600"'),
+    'the plan did not produce the SVG compatibility artifact');
+  assert(svg.includes('<ellipse') && svg.includes('<polyline'),
+    'the SVG compatibility artifact dropped drawing primitives');
+  assert(!/<(?:text|script|image|foreignObject)\b/i.test(svg),
+    'the local SVG serializer emitted a disallowed semantic or executable element');
+  assert(!/url\(|https?:|data:image/i.test(svg),
+    'the local SVG serializer emitted an external resource');
+
+  const semanticPlan = sampleDrawingPlan();
+  semanticPlan.elements[0].text = 'PRIVATE_ANSWER';
+  assertEqual(api.normalizeAiDrawingPlan(semanticPlan), null,
+    'the browser accepted an undeclared semantic field in a drawing element');
+  const nullablePlan = sampleDrawingPlan();
+  nullablePlan.version = null;
+  assertEqual(api.normalizeAiDrawingPlan(nullablePlan), null,
+    'the browser treated an explicit null plan version as the canonical version');
+  const aliasPlan = sampleDrawingPlan();
+  aliasPlan.elements[0] = {
+    type: 'rect', x: 200, y: 160, width: 400, height: 280, radius: 12,
+    fill: '#f4cf45', stroke: '#2f3b45', stroke_width: 8,
+  };
+  assertEqual(api.normalizeAiDrawingPlan(aliasPlan), null,
+    'the browser accepted a rect radius alias outside the backend schema');
+  const outOfBoundsPlan = sampleDrawingPlan();
+  outOfBoundsPlan.elements[0].cx = 790;
+  assertEqual(api.normalizeAiDrawingPlan(outOfBoundsPlan), null,
+    'the browser silently changed an out-of-bounds backend drawing plan');
+}
+
+async function testRawAiSvgFillsResponsiveStage() {
+  const harness = loadHarness();
+  const attrs = { viewBox: '0 0 800 600', width: '800', height: '600' };
+  const svg = {
+    style: {},
+    getAttribute(name) { return attrs[name] || null; },
+    setAttribute(name, value) { attrs[name] = String(value); },
+    removeAttribute(name) { delete attrs[name]; },
+  };
+  harness.api.normalizeAiDrawingSvg(svg);
+  assertEqual(attrs.preserveAspectRatio, 'none',
+    'raw AI SVG kept aspect-ratio letterboxing instead of filling the drawing stage');
+  assert(!Object.prototype.hasOwnProperty.call(attrs, 'width')
+    && !Object.prototype.hasOwnProperty.call(attrs, 'height'),
+  'raw AI SVG kept fixed dimensions that can diverge from the player canvas');
+
+  harness.api.installAiDrawingFitSpies({
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 1000, bottom: 500, width: 1000, height: 500 };
+    },
+  }, {
+    bounds: { x1: 200, y1: 200, x2: 600, y2: 400 },
+    centerX: 400,
+    centerY: 300,
+  });
+  harness.api.fitAiDrawingSvgToContent(svg);
+  const fittedViewBox = attrs.viewBox.split(/\s+/).map(Number);
+  assert(Math.abs((fittedViewBox[2] / fittedViewBox[3]) - 2) < 0.001,
+    'raw AI SVG content fitting ignored the responsive stage aspect ratio');
+}
+
+async function testBucketFillTreatsCanvasDisplayEdgeAsBoundary() {
+  const harness = loadHarness();
+  const width = 9;
+  const height = 9;
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  const barrier = { r: 36, g: 48, b: 58, a: 255 };
+  const fill = { r: 244, g: 207, b: 69, a: 255 };
+  const visibleBounds = { minX: 0, minY: 0, maxX: 8, maxY: 6 };
+  function setTestPixel(x, y, color) {
+    const index = (y * width + x) * 4;
+    pixels[index] = color.r;
+    pixels[index + 1] = color.g;
+    pixels[index + 2] = color.b;
+    pixels[index + 3] = color.a;
+  }
+  function testPixel(x, y) {
+    const index = (y * width + x) * 4;
+    return Array.from(pixels.slice(index, index + 4));
+  }
+  for (let y = 1; y < visibleBounds.maxY; y += 1) setTestPixel(4, y, barrier);
+
+  assertEqual(harness.api.floodFillPixelBuffer(
+    pixels, width, height, 1, 3, fill, visibleBounds,
+  ), true,
+    'bucket fill rejected an enclosed edge-bounded region');
+  assertDeepEqual(testPixel(1, 3), [244, 207, 69, 255],
+    'bucket fill did not color the selected side');
+  assertDeepEqual(testPixel(1, 0), [244, 207, 69, 255],
+    'bucket fill did not project the selected region onto the canvas edge');
+  assertDeepEqual(testPixel(6, 3), [0, 0, 0, 0],
+    'bucket fill escaped around a stroke ending at the canvas edge');
+  assertDeepEqual(testPixel(6, 0), [0, 0, 0, 0],
+    'the canvas edge connected two otherwise separate fill regions');
+  assertDeepEqual(testPixel(4, 3), [36, 48, 58, 255],
+    'bucket fill overwrote the brush boundary');
+  assertDeepEqual(testPixel(1, 7), [0, 0, 0, 0],
+    'bucket fill changed pixels clipped outside the visible canvas area');
+  const pixelsBeforeHiddenStart = Array.from(pixels);
+  assertEqual(harness.api.floodFillPixelBuffer(
+    pixels, width, height, 1, 8, fill, visibleBounds,
+  ), false, 'bucket fill accepted a start point outside the visible canvas area');
+  assertDeepEqual(Array.from(pixels), pixelsBeforeHiddenStart,
+    'an out-of-view bucket start changed the pixel buffer');
+  assertEqual(harness.api.floodFillPixelBuffer(
+    pixels, width, height, 1, 3, fill, null,
+  ), false, 'bucket fill treated an explicitly invisible canvas as fully visible');
+  assertDeepEqual(Array.from(pixels), pixelsBeforeHiddenStart,
+    'an explicitly invisible canvas changed the pixel buffer');
+
+  const mappedBounds = harness.api.canvasDisplayPixelBounds({
+    width: 800,
+    height: 600,
+    getBoundingClientRect() {
+      return { left: 0, top: -100, right: 800, bottom: 500, width: 800, height: 600 };
+    },
+  }, {
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 800, bottom: 400, width: 800, height: 400 };
+    },
+  });
+  assertDeepEqual(mappedBounds, { minX: 0, minY: 100, maxX: 799, maxY: 499 },
+    'visible canvas clipping was not mapped back into the pixel buffer');
+
+  const clippingAncestor = {
+    parentElement: null,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 800, bottom: 300, width: 800, height: 300 };
+    },
+  };
+  const stage = {
+    parentElement: clippingAncestor,
+    getBoundingClientRect() {
+      return { left: 0, top: -100, right: 800, bottom: 400, width: 800, height: 500 };
+    },
+  };
+  const clippedCanvas = {
+    width: 800,
+    height: 600,
+    parentElement: stage,
+    getBoundingClientRect() {
+      return { left: 0, top: -100, right: 800, bottom: 500, width: 800, height: 600 };
+    },
+  };
+  harness.sandbox.getComputedStyle = (element) => (element === clippingAncestor
+    ? { overflow: 'hidden', overflowX: 'hidden', overflowY: 'hidden' }
+    : { overflow: 'visible', overflowX: 'visible', overflowY: 'visible' });
+  const ancestorClippedBounds = harness.api.canvasDisplayPixelBounds(clippedCanvas, stage);
+  assertDeepEqual(ancestorClippedBounds, { minX: 0, minY: 100, maxX: 799, maxY: 399 },
+    'an outer overflow clipping edge was not mapped back into the pixel buffer');
+
+  harness.sandbox.visualViewport = {
+    width: 800,
+    height: 200,
+    offsetLeft: 0,
+    offsetTop: 50,
+  };
+  const viewportClippedBounds = harness.api.canvasDisplayPixelBounds(clippedCanvas, stage);
+  assertDeepEqual(viewportClippedBounds, { minX: 0, minY: 150, maxX: 799, maxY: 349 },
+    'the visual viewport edge was not mapped back into the pixel buffer');
+
+  harness.sandbox.visualViewport = null;
+  harness.sandbox.innerWidth = 2000;
+  harness.sandbox.innerHeight = 2000;
+  const yClip = {
+    parentElement: null,
+    __style: { overflow: 'visible', overflowX: 'visible', overflowY: 'hidden' },
+    getBoundingClientRect() {
+      return { left: -500, top: 0, right: 1000, bottom: 300, width: 1500, height: 300 };
+    },
+  };
+  const visibleNarrowAncestor = {
+    parentElement: yClip,
+    __style: { overflow: 'visible', overflowX: 'visible', overflowY: 'visible' },
+    getBoundingClientRect() {
+      return { left: 250, top: 100, right: 300, bottom: 150, width: 50, height: 50 };
+    },
+  };
+  const xClip = {
+    parentElement: visibleNarrowAncestor,
+    __style: { overflow: 'visible', overflowX: 'hidden', overflowY: 'visible' },
+    getBoundingClientRect() {
+      return { left: 0, top: -500, right: 600, bottom: 1000, width: 600, height: 1500 };
+    },
+  };
+  const axisStage = {
+    parentElement: xClip,
+    getBoundingClientRect() {
+      return { left: -100, top: -100, right: 700, bottom: 500, width: 800, height: 600 };
+    },
+  };
+  const axisCanvas = {
+    width: 800,
+    height: 600,
+    parentElement: axisStage,
+    getBoundingClientRect() {
+      return { left: -100, top: -100, right: 700, bottom: 500, width: 800, height: 600 };
+    },
+  };
+  harness.sandbox.getComputedStyle = (element) => element.__style
+    || { overflow: 'visible', overflowX: 'visible', overflowY: 'visible' };
+  assertDeepEqual(
+    harness.api.canvasDisplayPixelBounds(axisCanvas, axisStage),
+    { minX: 100, minY: 100, maxX: 699, maxY: 399 },
+    'axis-specific overflow clips or an overflow-visible ancestor were handled incorrectly',
+  );
+
+  const borderedClip = {
+    parentElement: null,
+    offsetWidth: 800,
+    offsetHeight: 300,
+    clientLeft: 1,
+    clientTop: 1,
+    clientWidth: 798,
+    clientHeight: 298,
+    __style: { overflow: 'hidden', overflowX: 'hidden', overflowY: 'hidden' },
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 800, bottom: 300, width: 800, height: 300 };
+    },
+  };
+  stage.parentElement = borderedClip;
+  assertDeepEqual(
+    harness.api.canvasDisplayPixelBounds(clippedCanvas, stage),
+    { minX: 1, minY: 101, maxX: 798, maxY: 398 },
+    'the overflow client box did not exclude the ancestor border pixels',
+  );
+
+  borderedClip.getBoundingClientRect = () => (
+    { left: 0, top: 700, right: 800, bottom: 1000, width: 800, height: 300 }
+  );
+  assertEqual(harness.api.canvasDisplayPixelBounds(clippedCanvas, stage), null,
+    'a fully clipped canvas failed open to its entire backing buffer');
+
+  clippedCanvas.getBoundingClientRect = () => (
+    { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
+  );
+  assertEqual(harness.api.canvasDisplayPixelBounds(clippedCanvas, stage), null,
+    'a zero-sized canvas failed open to its entire backing buffer');
+}
+
+async function testComplexDrawingPlanSupportsCurvesAndMoreDetail() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const complexPlan = sampleDrawingPlan();
+  complexPlan.elements = [
+    {
+      type: 'path',
+      d: 'M 150 320 C 210 90 590 90 650 320 Q 400 540 150 320 Z',
+      fill: '#f4cf45',
+      stroke: '#2f3b45',
+      stroke_width: 8,
+    },
+  ].concat(Array.from({ length: 80 }, (_value, index) => ({
+    type: 'circle',
+    cx: 200 + (index % 20) * 20,
+    cy: 200 + Math.floor(index / 20) * 20,
+    r: 4,
+    fill: '#ffffff',
+    stroke: 'none',
+    stroke_width: 1,
+  })));
+
+  const normalized = api.normalizeAiDrawingPlan(complexPlan);
+  assert(normalized, 'a detailed plan above the old 70-element cap was rejected');
+  assertEqual(normalized.elements.length, 81, 'the detailed plan lost drawing elements');
+  assertEqual(normalized.elements[0].type, 'path', 'the curved path was dropped');
+
+  const canvas = harness.sandbox.document.createElement('canvas');
+  assertEqual(api.renderAiDrawingPlanToCanvas(normalized, canvas), true,
+    'the curved drawing plan did not render to Canvas');
+  const pathPaint = canvas.__context.operations.find((operation) => (
+    (operation.name === 'fill' || operation.name === 'stroke')
+      && operation.args[0] && operation.args[0].d
+  ));
+  assert(pathPaint && pathPaint.args[0].d.includes('C 210 90'),
+    'Canvas rendering did not use the declared curved path');
+
+  const svg = api.aiDrawingPlanToSvg(normalized);
+  assert(svg.includes('<path') && svg.includes('C 210 90'),
+    'the SVG compatibility artifact dropped the curved path');
+
+  complexPlan.elements[0].d = 'M 20 20 L 40 40<script>';
+  assertEqual(api.normalizeAiDrawingPlan(complexPlan), null,
+    'the browser accepted executable markup inside path data');
+}
+
+async function testDrawingReviewCaptureIsLowResolutionOpaqueJpeg() {
+  const harness = loadHarness();
+  const image = harness.api.captureAiDrawingReviewImage(sampleDrawingPlan());
+
+  assertEqual(image, 'data:image/jpeg;base64,384x288',
+    'the visual review image was not the bounded low-resolution JPEG');
+  assertEqual(harness.createdCanvases.length, 2,
+    'drawing review should need one full-size source and one review canvas');
+  const source = harness.createdCanvases[0];
+  const review = harness.createdCanvases[1];
+  assertEqual(source.width, 800, 'the review source did not render the canonical plan width');
+  assertEqual(source.height, 600, 'the review source did not render the canonical plan height');
+  assertEqual(review.width, 384, 'the review image was not downsampled to the expected width');
+  assertEqual(review.height, 288, 'the review image was not downsampled to the expected height');
+  const reviewOperations = review.__context.operations;
+  assert(reviewOperations.some((operation) => operation.name === 'fillRect'),
+    'the JPEG review canvas was not given an opaque background');
+  const drawImage = reviewOperations.find((operation) => operation.name === 'drawImage');
+  assert(drawImage && drawImage.args.slice(1).join(',') === '0,0,384,288',
+    'the full drawing was not scaled into the bounded review image');
+  const encoded = reviewOperations.find((operation) => operation.name === 'toDataURL');
+  assertDeepEqual(encoded.args, ['image/jpeg', 0.78],
+    'the visual review image used an unexpected encoding or quality');
+}
+
+async function runPrepareAiDrawingReview(responseFactory) {
+  const harness = loadHarness();
+  const api = harness.api;
+  const calls = [];
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.phase = 'ai_drawing';
+  api.state.roundFlowToken = 9;
+  api.state.activeRoundToken = 9;
+  api.state.sessionId = 'drawing-review-session';
+  api.state.sdkClient = {
+    disposed: false,
+    runtime: { state: 'running', session: { id: 'drawing-review-session', routeInstanceId: 'review-route' } },
+    commands: {
+      execute(command, payload, options) {
+        calls.push({ command, payload, options });
+        return Promise.resolve().then(() => responseFactory(command, payload, options));
+      },
+    },
+  };
+  const original = sampleDrawingPlan();
+  const prepared = await api.prepareAiDrawing({ plan: original, svg: '<svg>legacy</svg>' }, 9);
+  return { harness, api, calls, original, prepared };
+}
+
+async function testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan() {
+  const corrected = sampleDrawingPlan('#f28c8c');
+  const result = await runPrepareAiDrawingReview(() => ({
+    ok: true,
+    data: {
+      ok: true,
+      handled: true,
+      accepted: false,
+      corrected: true,
+      drawing: { plan: corrected },
+    },
+  }));
+
+  assertEqual(result.calls.length, 1, 'one drawing produced more than one visual review command');
+  assertEqual(result.calls[0].command, 'round:ai-draw-review',
+    'drawing review bypassed the declared SDK command');
+  assertEqual(result.calls[0].payload.client_round_token, 9,
+    'drawing review lost the active round token');
+  assertEqual(result.calls[0].payload.image_data_url, 'data:image/jpeg;base64,384x288',
+    'drawing review did not send the bounded local Canvas capture');
+  assertDeepEqual(Object.keys(result.calls[0].payload).sort(),
+    ['client_round_token', 'image_data_url'],
+    'drawing review sent model plans or host-owned identity outside its SDK contract');
+  assertEqual(result.calls[0].options.timeoutMs, 90000,
+    'drawing review did not use its bounded command timeout');
+  assertEqual(result.prepared.plan.elements[0].fill, '#f28c8c',
+    'the single reviewed correction was not applied');
+  assert(result.prepared.svg.includes('#f28c8c'),
+    'the correction did not refresh the local summary/export SVG');
+}
+
+async function testDrawingPlanReviewUnavailableKeepsOriginalDrawing() {
+  const result = await runPrepareAiDrawingReview(() => Promise.reject(
+    Object.assign(new Error('vision unavailable'), { code: 'network_error' }),
+  ));
+
+  assertEqual(result.calls.length, 1, 'an unavailable reviewer was retried in a local loop');
+  assertEqual(result.prepared.plan.elements[0].fill, '#f4cf45',
+    'a review failure discarded the original local drawing plan');
+  assert(result.prepared.svg.includes('#f4cf45'),
+    'a review failure discarded the original summary/export artifact');
+}
+
+async function testStopSdkVoiceBestEffortRejectsResolvedFailureAndSyncThrow() {
+  for (const voice of [
+    { stop() { return Promise.resolve({ ok: false, active: false, reason: 'stop_failed' }); } },
+    { stop() { throw new Error('stop_failed'); } },
+  ]) {
+    const harness = loadHarness();
+    const api = harness.api;
+    const client = {
+      disposed: false,
+      runtime: { state: 'running' },
+      capabilities: { has(name) { return name === 'voice-input'; } },
+      voice,
+    };
+    api.installVoiceUiSpy([]);
+    api.state.sdkClient = client;
+    api.state.voiceRouteActive = true;
+
+    assertEqual(await api.stopSdkVoiceBestEffort(client), false,
+      'a failed SDK voice stop was reported as successful');
+  }
+}
+
+async function testSdkLoggerFailuresAreIsolated() {
+  const harness = loadHarness();
+  const result = harness.api.logSdkBestEffort({
+    logger: {
+      warn() { throw new Error('logger failed'); },
+    },
+  }, 'warn', 'runtime', 'route_inactive', 'safe message', { reason: 'inactive' });
+
+  assertEqual(result, false, 'an SDK logger exception escaped the best-effort boundary');
 }
 
 async function testPageExitPostsVoiceStopBeforeCleanup() {
@@ -1168,23 +1228,21 @@ async function main() {
   await testPreferenceWritesAreSerializedAndCoalesceFinalSnapshot();
   await testUnavailableStorageNeverFallsBackToRawLocalStorage();
   await testMemoryConsentUsesSdkAndRejectsLockedMismatch();
-  await testSdkLocaleUpdatesCachedLanguage();
   await testPlayerTextCommandsStaySerialized();
   await testQueuedPlayerTextDoesNotCrossPhaseBoundary();
   await testVoiceStateCannotClearAnActiveControlRequest();
   await testBackgroundVoiceQueryCannotClearANewerToggle();
-  await testAutomaticVoiceHandoffUsesPendingFence();
-  await testStaleAutomaticVoiceHandoffCannotOverwriteNewerRequest();
-  await testPlaybackBlockedHandoffRetriesAfterPlaybackStops();
-  await testPendingAudioWorkDoesNotRetryHandoffEarly();
-  await testPlaybackResumingBeforeRetryTimerDoesNotConsumeAttempt();
-  await testNewOrdinaryVoiceIntentCancelsDeferredRetryQuietly();
-  await testInitialPlaybackTransportFailureWithoutIntentDoesNotRetry();
-  await testHandoffRetryMaxExhaustionClearsState();
-  await testHandoffRetryWithoutRouteClearsState();
-  await testRouteCleanupCancelsPendingHandoffRetry();
-  await testManualVoiceControlCancelsPendingHandoffRetry();
-  await testRouteStartDoesNotWaitForAutomaticVoiceHandoff();
+  await testVoiceToggleUsesOfficialSdkControl();
+  await testRouteStartQueriesVoiceWithoutTakingOverMicrophone();
+  await testBucketFillTreatsCanvasDisplayEdgeAsBoundary();
+  await testCanvasDrawingPlanIsBoundedRenderedAndSerializable();
+  await testRawAiSvgFillsResponsiveStage();
+  await testComplexDrawingPlanSupportsCurvesAndMoreDetail();
+  await testDrawingReviewCaptureIsLowResolutionOpaqueJpeg();
+  await testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan();
+  await testDrawingPlanReviewUnavailableKeepsOriginalDrawing();
+  await testStopSdkVoiceBestEffortRejectsResolvedFailureAndSyncThrow();
+  await testSdkLoggerFailuresAreIsolated();
   await testPageExitPostsVoiceStopBeforeCleanup();
   process.stdout.write('drawing guess SDK preference tests passed\n');
 }

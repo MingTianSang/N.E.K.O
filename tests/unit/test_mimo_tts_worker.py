@@ -143,12 +143,8 @@ def test_mimo_worker_sends_chat_completions_tts_request(monkeypatch):
     request_queue.put(("speech-1", "世界"))
     request_queue.put((None, None))
 
-    audio_item, _ = _wait_for_queue_item(
-        response_queue,
-        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
-    )
-    assert audio_item[1] == "speech-1"
-    assert len(audio_item[2]) > 0
+    audio_item, _ = _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+    assert len(audio_item) > 0
 
     assert len(transport.requests) == 1
     sent = transport.requests[0]
@@ -638,12 +634,24 @@ def test_vllm_omni_worker_marks_not_ready_on_server_error_event(monkeypatch):
     assert not thread.is_alive()
 
     assert ("__ready__", True) in seen
-    assert any(
-        isinstance(item, tuple)
-        and item[0] == "__error__"
-        and "BAD_MODEL" in str(item[1])
+    error_payloads = [
+        json.loads(item[1])
         for item in seen
-    )
+        if isinstance(item, tuple) and item[0] == "__error__"
+    ]
+    # Configured endpoints expose only the stable diagnostic contract; the raw
+    # server code/message may contain provider echoes and must stay private.
+    # 自定义端点只上报稳定错误码、provider 与阶段，禁止透传原始服务端内容。
+    assert error_payloads == [
+        {
+            "code": "TTS_CONFIGURED_API_FAILURE",
+            "provider": "vllm_omni",
+            "stage": "server_event",
+            "message": "Configured TTS API unavailable; using existing fallback order",
+        }
+    ]
+    assert "BAD_MODEL" not in str(error_payloads)
+    assert "invalid model" not in str(error_payloads)
 
 
 @pytest.mark.unit

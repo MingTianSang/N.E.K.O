@@ -21,6 +21,7 @@ from ._shared import (  # noqa: F401 - preserve the legacy module namespace
     Dict,
     Enum,
     IMAGE_IDLE_RATE_MULTIPLIER,
+    ImageStageResult,
     List,
     NATIVE_IMAGE_MIN_INTERVAL,
     OMNI_RECENT_RESPONSES_MAX,
@@ -32,6 +33,7 @@ from ._shared import (  # noqa: F401 - preserve the legacy module namespace
     ToolDefinition,
     ToolResult,
     TurnDetectionMode,
+    VisualDeliveryMode,
     VISION_ANALYSIS_MAX_TOKENS,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
@@ -64,12 +66,8 @@ from ._gemini_support import (  # noqa: F401 - preserve the legacy module namesp
     types,
 )
 
-from ._proactive_audio import (  # noqa: F401 - preserve the legacy module namespace
-    _PROACTIVE_AUDIO_CACHE,
-    _PROACTIVE_AUDIO_DIR,
-    _load_proactive_audio,
-)
-
+from ._transport import RealtimeImagePayloadTooLargeError  # noqa: F401
+from ._protocol_capabilities import MultimodalTurnDelivery  # noqa: F401
 from ._client import OmniRealtimeClient  # noqa: F401
 
 __import__(
@@ -80,7 +78,6 @@ __import__(
     {
         "GEMINI_AVAILABLE": "_gemini_support",
         "_GEMINI_IMPORT_ERROR": "_gemini_support",
-        "_PROACTIVE_AUDIO_CACHE": "_proactive_audio",
         "_config_manager": "_gemini_support",
         "genai": "_gemini_support",
         "types": "_gemini_support",

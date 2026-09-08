@@ -85,6 +85,7 @@ GAME_CHAT_MAX_TEXT_CHARS = 260
 MEMORY_SUMMARY_MAX_CHARS = 260
 MEMORY_SUMMARY_TIMEOUT_SECONDS = 8.0
 VISION_GUESS_MAX_DATA_URL_CHARS = 1_800_000
+VISION_GUESS_MAX_INPUT_PIXELS = 16_000_000
 VISION_GUESS_MAX_CANDIDATES = 60
 DRAWING_PLAN_VERSION = 1
 DRAWING_PLAN_WIDTH = 800
@@ -200,7 +201,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
         "platano", "banana",
     ),
     "cat": (
-        "kitty", "kitten", "feline", "\u732b", "\u8c93", "\u732b\u54aa", "\u5c0f\u732b",
+        "kitty", "kitten", "feline", "\u732b", "\u8c93", "\u732b\u54aa", "\u8c93\u54aa", "\u5c0f\u732b",
         "\u55b5\u661f\u4eba", "\u306d\u3053", "\u30cd\u30b3", "\u732b\u3061\u3083\u3093",
         "\uace0\uc591\uc774", "gato", "gata",
     ),
@@ -210,11 +211,11 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "fish": (
         "fishes", "goldfish", "\u9c7c", "\u9b5a", "\u5c0f\u9c7c", "\u5c0f\u9b5a",
-        "\u9c7c\u513f", "\u9b5a\u4ed4", "\u3055\u304b\u306a", "\u30b5\u30ab\u30ca",
+        "\u9c7c\u513f", "\u9b5a\u5152", "\u9b5a\u4ed4", "\u3055\u304b\u306a", "\u30b5\u30ab\u30ca",
         "\ubb3c\uace0\uae30", "pez", "peixe",
     ),
     "bird": (
-        "avian", "\u9e1f", "\u9ce5", "\u5c0f\u9e1f", "\u5c0f\u9ce5", "\u9e1f\u513f",
+        "avian", "\u9e1f", "\u9ce5", "\u5c0f\u9e1f", "\u5c0f\u9ce5", "\u9e1f\u513f", "\u9ce5\u5152",
         "\u3068\u308a", "\u30c8\u30ea", "\uc0c8", "pajaro", "passaro",
     ),
     "rabbit": (
@@ -257,7 +258,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "cup": (
         "mug", "teacup", "glass", "\u676f", "\u676f\u5b50", "\u6c34\u676f",
-        "\u8336\u676f", "\u9a6c\u514b\u676f", "\u30b3\u30c3\u30d7", "\ucef5", "taza", "copo",
+        "\u8336\u676f", "\u9a6c\u514b\u676f", "\u99ac\u514b\u676f", "\u30b3\u30c3\u30d7", "\ucef5", "taza", "copo",
     ),
     "book": (
         "novel", "notebook", "storybook", "\u4e66", "\u66f8", "\u4e66\u672c",
@@ -273,7 +274,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "clock": (
         "watch", "timer", "alarm clock", "\u949f", "\u9418", "\u65f6\u949f",
-        "\u6642\u9418", "\u949f\u8868", "\u9418\u9336", "\u95f9\u949f", "\u6642\u8a08",
+        "\u6642\u9418", "\u949f\u8868", "\u9418\u9336", "\u95f9\u949f", "\u9b27\u9418", "\u6642\u8a08",
         "\uc2dc\uacc4", "reloj", "relogio",
     ),
     "key": (
@@ -288,12 +289,12 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "car": (
         "automobile", "auto", "sedan", "\u8f66", "\u8eca", "\u6c7d\u8f66",
-        "\u6c7d\u8eca", "\u5c0f\u6c7d\u8f66", "\u8f7f\u8f66", "\u8eca\u5b50",
+        "\u6c7d\u8eca", "\u5c0f\u6c7d\u8f66", "\u8f7f\u8f66", "\u8f66\u5b50", "\u8eca\u5b50",
         "\u304f\u308b\u307e", "\uc790\ub3d9\ucc28", "coche", "carro",
     ),
     "bus": (
         "coach", "shuttle", "\u516c\u4ea4", "\u516c\u4ea4\u8f66", "\u516c\u5171\u6c7d\u8f66",
-        "\u5df4\u58eb", "\u5927\u5df4", "\u30d0\u30b9", "\ubc84\uc2a4", "autobus", "onibus",
+        "\u516c\u5171\u6c7d\u8eca", "\u5df4\u58eb", "\u5927\u5df4", "\u30d0\u30b9", "\ubc84\uc2a4", "autobus", "onibus",
     ),
     "bicycle": (
         "bike", "cycle", "pushbike", "\u81ea\u884c\u8f66", "\u81ea\u884c\u8eca",
@@ -306,7 +307,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "train": (
         "railway", "locomotive", "\u706b\u8f66", "\u706b\u8eca", "\u5217\u8f66",
-        "\u5217\u8eca", "\u52a8\u8f66", "\u96fb\u8eca", "\u96fb\u8eca", "\u3067\u3093\u3057\u3083",
+        "\u5217\u8eca", "\u52a8\u8f66", "\u52d5\u8eca", "\u7535\u8f66", "\u96fb\u8eca", "\u3067\u3093\u3057\u3083",
         "\uae30\ucc28", "tren", "trem",
     ),
     "airplane": (
@@ -320,7 +321,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "door": (
         "gate", "entrance", "\u95e8", "\u9580", "\u5927\u95e8", "\u5927\u9580",
-        "\u95e8\u53e3", "\u6237", "\u6236", "\u30c9\u30a2", "\ubb38", "puerta", "porta",
+        "\u95e8\u53e3", "\u9580\u53e3", "\u6237", "\u6236", "\u30c9\u30a2", "\ubb38", "puerta", "porta",
     ),
     "hat": (
         "cap", "beanie", "\u5e3d", "\u5e3d\u5b50", "\u5c0f\u5e3d\u5b50",
@@ -333,7 +334,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "cake": (
         "cupcake", "birthday cake", "\u86cb\u7cd5", "\u751f\u65e5\u86cb\u7cd5",
-        "\u7cd5\u70b9", "\u30b1\u30fc\u30ad", "\ucf00\uc774\ud06c", "pastel", "bolo",
+        "\u7cd5\u70b9", "\u7cd5\u9ede", "\u30b1\u30fc\u30ad", "\ucf00\uc774\ud06c", "pastel", "bolo",
     ),
     "pizza": (
         "\u62ab\u8428", "\u62ab\u85a9", "\u6bd4\u8428", "\u30d4\u30b6", "\ud53c\uc790", "pizza",
@@ -371,7 +372,7 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
         "mesa", "stol",
     ),
     "lamp": (
-        "desk lamp", "night lamp", "\u706f", "\u53f0\u706f", "\u6aaf\u71c8", "\u5c0f\u706f",
+        "desk lamp", "night lamp", "\u706f", "\u53f0\u706f", "\u6aaf\u71c8", "\u5c0f\u706f", "\u5c0f\u71c8",
         "\u30e9\u30f3\u30d7", "\ub7a8\ud504", "lampara", "lampada", "luminaria",
     ),
     "spoon": (
@@ -421,10 +422,10 @@ _WORD_EXTRA_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "pants": (
         "trousers", "jeans", "\u88e4", "\u88e4\u5b50", "\u957f\u88e4", "\u9577\u8932",
-        "\u725b\u4ed4\u88e4", "\u30ba\u30dc\u30f3", "\ubc14\uc9c0", "pantalones", "calca",
+        "\u725b\u4ed4\u88e4", "\u725b\u4ed4\u8932", "\u30ba\u30dc\u30f3", "\ubc14\uc9c0", "pantalones", "calca",
     ),
     "sock": (
-        "socks", "\u889c", "\u889c\u5b50", "\u896a\u5b50", "\u77ed\u889c", "\u9774\u4e0b",
+        "socks", "\u889c", "\u889c\u5b50", "\u896a\u5b50", "\u77ed\u889c", "\u77ed\u896a", "\u9774\u4e0b",
         "\u304f\u3064\u3057\u305f", "\uc591\ub9d0", "calcetin", "calcetines", "meia",
     ),
     "glasses": (
@@ -778,6 +779,82 @@ def _mentions_word_alias(text: Any, word: DrawingGuessWord) -> bool:
         if _contains_alias_with_guess_boundary(text, alias):
             return True
     return False
+
+
+def _contains_alias_with_output_boundary(text: Any, alias: Any) -> bool:
+    """Match an answer alias in model output without guess-intent semantics.
+
+    Guess matching deliberately ignores negated candidates (``not a cat`` is
+    not a cat guess).  Output filtering has the opposite security property:
+    even a negated answer names the hidden answer and therefore leaks it.
+    Keep Latin/Cyrillic token boundaries so short aliases such as ``car`` and
+    ``sol`` do not match inside unrelated words.  CJK aliases retain the
+    existing single-Han-character boundary protection (a one-character alias
+    must not match inside a longer Han word); multi-character Han, kana, and
+    Hangul names are matched conservatively because those scripts commonly
+    attach particles without whitespace.
+    """
+    folded_text = _fold_guess_text(text)
+    folded_alias = _fold_guess_text(alias)
+    if not folded_text or not folded_alias:
+        return False
+    if folded_text == folded_alias:
+        return True
+
+    if _CJK_CHAR_RE.search(folded_alias):
+        han_count = len(_CJK_CHAR_RE.findall(folded_alias))
+        start = folded_text.find(folded_alias)
+        while start >= 0:
+            end = start + len(folded_alias)
+            if han_count > 1 or _cjk_boundary_ok(folded_text, start, end):
+                return True
+            start = folded_text.find(folded_alias, start + 1)
+        return False
+
+    spaced_alias = _spaced_guess_text(alias)
+    if not spaced_alias:
+        return False
+    spaced_text = _spaced_guess_text(text)
+    alias_pattern = re.compile(
+        rf"(?<![a-z0-9Ѐ-ӿ]){re.escape(spaced_alias)}(?![a-z0-9Ѐ-ӿ])"
+    )
+    return alias_pattern.search(spaced_text) is not None
+
+
+def _model_output_mentions_word(text: Any, word: DrawingGuessWord) -> bool:
+    return any(
+        _contains_alias_with_output_boundary(text, alias)
+        for alias in _word_aliases(word)
+    )
+
+
+def _hidden_answer_for_model_output(session: dict[str, Any]) -> DrawingGuessWord | None:
+    phase = str(session.get("phase") or "")
+    if phase in {"ai_drawing", "user_guessing"}:
+        return _WORD_BY_ID.get(str(session.get("ai_word_id") or ""))
+    if phase in {"user_drawing", "ai_guessing", "ai_guess_feedback"}:
+        return _WORD_BY_ID.get(str(session.get("user_word_id") or ""))
+    return None
+
+
+def _guard_hidden_answer_model_line(
+    line: Any,
+    *,
+    session: dict[str, Any],
+    allow_answer_reveal: bool = False,
+    answer: DrawingGuessWord | None = None,
+) -> tuple[str, bool]:
+    """Return ``("", True)`` when a non-public model line leaks an answer."""
+    safe_line = str(line or "").strip()
+    hidden_answer = answer or _hidden_answer_for_model_output(session)
+    if (
+        not safe_line
+        or allow_answer_reveal
+        or hidden_answer is None
+        or not _model_output_mentions_word(safe_line, hidden_answer)
+    ):
+        return safe_line, False
+    return "", True
 
 
 def _has_user_guess_intent(text: str) -> bool:
@@ -1331,14 +1408,6 @@ def _truncate_text(value: Any, limit: int) -> str:
     return f"{text[:max(0, limit - 1)]}…"
 
 
-def _safe_llm_error_summary(exc: Exception, *, limit: int = 500) -> str:
-    text = str(exc or "")
-    text = re.sub(r"data:image/[^,\s]+;base64,[A-Za-z0-9+/=_-]+", "data:image/...;base64,<redacted>", text)
-    text = re.sub(r"(api[_-]?key['\"]?\s*[:=]\s*['\"]?)[^'\"\s,}]+", r"\1<redacted>", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s+", " ", text).strip()
-    return _truncate_text(text or type(exc).__name__, limit)
-
-
 def _normalize_memory_consent(value: Any) -> str:
     return "summary" if str(value or "").strip().lower() == "summary" else "none"
 
@@ -1406,7 +1475,15 @@ def _build_drawing_guess_memory_summary(
     normalized_locale = _normalize_locale(locale)
     display_name = str(lanlan_name or session.get("lanlan_name") or "").strip()
     if not display_name:
-        display_name = "当前角色" if normalized_locale in {"zh-CN", "zh-TW"} else "the character"
+        display_name = {
+            "zh-CN": "当前角色",
+            "zh-TW": "目前角色",
+            "ja": "キャラクター",
+            "ko": "캐릭터",
+            "ru": "персонажем",
+            "pt": "a personagem",
+            "es": "el personaje",
+        }.get(normalized_locale, "the character")
 
     ai_word = _WORD_BY_ID.get(str(session.get("ai_word_id") or ""))
     ai_label = _drawing_guess_memory_label(ai_word, normalized_locale)
@@ -1416,7 +1493,7 @@ def _build_drawing_guess_memory_summary(
     character_guessed_user = bool(correct or int(session.get("ai_score") or 0))
     attempts_count = max(0, int(attempts or session.get("ai_guess_attempts") or 0))
 
-    if normalized_locale in {"zh-CN", "zh-TW"}:
+    if normalized_locale == "zh-CN":
         ai_part = (
             f"{display_name}画的是「{ai_label}」，我{'猜中了' if user_guessed_ai else '没有猜中'}"
             if ai_label else
@@ -1428,6 +1505,113 @@ def _build_drawing_guess_memory_summary(
         if attempts_count:
             user_part += f"，一共猜了 {attempts_count} 次"
         return _sanitize_memory_summary_text(f"我和{display_name}玩了一局你画我猜：{ai_part}；{user_part}。")
+
+    if normalized_locale == "zh-TW":
+        ai_part = (
+            f"{display_name}畫的是「{ai_label}」，我{'猜中了' if user_guessed_ai else '沒有猜中'}"
+            if ai_label else
+            f"{display_name}先畫了一題，我{'猜中了' if user_guessed_ai else '沒有猜中'}"
+        )
+        user_part = f"我畫的是「{user_label}」，{display_name}{'猜中了' if character_guessed_user else '沒有猜中'}"
+        if guessed_label and not character_guessed_user:
+            user_part += f"，最後猜成了「{guessed_label}」"
+        if attempts_count:
+            user_part += f"，一共猜了 {attempts_count} 次"
+        return _sanitize_memory_summary_text(f"我和{display_name}玩了一局你畫我猜：{ai_part}；{user_part}。")
+
+    if normalized_locale == "ja":
+        ai_part = (
+            f"{display_name}が描いたのは「{ai_label}」で、私は{'当てた' if user_guessed_ai else '当てられなかった'}"
+            if ai_label else
+            f"{display_name}が先に描き、私は{'当てた' if user_guessed_ai else '当てられなかった'}"
+        )
+        user_part = f"私が描いたのは「{user_label}」で、{display_name}は{'当てた' if character_guessed_user else '当てられなかった'}"
+        if guessed_label and not character_guessed_user:
+            user_part += f"（最後の予想は「{guessed_label}」）"
+        if attempts_count:
+            user_part += f"。予想は合計 {attempts_count} 回"
+        return _sanitize_memory_summary_text(
+            f"{display_name}とお絵描き当てゲームを1ラウンド遊んだ：{ai_part}；{user_part}。"
+        )
+
+    if normalized_locale == "ko":
+        ai_part = (
+            f"{display_name}이(가) 그린 것은 ‘{ai_label}’였고 나는 "
+            f"{'맞혔다' if user_guessed_ai else '맞히지 못했다'}"
+            if ai_label else
+            f"{display_name}이(가) 먼저 그렸고 나는 {'맞혔다' if user_guessed_ai else '맞히지 못했다'}"
+        )
+        user_part = (
+            f"내가 그린 것은 ‘{user_label}’였고 {display_name}은(는) "
+            f"{'맞혔다' if character_guessed_user else '맞히지 못했다'}"
+        )
+        if guessed_label and not character_guessed_user:
+            user_part += f"(마지막 추측은 ‘{guessed_label}’)"
+        if attempts_count:
+            user_part += f". 총 {attempts_count}번 추측했다"
+        return _sanitize_memory_summary_text(
+            f"{display_name}과(와) 그림 맞히기 한 라운드를 했다: {ai_part}; {user_part}."
+        )
+
+    if normalized_locale == "ru":
+        ai_part = (
+            f'{display_name} нарисовал(а) «{ai_label}», и я '
+            f'{"угадал(а)" if user_guessed_ai else "не угадал(а)"}'
+            if ai_label else
+            f'{display_name} рисовал(а) первым(ой), и я '
+            f'{"угадал(а)" if user_guessed_ai else "не угадал(а)"}'
+        )
+        user_part = (
+            f'я нарисовал(а) «{user_label}», и {display_name} '
+            f'{"угадал(а)" if character_guessed_user else "не угадал(а)"}'
+        )
+        if guessed_label and not character_guessed_user:
+            user_part += f', последним вариантом был «{guessed_label}»'
+        if attempts_count:
+            user_part += f", всего попыток: {attempts_count}"
+        return _sanitize_memory_summary_text(
+            f"Мы сыграли с {display_name} один раунд в рисование и угадывание: {ai_part}; {user_part}."
+        )
+
+    if normalized_locale in {"pt", "es"}:
+        if normalized_locale == "pt":
+            ai_part = (
+                f'{display_name} desenhou "{ai_label}" e eu '
+                f'{"acertei" if user_guessed_ai else "não acertei"}'
+                if ai_label else
+                f'{display_name} desenhou primeiro e eu '
+                f'{"acertei" if user_guessed_ai else "não acertei"}'
+            )
+            user_part = (
+                f'eu desenhei "{user_label}" e {display_name} '
+                f'{"acertou" if character_guessed_user else "não acertou"}'
+            )
+            if guessed_label and not character_guessed_user:
+                user_part += f', depois de chutar "{guessed_label}" por último'
+            if attempts_count:
+                user_part += f", em {attempts_count} tentativa{'s' if attempts_count != 1 else ''}"
+            return _sanitize_memory_summary_text(
+                f"Joguei uma rodada de desenho e adivinhação com {display_name}: {ai_part}; {user_part}."
+            )
+
+        ai_part = (
+            f'{display_name} dibujó "{ai_label}" y yo '
+            f'{"lo adiviné" if user_guessed_ai else "no lo adiviné"}'
+            if ai_label else
+            f'{display_name} dibujó primero y yo '
+            f'{"lo adiviné" if user_guessed_ai else "no lo adiviné"}'
+        )
+        user_part = (
+            f'yo dibujé "{user_label}" y {display_name} '
+            f'{"lo adivinó" if character_guessed_user else "no lo adivinó"}'
+        )
+        if guessed_label and not character_guessed_user:
+            user_part += f', después de decir "{guessed_label}" al final'
+        if attempts_count:
+            user_part += f", en {attempts_count} intento{'s' if attempts_count != 1 else ''}"
+        return _sanitize_memory_summary_text(
+            f"Jugué una ronda de dibujar y adivinar con {display_name}: {ai_part}; {user_part}."
+        )
 
     ai_part = (
         f'{display_name} drew "{ai_label}" and I {"guessed" if user_guessed_ai else "missed"} it'
@@ -1730,10 +1914,18 @@ async def _prepare_vision_image_data_url(value: Any) -> str | None:
         from utils.screenshot_utils import (
             COMPRESS_JPEG_QUALITY,
             COMPRESS_TARGET_HEIGHT,
+            MODEL_IMAGE_MAX_WIDTH,
+            _probe_image_profile,
             _validate_image_data,
             compress_screenshot,
         )
 
+        profile = await asyncio.to_thread(_probe_image_profile, encoded)
+        if not profile:
+            return None
+        _, (width, height) = profile
+        if width <= 0 or height <= 0 or width * height > VISION_GUESS_MAX_INPUT_PIXELS:
+            return None
         image = await asyncio.to_thread(_validate_image_data, image_bytes)
         if image is None:
             return None
@@ -1744,9 +1936,11 @@ async def _prepare_vision_image_data_url(value: Any) -> str | None:
             image,
             target_h=COMPRESS_TARGET_HEIGHT,
             quality=COMPRESS_JPEG_QUALITY,
+            max_w=MODEL_IMAGE_MAX_WIDTH,
         )
         jpg_b64 = base64.b64encode(jpg_bytes).decode("ascii")
-        return f"data:image/jpeg;base64,{jpg_b64}"
+        normalized = f"data:image/jpeg;base64,{jpg_b64}"
+        return normalized if len(normalized) <= VISION_GUESS_MAX_DATA_URL_CHARS else None
     except Exception:
         return None
 
@@ -2070,8 +2264,19 @@ def _parse_model_drawing_plan_payload(raw: Any) -> dict[str, Any] | None:
         return plan
     cleaned = _strip_json_fence(str(raw or "")).strip()
     if cleaned.startswith("{"):
-        # Do not recover a nested plan from a malformed or truncated root
-        # object. Candidate scanning is reserved for complete JSON in prose.
+        # Some otherwise complete model responses omit only the final brace of
+        # the outer {"plan": ...} wrapper. Repair that one exact shape, then let
+        # the normal drawing-plan sanitizer validate every nested field.
+        if cleaned.endswith("}") and re.match(r'^\{\s*"plan"\s*:\s*\{', cleaned):
+            repaired = _parse_json_object_payload(f"{cleaned}}}")
+            if (
+                isinstance(repaired, dict)
+                and set(repaired) == {"plan"}
+                and isinstance(repaired.get("plan"), dict)
+            ):
+                return repaired["plan"]
+        # Do not recover arbitrary nested objects from a malformed or genuinely
+        # truncated root. Candidate scanning is reserved for complete JSON prose.
         return None
     for candidate in _iter_balanced_json_object_candidates(raw):
         parsed = _parse_json_object_payload(candidate)
@@ -2997,6 +3202,18 @@ async def _generate_persona_chat_line(
                 timeout=GAME_CHAT_TIMEOUT_SECONDS + 2.0,
             )
         line = _sanitize_persona_line(getattr(result, "content", ""))
+        line, answer_blocked = _guard_hidden_answer_model_line(
+            line,
+            session=session,
+        )
+        if answer_blocked:
+            logger.info(
+                "drawing_guess persona chat rejected: lanlan=%s session=%s event=%s reason=hidden_answer_alias",
+                lanlan_name,
+                session.get("session_id") or "",
+                event,
+            )
+            return None
         if line:
             logger.info(
                 "drawing_guess persona chat ready: lanlan=%s session=%s event=%s source=model",
@@ -3104,6 +3321,35 @@ async def _generate_persona_game_line(
                 timeout=GAME_EVENT_LINE_TIMEOUT_SECONDS + 1.0,
             )
         line = _sanitize_persona_line(getattr(result, "content", ""))
+        public_details = details if isinstance(details, dict) else {}
+        hidden_answer = _hidden_answer_for_model_output(session)
+        allow_answer_reveal = bool(public_details.get("allow_answer_reveal"))
+        # A successful visual guess is allowed to say the word it just
+        # guessed.  This is not prior-answer disclosure: the backend derives
+        # the permission only when the declared guess itself exactly matches
+        # the hidden answer.
+        if (
+            not allow_answer_reveal
+            and event == "ai_guess_attempt"
+            and public_details.get("speak_as_visual_guess") is True
+            and hidden_answer is not None
+            and _matches_exact_word_alias(public_details.get("guess_label"), hidden_answer)
+        ):
+            allow_answer_reveal = True
+        line, answer_blocked = _guard_hidden_answer_model_line(
+            line,
+            session=session,
+            allow_answer_reveal=allow_answer_reveal,
+            answer=hidden_answer,
+        )
+        if answer_blocked:
+            logger.info(
+                "drawing_guess persona game line rejected: lanlan=%s session=%s event=%s reason=hidden_answer_alias",
+                lanlan_name,
+                session.get("session_id") or "",
+                event,
+            )
+            return fallback, "fallback"
         if line:
             logger.info(
                 "drawing_guess persona game line ready: lanlan=%s session=%s event=%s source=model",
@@ -3126,10 +3372,38 @@ async def _generate_persona_game_line(
 
 def _summary_evaluation_fallback(locale: str, *, correct: bool) -> str:
     normalized_locale = _normalize_locale(locale)
-    if normalized_locale in {"zh-CN", "zh-TW"}:
+    if normalized_locale == "zh-CN":
         if correct:
             return "\u5355\u72ec\u770b\u8fd9\u5f20\u753b\uff0c\u7ebf\u7d22\u8fd8\u662f\u633a\u6e05\u695a\u7684\uff0c\u96be\u602a\u6211\u4e00\u773c\u5c31\u6293\u5230\u4e86\u3002"
         return "\u5355\u72ec\u770b\u8fd9\u5f20\u753b\uff0c\u5b83\u628a\u7b54\u6848\u85cf\u5f97\u6709\u70b9\u72e1\u733e\uff0c\u4f46\u8fd9\u6837\u53cd\u800c\u633a\u6709\u610f\u601d\u3002"
+    localized = {
+        "zh-TW": (
+            "單獨看這張畫，線索還是挺清楚的，難怪我一眼就抓到了。",
+            "單獨看這張畫，它把答案藏得有點狡猾，但這樣反而挺有意思。",
+        ),
+        "ja": (
+            "この絵だけを見ても手がかりは十分伝わっていて、すぐに気づけたのも納得だよ。",
+            "この絵だけを見ると答えを少し巧妙に隠していて、それがかえって面白かったよ。",
+        ),
+        "ko": (
+            "이 그림만 봐도 단서가 꽤 분명해서 내가 바로 알아본 게 당연했어.",
+            "이 그림만 보면 답을 제법 영리하게 숨겨 두어서 오히려 더 재미있었어.",
+        ),
+        "ru": (
+            "Даже без дополнительных подсказок рисунок получился достаточно ясным, поэтому ответ сразу бросился в глаза.",
+            "Сам по себе рисунок хитро прячет ответ, и именно поэтому разгадывать его было интересно.",
+        ),
+        "pt": (
+            "Mesmo sem outras pistas, o desenho ficou claro o bastante para eu perceber a resposta de imediato.",
+            "Visto sozinho, o desenho esconde a resposta de um jeito esperto, e isso deixa a brincadeira mais divertida.",
+        ),
+        "es": (
+            "Incluso sin más pistas, el dibujo quedó lo bastante claro como para captar la respuesta enseguida.",
+            "Por sí solo, el dibujo esconde la respuesta con bastante ingenio, y eso hace el juego más divertido.",
+        ),
+    }.get(normalized_locale)
+    if localized:
+        return localized[0 if correct else 1]
     if correct:
         return "Looking at your drawing on its own, the clue came through clearly enough for me to catch it."
     return "Looking at your drawing on its own, it kept the answer hidden in a playful way."
@@ -3520,11 +3794,6 @@ async def _generate_text_context_guess(
     except asyncio.TimeoutError:
         logger.info("drawing_guess text guess timed out: lanlan=%s", lanlan_name)
     except Exception as exc:
-        print(
-            "drawing_guess text guess unavailable detail: "
-            f"lanlan={lanlan_name} session={session.get('session_id') or ''} "
-            f"err={type(exc).__name__} detail={_safe_llm_error_summary(exc)}"
-        )
         logger.info(
             "drawing_guess text guess unavailable: lanlan=%s err=%s",
             lanlan_name,
@@ -3636,11 +3905,6 @@ async def _generate_vision_guess(
     except asyncio.TimeoutError:
         logger.info("drawing_guess vision guess timed out: lanlan=%s", lanlan_name)
     except Exception as exc:
-        print(
-            "drawing_guess vision guess unavailable detail: "
-            f"lanlan={lanlan_name} session={session.get('session_id') or ''} "
-            f"err={type(exc).__name__} detail={_safe_llm_error_summary(exc)}"
-        )
         logger.info(
             "drawing_guess vision guess unavailable: lanlan=%s err=%s",
             lanlan_name,
@@ -3973,60 +4237,58 @@ async def drawing_guess_round_start(request: Request):
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
 
-    identity_error = _drawing_guess_route_identity_error(data)
-    if identity_error:
-        return {"ok": False, "reason": identity_error}
+    # Round creation updates both feature state and the generic SDK route state.
+    # Serialize it with route start/end/supersede, then validate identity inside
+    # the lock so a request queued behind a lifecycle transition cannot revive
+    # an obsolete route generation.
+    async with _get_route_lock(lanlan_name, "drawing_guess"):
+        identity_error = _drawing_guess_route_identity_error(data)
+        if identity_error:
+            return {"ok": False, "reason": identity_error}
 
-    _cleanup_sessions()
-    locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
-    session_key = _session_key(lanlan_name, session_id)
-    previous_session = _drawing_guess_sessions.get(session_key)
-    requested_generation = str(data.get("sdk_route_instance_id") or "").strip()
-    if isinstance(previous_session, dict) and game_route_identity_mismatch_reason(
-        expected_session_id=previous_session.get("session_id"),
-        expected_sdk_route_instance_id=previous_session.get("_sdk_route_instance_id"),
-        actual_session_id=session_id,
-        actual_sdk_route_instance_id=requested_generation,
-    ):
-        previous_session = None
-    word_cycle = _normalize_word_cycle_state(previous_session.get("word_cycle") if previous_session else None)
-    ai_word, user_options = _pick_round_words(word_cycle)
-    now = time.time()
-    debug_start_phase = str(data.get("debug_start_phase") or "").strip()
-    initial_phase = "word_picking" if debug_start_phase == "word_picking" else "ai_drawing"
-    session = {
-        "lanlan_name": lanlan_name,
-        "session_id": session_id,
-        "round_id": str(uuid.uuid4()),
-        "locale": locale,
-        "phase": initial_phase,
-        "ai_word_id": ai_word.id,
-        "user_word_options": [word.id for word in user_options],
-        "user_score": 0,
-        "ai_score": 0,
-        "ai_guess_attempts": 0,
-        "created_at": now,
-        "last_activity": now,
-        "memory_consent": _drawing_guess_round_memory_consent(
-            data,
-            sdk_route_instance_id=requested_generation,
-        ),
-        "game_chat_history": [],
-        "client_round_token": data.get("client_round_token"),
-        "word_cycle": word_cycle,
-    }
-    if requested_generation:
-        session["_sdk_route_instance_id"] = requested_generation
-    _drawing_guess_sessions[session_key] = session
-    _sync_active_route_state(session, locale)
-    response = {"ok": True, "state": _public_round_state(session, locale)}
-    if initial_phase == "word_picking":
-        response.update({
-            "phase": session["phase"],
-            "user_draw_options": _user_word_options_public(session, locale),
-            "draw_seconds": ROUND_DRAW_SECONDS,
-        })
-    return response
+        _cleanup_sessions()
+        locale = _normalize_locale(data.get("i18n_language") or data.get("language"))
+        session_key = _session_key(lanlan_name, session_id)
+        previous_session = _drawing_guess_sessions.get(session_key)
+        requested_generation = str(data.get("sdk_route_instance_id") or "").strip()
+        if isinstance(previous_session, dict) and game_route_identity_mismatch_reason(
+            expected_session_id=previous_session.get("session_id"),
+            expected_sdk_route_instance_id=previous_session.get("_sdk_route_instance_id"),
+            actual_session_id=session_id,
+            actual_sdk_route_instance_id=requested_generation,
+        ):
+            previous_session = None
+        word_cycle = _normalize_word_cycle_state(
+            previous_session.get("word_cycle") if previous_session else None
+        )
+        ai_word, user_options = _pick_round_words(word_cycle)
+        now = time.time()
+        session = {
+            "lanlan_name": lanlan_name,
+            "session_id": session_id,
+            "round_id": str(uuid.uuid4()),
+            "locale": locale,
+            "phase": "ai_drawing",
+            "ai_word_id": ai_word.id,
+            "user_word_options": [word.id for word in user_options],
+            "user_score": 0,
+            "ai_score": 0,
+            "ai_guess_attempts": 0,
+            "created_at": now,
+            "last_activity": now,
+            "memory_consent": _drawing_guess_round_memory_consent(
+                data,
+                sdk_route_instance_id=requested_generation,
+            ),
+            "game_chat_history": [],
+            "client_round_token": data.get("client_round_token"),
+            "word_cycle": word_cycle,
+        }
+        if requested_generation:
+            session["_sdk_route_instance_id"] = requested_generation
+        _drawing_guess_sessions[session_key] = session
+        _sync_active_route_state(session, locale)
+        return {"ok": True, "state": _public_round_state(session, locale)}
 
 
 @router.post("/ai-draw")
@@ -4471,6 +4733,7 @@ async def _handle_drawing_guess_input_payload_locked(
                 "state": _public_round_state(session, locale),
             }
 
+        answer_label = _word_public(word, locale)["label"]
         line, line_source = await _generate_persona_game_line(
             session=session,
             locale=locale,
@@ -4478,6 +4741,9 @@ async def _handle_drawing_guess_input_payload_locked(
             event="user_guess_wrong",
             fallback=_localized_line(locale, "user_wrong"),
             details={
+                "character_private_answer_label": answer_label,
+                "generate_hint_from_answer": True,
+                "do_not_derive_hint_from_wrong_guess": True,
                 "guess_label": guessed_public["label"],
                 "judgement": {
                     "actor": "user",
@@ -4867,6 +5133,23 @@ async def _run_drawing_guess_vision_turn(
         guessed_word = answer if correct else _wrong_word(answer)
         message = ""
         confidence = 1.0 if correct else 0.2
+
+    # The structured guess is authoritative.  A correct guess may naturally
+    # name itself, while a short line attached to a *different* guess must not
+    # smuggle the still-hidden answer into the chat bubble.
+    if message and not correct:
+        message, answer_blocked = _guard_hidden_answer_model_line(
+            message,
+            session=session,
+            answer=answer,
+        )
+        if answer_blocked:
+            logger.info(
+                "drawing_guess visual guess line rejected: lanlan=%s session=%s source=%s reason=hidden_answer_alias",
+                lanlan_name,
+                session.get("session_id") or "",
+                source,
+            )
 
     round_will_summarize = bool(correct or (not live_preview and (settle_on_miss or attempts >= MAX_AI_GUESS_ATTEMPTS)))
     message_source = source if message else "fallback"

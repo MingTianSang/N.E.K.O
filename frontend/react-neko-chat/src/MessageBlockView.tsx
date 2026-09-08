@@ -1,4 +1,6 @@
+import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
+import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -12,6 +14,24 @@ type MessageBlockViewProps = {
   isStreaming?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
+
+const MUSIC_COVER_PLACEHOLDER_URL = '/static/assets/music/music-cover-placeholder.png';
+
+function handleImageLoadError(event: SyntheticEvent<HTMLImageElement>, url: string) {
+  swapImageToMemeLoadFailedSticker(event.currentTarget, url);
+}
+
+function handleLinkThumbnailLoadError(
+  event: SyntheticEvent<HTMLImageElement>,
+  messageId: ChatMessage['id'],
+) {
+  if (typeof messageId !== 'string' || !messageId.startsWith('music-')) return;
+
+  const image = event.currentTarget;
+  const placeholderUrl = new URL(MUSIC_COVER_PLACEHOLDER_URL, window.location.href).href;
+  if (image.src === placeholderUrl) return;
+  image.src = MUSIC_COVER_PLACEHOLDER_URL;
+}
 
 export function isGuideMessage(message: ChatMessage) {
   return typeof message.id === 'string' && message.id.startsWith('yui-guide-');
@@ -34,12 +54,22 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'image') {
+    const isMemeProxyImage = isMemeProxyImageUrl(block.url);
+    const imageLoadingProps = isMemeProxyImage
+      ? { loading: 'eager' as const, fetchpriority: 'high' as const }
+      : { loading: 'lazy' as const };
+
     return (
       <figure
         className="message-block message-block-image"
         style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
       >
-        <img src={block.url} alt={block.alt || ''} loading="lazy" />
+        <img
+          src={block.url}
+          alt={block.alt || ''}
+          {...imageLoadingProps}
+          onError={(event) => handleImageLoadError(event, block.url)}
+        />
       </figure>
     );
   }
@@ -59,7 +89,13 @@ export default function MessageBlockView({
       >
         {block.thumbnailUrl ? (
           <div className="message-link-thumb">
-            <img src={block.thumbnailUrl} alt="" loading="lazy" />
+            <img
+              key={block.thumbnailUrl}
+              src={block.thumbnailUrl}
+              alt=""
+              loading="lazy"
+              onError={(event) => handleLinkThumbnailLoadError(event, message.id)}
+            />
           </div>
         ) : null}
         <div className="message-link-copy">
