@@ -16,31 +16,38 @@
 
     window.appUi = window.appUi || {};
     const I = window.__appUiParts || (window.__appUiParts = {});
+    const NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS = 15000;
 
     I.beginNekoCatReturnLifecycle = function beginNekoCatReturnLifecycle(options = {}) {
         if (I.nekoCatReturnLifecycle) return null;
         options = options && typeof options === 'object' ? options : {};
         let resolveLifecycle;
+        const AbortControllerCtor = window.AbortController;
+        const abortController = typeof AbortControllerCtor === 'function'
+            ? new AbortControllerCtor()
+            : null;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs))
             ? Math.max(1000, Number(options.timeoutMs))
-            : null;
+            : NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS;
         const lifecycle = {
             settled: false,
             cancelled: false,
             abortPublished: false,
+            abortController,
+            signal: abortController ? abortController.signal : null,
             source: options.source || 'return-click',
             timeoutId: null,
+            retryStateRestored: false,
+            restoreRetryState: null,
             promise: new Promise((resolve) => {
                 resolveLifecycle = resolve;
             })
         };
         lifecycle.resolve = resolveLifecycle;
         I.nekoCatReturnLifecycle = lifecycle;
-        if (timeoutMs !== null) {
-            lifecycle.timeoutId = window.setTimeout(() => {
-                I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
-            }, timeoutMs);
-        }
+        lifecycle.timeoutId = window.setTimeout(() => {
+            I.abortNekoCatReturnLifecycle(lifecycle, 'return-lifecycle-timeout');
+        }, timeoutMs);
         return lifecycle;
     };
 
@@ -60,6 +67,19 @@
     I.abortNekoCatReturnLifecycle = function abortNekoCatReturnLifecycle(lifecycle, reason) {
         if (!lifecycle || lifecycle.settled) return false;
         lifecycle.cancelled = true;
+        if (lifecycle.abortController) {
+            try {
+                lifecycle.abortController.abort();
+            } catch (_) {}
+        }
+        if (!lifecycle.retryStateRestored && typeof lifecycle.restoreRetryState === 'function') {
+            lifecycle.retryStateRestored = true;
+            try {
+                lifecycle.restoreRetryState(reason || 'return-incomplete');
+            } catch (restoreError) {
+                console.warn('[App] 恢复可重试的 return 状态失败:', restoreError);
+            }
+        }
         I.finishNekoCatReturnLifecycle(lifecycle, false);
         if (!lifecycle.abortPublished) {
             lifecycle.abortPublished = true;
@@ -105,13 +125,12 @@
         const activeType = visibleTypeMatch ? visibleTypeMatch[1] : configuredActiveType;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs))
             ? Math.max(1000, Number(options.timeoutMs))
-            : 15000;
+            : NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS;
 
         return new Promise((resolve) => {
             let settled = false;
             let timeoutId = null;
             let joinedReturnLifecycle = null;
-            let ownsJoinedReturnLifecycle = false;
             const finish = (restored) => {
                 if (settled) return;
                 settled = true;
@@ -127,7 +146,7 @@
             window.addEventListener('neko:cat-return-abort', handleAbort);
             timeoutId = window.setTimeout(() => {
                 console.warn('[App] 程序化恢复模型超时:', options.source || 'unknown');
-                if (ownsJoinedReturnLifecycle && joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
+                if (joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
                     I.abortNekoCatReturnLifecycle(joinedReturnLifecycle, 'programmatic-return-timeout');
                 }
                 finish(false);
@@ -188,7 +207,6 @@
                 // dispatchEvent 会同步进入 canonical handler 并创建 lifecycle。
                 if (!joinedReturnLifecycle && I.nekoCatReturnLifecycle) {
                     joinedReturnLifecycle = I.nekoCatReturnLifecycle;
-                    ownsJoinedReturnLifecycle = true;
                 }
             };
             dispatchReturnWhenReady().catch((error) => {
@@ -1617,6 +1635,7 @@
                 console.log('[App] 请她回来流程已在执行，忽略重复事件');
                 return;
             }
+            returnLifecycle.restoreRetryState = () => restoreReturnBallAfterBlockedModelViewport(event);
             let returnTerminalPublished = false;
             let returnAbortReason = 'return-incomplete';
             try {
@@ -1630,7 +1649,9 @@
                 window._goodbyeHideTimerId = null;
                 console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
-            let preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+            let preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({
+                signal: returnLifecycle.signal
+            });
             while (
                 !preReturnViewportReady.ready
                 && returnDetail.retryViewportRestore === true
@@ -1638,7 +1659,9 @@
             ) {
                 await new Promise((resume) => window.setTimeout(resume, 50));
                 if (returnLifecycle.cancelled) break;
-                preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+                preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({
+                    signal: returnLifecycle.signal
+                });
             }
             if (!preReturnViewportReady.ready) {
                 console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
@@ -1774,7 +1797,7 @@
                 // 即将被替换的 VRM/MMD/PNGTuber 再加载一遍。
                 let modelDisplayReady = true;
                 try {
-                    modelDisplayReady = await I.showCurrentModel();
+                    modelDisplayReady = await I.showCurrentModel({ signal: returnLifecycle.signal });
                 } catch (error) {
                     console.error('[App] showCurrentModel 失败:', error);
                     I.showLive2d();

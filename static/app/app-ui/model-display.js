@@ -622,7 +622,29 @@
         return null;
     }
 
-    I.ensureModelViewportReadyBeforeShowCurrentModel = async function ensureModelViewportReadyBeforeShowCurrentModel() {
+    function waitForReturnOperation(operation, signal) {
+        if (!signal) return Promise.resolve(operation);
+        if (signal.aborted) return Promise.reject(new DOMException('Return cancelled', 'AbortError'));
+        return new Promise((resolve, reject) => {
+            const handleAbort = () => reject(new DOMException('Return cancelled', 'AbortError'));
+            signal.addEventListener('abort', handleAbort, { once: true });
+            Promise.resolve(operation).then(
+                (value) => {
+                    signal.removeEventListener('abort', handleAbort);
+                    resolve(value);
+                },
+                (error) => {
+                    signal.removeEventListener('abort', handleAbort);
+                    reject(error);
+                }
+            );
+        });
+    }
+
+    I.ensureModelViewportReadyBeforeShowCurrentModel = async function ensureModelViewportReadyBeforeShowCurrentModel(options = {}) {
+        const returnSignal = options && options.signal ? options.signal : null;
+        const cancelledResult = () => ({ ready: false, restored: false, cancelled: true });
+        if (returnSignal && returnSignal.aborted) return cancelledResult();
         const restoreBounds = I.getPendingModelViewportRestoreBounds();
         if (!restoreBounds) {
             if (I.isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)) {
@@ -644,18 +666,34 @@
 
         if (window.nekoPetDrag && typeof window.nekoPetDrag.reveal === 'function') {
             try {
-                const revealResult = await Promise.resolve(window.nekoPetDrag.reveal());
+                const revealResult = await waitForReturnOperation(
+                    Promise.resolve(window.nekoPetDrag.reveal()),
+                    returnSignal
+                );
                 if (revealResult === false) {
-                    await waitForModelViewportRestore(restoreBounds, {
-                        timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
-                    });
+                    await waitForReturnOperation(
+                        waitForModelViewportRestore(restoreBounds, {
+                            timeoutMs: NEKO_MODEL_VIEWPORT_RESTORE_RETRY_MS
+                        }),
+                        returnSignal
+                    );
                 }
             } catch (error) {
+                if (returnSignal && returnSignal.aborted) return cancelledResult();
                 console.warn('[showCurrentModel] restore model viewport reveal retry failed:', error);
             }
         }
 
-        const viewportWait = await waitForModelViewportRestore(restoreBounds);
+        let viewportWait;
+        try {
+            viewportWait = await waitForReturnOperation(
+                waitForModelViewportRestore(restoreBounds),
+                returnSignal
+            );
+        } catch (error) {
+            if (returnSignal && returnSignal.aborted) return cancelledResult();
+            throw error;
+        }
         if (viewportWait.restored) {
             pendingNativeModelViewportRestoreBounds = null;
             recoverLive2DRendererFromReturnBallViewport('ensure-model-viewport-ready:after-wait');
@@ -674,7 +712,9 @@
     }
 
     // --- showCurrentModel ---
-    I.showCurrentModel = async function showCurrentModel() {
+    I.showCurrentModel = async function showCurrentModel(options = {}) {
+        const returnSignal = options && options.signal ? options.signal : null;
+        const isReturnCancelled = () => !!(returnSignal && returnSignal.aborted);
         // 检查"请她离开"状态
         if (window.live2dManager && window.live2dManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态，跳过显示逻辑');
@@ -689,10 +729,11 @@
             return;
         }
 
-        const modelViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+        const modelViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({ signal: returnSignal });
         if (!modelViewportReady.ready) {
             return false;
         }
+        if (isReturnCancelled()) return false;
 
         // 重置 goodbye 标志
         if (window.live2dManager) {
@@ -715,7 +756,10 @@
             const isMmdCurrentlyActive = window.mmdManager && window.mmdManager.currentModel
                 && _mmdEl && _mmdEl.style.display !== 'none' && !_mmdEl.classList.contains('hidden');
 
-            const charResponse = await fetch('/api/characters');
+            const charResponse = await fetch(
+                '/api/characters',
+                returnSignal ? { signal: returnSignal } : undefined
+            );
             if (!charResponse.ok) {
                 console.warn('[showCurrentModel] 无法获取角色配置');
                 // 如果当前已有 VRM/MMD 模型在运行，保持当前状态而非回退到 Live2D
@@ -728,6 +772,7 @@
             }
 
             const charactersData = await charResponse.json();
+            if (isReturnCancelled()) return false;
             const currentCatgirl = lanlan_config.lanlan_name;
             const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
 
@@ -1062,8 +1107,12 @@
                 I.pendingPngtuberReturnConfig = null;
 
                 if (window.loadPNGTuberAvatar) {
-                    await window.loadPNGTuberAvatar(pngtuberConfig);
+                    await window.loadPNGTuberAvatar(
+                        pngtuberConfig,
+                        returnSignal ? { signal: returnSignal } : undefined
+                    );
                 }
+                if (isReturnCancelled()) return false;
                 if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
                     window.pngtuberManager.show();
                 } else if (pngtuberContainer) {
@@ -1147,6 +1196,10 @@
                 if (mmdLockIconL2d) { mmdLockIconL2d.style.display = 'none'; }
             }
         } catch (error) {
+            if (isReturnCancelled()) {
+                console.warn('[showCurrentModel] 模型返回生命周期已取消');
+                return false;
+            }
             console.error('[showCurrentModel] 失败:', error);
             // 出错时检查是否有 VRM/MMD 正在运行且可见，如果有则保持当前状态
             const vrmEl = document.getElementById('vrm-container');

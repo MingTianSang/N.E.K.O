@@ -1083,7 +1083,7 @@ def test_pngtuber_load_announces_identity_change_before_async_setup():
 
     config_assignment = "this.config = normalizedConfig;"
     loading_event = "window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {"
-    async_setup = "await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });"
+    async_setup = "await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad, signal });"
     assert load_block.index(config_assignment) < load_block.index(loading_event)
     assert load_block.index(loading_event) < load_block.index(async_setup)
 
@@ -1091,7 +1091,7 @@ def test_pngtuber_load_announces_identity_change_before_async_setup():
 def test_pngtuber_loader_finishes_loading_state_on_every_exit():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     loader_block = source[
-        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    async function loadPNGTuberAvatar(config, options = {}) {"):
         source.index("    function playPNGTuberAnimation")
     ]
 
@@ -1107,14 +1107,15 @@ def test_pngtuber_loader_binds_lifecycle_events_to_one_load_token():
         source.index("        stateToSrc(state)")
     ]
     loader_block = source[
-        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    async function loadPNGTuberAvatar(config, options = {}) {"):
         source.index("    function playPNGTuberAnimation")
     ]
 
     assert "let pngtuberLoadSequence = 0;" in source
     assert "const loadToken = ++pngtuberLoadSequence;" in loader_block
-    assert "await window.pngtuberManager.load(config || {}, { loadToken });" in loader_block
+    assert "signal: returnSignal" in loader_block
     assert "const loadToken = Number(options.loadToken) || 0;" in load_block
+    assert "&& !(signal && signal.aborted)" in load_block
     assert "if (!isCurrentLoad()) return false;" in load_block
     assert loader_block.count("if (loadToken !== pngtuberLoadSequence)") == 3
     assert "if (!loaded || loadToken !== pngtuberLoadSequence)" in loader_block
@@ -1194,6 +1195,66 @@ manager.setupHTMLLockIcon = () => {{}};
   assert.equal(await older, false);
   assert.equal(manager.config.idle_image, 'newer.png');
   assert.equal(events.filter((event) => event.type === 'pngtuber-model-loading').length, 2);
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
+
+
+def test_pngtuber_cancelled_load_cannot_resume_after_async_setup():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber cancellation tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const window = {{
+  location: {{ pathname: '/' }},
+  innerWidth: 1280,
+  innerHeight: 720,
+  lanlan_config: {{ model_type: 'pngtuber' }},
+  dispatchEvent() {{}},
+}};
+const document = {{
+  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  getElementById() {{ return null; }},
+  querySelectorAll() {{ return []; }},
+}};
+class CustomEvent {{
+  constructor(type, options = {{}}) {{ this.type = type; this.detail = options.detail; }}
+}}
+const context = {{ console, CustomEvent, document, fetch, window }};
+vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js' }});
+
+const manager = new window.PNGTuberManager();
+let resolveSetup;
+let resumedMutations = 0;
+manager.detachDragListeners = () => {{}};
+manager.clearEmotion = () => {{}};
+manager.setupLayeredAdapter = () => new Promise((resolve) => {{ resolveSetup = resolve; }});
+manager.ensureContainer = () => {{ resumedMutations += 1; }};
+manager.preloadImages = () => {{ resumedMutations += 1; }};
+manager.attachSpeechListeners = () => {{ resumedMutations += 1; }};
+manager.attachDragListeners = () => {{ resumedMutations += 1; }};
+manager.setState = () => {{ resumedMutations += 1; }};
+manager.applyTransform = () => {{ resumedMutations += 1; }};
+manager.syncGlobalConfig = () => {{ resumedMutations += 1; }};
+manager.setupHTMLLockIcon = () => {{ resumedMutations += 1; }};
+
+(async () => {{
+  const controller = new AbortController();
+  const pending = manager.load({{ idle_image: 'slow.png' }}, {{
+    loadToken: 1,
+    signal: controller.signal,
+  }});
+  controller.abort();
+  resolveSetup(false);
+
+  assert.equal(await pending, false);
+  assert.equal(resumedMutations, 0);
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
 

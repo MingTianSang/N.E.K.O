@@ -239,10 +239,10 @@
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
                     const snapped = await interaction._snapModelIntoScreen({ animate: true });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('mmd');
+                        void saveReturnModelPosition('mmd');
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('mmd');
+                    void saveReturnModelPosition('mmd');
                 }
                 return;
             }
@@ -254,12 +254,12 @@
                     const snapped = await interaction._snapModelIntoScreen({ animate: true });
                     if (snapped) {
                         // VRM 的回弹方法只负责动画，最终位置需要由外层保存。
-                        await saveReturnModelPosition('vrm');
+                        void saveReturnModelPosition('vrm');
                     } else if (shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('vrm');
+                        void saveReturnModelPosition('vrm');
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('vrm');
+                    void saveReturnModelPosition('vrm');
                 }
                 return;
             }
@@ -270,7 +270,7 @@
                 activeModelType = 'pngtuber';
                 const snapped = await snapPngtuberIntoScreen();
                 if (snapped || shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('pngtuber');
+                    void saveReturnModelPosition('pngtuber');
                 }
                 return;
             }
@@ -282,16 +282,16 @@
                 if (liveModel && !liveModel.destroyed && typeof window.live2dManager._checkAndPerformSnap === 'function') {
                     const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('live2d');
+                        void saveReturnModelPosition('live2d');
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('live2d');
+                    void saveReturnModelPosition('live2d');
                 }
             }
         } catch (error) {
             console.warn('[App] 回来后的边界回弹计算失败:', error);
             if (shouldSaveWhenUnchanged && activeModelType) {
-                await saveReturnModelPosition(activeModelType);
+                void saveReturnModelPosition(activeModelType);
             }
         }
     }

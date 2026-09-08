@@ -12,6 +12,18 @@ const resetSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/listeners-and-api.js'),
   'utf8',
 );
+const modelDisplaySource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
+  'utf8',
+);
+const returnTransitionsSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-ui/return-transitions.js'),
+  'utf8',
+);
+const pngtuberSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/pngtuber-core.js'),
+  'utf8',
+);
 
 function createDeferred() {
   let resolve;
@@ -19,6 +31,69 @@ function createDeferred() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function createResetHarness({
+  hasReloadHandler = true,
+  returnResult = true,
+  temporaryReloadFails = false,
+  putOk = true,
+  putData = { success: true },
+} = {}) {
+  const functionStart = resetSource.indexOf('async function resetToDefaultModel() {');
+  const functionEnd = resetSource.indexOf('    // =====================================================================\n    // Public API', functionStart);
+  const resetFunction = resetSource.slice(functionStart, functionEnd);
+  const calls = [];
+  const parts = {};
+  if (hasReloadHandler) {
+    parts.handleModelReload = async (name, options = {}) => {
+      calls.push({ type: 'reload', name, options });
+      if (options.temporaryConfig && temporaryReloadFails) {
+        throw new Error('temporary_reload_failed');
+      }
+      return true;
+    };
+  }
+  const window = {
+    lanlan_config: { lanlan_name: 'Test Character' },
+    appUi: {
+      async returnFromGoodbye(options) {
+        calls.push({ type: 'return', options });
+        return returnResult;
+      },
+    },
+    showStatusToast(message) {
+      calls.push({ type: 'toast', message });
+    },
+  };
+  const document = { querySelector: () => null };
+  const fetch = async (url, options) => {
+    calls.push({ type: 'put', url, options });
+    return {
+      ok: putOk,
+      status: putOk ? 200 : 500,
+      async json() { return putData; },
+    };
+  };
+
+  vm.runInNewContext(`
+    var DEFAULT_LIVE2D_MODEL_NAME = 'yui-lolita';
+    var DEFAULT_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json';
+    var _resetToDefaultModelInFlight = false;
+    ${resetFunction}
+    window.runResetToDefaultModel = resetToDefaultModel;
+  `, {
+    window,
+    document,
+    fetch,
+    I: parts,
+    console,
+    JSON,
+    String,
+    encodeURIComponent,
+  }, { filename: 'reset-to-default-model.js' });
+
+  return { window, calls };
 }
 
 function createReturnHarness({
@@ -45,6 +120,9 @@ function createReturnHarness({
   if (returnLifecycle) {
     parts.nekoCatReturnLifecycle = {
       settled: false,
+      cancelled: false,
+      source: 'live2d-return-click',
+      resolve: returnLifecycle.resolve,
       promise: returnLifecycle.promise,
     };
   }
@@ -68,6 +146,7 @@ function createReturnHarness({
       model_type: modelType,
       live3d_sub_type: subType,
     },
+    AbortController,
     isNekoGoodbyeModeActive: () => goodbyeActive,
     addEventListener(type, listener) {
       const bucket = listeners.get(type) || [];
@@ -137,6 +216,9 @@ function createReturnHarness({
       parts.nekoCatReturnLifecycle = null;
       returnLifecycle.resolve(restored === true);
     },
+    activeTimerIds() {
+      return [...timers.keys()];
+    },
     fireTimer(timerId) {
       const callback = timers.get(timerId);
       assert.equal(typeof callback, 'function', `timer ${timerId} is not active`);
@@ -183,6 +265,21 @@ test('a timed-out return lifecycle aborts and releases the canonical handler loc
   assert.equal(harness.dispatched.at(-1).type, 'neko:cat-return-abort');
   assert.equal(harness.dispatched.at(-1).detail.reason, 'return-lifecycle-timeout');
   assert.ok(parts.beginNekoCatReturnLifecycle());
+});
+
+test('an ordinary return has a finite timeout and restores a retryable state', async () => {
+  const harness = createReturnHarness();
+  const parts = harness.window.__appUiParts;
+  const lifecycle = parts.beginNekoCatReturnLifecycle({ source: 'live2d-return-click' });
+  let retryRestores = 0;
+  lifecycle.restoreRetryState = () => { retryRestores += 1; };
+
+  assert.notEqual(lifecycle.timeoutId, null);
+  harness.fireTimer(lifecycle.timeoutId);
+  assert.equal(await lifecycle.promise, false);
+  assert.equal(retryRestores, 1);
+  assert.equal(lifecycle.signal.aborted, true);
+  assert.equal(parts.nekoCatReturnLifecycle, null);
 });
 
 for (const [modelType, subType, expectedEvent] of [
@@ -271,10 +368,28 @@ test('programmatic return joins the active return lifecycle after goodbye flags 
   assert.equal(await result, true);
 });
 
+test('programmatic timeout aborts a joined return lifecycle', async () => {
+  const harness = createReturnHarness({ returnInProgress: true });
+  const parts = harness.window.__appUiParts;
+  const lifecycle = parts.nekoCatReturnLifecycle;
+  harness.setGoodbyeActive(false);
+  const result = harness.window.appUi.returnFromGoodbye({
+    source: 'reset-to-default-model',
+    timeoutMs: 1000,
+  });
+  const helperTimerId = harness.activeTimerIds()[0];
+
+  harness.fireTimer(helperTimerId);
+  assert.equal(await result, false);
+  assert.equal(await lifecycle.promise, false);
+  assert.equal(parts.nekoCatReturnLifecycle, null);
+  assert.equal(harness.dispatched.at(-1).detail.reason, 'programmatic-return-timeout');
+});
+
 test('the canonical return lifecycle serializes handlers and aborts a blocked viewport', () => {
   const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
   const lifecycleStart = surfaceSource.indexOf('const returnLifecycle = I.beginNekoCatReturnLifecycle({', handlerStart);
-  const viewportWait = surfaceSource.indexOf('await I.ensureModelViewportReadyBeforeShowCurrentModel()', handlerStart);
+  const viewportWait = surfaceSource.indexOf('await I.ensureModelViewportReadyBeforeShowCurrentModel({', handlerStart);
   const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
   const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
 
@@ -292,19 +407,77 @@ test('default-model return skips restoring the model that is about to be replace
   const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
 
   assert.match(handlerSource, /const restoreCurrentModel = returnDetail\.restoreCurrentModel !== false;/);
-  assert.match(handlerSource, /if \(restoreCurrentModel\) \{[\s\S]*?await I\.showCurrentModel\(\);/);
+  assert.match(handlerSource, /if \(restoreCurrentModel\) \{[\s\S]*?await I\.showCurrentModel\(\{ signal: returnLifecycle\.signal \}\);/);
   assert.match(handlerSource, /else \{[\s\S]*?window\._nekoModelReturnEnterRect = null;/);
 });
 
-test('default-model reset returns from goodbye before persisting or hot-reloading', () => {
+test('return cancellation reaches model lookup and PNGTuber loading', () => {
+  assert.match(modelDisplaySource, /async function showCurrentModel\(options = \{\}\)/);
+  assert.match(surfaceSource, /ensureModelViewportReadyBeforeShowCurrentModel\(\{[\s\S]*?signal: returnLifecycle\.signal/);
+  assert.match(modelDisplaySource, /returnSignal \? \{ signal: returnSignal \} : undefined/);
+  assert.match(modelDisplaySource, /await window\.loadPNGTuberAvatar\([\s\S]*?signal: returnSignal/);
+  assert.match(pngtuberSource, /async function loadPNGTuberAvatar\(config, options = \{\}\)/);
+  assert.match(pngtuberSource, /await this\.setupLayeredAdapter\(\{ config: normalizedConfig, isCurrentLoad, signal \}\)/);
+  assert.match(pngtuberSource, /&& !\(signal && signal\.aborted\)/);
+});
+
+test('position persistence cannot block return completion', () => {
+  assert.doesNotMatch(returnTransitionsSource, /await saveReturnModelPosition\(/);
+  assert.match(returnTransitionsSource, /void saveReturnModelPosition\('pngtuber'\)/);
+  assert.match(returnTransitionsSource, /void saveReturnModelPosition\('live2d'\)/);
+});
+
+test('default-model reset validates Live2D before persisting and restores on failure', () => {
   const returnCall = resetSource.indexOf('await window.appUi.returnFromGoodbye({');
-  const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", returnCall);
-  const reloadCall = resetSource.indexOf('await I.handleModelReload(lanlanName, reloadOpts)', persistenceCall);
+  const reloadCall = resetSource.indexOf('await reloadModel(lanlanName, {', returnCall);
+  const persistenceCall = resetSource.indexOf("var putResp = await fetch(putUrl", reloadCall);
+  const catchBlock = resetSource.indexOf('} catch (e) {', persistenceCall);
+  const restoreCall = resetSource.indexOf('await reloadModel(lanlanName, {', catchBlock);
 
   assert.notEqual(returnCall, -1);
-  assert.ok(returnCall < persistenceCall, 'the full return path must restore the Pet viewport before persistence');
-  assert.ok(persistenceCall < reloadCall, 'the saved default must be visible to the hot reload');
+  assert.ok(returnCall < reloadCall, 'the full return path must restore the Pet viewport before hot reload');
+  assert.ok(reloadCall < persistenceCall, 'the default Live2D must load before persistence');
+  assert.ok(catchBlock < restoreCall, 'failure must re-fetch and restore the persisted previous model');
   assert.match(resetSource, /retryViewportRestore: true/);
   assert.match(resetSource, /restoreCurrentModel: false/);
   assert.match(resetSource, /if \(!returnedFromGoodbye\)/);
+  assert.match(resetSource, /model_path: DEFAULT_LIVE2D_MODEL_PATH/);
+  assert.match(resetSource, /skipIdleRestore: true/);
+  assert.match(resetSource, /putData\.success !== true/);
+  assert.match(resetSource, /if \(defaultReloadAttempted && !defaultPersisted && reloadModel\)/);
+});
+
+test('default-model reset loads the built-in Live2D before persisting it', async () => {
+  const harness = createResetHarness();
+  const result = await harness.window.runResetToDefaultModel();
+  const operationTypes = harness.calls
+    .filter((call) => call.type !== 'toast')
+    .map((call) => call.type);
+
+  assert.deepEqual(operationTypes, ['return', 'reload', 'put']);
+  assert.equal(result.success, true);
+  const reload = harness.calls.find((call) => call.type === 'reload');
+  assert.equal(reload.options.temporaryConfig.model_type, 'live2d');
+  assert.equal(reload.options.temporaryConfig.model_path, '/static/yui-lolita/yui-lolita.model3.json');
+});
+
+test('default-model reset restores the persisted prior model when PUT reports failure', async () => {
+  const harness = createResetHarness({ putData: { success: false, error: 'save_failed' } });
+  const result = await harness.window.runResetToDefaultModel();
+  const reloads = harness.calls.filter((call) => call.type === 'reload');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'HTTP 200: save_failed');
+  assert.equal(reloads.length, 2);
+  assert.ok(reloads[0].options.temporaryConfig);
+  assert.equal(reloads[1].options.temporaryConfig, undefined);
+});
+
+test('default-model reset fails before leaving goodbye when hot reload is unavailable', async () => {
+  const harness = createResetHarness({ hasReloadHandler: false });
+  const result = await harness.window.runResetToDefaultModel();
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'model_reload_unavailable');
+  assert.deepEqual(harness.calls.map((call) => call.type), ['toast']);
 });

@@ -340,12 +340,12 @@
     // Reset current avatar to the built-in default Live2D model
     //
     // Triggered from the Electron tray "Advanced Settings → Reset to Default
-    // Avatar" menu via the `reset-to-default-model` IPC. Persists the change
-    // through the standard PUT /api/characters/catgirl/l2d/<name> endpoint so
-    // the choice survives a reload, then triggers handleModelReload to swap
-    // the current MMD/VRM/Live2D model live.
+    // Avatar" menu via the `reset-to-default-model` IPC. It first validates the
+    // built-in Live2D model through the existing temporary hot-reload path, then
+    // persists the choice through PUT /api/characters/catgirl/l2d/<name>.
     // =====================================================================
     var DEFAULT_LIVE2D_MODEL_NAME = 'yui-lolita';
+    var DEFAULT_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json';
     var _resetToDefaultModelInFlight = false;
 
     async function resetToDefaultModel() {
@@ -356,6 +356,11 @@
         _resetToDefaultModelInFlight = true;
 
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        var defaultReloadAttempted = false;
+        var defaultPersisted = false;
+        var reloadModel = typeof I.handleModelReload === 'function'
+            ? I.handleModelReload
+            : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
         try {
             // Fail-fast when there is no character context. This happens if the
             // tray IPC fires before `neko:config-injected`, or on a sub-window
@@ -365,6 +370,9 @@
             if (!lanlanName) {
                 console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
                 throw new Error('missing_lanlan_name');
+            }
+            if (!reloadModel) {
+                throw new Error('model_reload_unavailable');
             }
 
             // “恢复默认模型”的目标固定为内置 Live2D。先退出 goodbye 并恢复
@@ -393,6 +401,22 @@
                 }
             }
 
+            // 先验证内置 Live2D 能在当前页面成功加载。临时配置不会改写服务端，
+            // 因此加载或后续 PUT 失败时，仍可从 page_config 恢复原模型。
+            defaultReloadAttempted = true;
+            await reloadModel(lanlanName, {
+                temporaryConfig: {
+                    success: true,
+                    model_type: 'live2d',
+                    model_path: DEFAULT_LIVE2D_MODEL_PATH,
+                    live3d_sub_type: ''
+                },
+                skipIdleRestore: true,
+                skipPersistentExpressions: true,
+                suppressToast: true,
+                throwOnError: true
+            });
+
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
             var putResp = await fetch(putUrl, {
@@ -404,27 +428,13 @@
                     live2d_idle_animation: null
                 })
             });
-            if (!putResp.ok) {
-                var errText = '';
-                try { errText = await putResp.text(); } catch (_) {}
-                throw new Error('HTTP ' + putResp.status + (errText ? (': ' + errText) : ''));
+            var putData = null;
+            try { putData = await putResp.json(); } catch (_) {}
+            if (!putResp.ok || !putData || putData.success !== true) {
+                var errorDetail = (putData && putData.error) || '';
+                throw new Error('HTTP ' + putResp.status + (errorDetail ? (': ' + errorDetail) : ''));
             }
-
-            // Trigger the live model swap. handleModelReload re-fetches the
-            // page_config, so it will pick up the freshly-saved default Live2D
-            // model and recycle the VRM/MMD overlays as needed.
-            // suppressToast: this caller owns the success/failure toast.
-            // throwOnError: handleModelReload's own catch swallows errors; we
-            // need them surfaced so the reset doesn't report success after a
-            // failed hot-swap.
-            var reloadOpts = { suppressToast: true, throwOnError: true };
-            if (typeof I.handleModelReload === 'function') {
-                await I.handleModelReload(lanlanName, reloadOpts);
-            } else if (typeof window.handleModelReload === 'function') {
-                await window.handleModelReload(lanlanName, reloadOpts);
-            } else {
-                console.warn('[Model] handleModelReload 不可用，跳过热切换');
-            }
+            defaultPersisted = true;
 
             try {
                 if (typeof window.showStatusToast === 'function') {
@@ -437,6 +447,18 @@
 
             return { success: true };
         } catch (e) {
+            // 临时热切换失败，或模型已切换但 PUT 失败时，服务端通常仍保留
+            // 原 page_config。重新走标准热重载，避免旧模型容器保持隐藏。
+            if (defaultReloadAttempted && !defaultPersisted && reloadModel) {
+                try {
+                    await reloadModel(lanlanName, {
+                        suppressToast: true,
+                        throwOnError: true
+                    });
+                } catch (restoreError) {
+                    console.error('[Model] 默认模型恢复失败后回退原模型也失败:', restoreError);
+                }
+            }
             console.error('[Model] 恢复默认模型失败:', e);
             try {
                 if (typeof window.showStatusToast === 'function') {
