@@ -442,15 +442,6 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
-    route_lifecycle = runtime.split("function postIcebreakerRoute", 1)[1].split(
-        "function startIcebreakerRoute",
-        1,
-    )[0]
-    assert "function postRouteWithHeaders(headers, allowRetry)" in route_lifecycle
-    assert "allowRetry && response.status === 403" in route_lifecycle
-    assert "errorBody.error_code === 'csrf_validation_failed'" in route_lifecycle
-    assert "return refreshLocalMutationHeaders().then(function (nextHeaders)" in route_lifecycle
-    assert "return postRouteWithHeaders(nextHeaders, false);" in route_lifecycle
     assert "postgameProactive: { enabled: false }" in runtime
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
@@ -525,14 +516,14 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
     assert "contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {" in runtime
     assert "return contextAppendPromise;" in runtime
 
-    append_message_block = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
-    context_then = "return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {"
+    context_then = "return appendLlmContext(role, messageText, meta || {}).then(function () {"
     assert context_then in append_message_block
-    assert "broadcastIcebreakerAppendMessage(message, targetSession);" in append_message_block
-    assert append_message_block.index("broadcastIcebreakerAppendMessage(message, targetSession);") < append_message_block.index(
+    assert "broadcastIcebreakerAppendMessage(message);" in append_message_block
+    assert append_message_block.index("broadcastIcebreakerAppendMessage(message);") < append_message_block.index(
         context_then
     )
     assert append_message_block.index(context_then) < append_message_block.index(
@@ -542,7 +533,7 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
 
 def test_icebreaker_context_append_requires_successful_json_payload():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    append_context_block = runtime.split("function appendLlmContext(role, text, meta, session)", 1)[1].split(
+    append_context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
         "function getIcebreakerMessageText(message)",
         1,
     )[0]
@@ -650,7 +641,7 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setTranslateEnabled(true" not in start_block
 
     sync_block = runtime.split("function finalizeIcebreakerAssistantSubtitleTranslation(role, message)", 1)[1].split(
-        "function appendChatMessage(role, text, meta, session)",
+        "function appendChatMessage(role, text, meta)",
         1,
     )[0]
     assert "if (role !== 'assistant') return;" in sync_block
@@ -658,11 +649,11 @@ def test_icebreaker_assistant_message_does_not_auto_open_subtitle_translation_pa
     assert "setTranslateEnabled(true" not in sync_block
     assert "bridge.finalizeTurnWithTranslation(line)" in sync_block
 
-    append_message_block = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
+    append_message_block = runtime.split("function appendChatMessage(role, text, meta)", 1)[1].split(
         "function speakViaProjectTts",
         1,
     )[0]
-    assert "return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {" in append_message_block
+    assert "return appendLlmContext(role, messageText, meta || {}).then(function () {" in append_message_block
     standalone_branch = append_message_block.split("if (!shouldRenderIcebreakerOnLocalChatHost()) {", 1)[1].split(
         "var chatHost = null;",
         1,
@@ -686,14 +677,14 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     loading_runtime = ICEBREAKER_ASSISTANT_LOADING_PATH.read_text(encoding="utf-8")
     assistant_append_block = runtime.split("function appendAssistantChatMessage(text, meta, session)", 1)[1].split(
-        "function appendChatMessage(role, text, meta, session)",
+        "function appendChatMessage(role, text, meta)",
         1,
     )[0]
     deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
-        "function completeWithHandoff(option, terminalChoiceWritePromise)",
+        "function completeWithHandoff(option)",
         1,
     )[0]
-    handoff_block = runtime.split("function completeWithHandoff(option, terminalChoiceWritePromise)", 1)[1].split(
+    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
         "function advanceWithChoice(session, option, choice, label, choiceNodeId)",
         1,
     )[0]
@@ -712,7 +703,7 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
     assert "dispatchThinking(true, source);" in loading_runtime
     assert "dispatchThinking(false, source);" in loading_runtime
     assert "assistantLoading.showAssistantFakeLoading({" in runtime
-    assert "return appendChatMessage('assistant', text, meta, targetSession);" in assistant_append_block
+    assert "return appendChatMessage('assistant', text, meta);" in assistant_append_block
     assert "}).then(function (message) {" in assistant_append_block
     assert "if (targetSession && activeSession !== targetSession) return null;" in assistant_append_block
     assert "return message;" in assistant_append_block
@@ -725,8 +716,8 @@ def test_icebreaker_assistant_lines_show_fake_thinking_dots_before_text():
 
 def test_icebreaker_project_tts_uses_local_mutation_headers():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey, signal, session)", 1)[1].split(
-        "function speakLine(text, voiceKey, session)",
+    speak_block = runtime.split("function speakViaProjectTts(text, voiceKey, signal)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
         1,
     )[0]
 
@@ -739,11 +730,11 @@ def test_icebreaker_project_tts_uses_local_mutation_headers():
 
 def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    tts_wait_block = runtime.split("function waitForTtsRequest(text, voiceKey, session)", 1)[1].split(
-        "function speakLine(text, voiceKey, session)",
+    tts_wait_block = runtime.split("function waitForTtsRequest(text, voiceKey)", 1)[1].split(
+        "function speakLine(text, voiceKey)",
         1,
     )[0]
-    speak_line_block = runtime.split("function speakLine(text, voiceKey, session)", 1)[1].split(
+    speak_line_block = runtime.split("function speakLine(text, voiceKey)", 1)[1].split(
         "function applyAssistantTextEmotion(text)",
         1,
     )[0]
@@ -752,19 +743,18 @@ def test_icebreaker_speak_line_waits_for_estimated_speech_duration():
     assert "var controller = typeof AbortController === 'function' ? new AbortController() : null;" in tts_wait_block
     assert "if (controller) controller.abort();" in tts_wait_block
     assert "var timeoutId = window.setTimeout(function () {" in tts_wait_block
-    assert "speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined, session)" in tts_wait_block
+    assert "speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)" in tts_wait_block
     assert "var speechDurationPromise = new Promise(function (resolve) {" in speak_line_block
     assert "window.setTimeout(resolve, estimateSpeechDurationMs(text));" in speak_line_block
-    assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);" in speak_line_block
-    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {" in speak_line_block
-    assert "return results[1] === true;" in speak_line_block
+    assert "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);" in speak_line_block
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in speak_line_block
     assert "return speakViaProjectTts(text, voiceKey).then(function () {" not in speak_line_block
     assert "if (ok) return;" not in speak_line_block
     assert speak_line_block.index("var speechDurationPromise = new Promise") < speak_line_block.index(
-        "var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);"
+        "var ttsRequestPromise = waitForTtsRequest(text, voiceKey);"
     )
-    assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);") < speak_line_block.index(
-        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {"
+    assert speak_line_block.index("var ttsRequestPromise = waitForTtsRequest(text, voiceKey);") < speak_line_block.index(
+        "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});"
     )
 
 
@@ -789,7 +779,7 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "return advanceWithChoice(session, option, choice, label, choiceNodeId);" in handle_choice_block
     assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
     assert "return deliverNode(option.next).then(function (delivered)" in advance_choice_block
-    assert "return completeWithHandoff(option, choiceWritePromise);" in advance_choice_block
+    assert "return completeWithHandoff(option);" in advance_choice_block
     assert "return Promise.resolve(false);" in advance_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
@@ -798,7 +788,7 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
 def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     deliver_node_block = runtime.split("function deliverNode(nodeId)", 1)[1].split(
-        "function completeWithHandoff(option, terminalChoiceWritePromise)",
+        "function completeWithHandoff(option)",
         1,
     )[0]
 
@@ -830,53 +820,39 @@ def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
 
 def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    handoff_block = runtime.split("function completeWithHandoff(option, terminalChoiceWritePromise)", 1)[1].split(
+    handoff_block = runtime.split("function completeWithHandoff(option)", 1)[1].split(
         "function handleChoice(detail)",
         1,
     )[0]
 
     assert "var session = activeSession;" in handoff_block
-    assert "function speakViaProjectTts(text, voiceKey, signal, session)" in runtime
-    assert "function waitForTtsRequest(text, voiceKey, session)" in runtime
-    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {" in runtime
+    assert "function speakViaProjectTts(text, voiceKey, signal)" in runtime
+    assert "function waitForTtsRequest(text, voiceKey)" in runtime
+    assert "return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});" in runtime
     assert "var handoffSpeechPromise = Promise.resolve(false);" in handoff_block
-    assert "handoffSpeechPromise = text ? speakLine(text, option.handoffVoiceKey || '', session)" in handoff_block
+    assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;" in handoff_block
-    route_completion = runtime.split("function completeHandoffRoute", 1)[1].split(
-        "function finishActiveHandoff",
-        1,
-    )[0]
-    assert "return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {" in route_completion
-    assert "if (!routeEnded) return false;" in route_completion
-    assert "return Promise.resolve(handoffSpeechPromise).then(function (spoken) {" in handoff_block
+    assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
+    assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
+        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
     )
-    assert handoff_block.index("handoffSpeechPromise = text ? speakLine") < handoff_block.index(
-        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
+    assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
+        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
-        "return finishActiveHandoff(session);"
+        "dispatchIcebreakerEnded('handoff');"
     )
-    assert handoff_block.index("terminalPending: true") < handoff_block.index(
-        "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
-    ) < handoff_block.index("terminalChoiceRecorded: true") < handoff_block.index(
-        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
+    assert handoff_block.index("completed: true") < handoff_block.index(
+        "return Promise.resolve(handoffSpeechPromise)"
     )
-    assert "completed: true" in route_completion
-    assert "return finishActiveHandoff(session);" in handoff_block
-    assert "dispatchIcebreakerEnded('handoff');" in runtime.split(
-        "function finishActiveHandoff",
-        1,
-    )[1].split("function getStoredDayEntry", 1)[0]
-    assert handoff_block.index(
-        "return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;"
-    ) < handoff_block.index(
-        "return finishActiveHandoff(session);"
+    assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
+    assert "if (activeSession === session) {" in handoff_block
+    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+        "activeSession = null;"
     )
 
 
@@ -896,7 +872,7 @@ def test_icebreaker_unload_ends_active_route_without_completing_day():
     assert "document.addEventListener('visibilitychange'" not in runtime
 
     cleanup_block = runtime.split("function endIcebreakerRouteOnPageExit(reason)", 1)[1].split(
-        "function loadScripts(options)",
+        "function loadScripts()",
         1,
     )[0]
     assert "markDay(" not in cleanup_block
@@ -916,7 +892,6 @@ def test_icebreaker_defers_while_home_tutorial_is_active():
     assert "function hasVisibleTutorialBlocker(selectors)" in runtime
     assert "function isDay1SystrayIntroBlockingIcebreaker()" in runtime
     assert "function isTutorialBlockingIcebreaker()" in runtime
-    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false" in runtime
     assert "window.isInTutorial" in runtime
     assert "manager.isTutorialRunning" in runtime
     assert "manager._teardownPromise" in runtime
@@ -1041,100 +1016,20 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
         1,
     )[0]
 
-    assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession(resolveLanlanName())) return false;" in bootstrap
+    assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
     assert "if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();" in bootstrap
     assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
-    assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
-    assert "if (!configReady || activeSession) return null;" in restore
+    assert "return waitForPageConfigForRestore().then(function ()" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
-    assert "var restoreGenerationAtStart = restoreGeneration;" in restore
-    assert "if (restoreGeneration !== restoreGenerationAtStart || activeSession) return !!activeSession;" in restore
-    assert "var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;" in runtime
-    assert "var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;" in runtime
-    assert "loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);" in runtime
-    assert "}, ROUTE_STATE_RESTORE_MAX_WAIT_MS);" in runtime
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
-    assert "var RESTORE_ASSET_MAX_WAIT_MS = 3000;" in runtime
-    assert "function loadRestoreAssets(locale)" in runtime
-    assert "}, RESTORE_ASSET_MAX_WAIT_MS);" in runtime
-    assert "if (controller) controller.abort();" in runtime.split(
-        "function loadRestoreAssets(locale)",
-        1,
-    )[1].split("function getText", 1)[0]
-    assert "scriptPromise = null;" in runtime
-    assert "localePromises = Object.create(null);" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
-    assert "if (!routeResult.loaded) return false;" in restore
-    assert restore.index("if (!routeResult.loaded) return false;") < restore.index(
-        "var reuseActiveRoute = snapshot.matchesActiveRoute === true;"
-    )
-    assert "retryRestoreWhenPageConfigSettles();" in restore
-    assert "function retryRestoreWhenPageConfigSettles()" in runtime
-    assert "var reuseActiveRoute = snapshot.matchesActiveRoute === true;" in restore
-    assert "? String(snapshot.entry.sessionId || '')" in restore
-    assert ": makeIcebreakerSessionId(snapshot.day)" in restore
-    assert "var activationPromise = reuseActiveRoute" in restore
-    assert "? Promise.resolve(true)" in restore
-    assert ": startIcebreakerRouteForRestore(session);" in restore
-    assert "var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;" in runtime
-    assert "var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;" in runtime
-    assert "if (controller) controller.abort();" in runtime
-    assert "return startIcebreakerRouteForRestore(session, attemptIndex + 1);" in runtime
-    assert "return loadIcebreakerRouteStateForRestore().then(function (routeResult)" in runtime
-    assert "String(state.session_id || '') === String(session.sessionId || '')" in runtime
-    route_start_restore = runtime.split("function startIcebreakerRouteForRestore", 1)[1].split(
-        "function restoreInterruptedSession",
-        1,
-    )[0]
-    assert route_start_restore.index("getLocalMutationHeaders()") < route_start_restore.index(
-        "var controller = typeof AbortController"
-    )
-    assert "preparedHeaders" in runtime
-    assert "return activationPromise.then(function (started)" in restore
-    assert "icebreaker_restore_superseded" in restore
-    assert "if (force) restoreGeneration += 1;" in runtime
-    assert restore.index("if (!started) return false;") < restore.index(
-        "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
-    )
+    assert "if (!routeResult.loaded) return false;" not in restore
+    assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
+    assert "return startIcebreakerRoute(session).then(function (started)" in restore
     assert "activeSession = session;" in restore
-    assert "choiceSeq: Number(snapshot.entry.choiceSeq) || 0" in restore
-    assert "session.choiceWriteMetas = (Array.isArray(snapshot.entry.choiceWriteMetas)" in restore
-    assert "if (!reuseActiveRoute)" in restore
-    assert "sessionId: session.sessionId" in restore
-    assert "session.pendingChoiceWrites = session.choiceWriteMetas.map" in restore
     assert "var presentationPromise" in restore
     assert ": setChoicePrompt(" in restore
     assert "icebreaker_restore_presentation_failed" in restore
-    assert "var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;" in runtime
-    assert "var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;" in runtime
-    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in runtime
-    wait_helper = runtime.split("function withRestoreWaitTimeout", 1)[1].split(
-        "function waitForPageConfigForRestore",
-        1,
-    )[0]
-    assert "window.setTimeout(function () {" in wait_helper
-    assert "}, PAGE_CONFIG_RESTORE_WAIT_MS);" in wait_helper
-    assert "resolve(fallbackValue);" in wait_helper
-    assert "var timeoutSentinel = {};" in runtime
-    assert "withRestoreWaitTimeout(ready, timeoutSentinel, 'page config')" in runtime
-    assert "useDirectMutationHeadersForRestore = true;" in runtime
-    assert "useDirectMutationHeadersForRestore = false;" in runtime
-    assert "return true;" in runtime.split("function waitForPageConfigForRestore", 1)[1].split(
-        "function canRestoreFromManagedRebuild",
-        1,
-    )[0]
-    assert "if (!useDirectMutationHeadersForRestore && security" in runtime
-    assert "return fetchLocalMutationHeadersDirectly(headers);" in runtime
-    direct_headers = runtime.split("function fetchLocalMutationHeadersDirectly", 1)[1].split(
-        "function getLocalMutationHeaders",
-        1,
-    )[0]
-    assert "var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;" in runtime
-    assert "}, DIRECT_MUTATION_HEADERS_MAX_WAIT_MS);" in direct_headers
-    assert "controller.abort();" in direct_headers
-    assert "finish(headers);" in direct_headers
-    assert "return Promise.resolve(decisionPromise).then(function (decision)" in runtime
-    assert "withRestoreWaitTimeout(decisionPromise" not in runtime
 
     snapshot_matcher = runtime.split("function findRestorableDaySnapshot", 1)[1].split(
         "function hasIncompleteStoredSession",
@@ -1142,91 +1037,6 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
-    assert "if (routeActive && !candidate.matchesActiveRoute) return;" in snapshot_matcher
-    assert "if (entry.releasePending === true) return;" in snapshot_matcher
-    assert "entry.releasePending !== true" not in runtime.split(
-        "function hasIncompleteStoredSession",
-        1,
-    )[1].split("function makeIcebreakerSessionId", 1)[0]
-    assert "function findPendingReleaseSnapshot(lanlanName, routeState)" in runtime
-    pending_release_matcher = runtime.split("function findPendingReleaseSnapshot", 1)[1].split(
-        "function ensurePendingReleaseMessage",
-        1,
-    )[0]
-    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in pending_release_matcher
-    assert "releasePending: false" in pending_release_matcher
-    assert "expiredActiveRelease = { day: day, entry: entry, expired: true };" in pending_release_matcher
-    assert "foundMismatchedActiveRelease = true;" in runtime
-    assert "{ mismatchedActiveRoute: true }" in runtime
-    release_cleanup = runtime.split("function completePendingRelease", 1)[1].split(
-        "function hasIncompleteStoredSession",
-        1,
-    )[0]
-    assert "routeMatchesRelease" in release_cleanup
-    assert "endIcebreakerRoute({" in release_cleanup
-    assert "releasePending: false" in release_cleanup
-    assert "var activationPromise = routeMatchesRelease" in release_cleanup
-    assert ": startIcebreakerRouteForRestore(releaseSession);" in release_cleanup
-    assert "return endIcebreakerRoute(releaseSession, 'icebreaker_free_text_release_restore');" in release_cleanup
-    assert "releaseCleanupCompleted: true" in release_cleanup
-    assert "ensurePendingReleaseMessage(snapshot, lanlanName)" in release_cleanup
-    assert "ensurePendingReleaseSpeech(snapshot, lanlanName)" in release_cleanup
-    release_speech = runtime.split("function ensurePendingReleaseSpeech", 1)[1].split(
-        "function completePendingRelease",
-        1,
-    )[0]
-    assert "if (!spoken) return false;" in release_speech
-    assert "function completeExpiredPendingRelease(snapshot, lanlanName)" in release_cleanup
-    assert "icebreaker_stale_release_expired" in release_cleanup
-    assert "dispatchIcebreakerEnded('stale_release_expired');" in release_cleanup
-    assert "releaseSpeechDelivered: true" in runtime
-    assert release_cleanup.index("ensurePendingReleaseMessage(snapshot, lanlanName)") < release_cleanup.index(
-        "broadcastIcebreakerClearChoicePromptSource"
-    )
-    assert "day: String(snapshot.day || '')" in release_cleanup
-    assert "dispatchIcebreakerEnded('free_text_release_restore');" in release_cleanup
-    assert release_cleanup.index("releasePending: false") < release_cleanup.index(
-        "dispatchIcebreakerEnded('free_text_release_restore');"
-    )
-    deferred_start = runtime.split("function attemptStartFromGuideEndState", 1)[1].split(
-        "function synthesizeEndStateFromEvent",
-        1,
-    )[0]
-    assert "if (restored && restored.releaseCleanupCompleted === true)" in deferred_start
-    assert "if (String(restored.day || '') === dayKey)" in deferred_start
-    assert "return startFromEndStateWhenTutorialIdle(endState);" in deferred_start
-    assert "var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);" in restore
-    assert "if (hasMismatchedPendingRelease || routeResult.state.icebreaker_active === true) return false;" in restore
-    assert "return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);" in restore
-
-    start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
-        "function startFromEndState(endState)",
-        1,
-    )[0]
-    root_snapshot = "markDay(dayKey, {"
-    assert root_snapshot in start_for_day
-    assert start_for_day.index(root_snapshot) < start_for_day.index("return deliverNode(dayConfig.root)")
-    assert "pendingNodeId: dayConfig.root" in start_for_day
-    assert "choiceSeq: 0" in start_for_day
-    assert "choiceWriteMetas: []" in start_for_day
-    assert "terminalPending: false" in start_for_day
-    assert "terminalChoiceRecorded: false" in start_for_day
-    assert "terminalMessageDelivered: false" in start_for_day
-    assert "releasePending: false" in start_for_day
-    assert "if (!force && isDayReleasePending(dayKey)) return false;" in start_for_day
-    assert "if (isDayReleasePending(day)) return false;" in runtime
-    assert "freeTextDerailStreaks: {}" in start_for_day
-    assert "started: false" in start_for_day
-
-    append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
-        "function speakViaProjectTts",
-        1,
-    )[0]
-    assert "author: role === 'user' ? '你' : resolveAuthor(targetSession)" in append_message
-    assert append_message.index("broadcastIcebreakerAppendMessage(message, targetSession);") < append_message.index(
-        "markPendingNodeMessageDelivered(targetSession, meta);"
-    ) < append_message.index("return appendLlmContext(role, messageText, meta || {}, targetSession)")
-    assert "pendingNodeId: ''" not in append_message
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
@@ -1236,163 +1046,10 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
     assert "pendingNodeId: option.next" in runtime
     assert "snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]" in runtime
-    assert "snapshot.entry.pendingNodeMessageDelivered === true" in runtime
-    assert "function resumePendingNode(session, nodeId, messageDelivered)" in runtime
-    assert "pendingNodeMessageDelivered: true" in runtime
-    assert "pendingNodeMessageDelivered: false" in runtime
-    handoff = runtime.split("function completeWithHandoff", 1)[1].split(
+    assert "completed: true" in runtime.split("function completeWithHandoff", 1)[1].split(
         "function advanceWithChoice",
         1,
     )[0]
-    assert "terminalPending: true" in handoff
-    assert handoff.index("terminalPending: true") < handoff.index(
-        "return appendAssistantChatMessage(text"
-    ) < handoff.index(
-        "waitForTerminalChoiceWrite(terminalChoiceWritePromise"
-    ) < handoff.index("return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;")
-    assert "terminalPending: false" in runtime
-    assert "var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;" in runtime
-    terminal_wait = runtime.split("function waitForTerminalChoiceWrite", 1)[1].split(
-        "function completeWithHandoff",
-        1,
-    )[0]
-    assert "}, TERMINAL_CHOICE_WRITE_MAX_WAIT_MS);" in terminal_wait
-    assert "controller.abort();" in terminal_wait
-    assert "resolve(false);" in terminal_wait
-    assert "if (!ended) session.routeEnded = false;" in runtime
-    assert "function didAllChoiceWritesSucceed(results)" in runtime
-    assert "return result === true;" in runtime
-    assert "if (!didAllChoiceWritesSucceed(writeResults)) return false;" in handoff
-    assert "terminalChoiceRecorded: true" in handoff
-    assert "settlementPatch.terminalChoiceRecorded = true" in runtime
-    assert "function retryPendingHandoff" in runtime
-    assert "function ensurePendingHandoffMessage" in runtime
-    assert "patch.terminalMessageDelivered = true" in runtime
-    assert "terminalMessageDelivered: false" in runtime
-    assert "terminalSpeechDelivered: false" in runtime
-    assert "terminalSpeechDelivered: true" in runtime
-    append_message = runtime.split("function appendChatMessage(role, text, meta, session)", 1)[1].split(
-        "function speakViaProjectTts",
-        1,
-    )[0]
-    assert append_message.index("broadcastIcebreakerAppendMessage(message, targetSession);") < append_message.index(
-        "markPendingAssistantMessageDelivered(targetSession, meta);"
-    )
-    assert "if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost())" in append_message
-    assert append_message.index("if (!result) return result;") < append_message.index(
-        "if (isPendingAssistantMessage)"
-    )
-    assert "if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length))" in runtime
-    retry_handoff = runtime.split("function retryPendingHandoff", 1)[1].split(
-        "function completeWithHandoff",
-        1,
-    )[0]
-    assert retry_handoff.index(
-        "if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);"
-    ) < retry_handoff.index(
-        "if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length))"
-    )
-    assert "return trackPendingChoiceWrite(session, meta, recordChoiceToPool(meta));" in retry_handoff
-    assert "function clearIncompatiblePendingHandoff(session, entry)" in runtime
-    assert "clearIncompatiblePendingHandoff(session, snapshot.entry);" in runtime
-    advance = runtime.split("function advanceWithChoice", 1)[1].split(
-        "function handleChoice",
-        1,
-    )[0]
-    assert "choiceSeq: session.choiceSeq" in advance
-    assert "choiceWriteMetas: session.choiceWriteMetas" in advance
-    assert "pendingUserChoice: null" in advance
-    assert "function resumePendingUserChoice(session, pendingChoice)" in runtime
-    assert "pendingUserChoice: restoredPendingUserChoice" in runtime
-    pending_choice_resume = runtime.split("function resumePendingUserChoice", 1)[1].split(
-        "function restoreInterruptedSession",
-        1,
-    )[0]
-    assert "var PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS = 3000;" in runtime
-    restore_context = runtime.split("function runBoundedRestoreContextOperation", 1)[1].split(
-        "function resumePendingUserChoice",
-        1,
-    )[0]
-    assert "String(label || 'restore context') + ' headers'" in restore_context
-    assert "if (controller) controller.abort();" in restore_context
-    assert "}, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);" in restore_context
-    assert "preparedHeaders: headers" in pending_choice_resume
-    assert "signal: signal" in pending_choice_resume
-    assert "if (pending.messageDelivered === true && result !== true) return false;" in pending_choice_resume
-    assert "if (extra.signal) requestOptions.signal = extra.signal;" in runtime
-    assert "delete broadcastMeta.signal;" in append_message
-    assert "delete broadcastMeta.preparedHeaders;" in append_message
-    assert "icebreaker: Object.assign({ source: SOURCE }, broadcastMeta)" in append_message
-    assert "if ((restoredPendingUserChoice || restoredPendingFreeText) && activeSession === session)" in runtime
-    assert "function retryPendingUserChoice(session, choice, choiceNodeId)" in runtime
-    assert "return resumePendingUserChoice(session, pending);" in runtime
-    assert "function recoverPendingFreeText(session, pendingFreeText)" in runtime
-    assert "pendingFreeText: restoredPendingFreeText" in runtime
-    pending_free_text_recovery = runtime.split("function recoverPendingFreeText", 1)[1].split(
-        "function restoreInterruptedSession",
-        1,
-    )[0]
-    assert "fallbackFreeTextInterpretation" not in pending_free_text_recovery
-    assert "setFreeTextDerailStreak" not in pending_free_text_recovery
-    assert "pending.recoveryMessageDelivered === true" in pending_free_text_recovery
-    assert "pendingFreeTextRecovery: true" in pending_free_text_recovery
-    ordinary_free_text_reply = runtime.split("var replyText = decision.reply", 1)[1].split(
-        "function handleFreeText(detail)",
-        1,
-    )[0]
-    assert "pendingFreeTextRecovery: true" in ordinary_free_text_reply
-    assert "function markPendingFreeTextRecoveryDelivered(session, meta)" in runtime
-    pending_free_text_append = pending_free_text_recovery.split("appendAssistantChatMessage", 1)[1]
-    assert "if (!result.delivered)" in pending_free_text_append
-    assert pending_free_text_append.index("if (!result.delivered)") < pending_free_text_append.index(
-        "clearPendingFreeText(session, pending.requestId);"
-    )
-    assert "pendingFreeText: null" in advance
-    assert "function trackPendingChoiceWrite(session, choiceMeta, writePromise)" in runtime
-    assert "return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));" in runtime
-    assert "String(entry.sessionId || '') !== String(session.sessionId || '')" in runtime
-    assert "var remainingMetas = (Array.isArray(entry.choiceWriteMetas)" in runtime
-    release = runtime.split("if (decision.action === 'release')", 1)[1].split(
-        "var replyText = decision.reply",
-        1,
-    )[0]
-    assert "releasePending: true" in release
-    assert release.index("releasePending: true") < release.index("var releaseAppend")
-    assert "releasePending: false" in release
-
-
-def test_icebreaker_managed_restore_waits_for_the_user_controlled_startup_gate():
-    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    bootstrap = runtime.split("function bootstrapFromRecentEndState()", 1)[1].split(
-        "window.addEventListener('neko:avatar-floating-guide-complete'",
-        1,
-    )[0]
-
-    assert "restoreIdleDeadline" not in bootstrap
-    assert "if (Date.now() >= restoreIdleDeadline) return false;" not in bootstrap
-    assert "window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);" in bootstrap
-    assert "return restoreInterruptedSession();" in bootstrap
-
-    deferred_start = runtime.split("function attemptStartFromGuideEndState", 1)[1].split(
-        "function synthesizeEndStateFromEvent",
-        1,
-    )[0]
-    assert "isManagedDesktopReload()" in deferred_start
-    assert "&& hasIncompleteStoredSession(resolveLanlanName())" in deferred_start
-    assert "? restoreInterruptedSession()" in deferred_start
-    assert "if (restored) {" in deferred_start
-    assert "if (activeSession && String(activeSession.day || '') === dayKey)" in deferred_start
-    assert deferred_start.index("? restoreInterruptedSession()") < deferred_start.index(
-        "return startFromEndStateWhenTutorialIdle(endState);"
-    )
-    incomplete_matcher = runtime.split("function hasIncompleteStoredSession(lanlanName)", 1)[1].split(
-        "function makeIcebreakerSessionId",
-        1,
-    )[0]
-    assert "var expectedLanlanName = String(lanlanName || '');" in incomplete_matcher
-    assert "String(entry.lanlanName || '') === expectedLanlanName" in incomplete_matcher
-    assert "window.addEventListener('neko:new-user-icebreaker-ended'" in runtime
-    assert "if (!pendingGuideEndState || activeSession) return;" in runtime
 
 
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
@@ -1622,9 +1279,6 @@ def test_icebreaker_free_text_uses_llm_interpreter_before_static_fallback():
     assert "recordFreeTextTurn(session, {" in runtime
     assert "getFreeTextDerailStreak(session, nodeId)" in runtime
     assert "setFreeTextDerailStreak(session, nodeId, 0)" in runtime
-    assert "freeTextDerailStreaks: streaks" in runtime
-    assert "function hydrateFreeTextDerailState(session, entry)" in runtime
-    assert "hydrateFreeTextDerailState(session, snapshot.entry);" in runtime
     assert "free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId)" in runtime
     assert "recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId)" in runtime
     assert "session.freeTextTurns" not in runtime
@@ -1658,7 +1312,7 @@ def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append(
         "function canStartFromEndState",
         1,
     )[0]
-    continuation_block = free_text_block.split("}, session).then(function (message) {", 1)[1]
+    continuation_block = free_text_block.split("}).then(function (message) {", 1)[1]
 
     assert "var session = activeSession;" in free_text_block
     assert "var day = session.day;" in free_text_block
@@ -1679,13 +1333,13 @@ def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append(
     assert "setChoicePrompt(currentNode, localeData);" in runtime
     assert "dispatchIcebreakerEnded('free_text_release');" in runtime
     assert "return Promise.resolve().then(function () {" in runtime
-    assert "return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {" in runtime
+    assert "return speakLine(releaseText, releaseVoiceKey);" in runtime
     assert "}).catch(function () {}).then(function () {" in runtime
     assert "didAppendRelease" in runtime
     assert "var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {" in runtime
     assert "}) : Promise.resolve(activeSession === session);" in runtime
     assert "if (!didAppendRelease || activeSession !== session) return false;" in runtime
-    assert runtime.index("return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {") < runtime.index(
+    assert runtime.index("return speakLine(releaseText, releaseVoiceKey);") < runtime.index(
         "dispatchIcebreakerEnded('free_text_release');"
     )
     assert "Number(session.offTopicCount || 0) >= 1" not in free_text_block

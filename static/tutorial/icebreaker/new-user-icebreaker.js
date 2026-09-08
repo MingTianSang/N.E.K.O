@@ -10,18 +10,6 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
-    var PAGE_CONFIG_RESTORE_WAIT_MS = 3000;
-    var ROUTE_START_RESTORE_MAX_ATTEMPTS = 3;
-    var ROUTE_START_RESTORE_RETRY_MS = 300;
-    var ROUTE_START_RESTORE_MAX_WAIT_MS = 3000;
-    var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;
-    var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;
-    var ROUTE_STATE_RESTORE_RETRY_MS = 300;
-    var RESTORE_ASSET_MAX_WAIT_MS = 3000;
-    var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
-    var DIRECT_MUTATION_HEADERS_MAX_WAIT_MS = 3000;
-    var TERMINAL_CHOICE_WRITE_MAX_WAIT_MS = 12000;
-    var PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS = 3000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -37,14 +25,11 @@
     var pendingGuideEndState = null;
     var pendingGuideEndStartPromise = null;
     var restoreSessionPromise = null;
-    var restoreGeneration = 0;
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
     var icebreakerBridgeTimestampSeq = 0;
     var contextAppendPromise = Promise.resolve();
-    var useDirectMutationHeadersForRestore = false;
-    var pageConfigRestoreRetryAttached = false;
     var freeTextState = freeTextRuntime && typeof freeTextRuntime.createRuntimeStateStore === 'function'
         ? freeTextRuntime.createRuntimeStateStore()
         : null;
@@ -88,19 +73,12 @@
         return !!(entry && entry.completed);
     }
 
-    function isDayReleasePending(day) {
-        var store = readStore();
-        var entry = store && store.days ? store.days[String(day || '')] : null;
-        return !!(entry && entry.releasePending === true);
-    }
-
     function isPeriodActive() {
         return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
     }
 
-    function fetchJson(url, options) {
-        var requestOptions = Object.assign({ credentials: 'same-origin', cache: 'no-store' }, options || {});
-        return fetch(url, requestOptions).then(function (response) {
+    function fetchJson(url) {
+        return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
         });
@@ -112,55 +90,35 @@
         return '/api/config/page_config' + suffix;
     }
 
-    function fetchLocalMutationHeadersDirectly(headers) {
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var requestOptions = {
-            credentials: 'same-origin',
-            cache: 'no-store'
-        };
-        if (controller) requestOptions.signal = controller.signal;
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (controller) controller.abort();
-                finish(headers);
-            }, DIRECT_MUTATION_HEADERS_MAX_WAIT_MS);
-            function finish(result) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(result || headers);
-            }
-            fetch(getPageConfigUrl(), requestOptions).then(function (response) {
-                if (!response.ok) return null;
-                return response.json();
-            }).then(function (config) {
-                if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
-                    headers['X-CSRF-Token'] = config.autostart_csrf_token;
-                }
-                finish(headers);
-            }).catch(function () {
-                finish(headers);
-            });
-        });
-    }
-
     function getLocalMutationHeaders() {
         var headers = { 'Content-Type': 'application/json' };
         var security = window.nekoLocalMutationSecurity;
-        if (!useDirectMutationHeadersForRestore && security && typeof security.getMutationHeaders === 'function') {
+        if (security && typeof security.getMutationHeaders === 'function') {
             return Promise.resolve(security.getMutationHeaders()).then(function (mutationHeaders) {
                 return Object.assign(headers, mutationHeaders || {});
             }).catch(function () {
                 return headers;
             });
         }
-        return fetchLocalMutationHeadersDirectly(headers);
+        return fetch(getPageConfigUrl(), {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) return headers;
+            return response.json();
+        }).then(function (config) {
+            if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
+                headers['X-CSRF-Token'] = config.autostart_csrf_token;
+            }
+            return headers;
+        }).catch(function () {
+            return headers;
+        });
     }
 
     function refreshLocalMutationHeaders() {
         var security = window.nekoLocalMutationSecurity;
-        if (!useDirectMutationHeadersForRestore && security && typeof security.refreshToken === 'function') {
+        if (security && typeof security.refreshToken === 'function') {
             return Promise.resolve(security.refreshToken()).then(function () {
                 return getLocalMutationHeaders();
             }).catch(function () {
@@ -170,7 +128,7 @@
         return getLocalMutationHeaders();
     }
 
-    function postIcebreakerRoute(path, session, extraBody, signal, preparedHeaders) {
+    function postIcebreakerRoute(path, session, extraBody) {
         if (!session || !session.sessionId) return Promise.resolve(false);
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(session),
@@ -184,46 +142,23 @@
             });
         }
 
-        function postRouteWithHeaders(headers, allowRetry) {
-            var requestOptions = {
+        return getLocalMutationHeaders().then(function (headers) {
+            return fetch(ICEBREAKER_API_BASE + path, {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            };
-            if (signal) requestOptions.signal = signal;
-            return fetch(ICEBREAKER_API_BASE + path, requestOptions).then(function (response) {
-                if (allowRetry && response.status === 403) {
-                    return response.clone().json().catch(function () {
-                        return null;
-                    }).then(function (errorBody) {
-                        if (errorBody && errorBody.error_code === 'csrf_validation_failed') {
-                            return refreshLocalMutationHeaders().then(function (nextHeaders) {
-                                return postRouteWithHeaders(nextHeaders, false);
-                            });
-                        }
-                        return parseRouteResponse(response);
-                    });
-                }
-                return parseRouteResponse(response);
-            });
-        }
-
-        var headersPromise = preparedHeaders
-            ? Promise.resolve(preparedHeaders)
-            : getLocalMutationHeaders();
-        return headersPromise.then(function (headers) {
-            return postRouteWithHeaders(headers, true);
+            }).then(parseRouteResponse);
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] route lifecycle request failed:', path, error);
             return false;
         });
     }
 
-    function startIcebreakerRoute(session, signal, preparedHeaders) {
+    function startIcebreakerRoute(session) {
         return postIcebreakerRoute('/route/start', session, {
             source: SOURCE
-        }, signal, preparedHeaders);
+        });
     }
 
     function clearPendingStartDay(dayKey) {
@@ -265,9 +200,6 @@
         return postIcebreakerRoute('/route/end', session, {
             reason: reason || 'icebreaker_complete',
             postgameProactive: { enabled: false }
-        }).then(function (ended) {
-            if (!ended) session.routeEnded = false;
-            return ended;
         });
     }
 
@@ -320,9 +252,9 @@
         }
     }
 
-    function loadScripts(options) {
+    function loadScripts() {
         if (!scriptPromise) {
-            scriptPromise = fetchJson(SCRIPT_URL, options);
+            scriptPromise = fetchJson(SCRIPT_URL);
         }
         return scriptPromise;
     }
@@ -379,51 +311,16 @@
         return payload;
     }
 
-    function loadLocale(locale, options) {
+    function loadLocale(locale) {
         var normalized = normalizeLocale(locale);
         if (!localePromises[normalized]) {
-            localePromises[normalized] = fetchJson(
-                LOCALE_BASE_URL + encodeURIComponent(normalized) + '.json',
-                options
-            ).catch(function (error) {
-                if (error && error.name === 'AbortError') throw error;
-                if (normalized === 'zh-CN') return {};
-                return loadLocale('zh-CN', options);
-            });
+            localePromises[normalized] = fetchJson(LOCALE_BASE_URL + encodeURIComponent(normalized) + '.json')
+                .catch(function () {
+                    if (normalized === 'zh-CN') return {};
+                    return loadLocale('zh-CN');
+                });
         }
         return localePromises[normalized];
-    }
-
-    function loadRestoreAssets(locale) {
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var options = controller ? { signal: controller.signal } : undefined;
-        var assetsPromise = Promise.all([loadScripts(options), loadLocale(locale, options)]);
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                if (controller) controller.abort();
-                // A fetch that never settles must not poison the shared caches and block
-                // a later explicit start or restore retry for the rest of the page lifetime.
-                scriptPromise = null;
-                localePromises = Object.create(null);
-                resolve(null);
-            }, RESTORE_ASSET_MAX_WAIT_MS);
-            assetsPromise.then(function (assets) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(assets);
-            }).catch(function () {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                scriptPromise = null;
-                localePromises = Object.create(null);
-                resolve(null);
-            });
-        });
     }
 
     function getText(localeData, key) {
@@ -475,105 +372,32 @@
         }
     }
 
-    function resolveAuthor(session) {
-        return resolveSessionLanlanName(session) || 'N.E.K.O';
+    function resolveAuthor() {
+        return resolveLanlanName() || 'N.E.K.O';
     }
 
-    function loadIcebreakerRouteStateForRestore(attempt) {
-        var attemptIndex = Number(attempt || 0);
+    function loadIcebreakerRouteStateForRestore() {
         var lanlanName = resolveLanlanName();
         var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
-        var controller = typeof AbortController === 'function' ? new AbortController() : null;
-        var requestPromise = fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix, {
-            signal: controller ? controller.signal : undefined
-        });
-        return new Promise(function (resolve) {
-            var settled = false;
-            function retryOrResolveUnavailable() {
-                if (attemptIndex + 1 >= ROUTE_STATE_RESTORE_MAX_ATTEMPTS) {
-                    resolve({ loaded: false, state: null });
-                    return;
-                }
-                window.setTimeout(function () {
-                    loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);
-                }, ROUTE_STATE_RESTORE_RETRY_MS);
-            }
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                if (controller) controller.abort();
-                retryOrResolveUnavailable();
-            }, ROUTE_STATE_RESTORE_MAX_WAIT_MS);
-            requestPromise.then(function (data) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve({
-                    loaded: !!(data && data.ok === true),
-                    state: data && data.ok === true && data.state && typeof data.state === 'object'
-                        ? data.state
-                        : null
-                });
-            }).catch(function (error) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                console.warn('[NewUserIcebreaker] route restore state failed:', error);
-                retryOrResolveUnavailable();
-            });
-        });
-    }
-
-    function withRestoreWaitTimeout(promise, fallbackValue, label) {
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                console.warn('[NewUserIcebreaker] ' + label + ' wait timed out');
-                resolve(fallbackValue);
-            }, PAGE_CONFIG_RESTORE_WAIT_MS);
-            Promise.resolve(promise).then(function (value) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(value);
-            }, function (error) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                console.warn('[NewUserIcebreaker] ' + label + ' wait failed:', error);
-                resolve(fallbackValue);
-            });
+        return fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
+            return {
+                loaded: !!(data && data.ok === true),
+                state: data && data.ok === true && data.state && typeof data.state === 'object'
+                    ? data.state
+                    : null
+            };
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] route restore state failed:', error);
+            return { loaded: false, state: null };
         });
     }
 
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
-        if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
-        var timeoutSentinel = {};
-        return withRestoreWaitTimeout(ready, timeoutSentinel, 'page config').then(function (result) {
-            if (result === timeoutSentinel) {
-                useDirectMutationHeadersForRestore = true;
-                Promise.resolve(ready).then(function () {
-                    useDirectMutationHeadersForRestore = false;
-                }).catch(function () {});
-            } else {
-                useDirectMutationHeadersForRestore = false;
-            }
-            return true;
+        if (!ready || typeof ready.then !== 'function') return Promise.resolve();
+        return Promise.resolve(ready).catch(function (error) {
+            console.warn('[NewUserIcebreaker] page config wait failed:', error);
         });
-    }
-
-    function retryRestoreWhenPageConfigSettles() {
-        var ready = window.pageConfigReady;
-        if (pageConfigRestoreRetryAttached || !ready || typeof ready.then !== 'function') return;
-        pageConfigRestoreRetryAttached = true;
-        Promise.resolve(ready).then(function () {
-            window.setTimeout(function () {
-                restoreInterruptedSession();
-            }, 0);
-        }).catch(function () {});
     }
 
     function waitForStorageStartupDecisionForRestore() {
@@ -581,16 +405,7 @@
         if (!storageLocation || typeof storageLocation.waitUntilMainUiAllowed !== 'function') {
             return Promise.resolve(true);
         }
-        var decisionPromise;
-        try {
-            decisionPromise = storageLocation.waitUntilMainUiAllowed();
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] storage startup wait threw:', error);
-            return Promise.resolve(false);
-        }
-        // This is a user-controlled startup gate. The main UI intentionally remains blocked
-        // while the chooser is open, so timing it out here would discard the one-shot restore.
-        return Promise.resolve(decisionPromise).then(function (decision) {
+        return Promise.resolve(storageLocation.waitUntilMainUiAllowed()).then(function (decision) {
             return !decision || decision.canContinue !== false;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] storage startup wait failed:', error);
@@ -614,12 +429,9 @@
             var dayConfig = scripts && scripts.days ? scripts.days[day] : null;
             var nodeId = String((entry && entry.nodeId) || '');
             var entryLanlanName = String((entry && entry.lanlanName) || '');
-            var updatedAt = Number(entry && entry.updatedAt);
             if (!entry || entry.started !== true || entry.completed === true) return;
-            if (entry.releasePending === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName !== currentLanlanName) return;
-            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) return;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
@@ -630,7 +442,6 @@
                     && !!routeSessionId
                     && String(entry.sessionId || '') === routeSessionId
             };
-            if (routeActive && !candidate.matchesActiveRoute) return;
             if (
                 !best
                 || (candidate.matchesActiveRoute && !best.matchesActiveRoute)
@@ -645,178 +456,9 @@
         return best;
     }
 
-    function findPendingReleaseSnapshot(lanlanName, routeState) {
+    function hasIncompleteStoredSession() {
         var store = readStore();
         var days = store && store.days && typeof store.days === 'object' ? store.days : {};
-        var expectedLanlanName = String(lanlanName || '');
-        var state = routeState && typeof routeState === 'object' ? routeState : {};
-        var activeRouteSessionId = state.icebreaker_active === true ? String(state.session_id || '') : '';
-        var best = null;
-        var expiredActiveRelease = null;
-        var foundMismatchedActiveRelease = false;
-        Object.keys(days).forEach(function (day) {
-            var entry = days[day];
-            if (!entry || entry.releasePending !== true || entry.completed === true) return;
-            if (String(entry.lanlanName || '') !== expectedLanlanName) return;
-            var updatedAt = Number(entry.updatedAt || 0);
-            if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS) {
-                if (activeRouteSessionId && String(entry.sessionId || '') === activeRouteSessionId) {
-                    if (!expiredActiveRelease || updatedAt > Number(expiredActiveRelease.entry.updatedAt || 0)) {
-                        expiredActiveRelease = { day: day, entry: entry, expired: true };
-                    }
-                    return;
-                }
-                markDay(day, {
-                    started: true,
-                    completed: true,
-                    completedAt: Date.now(),
-                    releasePending: false,
-                    releaseText: '',
-                    releaseVoiceKey: '',
-                    releaseRequestId: '',
-                    releaseMessageDelivered: false,
-                    releaseSpeechDelivered: false,
-                    pendingFreeText: null,
-                    releasedByFreeText: true,
-                    updatedAt: Date.now()
-                });
-                return;
-            }
-            if (activeRouteSessionId && String(entry.sessionId || '') !== activeRouteSessionId) {
-                foundMismatchedActiveRelease = true;
-                return;
-            }
-            if (!best || Number(entry.updatedAt || 0) > Number(best.entry.updatedAt || 0)) {
-                best = { day: day, entry: entry };
-            }
-        });
-        return best || expiredActiveRelease || (foundMismatchedActiveRelease ? { mismatchedActiveRoute: true } : null);
-    }
-
-    function ensurePendingReleaseMessage(snapshot, lanlanName) {
-        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
-        var releaseText = String(entry.releaseText || '');
-        if (!releaseText || entry.releaseMessageDelivered === true) return Promise.resolve(true);
-        var releaseSession = {
-            day: String(snapshot.day || ''),
-            sessionId: String(entry.sessionId || ''),
-            lanlanName: String(lanlanName || entry.lanlanName || ''),
-            nodeId: String(entry.nodeId || '')
-        };
-        return appendChatMessage('assistant', releaseText, {
-            day: releaseSession.day,
-            nodeId: releaseSession.nodeId,
-            voiceKey: String(entry.releaseVoiceKey || ''),
-            fallback: 'release',
-            freeText: true,
-            requestId: String(entry.releaseRequestId || '')
-        }, releaseSession).then(function (message) {
-            return didAppendChatMessage(message);
-        });
-    }
-
-    function ensurePendingReleaseSpeech(snapshot, lanlanName) {
-        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
-        var releaseText = String(entry.releaseText || '');
-        if (!releaseText || entry.releaseSpeechDelivered === true) return Promise.resolve(true);
-        var releaseSession = {
-            day: String(snapshot.day || ''),
-            sessionId: String(entry.sessionId || ''),
-            lanlanName: String(lanlanName || entry.lanlanName || ''),
-            nodeId: String(entry.nodeId || '')
-        };
-        return speakLine(releaseText, String(entry.releaseVoiceKey || ''), releaseSession).then(function (spoken) {
-            if (!spoken) return false;
-            markDay(snapshot.day, {
-                releaseSpeechDelivered: true,
-                updatedAt: Date.now()
-            });
-            return true;
-        }).catch(function () {
-            return false;
-        });
-    }
-
-    function completePendingRelease(routeState, snapshot, lanlanName) {
-        var state = routeState && typeof routeState === 'object' ? routeState : {};
-        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
-        var routeMatchesRelease = state.icebreaker_active === true
-            && String(state.session_id || '') === String(entry.sessionId || '')
-            && String(state.lanlan_name || lanlanName || '') === String(lanlanName || '');
-        var releaseSession = {
-            day: String(snapshot.day || ''),
-            sessionId: String(entry.sessionId || ''),
-            lanlanName: String(lanlanName || entry.lanlanName || ''),
-            nodeId: String(entry.nodeId || '')
-        };
-        var activationPromise = routeMatchesRelease
-            ? Promise.resolve(true)
-            : startIcebreakerRouteForRestore(releaseSession);
-        return activationPromise.then(function (started) {
-            if (!started) return false;
-            return ensurePendingReleaseMessage(snapshot, lanlanName);
-        }).then(function (messageDelivered) {
-            if (!messageDelivered) return false;
-            return ensurePendingReleaseSpeech(snapshot, lanlanName);
-        }).then(function (speechDelivered) {
-            if (!speechDelivered) return false;
-            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_release_cleanup', lanlanName);
-            return endIcebreakerRoute(releaseSession, 'icebreaker_free_text_release_restore');
-        }).then(function (cleaned) {
-            if (!cleaned) return false;
-            markDay(snapshot.day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                releasePending: false,
-                releaseText: '',
-                releaseVoiceKey: '',
-                releaseRequestId: '',
-                releaseMessageDelivered: false,
-                releaseSpeechDelivered: false,
-                pendingFreeText: null,
-                releasedByFreeText: true,
-                updatedAt: Date.now()
-            });
-            dispatchIcebreakerEnded('free_text_release_restore');
-            return {
-                releaseCleanupCompleted: true,
-                day: String(snapshot.day || '')
-            };
-        });
-    }
-
-    function completeExpiredPendingRelease(snapshot, lanlanName) {
-        var entry = snapshot && snapshot.entry ? snapshot.entry : {};
-        return endIcebreakerRoute({
-            sessionId: String(entry.sessionId || ''),
-            lanlanName: String(lanlanName || entry.lanlanName || '')
-        }, 'icebreaker_stale_release_expired').then(function (ended) {
-            if (!ended) return false;
-            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_stale_release_expired', lanlanName);
-            markDay(snapshot.day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                releasePending: false,
-                releaseText: '',
-                releaseVoiceKey: '',
-                releaseRequestId: '',
-                releaseMessageDelivered: false,
-                releaseSpeechDelivered: false,
-                pendingFreeText: null,
-                releasedByFreeText: true,
-                updatedAt: Date.now()
-            });
-            dispatchIcebreakerEnded('stale_release_expired');
-            return { releaseCleanupCompleted: true, day: String(snapshot.day || '') };
-        });
-    }
-
-    function hasIncompleteStoredSession(lanlanName) {
-        var store = readStore();
-        var days = store && store.days && typeof store.days === 'object' ? store.days : {};
-        var expectedLanlanName = String(lanlanName || '');
         return Object.keys(days).some(function (day) {
             var entry = days[day];
             return !!(
@@ -825,7 +467,6 @@
                 && entry.completed !== true
                 && entry.sessionId
                 && entry.nodeId
-                && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
             );
         });
     }
@@ -849,272 +490,31 @@
         });
     }
 
-    function startIcebreakerRouteForRestore(session, attempt) {
-        var attemptIndex = Number(attempt || 0);
-        return withRestoreWaitTimeout(
-            getLocalMutationHeaders(),
-            null,
-            'route start headers'
-        ).then(function (headers) {
-            if (!headers) return false;
-            var controller = typeof AbortController === 'function' ? new AbortController() : null;
-            var attemptPromise = startIcebreakerRoute(
-                session,
-                controller ? controller.signal : null,
-                headers
-            );
-            return new Promise(function (resolve) {
-                var settled = false;
-                var timeoutId = window.setTimeout(function () {
-                    if (settled) return;
-                    settled = true;
-                    if (controller) controller.abort();
-                    resolve(false);
-                }, ROUTE_START_RESTORE_MAX_WAIT_MS);
-                Promise.resolve(attemptPromise).then(function (started) {
-                    if (settled) return;
-                    settled = true;
-                    window.clearTimeout(timeoutId);
-                    resolve(started);
-                });
-            });
-        }).then(function (started) {
-            if (started) return true;
-            if (attemptIndex + 1 >= ROUTE_START_RESTORE_MAX_ATTEMPTS) {
-                return loadIcebreakerRouteStateForRestore().then(function (routeResult) {
-                    var state = routeResult && routeResult.state || {};
-                    return !!(
-                        routeResult && routeResult.loaded
-                        && state.icebreaker_active === true
-                        && String(state.session_id || '') === String(session.sessionId || '')
-                        && String(state.lanlan_name || session.lanlanName || '') === String(session.lanlanName || '')
-                    );
-                });
-            }
-            return new Promise(function (resolve) {
-                window.setTimeout(resolve, ROUTE_START_RESTORE_RETRY_MS);
-            }).then(function () {
-                return startIcebreakerRouteForRestore(session, attemptIndex + 1);
-            });
-        });
-    }
-
-    function runBoundedRestoreContextOperation(operation, label) {
-        return withRestoreWaitTimeout(
-            getLocalMutationHeaders(),
-            null,
-            String(label || 'restore context') + ' headers'
-        ).then(function (headers) {
-            if (!headers) return false;
-            var controller = typeof AbortController === 'function' ? new AbortController() : null;
-            return new Promise(function (resolve) {
-                var settled = false;
-                var timeoutId = window.setTimeout(function () {
-                    if (settled) return;
-                    settled = true;
-                    if (controller) controller.abort();
-                    resolve(false);
-                }, PENDING_USER_CHOICE_RESUME_MAX_WAIT_MS);
-                Promise.resolve(operation(headers, controller ? controller.signal : null)).then(function (result) {
-                    if (settled) return;
-                    settled = true;
-                    window.clearTimeout(timeoutId);
-                    resolve(result);
-                }).catch(function () {
-                    if (settled) return;
-                    settled = true;
-                    window.clearTimeout(timeoutId);
-                    resolve(false);
-                });
-            });
-        });
-    }
-
-    function resumePendingUserChoice(session, pendingChoice) {
-        var pending = pendingChoice && typeof pendingChoice === 'object' ? pendingChoice : {};
-        var nodeId = String(pending.nodeId || session.nodeId || '');
-        var choice = String(pending.choice || '');
-        var label = String(pending.label || '');
-        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
-        var option = node && Array.isArray(node.options) ? node.options.find(function (candidate) {
-            return String(candidate.id || '') === choice;
-        }) : null;
-        if (!option) {
-            markDay(session.day, {
-                pendingUserChoice: null,
-                updatedAt: Date.now()
-            });
-            return Promise.resolve(false);
-        }
-        var meta = {
-            day: session.day,
-            nodeId: nodeId,
-            choice: choice,
-            requestId: String(pending.requestId || ''),
-            messageId: String(pending.messageId || ''),
-            pendingUserChoice: true
-        };
-        return runBoundedRestoreContextOperation(function (headers, signal) {
-            var requestMeta = Object.assign({}, meta, {
-                preparedHeaders: headers,
-                signal: signal
-            });
-            return pending.messageDelivered === true
-                ? appendLlmContext('user', label, requestMeta, session)
-                : appendChatMessage('user', label, requestMeta, session);
-        }, 'pending choice context').then(function (result) {
-            if (pending.messageDelivered === true && result !== true) return false;
-            if (pending.messageDelivered !== true && !didAppendChatMessage(result)) return false;
-            if (activeSession !== session) return false;
-            return advanceWithChoice(session, option, choice, label, nodeId);
-        });
-    }
-
-    function clearIncompatiblePendingHandoff(session, entry) {
-        if (!session || !entry || entry.terminalPending !== true) return;
-        var choice = String(entry.terminalChoice || '');
-        var nodeId = String(entry.nodeId || session.nodeId || '');
-        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
-        var option = node && Array.isArray(node.options) ? node.options.find(function (candidate) {
-            return String(candidate.id || '') === choice && !!candidate.handoffKey;
-        }) : null;
-        if (option) return;
-        session.choiceWriteMetas = (session.choiceWriteMetas || []).filter(function (meta) {
-            return !(
-                meta && meta.handoff === true
-                && String(meta.nodeId || '') === nodeId
-                && String(meta.choice || '') === choice
-            );
-        });
-        markDay(session.day, {
-            terminalPending: false,
-            terminalChoiceRecorded: false,
-            terminalChoice: '',
-            terminalChoiceSeq: 0,
-            terminalMessageDelivered: false,
-            terminalSpeechDelivered: false,
-            choiceWriteMetas: session.choiceWriteMetas,
-            updatedAt: Date.now()
-        });
-    }
-
-    function recoverPendingFreeText(session, pendingFreeText) {
-        var pending = pendingFreeText && typeof pendingFreeText === 'object' ? pendingFreeText : {};
-        var nodeId = String(pending.nodeId || session.nodeId || '');
-        var node = session.dayConfig && session.dayConfig.nodes ? session.dayConfig.nodes[nodeId] : null;
-        if (!node || pending.messageDelivered !== true) {
-            markDay(session.day, {
-                pendingFreeText: null,
-                updatedAt: Date.now()
-            });
-            return node ? setChoicePrompt(node, session.localeData, 0) : Promise.resolve(false);
-        }
-        session.freeTextInFlight = true;
-        var fallback = session.dayConfig && session.dayConfig.fallback || {};
-        var replyText = getText(session.localeData, fallback.redirectKey);
-        if (!replyText) {
-            return setChoicePrompt(node, session.localeData, 0).then(function () {
-                session.freeTextInFlight = false;
-                clearPendingFreeText(session, pending.requestId);
-                return true;
-            });
-        }
-        var recoveryMeta = {
-            day: session.day,
-            nodeId: nodeId,
-            fallback: 'respond_and_keep_options',
-            freeText: true,
-            requestId: String(pending.requestId || ''),
-            messageId: String(pending.recoveryMessageId || ''),
-            pendingFreeTextRecovery: true
-        };
-        var recoveryReply = runBoundedRestoreContextOperation(function (headers, signal) {
-            var requestMeta = Object.assign({}, recoveryMeta, {
-                preparedHeaders: headers,
-                signal: signal
-            });
-            if (pending.recoveryMessageDelivered === true) {
-                return appendLlmContext('assistant', replyText, requestMeta, session).then(function (appended) {
-                    return { delivered: appended === true, newlyDelivered: false };
-                });
-            }
-            return appendAssistantChatMessage(replyText, requestMeta, session).then(function (message) {
-                return { delivered: didAppendChatMessage(message), newlyDelivered: true };
-            });
-        }, 'pending free-text context');
-        return recoveryReply.then(function (result) {
-            if (!result.delivered) {
-                session.freeTextInFlight = false;
-                return false;
-            }
-            if (result.newlyDelivered) {
-                applyAssistantTextEmotion(replyText);
-                speakLine(replyText, '');
-            }
-            if (activeSession !== session) return false;
-            return setChoicePrompt(node, session.localeData, computeChoicePromptRevealDelay(replyText))
-                .then(function () {
-                    session.freeTextInFlight = false;
-                    clearPendingFreeText(session, pending.requestId);
-                    return true;
-                });
-        }).catch(function (error) {
-            console.warn('[NewUserIcebreaker] pending free-text recovery failed:', error);
-            if (activeSession !== session) return false;
-            session.freeTextInFlight = false;
-            return false;
-        });
-    }
-
     function restoreInterruptedSession() {
         if (!isManagedDesktopReload()) return Promise.resolve(false);
         if (activeSession) return Promise.resolve(true);
         if (restoreSessionPromise) return restoreSessionPromise;
-        var restoreGenerationAtStart = restoreGeneration;
         restoreSessionPromise = waitForStorageStartupDecisionForRestore().then(function (canContinue) {
             if (!canContinue || activeSession) return null;
-            return waitForPageConfigForRestore().then(function (configReady) {
-                if (!configReady || activeSession) return null;
+            return waitForPageConfigForRestore().then(function () {
+                if (activeSession) return null;
                 return Promise.all([
                     loadIcebreakerRouteStateForRestore(),
-                    loadRestoreAssets(currentLocale())
-                ]).then(function (restoreInputs) {
-                    var assets = restoreInputs[1];
-                    return assets ? [restoreInputs[0], assets[0], assets[1]] : null;
-                });
+                    loadScripts(),
+                    loadLocale(currentLocale())
+                ]);
             });
         }).then(function (results) {
-            // A user-forced start may have completed while route state or restore assets
-            // were loading. Do not let the stale continuation replace that fresh route.
-            if (restoreGeneration !== restoreGenerationAtStart || activeSession) return !!activeSession;
             if (!results) return !!activeSession;
             var routeResult = results[0];
             var scripts = results[1];
             var localeData = results[2] || {};
-            // route 是否仍活跃未知时不能用新 session 覆盖它；保留重放 prompt，等待下一次
-            // 明确信号/页面重建，而不是把旧 renderer 的在途写入变成 stale。
-            if (!routeResult.loaded) return false;
             var configuredLanlanName = resolveLanlanName();
             var restoreLanlanName = String(
                 configuredLanlanName || (routeResult.state && routeResult.state.lanlan_name) || ''
             );
-            if (!restoreLanlanName) {
-                retryRestoreWhenPageConfigSettles();
-                return false;
-            }
-            var pendingRelease = findPendingReleaseSnapshot(restoreLanlanName, routeResult.state);
-            var hasMismatchedPendingRelease = pendingRelease && pendingRelease.mismatchedActiveRoute === true;
-            if (pendingRelease && !hasMismatchedPendingRelease) {
-                if (pendingRelease.expired === true) {
-                    return completeExpiredPendingRelease(pendingRelease, restoreLanlanName);
-                }
-                return completePendingRelease(routeResult.state, pendingRelease, restoreLanlanName);
-            }
             var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
             if (!snapshot) {
-                // 本地待释放 session 与后端活动 route 不同，说明活动 route 可能属于较新页面。
-                // 不得因旧快照无法恢复而清掉另一个仍存活会话的 prompt/route。
-                if (hasMismatchedPendingRelease || routeResult.state.icebreaker_active === true) return false;
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
             }
 
@@ -1127,88 +527,30 @@
                 return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_missing_lanlan');
             }
 
-            // 后端仍持有同一 route 时复用原 session：窗口重建前已发出的 choice/context
-            // 仍可通过 active-session 校验。旧 route 已结束时才换 id，隔离旧页面迟到的 end。
-            var reuseActiveRoute = snapshot.matchesActiveRoute === true;
+            // 恢复时换一个 session id 并重新激活 route。浏览器普通 reload 的旧页面可能
+            // 还有迟到的 /route/end；新 id 能让后端把它判为 stale，避免刚恢复就被旧请求关掉。
             var session = {
                 day: snapshot.day,
                 dayConfig: snapshot.dayConfig,
                 localeData: localeData,
                 nodeId: snapshot.nodeId,
                 lanlanName: lanlanName,
-                choiceSeq: Number(snapshot.entry.choiceSeq) || 0,
-                choiceWriteMetas: [],
-                sessionId: reuseActiveRoute
-                    ? String(snapshot.entry.sessionId || '')
-                    : makeIcebreakerSessionId(snapshot.day)
+                sessionId: makeIcebreakerSessionId(snapshot.day)
             };
-            session.choiceWriteMetas = (Array.isArray(snapshot.entry.choiceWriteMetas)
-                ? snapshot.entry.choiceWriteMetas
-                : []).map(function (storedMeta) {
-                return Object.assign({}, storedMeta, { sessionId: session.sessionId });
-            });
-            if (!reuseActiveRoute) {
-                markDay(session.day, {
-                    lanlanName: session.lanlanName,
-                    sessionId: session.sessionId,
-                    choiceWriteMetas: session.choiceWriteMetas,
-                    updatedAt: Date.now()
-                });
-            }
-            clearIncompatiblePendingHandoff(session, snapshot.entry);
-            var restoredPendingUserChoice = snapshot.entry.pendingUserChoice
-                && typeof snapshot.entry.pendingUserChoice === 'object'
-                ? Object.assign({}, snapshot.entry.pendingUserChoice, { sessionId: session.sessionId })
-                : null;
-            var restoredPendingFreeText = snapshot.entry.pendingFreeText
-                && typeof snapshot.entry.pendingFreeText === 'object'
-                ? Object.assign({}, snapshot.entry.pendingFreeText, { sessionId: session.sessionId })
-                : null;
-            var activationPromise = reuseActiveRoute
-                ? Promise.resolve(true)
-                : startIcebreakerRouteForRestore(session);
-            return activationPromise.then(function (started) {
+            broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
+            return startIcebreakerRoute(session).then(function (started) {
                 if (!started) return false;
-                if (restoreGeneration !== restoreGenerationAtStart || activeSession) {
-                    return endIcebreakerRoute(session, 'icebreaker_restore_superseded').then(function () {
-                        return false;
-                    });
-                }
-                if (!reuseActiveRoute) {
-                    // 只有新 route 已确认激活后才清旧 prompt。瞬时启动失败时保留重放控件，
-                    // 避免一次性 bootstrap 把用户留在没有选择入口的页面。
-                    broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
-                }
                 activeSession = session;
-                hydrateFreeTextDerailState(session, snapshot.entry);
-                session.pendingChoiceWrites = session.choiceWriteMetas.map(function (storedMeta) {
-                    var replayMeta = Object.assign({}, storedMeta, {
-                        sessionId: session.sessionId
-                    });
-                    return trackPendingChoiceWrite(session, replayMeta, recordChoiceToPool(replayMeta));
-                });
                 markDay(session.day, {
                     started: true,
                     completed: false,
                     lanlanName: session.lanlanName,
                     sessionId: session.sessionId,
                     nodeId: session.nodeId,
-                    choiceSeq: session.choiceSeq,
-                    choiceWriteMetas: session.choiceWriteMetas,
-                    pendingUserChoice: restoredPendingUserChoice,
-                    pendingFreeText: restoredPendingFreeText,
                     updatedAt: Date.now()
                 });
-                var presentationPromise = restoredPendingUserChoice
-                    ? resumePendingUserChoice(session, restoredPendingUserChoice)
-                    : restoredPendingFreeText
-                    ? recoverPendingFreeText(session, restoredPendingFreeText)
-                    : snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
-                    ? resumePendingNode(
-                        session,
-                        snapshot.pendingNodeId,
-                        snapshot.entry.pendingNodeMessageDelivered === true
-                    )
+                var presentationPromise = snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
+                    ? deliverNode(snapshot.pendingNodeId)
                     : setChoicePrompt(
                         session.dayConfig.nodes[session.nodeId],
                         session.localeData,
@@ -1216,16 +558,6 @@
                     );
                 return presentationPromise.then(function (presented) {
                     if (presented) return true;
-                    if ((restoredPendingUserChoice || restoredPendingFreeText) && activeSession === session) {
-                        session.choiceInFlight = false;
-                        return setChoicePrompt(
-                            session.dayConfig.nodes[session.nodeId],
-                            session.localeData,
-                            0
-                        ).then(function () {
-                            return true;
-                        });
-                    }
                     clearChoicePrompt();
                     if (activeSession === session) activeSession = null;
                     return endIcebreakerRoute(session, 'icebreaker_restore_presentation_failed').then(function () {
@@ -1355,11 +687,10 @@
         }
     }
 
-    function broadcastIcebreakerAppendMessage(message, session) {
+    function broadcastIcebreakerAppendMessage(message) {
         broadcastIcebreaker(null, {
             action: 'icebreaker_append_chat_message',
-            message: message,
-            lanlan_name: resolveSessionLanlanName(session)
+            message: message
         });
     }
 
@@ -1386,11 +717,11 @@
         });
     }
 
-    function appendLlmContext(role, text, meta, session) {
+    function appendLlmContext(role, text, meta) {
         var cleanRole = String(role || '').trim();
         var cleanText = String(text || '').trim();
         if ((cleanRole !== 'assistant' && cleanRole !== 'user') || !cleanText) return Promise.resolve(false);
-        var currentSession = session || activeSession || {};
+        var currentSession = activeSession || {};
         var extra = meta && typeof meta === 'object' ? meta : {};
         var body = Object.assign({
             lanlan_name: resolveSessionLanlanName(currentSession),
@@ -1419,14 +750,12 @@
         }
 
         function postContextWithHeaders(headers, allowRetry) {
-            var requestOptions = {
+            return fetch(ICEBREAKER_API_BASE + '/context', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
                 body: JSON.stringify(body)
-            };
-            if (extra.signal) requestOptions.signal = extra.signal;
-            return fetch(ICEBREAKER_API_BASE + '/context', requestOptions).then(function (response) {
+            }).then(function (response) {
                 if (allowRetry && response.status === 403) {
                     return response.clone().json().catch(function () {
                         return null;
@@ -1444,10 +773,7 @@
         }
 
         contextAppendPromise = contextAppendPromise.catch(function () {}).then(function () {
-            var headersPromise = extra.preparedHeaders
-                ? Promise.resolve(extra.preparedHeaders)
-                : getLocalMutationHeaders();
-            return headersPromise.then(function (headers) {
+            return getLocalMutationHeaders().then(function (headers) {
                 return postContextWithHeaders(headers, true);
             }).catch(function (error) {
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
@@ -1494,7 +820,7 @@
         // 与 /context 同款：缓存的 local-mutation token 过期（如后端重启而页面常驻）时，
         // 403 csrf_validation_failed 不当普通失败丢弃，刷新 token 后重试一次，避免静默漏记。
         function postChoiceWithHeaders(headers, allowRetry) {
-            var requestOptions = {
+            return fetch(ICEBREAKER_API_BASE + '/choice', {
                 method: 'POST',
                 headers: headers,
                 credentials: 'same-origin',
@@ -1503,9 +829,7 @@
                 // body 仅 ~200 字节，远低于 keepalive 的 64KB 上限。
                 keepalive: true,
                 body: JSON.stringify(body)
-            };
-            if (info.signal) requestOptions.signal = info.signal;
-            return fetch(ICEBREAKER_API_BASE + '/choice', requestOptions).then(function (response) {
+            }).then(function (response) {
                 if (allowRetry && response.status === 403) {
                     return response.clone().json().catch(function () {
                         return null;
@@ -1527,32 +851,6 @@
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] record choice to pool failed:', error);
             return false;
-        });
-    }
-
-    function trackPendingChoiceWrite(session, choiceMeta, writePromise) {
-        return Promise.resolve(writePromise).then(function (result) {
-            if (result !== true || !session) return result;
-            var entry = getStoredDayEntry(session.day);
-            if (!entry || String(entry.sessionId || '') !== String(session.sessionId || '')) return result;
-            var remainingMetas = (Array.isArray(entry.choiceWriteMetas) ? entry.choiceWriteMetas : []).filter(function (storedMeta) {
-                return String(storedMeta && storedMeta.sessionId || '') !== String(session.sessionId || '')
-                    || Number(storedMeta && storedMeta.seq) !== Number(choiceMeta && choiceMeta.seq);
-            });
-            session.choiceWriteMetas = remainingMetas;
-            var settlementPatch = {
-                choiceWriteMetas: remainingMetas,
-                updatedAt: Date.now()
-            };
-            if (
-                choiceMeta && choiceMeta.handoff === true
-                && entry.terminalPending === true
-                && String(entry.terminalChoice || '') === String(choiceMeta.choice || '')
-            ) {
-                settlementPatch.terminalChoiceRecorded = true;
-            }
-            markDay(session.day, settlementPatch);
-            return result;
         });
     }
 
@@ -1654,7 +952,7 @@
         var targetSession = session || activeSession;
         return showIcebreakerAssistantFakeLoading(targetSession).then(function () {
             if (targetSession && activeSession !== targetSession) return null;
-            return appendChatMessage('assistant', text, meta, targetSession);
+            return appendChatMessage('assistant', text, meta);
         }).then(function (message) {
             if (targetSession && activeSession !== targetSession) return null;
             return message;
@@ -1665,122 +963,25 @@
         return !!message;
     }
 
-    function markPendingAssistantMessageDelivered(session, meta) {
-        if (!session || !meta) return;
-        var patch = { updatedAt: Date.now() };
-        if (meta.handoff === true) {
-            patch.terminalMessageDelivered = true;
-        } else if (meta.freeText === true && meta.fallback === 'release') {
-            patch.releaseMessageDelivered = true;
-        } else {
-            return;
-        }
-        markDay(session.day, patch);
-    }
-
-    function markPendingUserChoiceDelivered(session, meta) {
-        if (!session || !meta || meta.pendingUserChoice !== true) return;
-        var entry = getStoredDayEntry(session.day);
-        var pending = entry && entry.pendingUserChoice;
-        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
-        markDay(session.day, {
-            pendingUserChoice: Object.assign({}, pending, { messageDelivered: true }),
-            updatedAt: Date.now()
-        });
-    }
-
-    function clearPendingFreeText(session, requestId) {
-        if (!session) return;
-        var entry = getStoredDayEntry(session.day);
-        var pending = entry && entry.pendingFreeText;
-        if (!pending || String(pending.requestId || '') !== String(requestId || '')) return;
-        markDay(session.day, {
-            pendingFreeText: null,
-            updatedAt: Date.now()
-        });
-    }
-
-    function markPendingFreeTextDelivered(session, meta) {
-        if (!session || !meta || meta.pendingFreeText !== true) return;
-        var entry = getStoredDayEntry(session.day);
-        var pending = entry && entry.pendingFreeText;
-        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
-        markDay(session.day, {
-            pendingFreeText: Object.assign({}, pending, { messageDelivered: true }),
-            updatedAt: Date.now()
-        });
-    }
-
-    function markPendingFreeTextRecoveryDelivered(session, meta) {
-        if (!session || !meta || meta.pendingFreeTextRecovery !== true) return;
-        var entry = getStoredDayEntry(session.day);
-        var pending = entry && entry.pendingFreeText;
-        if (!pending || String(pending.requestId || '') !== String(meta.requestId || '')) return;
-        markDay(session.day, {
-            pendingFreeText: Object.assign({}, pending, { recoveryMessageDelivered: true }),
-            updatedAt: Date.now()
-        });
-    }
-
-    function markPendingNodeMessageDelivered(session, meta) {
-        if (!session || !meta || meta.pendingNode !== true) return;
-        var entry = getStoredDayEntry(session.day);
-        if (!entry || String(entry.pendingNodeId || '') !== String(meta.nodeId || '')) return;
-        markDay(session.day, {
-            pendingNodeMessageDelivered: true,
-            updatedAt: Date.now()
-        });
-    }
-
-    function appendChatMessage(role, text, meta, session) {
+    function appendChatMessage(role, text, meta) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
-        var targetSession = session || activeSession;
-        var broadcastMeta = Object.assign({}, meta || {});
-        delete broadcastMeta.signal;
-        delete broadcastMeta.preparedHeaders;
         var message = {
-            id: String(meta && meta.messageId || '') || makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
+            id: makeMessageId(role === 'user' ? 'icebreaker-user' : 'icebreaker-assistant'),
             role: role,
-            author: role === 'user' ? '你' : resolveAuthor(targetSession),
+            author: role === 'user' ? '你' : resolveAuthor(),
             time: '',
             createdAt: Date.now(),
             blocks: [{ type: 'text', text: messageText }],
             status: 'sent',
             sortKey: nextIcebreakerSortKey(),
-            avatarLabel: role === 'assistant' ? resolveAuthor(targetSession) : undefined,
+            avatarLabel: role === 'assistant' ? resolveAuthor() : undefined,
             avatarUrl: role === 'assistant' ? resolveAssistantAvatarUrl() : undefined,
             actions: undefined,
-            icebreaker: Object.assign({ source: SOURCE }, broadcastMeta)
+            icebreaker: Object.assign({ source: SOURCE }, meta || {})
         };
-        broadcastIcebreakerAppendMessage(message, targetSession);
-        var isPendingAssistantMessage = role === 'assistant' && targetSession && meta && (
-            meta.handoff === true || (meta.freeText === true && meta.fallback === 'release')
-        );
-        var isPendingUserChoice = role === 'user' && targetSession && meta && meta.pendingUserChoice === true;
-        var isPendingFreeText = role === 'user' && targetSession && meta && meta.pendingFreeText === true;
-        var isPendingFreeTextRecovery = role === 'assistant' && targetSession && meta
-            && meta.pendingFreeTextRecovery === true;
-        var isPendingNodeMessage = role === 'assistant' && targetSession && meta
-            && meta.pendingNode === true;
-        if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
-            // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
-            // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
-            markPendingAssistantMessageDelivered(targetSession, meta);
-        }
-        if (isPendingUserChoice && !shouldRenderIcebreakerOnLocalChatHost()) {
-            markPendingUserChoiceDelivered(targetSession, meta);
-        }
-        if (isPendingFreeText && !shouldRenderIcebreakerOnLocalChatHost()) {
-            markPendingFreeTextDelivered(targetSession, meta);
-        }
-        if (isPendingFreeTextRecovery && !shouldRenderIcebreakerOnLocalChatHost()) {
-            markPendingFreeTextRecoveryDelivered(targetSession, meta);
-        }
-        if (isPendingNodeMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
-            markPendingNodeMessageDelivered(targetSession, meta);
-        }
-        return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {
+        broadcastIcebreakerAppendMessage(message);
+        return appendLlmContext(role, messageText, meta || {}).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
                 // In desktop multi-window mode the standalone /chat page renders the
                 // bubble/caption, but the pet page remains the subtitle translation
@@ -1797,21 +998,6 @@
                 return host.appendMessage(message);
             }).then(function (result) {
                 if (!result) return result;
-                if (isPendingAssistantMessage) {
-                    markPendingAssistantMessageDelivered(targetSession, meta);
-                }
-                if (isPendingUserChoice) {
-                    markPendingUserChoiceDelivered(targetSession, meta);
-                }
-                if (isPendingFreeText) {
-                    markPendingFreeTextDelivered(targetSession, meta);
-                }
-                if (isPendingFreeTextRecovery) {
-                    markPendingFreeTextRecoveryDelivered(targetSession, meta);
-                }
-                if (isPendingNodeMessage) {
-                    markPendingNodeMessageDelivered(targetSession, meta);
-                }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
                     finalizeIcebreakerAssistantSubtitleTranslation(role, message);
@@ -1824,13 +1010,12 @@
         });
     }
 
-    function speakViaProjectTts(text, voiceKey, signal, session) {
+    function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
-        var targetSession = session || activeSession;
-        var sessionId = targetSession && targetSession.sessionId ? targetSession.sessionId : '';
+        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveSessionLanlanName(targetSession),
+            lanlan_name: resolveSessionLanlanName(activeSession),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -1842,7 +1027,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload(targetSession));
+        }, conversationLanguagePayload(activeSession));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -1864,41 +1049,39 @@
         });
     }
 
-    function waitForTtsRequest(text, voiceKey, session) {
+    function waitForTtsRequest(text, voiceKey) {
         return new Promise(function (resolve) {
             var settled = false;
             var controller = typeof AbortController === 'function' ? new AbortController() : null;
             var timeoutId = window.setTimeout(function () {
                 if (controller) controller.abort();
-                finish(false);
+                finish();
             }, TTS_REQUEST_MAX_WAIT_MS);
-            function finish(result) {
+            function finish() {
                 if (settled) return;
                 settled = true;
                 window.clearTimeout(timeoutId);
-                resolve(result === true);
+                resolve();
             }
             try {
                 Promise.resolve(
-                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined, session)
+                    speakViaProjectTts(text, voiceKey, controller ? controller.signal : undefined)
                 ).then(finish).catch(function () {
-                    finish(false);
+                    finish();
                 });
             } catch (error) {
                 console.warn('[NewUserIcebreaker] project TTS failed:', error);
-                finish(false);
+                finish();
             }
         });
     }
 
-    function speakLine(text, voiceKey, session) {
+    function speakLine(text, voiceKey) {
         var speechDurationPromise = new Promise(function (resolve) {
             window.setTimeout(resolve, estimateSpeechDurationMs(text));
         });
-        var ttsRequestPromise = waitForTtsRequest(text, voiceKey, session);
-        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function (results) {
-            return results[1] === true;
-        });
+        var ttsRequestPromise = waitForTtsRequest(text, voiceKey);
+        return Promise.all([speechDurationPromise, ttsRequestPromise]).then(function () {});
     }
 
     function applyAssistantTextEmotion(text) {
@@ -1966,25 +1149,6 @@
         if (freeTextState && typeof freeTextState.setDerailStreak === 'function') {
             freeTextState.setDerailStreak(session, nodeId, value);
         }
-        if (!session || !session.day || !nodeId) return;
-        var store = readStore();
-        var entry = store && store.days ? store.days[String(session.day)] : null;
-        var streaks = Object.assign({}, entry && entry.freeTextDerailStreaks || {});
-        streaks[String(nodeId)] = value ? 1 : 0;
-        markDay(session.day, {
-            freeTextDerailStreaks: streaks,
-            updatedAt: Date.now()
-        });
-    }
-
-    function hydrateFreeTextDerailState(session, entry) {
-        if (!freeTextState || typeof freeTextState.setDerailStreak !== 'function') return;
-        var streaks = entry && entry.freeTextDerailStreaks && typeof entry.freeTextDerailStreaks === 'object'
-            ? entry.freeTextDerailStreaks
-            : {};
-        Object.keys(streaks).forEach(function (nodeId) {
-            freeTextState.setDerailStreak(session, nodeId, Number(streaks[nodeId]) > 0 ? 1 : 0);
-        });
     }
 
     function postIcebreakerJson(path, body) {
@@ -2150,11 +1314,7 @@
 
     function isTutorialBlockingIcebreaker() {
         try {
-            if (
-                window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false
-                || window.isInTutorial
-                || window.isNekoHomeTutorialPending === true
-            ) return true;
+            if (window.isInTutorial || window.isNekoHomeTutorialPending === true) return true;
         } catch (_) {}
         try {
             var manager = window.universalTutorialManager;
@@ -2189,8 +1349,7 @@
         return appendAssistantChatMessage(text, {
             day: session.day,
             nodeId: nodeId,
-            voiceKey: node.voiceKey || '',
-            pendingNode: true
+            voiceKey: node.voiceKey || ''
         }, session).then(function (message) {
             if (activeSession !== session || session.nodeId !== nodeId) return false;
             if (!didAppendChatMessage(message)) {
@@ -2206,7 +1365,6 @@
                 sessionId: session.sessionId,
                 nodeId: nodeId,
                 pendingNodeId: '',
-                pendingNodeMessageDelivered: false,
                 updatedAt: Date.now()
             });
             applyAssistantTextEmotion(text);
@@ -2218,197 +1376,7 @@
         });
     }
 
-    function resumePendingNode(session, nodeId, messageDelivered) {
-        if (!messageDelivered) return deliverNode(nodeId);
-        var node = session && session.dayConfig && session.dayConfig.nodes
-            ? session.dayConfig.nodes[nodeId]
-            : null;
-        if (!node) return Promise.resolve(false);
-        var text = getText(session.localeData, node.lineKey);
-        return runBoundedRestoreContextOperation(function (headers, signal) {
-            return appendLlmContext('assistant', text, {
-                day: session.day,
-                nodeId: nodeId,
-                pendingNode: true,
-                preparedHeaders: headers,
-                signal: signal
-            }, session);
-        }, 'pending node context').then(function (appended) {
-            if (appended !== true || activeSession !== session) return false;
-            markDay(session.day, {
-                nodeId: nodeId,
-                pendingNodeId: '',
-                pendingNodeMessageDelivered: false,
-                updatedAt: Date.now()
-            });
-            return setChoicePrompt(node, session.localeData, 0).then(function () {
-                return true;
-            });
-        });
-    }
-
-    function waitForTerminalChoiceWrite(writePromise, controller) {
-        return new Promise(function (resolve) {
-            var settled = false;
-            var timeoutId = window.setTimeout(function () {
-                if (settled) return;
-                settled = true;
-                if (controller && typeof controller.abort === 'function') controller.abort();
-                console.warn('[NewUserIcebreaker] choice persistence timed out before handoff');
-                resolve(false);
-            }, TERMINAL_CHOICE_WRITE_MAX_WAIT_MS);
-            Promise.resolve(writePromise).then(function (result) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                resolve(result);
-            }).catch(function (error) {
-                if (settled) return;
-                settled = true;
-                window.clearTimeout(timeoutId);
-                console.warn('[NewUserIcebreaker] choice persistence failed before handoff:', error);
-                resolve(false);
-            });
-        });
-    }
-
-    function didAllChoiceWritesSucceed(results) {
-        return Array.isArray(results) && results.every(function (result) {
-            return result === true;
-        });
-    }
-
-    function completeHandoffRoute(session, day, nodeId, sessionId) {
-        return endIcebreakerRoute(session, 'icebreaker_handoff').then(function (routeEnded) {
-            if (!routeEnded) return false;
-            markDay(day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                terminalPending: false,
-                terminalChoiceRecorded: false,
-                terminalChoice: '',
-                terminalChoiceSeq: 0,
-                terminalMessageDelivered: false,
-                terminalSpeechDelivered: false,
-                choiceWriteMetas: [],
-                lanlanName: session.lanlanName,
-                sessionId: sessionId,
-                nodeId: nodeId,
-                pendingNodeId: '',
-                updatedAt: Date.now()
-            });
-            return true;
-        });
-    }
-
-    function finishActiveHandoff(session) {
-        if (activeSession === session) activeSession = null;
-        dispatchIcebreakerEnded('handoff');
-        return true;
-    }
-
-    function getStoredDayEntry(day) {
-        var store = readStore();
-        return store && store.days && store.days[String(day || '')];
-    }
-
-    function ensurePendingHandoffMessage(session, option, entry) {
-        var text = getText(session.localeData, option.handoffKey);
-        var messagePromise = entry && entry.terminalMessageDelivered === true
-            ? Promise.resolve(true)
-            : appendAssistantChatMessage(text, {
-                day: session.day,
-                nodeId: session.nodeId,
-                voiceKey: option.handoffVoiceKey || '',
-                handoff: true
-            }, session).then(function (message) {
-                if (!didAppendChatMessage(message)) return false;
-                clearChoicePrompt();
-                applyAssistantTextEmotion(text);
-                return true;
-            });
-        return messagePromise.then(function (messageDelivered) {
-            if (!messageDelivered) return false;
-            if (!text || (entry && entry.terminalSpeechDelivered === true)) return true;
-            return speakLine(text, option.handoffVoiceKey || '', session).then(function (spoken) {
-                if (!spoken) return false;
-                markDay(session.day, {
-                    terminalSpeechDelivered: true,
-                    updatedAt: Date.now()
-                });
-                return true;
-            });
-        });
-    }
-
-    function retryPendingHandoff(session, option, choice, label, choiceNodeId) {
-        if (!option || !option.handoffKey) return null;
-        var entry = getStoredDayEntry(session.day);
-        if (!entry
-                || entry.terminalPending !== true
-                || String(entry.sessionId || '') !== String(session.sessionId || '')
-                || String(entry.nodeId || '') !== String(choiceNodeId || '')) {
-            return null;
-        }
-        if (String(entry.terminalChoice || '') !== String(choice || '')) return Promise.resolve(false);
-        return ensurePendingHandoffMessage(session, option, entry).then(function (delivered) {
-            if (!delivered) return false;
-            if (entry.terminalChoiceRecorded === true && (!entry.choiceWriteMetas || !entry.choiceWriteMetas.length)) {
-                return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
-            }
-
-            // 同一 session/node/choice 的后端写入天然幂等。失败后重放本 session 的选择元数据，
-            // 已成功项会被去重，失败项得到补写；已经广播的 handoff 台词由持久化标记去重。
-            var retryMetas = (session.choiceWriteMetas || []).slice();
-            if (entry.terminalChoiceRecorded !== true && !retryMetas.some(function (meta) {
-                return meta && meta.handoff === true && String(meta.choice || '') === String(choice || '');
-            })) {
-                retryMetas.push({
-                    day: session.day,
-                    sessionId: session.sessionId,
-                    nodeId: choiceNodeId,
-                    choice: choice,
-                    label: label,
-                    handoff: true,
-                    completed: true,
-                    seq: Number(entry.terminalChoiceSeq) || (session.choiceSeq = (session.choiceSeq || 0) + 1)
-                });
-            }
-            session.choiceWriteMetas = retryMetas.slice();
-            markDay(session.day, {
-                choiceWriteMetas: session.choiceWriteMetas,
-                updatedAt: Date.now()
-            });
-            var retryWrites = retryMetas.map(function (meta) {
-                return trackPendingChoiceWrite(session, meta, recordChoiceToPool(meta));
-            });
-            return waitForTerminalChoiceWrite(Promise.all(retryWrites)).then(function (writeResults) {
-                if (!didAllChoiceWritesSucceed(writeResults)) return false;
-                markDay(session.day, {
-                    terminalChoiceRecorded: true,
-                    updatedAt: Date.now()
-                });
-                return completeHandoffRoute(session, session.day, choiceNodeId, session.sessionId);
-            });
-        }).then(function (completed) {
-            return completed ? finishActiveHandoff(session) : false;
-        });
-    }
-
-    function retryPendingUserChoice(session, choice, choiceNodeId) {
-        var entry = getStoredDayEntry(session.day);
-        var pending = entry && entry.pendingUserChoice;
-        if (!pending
-                || String(pending.sessionId || '') !== String(session.sessionId || '')
-                || String(pending.nodeId || '') !== String(choiceNodeId || '')) {
-            return null;
-        }
-        if (String(pending.choice || '') !== String(choice || '')) return Promise.resolve(false);
-        return resumePendingUserChoice(session, pending);
-    }
-
-    function completeWithHandoff(option, terminalChoiceWritePromise) {
+    function completeWithHandoff(option) {
         var session = activeSession;
         if (!session) return Promise.resolve(false);
         var text = getText(session.localeData, option.handoffKey);
@@ -2417,22 +1385,6 @@
         var sessionId = session.sessionId;
         var handoffSpeechPromise = Promise.resolve(false);
         var handoffDelivered = false;
-        markDay(day, {
-            started: true,
-            completed: false,
-            terminalPending: true,
-            terminalPendingAt: Date.now(),
-            terminalChoiceRecorded: false,
-            terminalChoice: String(option.id || ''),
-            terminalChoiceSeq: Number(session.choiceSeq) || 0,
-            terminalMessageDelivered: false,
-            terminalSpeechDelivered: false,
-            lanlanName: session.lanlanName,
-            sessionId: sessionId,
-            nodeId: nodeId,
-            pendingNodeId: '',
-            updatedAt: Date.now()
-        });
         return appendAssistantChatMessage(text, {
             day: day,
             nodeId: nodeId,
@@ -2441,54 +1393,48 @@
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return false;
             handoffDelivered = true;
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                lanlanName: session.lanlanName,
+                sessionId: sessionId,
+                nodeId: nodeId,
+                pendingNodeId: ''
+            });
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
-            handoffSpeechPromise = text ? speakLine(text, option.handoffVoiceKey || '', session).then(function (spoken) {
-                if (!spoken) return false;
-                markDay(day, {
-                    terminalSpeechDelivered: true,
-                    updatedAt: Date.now()
-                });
-                return true;
-            }) : Promise.resolve(true);
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
             // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
             // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
             var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
                 return Promise.resolve(p).catch(function () {});
             });
-            return waitForTerminalChoiceWrite(terminalChoiceWritePromise, session.terminalChoiceWriteController).then(function (recorded) {
-                if (recorded !== true) return false;
-                return waitForTerminalChoiceWrite(Promise.all(pendingWrites)).then(function (writeResults) {
-                    if (!didAllChoiceWritesSucceed(writeResults)) return false;
-                    markDay(day, {
-                        terminalChoiceRecorded: true,
-                        updatedAt: Date.now()
-                    });
-                    return Promise.resolve(handoffSpeechPromise).then(function (spoken) {
-                        return spoken ? completeHandoffRoute(session, day, nodeId, sessionId) : false;
-                    });
-                });
+            return Promise.all(pendingWrites).then(function () {
+                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            });
+        }).then(function () {
+            if (!handoffDelivered) return false;
+            return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
+                return true;
             });
         }).then(function (completed) {
-            if (!handoffDelivered) return false;
-            return completed;
-        }).then(function (completed) {
             if (!completed) return false;
-            return finishActiveHandoff(session);
+            if (activeSession === session) {
+                activeSession = null;
+            }
+            dispatchIcebreakerEnded('handoff');
+            return true;
         });
     }
 
     function advanceWithChoice(session, option, choice, label, choiceNodeId) {
         if (!session || activeSession !== session || !option) return Promise.resolve(null);
         var isHandoffChoice = !!option.handoffKey;
-        var terminalChoiceWriteController = isHandoffChoice && typeof AbortController === 'function'
-            ? new AbortController()
-            : null;
-        session.terminalChoiceWriteController = terminalChoiceWriteController;
         setFreeTextDerailStreak(session, choiceNodeId, 0);
         // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
         // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
-        var choiceMeta = {
+        var choiceWritePromise = recordChoiceToPool({
             day: session.day,
             sessionId: session.sessionId,
             nodeId: choiceNodeId,
@@ -2497,19 +1443,8 @@
             handoff: isHandoffChoice,
             completed: isHandoffChoice,
             seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
-        };
-        var choiceWritePromise = trackPendingChoiceWrite(session, choiceMeta, recordChoiceToPool(Object.assign({}, choiceMeta, {
-            signal: terminalChoiceWriteController ? terminalChoiceWriteController.signal : null
-        })));
-        (session.choiceWriteMetas || (session.choiceWriteMetas = [])).push(choiceMeta);
-        (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
-        markDay(session.day, {
-            choiceSeq: session.choiceSeq,
-            choiceWriteMetas: session.choiceWriteMetas,
-            pendingUserChoice: null,
-            pendingFreeText: null,
-            updatedAt: Date.now()
         });
+        (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
         if (option.next) {
             markDay(session.day, {
                 started: true,
@@ -2518,7 +1453,6 @@
                 sessionId: session.sessionId,
                 nodeId: choiceNodeId,
                 pendingNodeId: option.next,
-                pendingNodeMessageDelivered: false,
                 updatedAt: Date.now()
             });
             return deliverNode(option.next).then(function (delivered) {
@@ -2526,7 +1460,6 @@
                     markDay(session.day, {
                         nodeId: choiceNodeId,
                         pendingNodeId: '',
-                        pendingNodeMessageDelivered: false,
                         updatedAt: Date.now()
                     });
                 }
@@ -2534,7 +1467,7 @@
             });
         }
         if (option.handoffKey) {
-            return completeWithHandoff(option, choiceWritePromise);
+            return completeWithHandoff(option);
         }
         return Promise.resolve(false);
     }
@@ -2557,59 +1490,10 @@
         // 叶子节点的选项带 handoffKey（无 next）即这天的收尾选择；中间节点带 next。
         // 本次选择所属节点：deliverNode 之后 session.nodeId 会被改写，先快照下来。
         var choiceNodeId = session.nodeId;
-        var pendingUserChoiceRetry = retryPendingUserChoice(session, choice, choiceNodeId);
-        if (pendingUserChoiceRetry) {
-            pendingUserChoiceRetry.then(function (result) {
-                if (activeSession === session) {
-                    session.choiceInFlight = false;
-                    if (result === false) setChoicePrompt(node, session.localeData);
-                }
-            }).catch(function (error) {
-                console.warn('[NewUserIcebreaker] pending user choice retry failed:', error);
-                if (activeSession === session) {
-                    session.choiceInFlight = false;
-                    setChoicePrompt(node, session.localeData);
-                }
-            });
-            return;
-        }
-        var pendingHandoffRetry = retryPendingHandoff(session, option, choice, label, choiceNodeId);
-        if (pendingHandoffRetry) {
-            pendingHandoffRetry.then(function (result) {
-                if (activeSession === session) {
-                    session.choiceInFlight = false;
-                    if (result === false) setChoicePrompt(node, session.localeData);
-                }
-            }).catch(function (error) {
-                console.warn('[NewUserIcebreaker] terminal handoff retry failed:', error);
-                if (activeSession === session) {
-                    session.choiceInFlight = false;
-                    setChoicePrompt(node, session.localeData);
-                }
-            });
-            return;
-        }
-        var choiceContextRequestId = makeMessageId('icebreaker-choice-context');
-        var choiceMessageId = makeMessageId('icebreaker-user');
-        markDay(session.day, {
-            pendingUserChoice: {
-                sessionId: session.sessionId,
-                nodeId: choiceNodeId,
-                choice: choice,
-                label: label,
-                requestId: choiceContextRequestId,
-                messageId: choiceMessageId,
-                messageDelivered: false
-            },
-            updatedAt: Date.now()
-        });
         appendChatMessage('user', label, {
             day: session.day,
             nodeId: session.nodeId,
-            choice: choice,
-            requestId: choiceContextRequestId,
-            messageId: choiceMessageId,
-            pendingUserChoice: true
+            choice: choice
         }).then(function (message) {
             if (!message) {
                 if (activeSession === session) {
@@ -2705,24 +1589,6 @@
         if (decision.action === 'release') {
             var releaseText = decision.reply || getText(localeData, fallback.releaseKey);
             var releaseVoiceKey = fallback.releaseVoiceKey || '';
-            // 用户已明确退出后，先持久化不可恢复状态，再等待消息、语音与 route/end；
-            // managed rebuild 发生在任一 await 中都不会重新绑定旧选项。
-            markDay(day, {
-                started: true,
-                completed: false,
-                releasePending: true,
-                releaseText: releaseText,
-                releaseVoiceKey: releaseVoiceKey,
-                releaseRequestId: String(info.requestId || ''),
-                releaseMessageDelivered: false,
-                releaseSpeechDelivered: false,
-                pendingFreeText: null,
-                lanlanName: session.lanlanName,
-                sessionId: sessionId,
-                nodeId: nodeId,
-                pendingNodeId: '',
-                updatedAt: Date.now()
-            });
             recordFreeTextTurn(session, {
                 userText: info.userText,
                 action: 'release',
@@ -2748,13 +1614,7 @@
                 clearFreeTextRuntimeStateForSession(session);
                 return Promise.resolve().then(function () {
                     if (!releaseText) return null;
-                    return speakLine(releaseText, releaseVoiceKey, session).then(function (spoken) {
-                        if (!spoken) return;
-                        markDay(day, {
-                            releaseSpeechDelivered: true,
-                            updatedAt: Date.now()
-                        });
-                    });
+                    return speakLine(releaseText, releaseVoiceKey);
                 }).catch(function () {}).then(function () {
                     if (activeSession !== session) return false;
                     return endIcebreakerRoute(session, 'icebreaker_free_text_release');
@@ -2767,13 +1627,6 @@
                     completedAt: Date.now(),
                     sessionId: sessionId,
                     nodeId: nodeId,
-                    releasePending: false,
-                    releaseText: '',
-                    releaseVoiceKey: '',
-                    releaseRequestId: '',
-                    releaseMessageDelivered: false,
-                    releaseSpeechDelivered: false,
-                    pendingFreeText: null,
                     releasedByFreeText: true
                 });
                 if (activeSession === session) {
@@ -2786,10 +1639,7 @@
 
         var replyText = decision.reply || getText(localeData, fallback.redirectKey);
         if (!replyText) {
-            return currentNode ? setChoicePrompt(currentNode, localeData).then(function (result) {
-                clearPendingFreeText(session, info.requestId);
-                return result;
-            }) : Promise.resolve(null);
+            return currentNode ? setChoicePrompt(currentNode, localeData) : Promise.resolve(null);
         }
         recordFreeTextTurn(session, {
             userText: info.userText,
@@ -2802,9 +1652,7 @@
             nodeId: nodeId,
             fallback: 'respond_and_keep_options',
             freeText: true,
-            requestId: info.requestId || '',
-            messageId: info.recoveryMessageId || '',
-            pendingFreeTextRecovery: true
+            requestId: info.requestId || ''
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return null;
             if (decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL) {
@@ -2819,10 +1667,7 @@
                 ? session.dayConfig.nodes[nodeId]
                 : null;
             if (!currentNode) return null;
-            return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText)).then(function (result) {
-                clearPendingFreeText(session, info.requestId);
-                return result;
-            });
+            return setChoicePrompt(currentNode, localeData, computeChoicePromptRevealDelay(replyText));
         });
     }
 
@@ -2840,32 +1685,15 @@
         var sessionId = session.sessionId;
         var localeData = session.localeData;
         var fallback = (session.dayConfig && session.dayConfig.fallback) || {};
-        var requestId = detail.requestId || makeMessageId('icebreaker-free-text-request');
-        var userMessageId = detail.messageId || makeMessageId('icebreaker-user');
-        var recoveryMessageId = makeMessageId('icebreaker-assistant');
-        markDay(day, {
-            pendingFreeText: {
-                sessionId: sessionId,
-                nodeId: nodeId,
-                requestId: requestId,
-                messageId: userMessageId,
-                recoveryMessageId: recoveryMessageId,
-                messageDelivered: false,
-                recoveryMessageDelivered: false
-            },
-            updatedAt: Date.now()
-        });
+        var requestId = detail.requestId || '';
 
         return appendChatMessage('user', text, {
             day: day,
             nodeId: nodeId,
             freeText: true,
-            requestId: requestId,
-            messageId: userMessageId,
-            pendingFreeText: true
-        }, session).then(function (message) {
+            requestId: requestId
+        }).then(function (message) {
             if (!message) {
-                clearPendingFreeText(session, requestId);
                 if (activeSession === session) {
                     var restoreNode = session.dayConfig && session.dayConfig.nodes
                         ? session.dayConfig.nodes[nodeId]
@@ -2884,8 +1712,7 @@
                 localeData: localeData,
                 fallback: fallback,
                 userText: text,
-                requestId: requestId,
-                recoveryMessageId: recoveryMessageId
+                requestId: requestId
             }).catch(function (error) {
                 if (isIcebreakerRouteInactiveError(error)) {
                     throw error;
@@ -2903,8 +1730,7 @@
                     localeData: localeData,
                     fallback: fallback,
                     userText: text,
-                    requestId: requestId,
-                    recoveryMessageId: recoveryMessageId
+                    requestId: requestId
                 });
             });
         }).then(function (result) {
@@ -2914,7 +1740,6 @@
             return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] free-text handling failed:', error);
-            clearPendingFreeText(session, requestId);
             if (activeSession === session) {
                 session.freeTextInFlight = false;
                 if (isIcebreakerRouteInactiveError(error)) {
@@ -2942,7 +1767,6 @@
         var day = String(endState.day || '');
         if (!day || !scripts || !scripts.days || !scripts.days[day]) return false;
         if (isDayCompleted(day)) return false;
-        if (isDayReleasePending(day)) return false;
         return true;
     }
 
@@ -2988,7 +1812,6 @@
 
     function startForDay(day, options) {
         var force = !!(options && options.force);
-        if (force) restoreGeneration += 1;
         var dayKey = String(day || '');
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
         if (!force && restoreSessionPromise) {
@@ -3006,7 +1829,6 @@
             var dayConfig = scripts && scripts.days ? scripts.days[dayKey] : null;
             if (!dayConfig || !dayConfig.root || !dayConfig.nodes) return false;
             if (!force && isDayCompleted(dayKey)) return false;
-            if (!force && isDayReleasePending(dayKey)) return false;
             var nextSession = {
                 day: dayKey,
                 dayConfig: dayConfig,
@@ -3014,50 +1836,17 @@
                 nodeId: dayConfig.root,
                 // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
                 lanlanName: resolveLanlanName(),
-                sessionId: makeIcebreakerSessionId(dayKey),
-                choiceSeq: 0,
-                choiceWriteMetas: [],
-                pendingChoiceWrites: []
+                sessionId: makeIcebreakerSessionId(dayKey)
             };
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
                 clearPendingGuideEndStateDay(dayKey);
-                // route 激活成功后立即写入 root 身份；deliverNode 仍在等待 loading/context/host
-                // 时发生 managed rebuild，也能由 bootstrap 识别为未完成会话。
-                markDay(dayKey, {
-                    started: true,
-                    completed: false,
-                    lanlanName: nextSession.lanlanName,
-                    sessionId: nextSession.sessionId,
-                    nodeId: dayConfig.root,
-                    pendingNodeId: dayConfig.root,
-                    pendingNodeMessageDelivered: false,
-                    choiceSeq: 0,
-                    choiceWriteMetas: [],
-                    pendingUserChoice: null,
-                    pendingFreeText: null,
-                    terminalPending: false,
-                    terminalChoiceRecorded: false,
-                    terminalChoice: '',
-                    terminalChoiceSeq: 0,
-                    terminalMessageDelivered: false,
-                    terminalSpeechDelivered: false,
-                    releasePending: false,
-                    releaseSpeechDelivered: false,
-                    releasedByFreeText: false,
-                    freeTextDerailStreaks: {},
-                    updatedAt: Date.now()
-                });
                 return deliverNode(dayConfig.root).then(function (delivered) {
                     if (delivered) return true;
                     if (activeSession === nextSession) {
                         activeSession = null;
                     }
-                    markDay(dayKey, {
-                        started: false,
-                        updatedAt: Date.now()
-                    });
                     return endIcebreakerRoute(nextSession, 'icebreaker_start_append_failed').then(function () {
                         return false;
                     });
@@ -3108,26 +1897,7 @@
         if (!pendingGuideEndState) return Promise.resolve(true);
         if (dayKey && String(pendingGuideEndState.day || '') !== dayKey) return Promise.resolve(true);
         if (pendingGuideEndStartPromise) return pendingGuideEndStartPromise;
-        var restoreBeforeStartPromise = isManagedDesktopReload()
-            && hasIncompleteStoredSession(resolveLanlanName())
-            ? restoreInterruptedSession()
-            : Promise.resolve(false);
-        pendingGuideEndStartPromise = restoreBeforeStartPromise.then(function (restored) {
-            if (restored && restored.releaseCleanupCompleted === true) {
-                if (String(restored.day || '') === dayKey) {
-                    clearPendingGuideEndStateDay(dayKey);
-                    return true;
-                }
-                return startFromEndStateWhenTutorialIdle(endState);
-            }
-            if (restored) {
-                if (activeSession && String(activeSession.day || '') === dayKey) {
-                    clearPendingGuideEndStateDay(dayKey);
-                }
-                return true;
-            }
-            return startFromEndStateWhenTutorialIdle(endState);
-        }).then(function (started) {
+        pendingGuideEndStartPromise = startFromEndStateWhenTutorialIdle(endState).then(function (started) {
             if (!started) {
                 clearPendingGuideEndStateDay(pendingDay);
                 dispatchIcebreakerEnded('start_failed');
@@ -3199,14 +1969,11 @@
         // 不从「教程已经结束」的历史启动新破冰；只恢复本地明确保存为
         // started-but-incomplete 的破冰节点。旧 route 可能已被 pagehide 提前结束，
         // 因此它只用于优先匹配节点，不能作为是否恢复的硬前提。
-        if (!isManagedDesktopReload() || !hasIncompleteStoredSession(resolveLanlanName())) return false;
+        if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;
         return new Promise(function (resolve) {
             window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
         }).then(function waitForTutorialIdle() {
             if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();
-            // The storage/startup chooser is user-controlled and may legitimately remain
-            // open beyond the ordinary tutorial trigger window. Keep this one-shot restore
-            // alive until startup settles instead of abandoning the persisted session.
             return new Promise(function (resolve) {
                 window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
             }).then(waitForTutorialIdle);
@@ -3217,10 +1984,6 @@
     window.addEventListener('neko:tutorial-completed', handleGuideEndEvent);
     window.addEventListener('neko:day1-systray-intro-closed', function () {
         if (!pendingGuideEndState) return;
-        attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
-    });
-    window.addEventListener('neko:new-user-icebreaker-ended', function () {
-        if (!pendingGuideEndState || activeSession) return;
         attemptStartFromGuideEndState(pendingGuideEndState, String(pendingGuideEndState.day || ''));
     });
     window.addEventListener('pagehide', function () {
