@@ -37,6 +37,7 @@ function createResetHarness({
   hasReloadHandler = true,
   returnResult = true,
   temporaryReloadFails = false,
+  temporaryReloadResult = true,
   putOk = true,
   putData = { success: true },
 } = {}) {
@@ -51,7 +52,7 @@ function createResetHarness({
       if (options.temporaryConfig && temporaryReloadFails) {
         throw new Error('temporary_reload_failed');
       }
-      return true;
+      return options.temporaryConfig ? temporaryReloadResult : true;
     };
   }
   const window = {
@@ -443,6 +444,8 @@ test('default-model reset validates Live2D before persisting and restores on fai
   assert.match(resetSource, /if \(!returnedFromGoodbye\)/);
   assert.match(resetSource, /model_path: DEFAULT_LIVE2D_MODEL_PATH/);
   assert.match(resetSource, /skipIdleRestore: true/);
+  assert.match(resetSource, /if \(defaultReloadResult !== true\)/);
+  assert.match(resetSource, /apply_runtime: false/);
   assert.match(resetSource, /putData\.success !== true/);
   assert.match(resetSource, /if \(defaultReloadAttempted && !defaultPersisted && reloadModel\)/);
 });
@@ -459,6 +462,20 @@ test('default-model reset loads the built-in Live2D before persisting it', async
   const reload = harness.calls.find((call) => call.type === 'reload');
   assert.equal(reload.options.temporaryConfig.model_type, 'live2d');
   assert.equal(reload.options.temporaryConfig.model_path, '/static/yui-lolita/yui-lolita.model3.json');
+  const put = harness.calls.find((call) => call.type === 'put');
+  assert.equal(JSON.parse(put.options.body).apply_runtime, false);
+});
+
+test('default-model reset does not persist a superseded temporary reload', async () => {
+  const harness = createResetHarness({ temporaryReloadResult: false });
+  const result = await harness.window.runResetToDefaultModel();
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'default_model_reload_not_applied');
+  assert.deepEqual(
+    harness.calls.filter((call) => call.type !== 'toast').map((call) => call.type),
+    ['return', 'reload'],
+  );
 });
 
 test('default-model reset restores the persisted prior model when PUT reports failure', async () => {

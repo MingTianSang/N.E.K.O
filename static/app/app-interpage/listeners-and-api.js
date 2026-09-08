@@ -404,7 +404,7 @@
             // 先验证内置 Live2D 能在当前页面成功加载。临时配置不会改写服务端，
             // 因此加载或后续 PUT 失败时，仍可从 page_config 恢复原模型。
             defaultReloadAttempted = true;
-            await reloadModel(lanlanName, {
+            var defaultReloadResult = await reloadModel(lanlanName, {
                 temporaryConfig: {
                     success: true,
                     model_type: 'live2d',
@@ -416,6 +416,13 @@
                 suppressToast: true,
                 throwOnError: true
             });
+            if (defaultReloadResult !== true) {
+                // A queued reload can be displaced by a newer request and
+                // resolve false without throwing. It did not validate the
+                // default model, so it must not be persisted or rolled back.
+                defaultReloadAttempted = false;
+                throw new Error('default_model_reload_not_applied');
+            }
 
             // Persist the change so that future reloads keep the default avatar.
             var putUrl = '/api/characters/catgirl/l2d/' + encodeURIComponent(lanlanName);
@@ -425,7 +432,11 @@
                 body: JSON.stringify({
                     model_type: 'live2d',
                     live2d: DEFAULT_LIVE2D_MODEL_NAME,
-                    live2d_idle_animation: null
+                    live2d_idle_animation: null,
+                    // The frontend already loaded and validated the target.
+                    // Avoid a post-save init_one_catgirl failure being reported
+                    // after the persistent binding has already changed.
+                    apply_runtime: false
                 })
             });
             var putData = null;
