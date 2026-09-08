@@ -1047,6 +1047,7 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
     assert "if (!configReady || activeSession) return null;" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
+    assert "if (activeSession) return true;\n            if (!results)" in restore
     assert "var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;" in runtime
     assert "var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;" in runtime
     assert "loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);" in runtime
@@ -1218,8 +1219,9 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "author: role === 'user' ? '你' : resolveAuthor(targetSession)" in append_message
     assert append_message.index("broadcastIcebreakerAppendMessage(message, targetSession);") < append_message.index(
-        "pendingNodeId: ''"
+        "markPendingNodeMessageDelivered(targetSession, meta);"
     ) < append_message.index("return appendLlmContext(role, messageText, meta || {}, targetSession)")
+    assert "pendingNodeId: ''" not in append_message
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
@@ -1229,6 +1231,10 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
     assert "pendingNodeId: option.next" in runtime
     assert "snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]" in runtime
+    assert "snapshot.entry.pendingNodeMessageDelivered === true" in runtime
+    assert "function resumePendingNode(session, nodeId, messageDelivered)" in runtime
+    assert "pendingNodeMessageDelivered: true" in runtime
+    assert "pendingNodeMessageDelivered: false" in runtime
     handoff = runtime.split("function completeWithHandoff", 1)[1].split(
         "function advanceWithChoice",
         1,
@@ -1325,6 +1331,11 @@ def test_icebreaker_restore_preserves_session_identity_and_transition_state():
     assert "setFreeTextDerailStreak" not in pending_free_text_recovery
     assert "pending.recoveryMessageDelivered === true" in pending_free_text_recovery
     assert "pendingFreeTextRecovery: true" in pending_free_text_recovery
+    ordinary_free_text_reply = runtime.split("var replyText = decision.reply", 1)[1].split(
+        "function handleFreeText(detail)",
+        1,
+    )[0]
+    assert "pendingFreeTextRecovery: true" in ordinary_free_text_reply
     assert "function markPendingFreeTextRecoveryDelivered(session, meta)" in runtime
     pending_free_text_append = pending_free_text_recovery.split("appendAssistantChatMessage", 1)[1]
     assert "if (!result.delivered)" in pending_free_text_append

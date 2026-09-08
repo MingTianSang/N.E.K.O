@@ -1076,6 +1076,9 @@
                 });
             });
         }).then(function (results) {
+            // A user-forced start may have completed while route state or restore assets
+            // were loading. Do not let the stale continuation replace that fresh route.
+            if (activeSession) return true;
             if (!results) return !!activeSession;
             var routeResult = results[0];
             var scripts = results[1];
@@ -1188,7 +1191,11 @@
                     : restoredPendingFreeText
                     ? recoverPendingFreeText(session, restoredPendingFreeText)
                     : snapshot.pendingNodeId && session.dayConfig.nodes[snapshot.pendingNodeId]
-                    ? deliverNode(snapshot.pendingNodeId)
+                    ? resumePendingNode(
+                        session,
+                        snapshot.pendingNodeId,
+                        snapshot.entry.pendingNodeMessageDelivered === true
+                    )
                     : setChoicePrompt(
                         session.dayConfig.nodes[session.nodeId],
                         session.localeData,
@@ -1702,6 +1709,16 @@
         });
     }
 
+    function markPendingNodeMessageDelivered(session, meta) {
+        if (!session || !meta || meta.pendingNode !== true) return;
+        var entry = getStoredDayEntry(session.day);
+        if (!entry || String(entry.pendingNodeId || '') !== String(meta.nodeId || '')) return;
+        markDay(session.day, {
+            pendingNodeMessageDelivered: true,
+            updatedAt: Date.now()
+        });
+    }
+
     function appendChatMessage(role, text, meta, session) {
         var messageText = String(text || '').trim();
         if (!messageText) return Promise.resolve(null);
@@ -1731,6 +1748,8 @@
         var isPendingFreeText = role === 'user' && targetSession && meta && meta.pendingFreeText === true;
         var isPendingFreeTextRecovery = role === 'assistant' && targetSession && meta
             && meta.pendingFreeTextRecovery === true;
+        var isPendingNodeMessage = role === 'assistant' && targetSession && meta
+            && meta.pendingNode === true;
         if (isPendingAssistantMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
             // 广播与标记在同一同步调用栈内完成：重建若发生在广播前会补发台词，
             // 若发生在后续 /context 等待中则不会重复投递外置 chat 已接收的气泡。
@@ -1745,14 +1764,8 @@
         if (isPendingFreeTextRecovery && !shouldRenderIcebreakerOnLocalChatHost()) {
             markPendingFreeTextRecoveryDelivered(targetSession, meta);
         }
-        // 广播与 localStorage 更新都在同一同步调用栈完成：重建若发生在后续 /context
-        // await 中，恢复只重绑 prompt；若发生在广播前，pendingNodeId 仍会要求重新投递。
-        if (role === 'assistant' && targetSession && meta && meta.handoff !== true && meta.nodeId) {
-            markDay(targetSession.day, {
-                nodeId: String(meta.nodeId),
-                pendingNodeId: '',
-                updatedAt: Date.now()
-            });
+        if (isPendingNodeMessage && !shouldRenderIcebreakerOnLocalChatHost()) {
+            markPendingNodeMessageDelivered(targetSession, meta);
         }
         return appendLlmContext(role, messageText, meta || {}, targetSession).then(function () {
             if (!shouldRenderIcebreakerOnLocalChatHost()) {
@@ -1782,6 +1795,9 @@
                 }
                 if (isPendingFreeTextRecovery) {
                     markPendingFreeTextRecoveryDelivered(targetSession, meta);
+                }
+                if (isPendingNodeMessage) {
+                    markPendingNodeMessageDelivered(targetSession, meta);
                 }
                 return waitForIcebreakerChatHostMounted(chatHost).then(function () {
                     syncIcebreakerAssistantCompactCaption(role, message);
@@ -2160,7 +2176,8 @@
         return appendAssistantChatMessage(text, {
             day: session.day,
             nodeId: nodeId,
-            voiceKey: node.voiceKey || ''
+            voiceKey: node.voiceKey || '',
+            pendingNode: true
         }, session).then(function (message) {
             if (activeSession !== session || session.nodeId !== nodeId) return false;
             if (!didAppendChatMessage(message)) {
@@ -2176,12 +2193,42 @@
                 sessionId: session.sessionId,
                 nodeId: nodeId,
                 pendingNodeId: '',
+                pendingNodeMessageDelivered: false,
                 updatedAt: Date.now()
             });
             applyAssistantTextEmotion(text);
             speakLine(text, node.voiceKey || '');
             // 立刻下发 choicePrompt 绑定输入路由；按钮可见性由 host 按 revealDelayMs 延后。
             return setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text)).then(function () {
+                return true;
+            });
+        });
+    }
+
+    function resumePendingNode(session, nodeId, messageDelivered) {
+        if (!messageDelivered) return deliverNode(nodeId);
+        var node = session && session.dayConfig && session.dayConfig.nodes
+            ? session.dayConfig.nodes[nodeId]
+            : null;
+        if (!node) return Promise.resolve(false);
+        var text = getText(session.localeData, node.lineKey);
+        return runBoundedRestoreContextOperation(function (headers, signal) {
+            return appendLlmContext('assistant', text, {
+                day: session.day,
+                nodeId: nodeId,
+                pendingNode: true,
+                preparedHeaders: headers,
+                signal: signal
+            }, session);
+        }, 'pending node context').then(function (appended) {
+            if (appended !== true || activeSession !== session) return false;
+            markDay(session.day, {
+                nodeId: nodeId,
+                pendingNodeId: '',
+                pendingNodeMessageDelivered: false,
+                updatedAt: Date.now()
+            });
+            return setChoicePrompt(node, session.localeData, 0).then(function () {
                 return true;
             });
         });
@@ -2458,6 +2505,7 @@
                 sessionId: session.sessionId,
                 nodeId: choiceNodeId,
                 pendingNodeId: option.next,
+                pendingNodeMessageDelivered: false,
                 updatedAt: Date.now()
             });
             return deliverNode(option.next).then(function (delivered) {
@@ -2465,6 +2513,7 @@
                     markDay(session.day, {
                         nodeId: choiceNodeId,
                         pendingNodeId: '',
+                        pendingNodeMessageDelivered: false,
                         updatedAt: Date.now()
                     });
                 }
@@ -2741,7 +2790,8 @@
             fallback: 'respond_and_keep_options',
             freeText: true,
             requestId: info.requestId || '',
-            messageId: info.recoveryMessageId || ''
+            messageId: info.recoveryMessageId || '',
+            pendingFreeTextRecovery: true
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return null;
             if (decision.topicState === FREE_TEXT_TOPIC_SOFT_DERAIL) {
@@ -2966,6 +3016,7 @@
                     sessionId: nextSession.sessionId,
                     nodeId: dayConfig.root,
                     pendingNodeId: dayConfig.root,
+                    pendingNodeMessageDelivered: false,
                     choiceSeq: 0,
                     choiceWriteMetas: [],
                     pendingUserChoice: null,
