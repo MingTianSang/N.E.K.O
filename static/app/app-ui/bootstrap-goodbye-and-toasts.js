@@ -330,8 +330,25 @@ I.mod = window.appUi;
         }
     }
 
+    I.reapplyGoodbyeResourceSuspend = function reapplyGoodbyeResourceSuspend(previousSnapshot) {
+        const prior = previousSnapshot && typeof previousSnapshot === 'object'
+            ? previousSnapshot
+            : null;
+        const token = I.beginGoodbyeResourceSuspend({
+            activeModelType: prior && prior.activeModelType ? prior.activeModelType : ''
+        });
+        const snapshot = getGoodbyeResourceSnapshot();
+        if (snapshot && prior) {
+            snapshot.subtitleWindowWasVisible = !!prior.subtitleWindowWasVisible;
+            snapshot.agentHudWasVisible = !!prior.agentHudWasVisible;
+        }
+        I.completeGoodbyeResourceSuspend(token);
+        return token;
+    }
+
     I.mod.restoreGoodbyeResourceSuspend = I.restoreGoodbyeResourceSuspend;
     I.mod.completeGoodbyeResourceSuspend = I.completeGoodbyeResourceSuspend;
+    I.mod.reapplyGoodbyeResourceSuspend = I.reapplyGoodbyeResourceSuspend;
     window.addEventListener('neko:goodbye-state-cleared', (event) => {
         const detail = event && event.detail ? event.detail : {};
         const reason = detail.reason || 'goodbye-state-cleared';

@@ -16,6 +16,14 @@ const modelReloadSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/bootstrap-resources-and-model-reload.js'),
   'utf8',
 );
+const goodbyeResourceSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-ui/bootstrap-goodbye-and-toasts.js'),
+  'utf8',
+);
+const autoGoodbyeSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-auto-goodbye.js'),
+  'utf8',
+);
 const modelDisplaySource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
   'utf8',
@@ -406,6 +414,27 @@ test('the canonical return lifecycle serializes handlers and aborts a blocked vi
   assert.match(surfaceSource, /new CustomEvent\('neko:cat-return-abort'/);
 });
 
+test('a cancelled committed return restores the complete suspended goodbye state', () => {
+  const retryStart = surfaceSource.indexOf('function hideReturnedModelForRetry(goodbyeResourceSnapshot)');
+  const retryEnd = surfaceSource.indexOf('function restoreReturnBallAfterBlockedModelViewport', retryStart);
+  const retrySource = surfaceSource.slice(retryStart, retryEnd);
+  const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
+  const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
+  const handlerSource = surfaceSource.slice(handlerStart, handlerEnd);
+
+  assert.match(retrySource, /live2dManager\.setLocked\(true/);
+  assert.match(retrySource, /vrmManager\.core\.setLocked\(true\)/);
+  assert.match(retrySource, /mmdManager\.core\.setLocked\(true\)/);
+  assert.match(retrySource, /I\.reapplyGoodbyeResourceSuspend\(goodbyeResourceSnapshot\)/);
+  assert.match(handlerSource, /if \(returnStateCommitted\) \{\s*hideReturnedModelForRetry\(retryGoodbyeResourceSnapshot\)/);
+  assert.match(handlerSource, /reason: 'return-abort-rollback'/);
+  assert.match(goodbyeResourceSource, /I\.reapplyGoodbyeResourceSuspend = function reapplyGoodbyeResourceSuspend/);
+  assert.match(goodbyeResourceSource, /snapshot\.subtitleWindowWasVisible = !!prior\.subtitleWindowWasVisible/);
+  assert.match(goodbyeResourceSource, /snapshot\.agentHudWasVisible = !!prior\.agentHudWasVisible/);
+  assert.match(autoGoodbyeSource, /window\.addEventListener\('neko:cat-return-abort', handleReturnAbort\)/);
+  assert.match(autoGoodbyeSource, /syncGoodbyeSilentState\(true, 'return-abort'\)/);
+});
+
 test('default-model return skips restoring the model that is about to be replaced', () => {
   const handlerStart = surfaceSource.indexOf('const handleReturnClick = async (event) => {');
   const handlerEnd = surfaceSource.indexOf("window.addEventListener('live2d-return-click'", handlerStart);
@@ -433,7 +462,7 @@ test('position persistence cannot block return completion', () => {
   assert.match(returnTransitionsSource, /async function settleReturnedModelBounds\(shouldSaveWhenUnchanged, options = \{\}\)/);
   assert.match(returnTransitionsSource, /waitForReturnTransitionOperation\([\s\S]*?returnSignal/);
   assert.match(surfaceSource, /settleReturnedModelBounds\(returnModelWasMoved, \{[\s\S]*?signal: returnLifecycle\.signal/);
-  assert.match(surfaceSource, /if \(returnedModelShown\) hideReturnedModelForRetry\(\);/);
+  assert.match(surfaceSource, /if \(returnStateCommitted\) \{\s*hideReturnedModelForRetry\(retryGoodbyeResourceSnapshot\)/);
   assert.match(surfaceSource, /\['live2d', 'vrm', 'mmd', 'pngtuber'\]\.forEach/);
 });
 

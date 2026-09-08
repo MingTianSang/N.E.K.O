@@ -995,8 +995,14 @@
             });
             noteUserInteraction('return-click');
         };
+        const handleReturnAbort = () => {
+            if (!state.pendingReturnSnapshot || !isGoodbyeActive()) return;
+            state.pendingReturnSnapshot = null;
+            syncGoodbyeSilentState(true, 'return-abort');
+        };
         window.addEventListener('neko:cat-return-commit', handleReturnCommit);
         window.addEventListener('neko:cat-return-complete', handleReturnComplete);
+        window.addEventListener('neko:cat-return-abort', handleReturnAbort);
         window.addEventListener('neko:goodbye-state-cleared', () => {
             state.pendingReturnSnapshot = null;
         });

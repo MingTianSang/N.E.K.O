@@ -1016,8 +1016,10 @@ def test_model_cat_transition_contract_is_present():
     assert "if (!isCancelled() && shouldSaveWhenUnchanged && activeModelType)" in settle_block
     assert "signal: returnLifecycle.signal" in return_handler_full_block
     assert "if (modelBoundsSettled === false || returnLifecycle.cancelled)" in source
-    assert "function hideReturnedModelForRetry()" in source
-    assert "if (returnedModelShown) hideReturnedModelForRetry();" in source
+    assert "function hideReturnedModelForRetry(goodbyeResourceSnapshot)" in source
+    assert "if (returnStateCommitted) {" in source
+    assert "hideReturnedModelForRetry(retryGoodbyeResourceSnapshot);" in source
+    assert "reapplyGoodbyeResourceSuspend(goodbyeResourceSnapshot);" in source
     _assert_source_order(
         settle_block,
         "return settle waits for model enter animation before snap/save",

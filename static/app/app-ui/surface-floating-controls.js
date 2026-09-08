@@ -1597,7 +1597,7 @@
         }
     });
 
-        function hideReturnedModelForRetry() {
+        function hideReturnedModelForRetry(goodbyeResourceSnapshot) {
             [window.live2dManager, window.vrmManager, window.mmdManager].forEach((manager) => {
                 if (manager) manager._goodbyeClicked = true;
             });
@@ -1626,6 +1626,25 @@
                     control.style.setProperty('opacity', '0', 'important');
                 });
             });
+            if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
+                window.live2dManager.setLocked(true, { updateFloatingButtons: false });
+            }
+            if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
+                window.vrmManager.core.setLocked(true);
+            }
+            if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
+                window.mmdManager.core.setLocked(true);
+            }
+            if (goodbyeResourceSnapshot && goodbyeResourceSnapshot.activeModelType === 'mmd' && window.mmdManager) {
+                window.mmdManager.enablePhysics = false;
+            }
+            if (goodbyeResourceSnapshot && goodbyeResourceSnapshot.activeModelType === 'pngtuber'
+                && window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
+                window.pngtuberManager.setLocked(true, { updateFloatingButtons: false });
+            }
+            if (typeof I.reapplyGoodbyeResourceSuspend === 'function') {
+                I.reapplyGoodbyeResourceSuspend(goodbyeResourceSnapshot);
+            }
             window._nekoModelReturnEnterRect = null;
         }
 
@@ -1647,6 +1666,7 @@
                 }
             }
             I.revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
+            return container;
         }
 
         // 请她回来按钮（统一处理函数）
@@ -1667,10 +1687,24 @@
                 console.log('[App] 请她回来流程已在执行，忽略重复事件');
                 return;
             }
-            let returnedModelShown = false;
+            const retryGoodbyeResourceSnapshot = window.__nekoGoodbyeResourceSuspendSnapshot || null;
+            let returnStateCommitted = false;
             returnLifecycle.restoreRetryState = () => {
-                if (returnedModelShown) hideReturnedModelForRetry();
-                restoreReturnBallAfterBlockedModelViewport(event);
+                if (returnStateCommitted) {
+                    hideReturnedModelForRetry(retryGoodbyeResourceSnapshot);
+                }
+                const restoredReturnContainer = restoreReturnBallAfterBlockedModelViewport(event);
+                if (returnStateCommitted && restoredReturnContainer) {
+                    const restoredAppearance = I.getReturnButtonAppearance(restoredReturnContainer);
+                    I.publishCatLocalActive(
+                        restoredAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_CAT,
+                        {
+                            source: event && event.type ? event.type : 'return-click',
+                            reason: 'return-abort-rollback',
+                            appearance: restoredAppearance
+                        }
+                    );
+                }
             };
             let returnTerminalPublished = false;
             let returnAbortReason = 'return-incomplete';
@@ -1728,6 +1762,7 @@
                     live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;
                 }
             } catch (_) {}
+            returnStateCommitted = true;
             I.publishCatLocalActive(false, {
                 source: event && event.type ? event.type : 'return-click',
                 reason: 'return-commit',
@@ -1841,7 +1876,6 @@
                 if (modelDisplayReady === false) {
                     return;
                 }
-                returnedModelShown = true;
                 if (returnLifecycle.cancelled) {
                     returnAbortReason = 'return-lifecycle-cancelled';
                     return;
