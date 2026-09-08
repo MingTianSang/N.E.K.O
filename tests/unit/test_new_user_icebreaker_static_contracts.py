@@ -1047,7 +1047,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
     assert "if (!configReady || activeSession) return null;" in restore
     assert "loadIcebreakerRouteStateForRestore()" in restore
-    assert "if (activeSession) return true;\n            if (!results)" in restore
+    assert "var restoreGenerationAtStart = restoreGeneration;" in restore
+    assert "if (restoreGeneration !== restoreGenerationAtStart || activeSession) return !!activeSession;" in restore
     assert "var ROUTE_STATE_RESTORE_MAX_WAIT_MS = 3000;" in runtime
     assert "var ROUTE_STATE_RESTORE_MAX_ATTEMPTS = 3;" in runtime
     assert "loadIcebreakerRouteStateForRestore(attemptIndex + 1).then(resolve);" in runtime
@@ -1090,6 +1091,8 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )
     assert "preparedHeaders" in runtime
     assert "return activationPromise.then(function (started)" in restore
+    assert "icebreaker_restore_superseded" in restore
+    assert "if (force) restoreGeneration += 1;" in runtime
     assert restore.index("if (!started) return false;") < restore.index(
         "broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);"
     )

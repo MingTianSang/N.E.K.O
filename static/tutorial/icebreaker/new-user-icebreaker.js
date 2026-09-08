@@ -37,6 +37,7 @@
     var pendingGuideEndState = null;
     var pendingGuideEndStartPromise = null;
     var restoreSessionPromise = null;
+    var restoreGeneration = 0;
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -1069,6 +1070,7 @@
         if (!isManagedDesktopReload()) return Promise.resolve(false);
         if (activeSession) return Promise.resolve(true);
         if (restoreSessionPromise) return restoreSessionPromise;
+        var restoreGenerationAtStart = restoreGeneration;
         restoreSessionPromise = waitForStorageStartupDecisionForRestore().then(function (canContinue) {
             if (!canContinue || activeSession) return null;
             return waitForPageConfigForRestore().then(function (configReady) {
@@ -1084,7 +1086,7 @@
         }).then(function (results) {
             // A user-forced start may have completed while route state or restore assets
             // were loading. Do not let the stale continuation replace that fresh route.
-            if (activeSession) return true;
+            if (restoreGeneration !== restoreGenerationAtStart || activeSession) return !!activeSession;
             if (!results) return !!activeSession;
             var routeResult = results[0];
             var scripts = results[1];
@@ -1167,6 +1169,11 @@
                 : startIcebreakerRouteForRestore(session);
             return activationPromise.then(function (started) {
                 if (!started) return false;
+                if (restoreGeneration !== restoreGenerationAtStart || activeSession) {
+                    return endIcebreakerRoute(session, 'icebreaker_restore_superseded').then(function () {
+                        return false;
+                    });
+                }
                 if (!reuseActiveRoute) {
                     // 只有新 route 已确认激活后才清旧 prompt。瞬时启动失败时保留重放控件，
                     // 避免一次性 bootstrap 把用户留在没有选择入口的页面。
@@ -2981,6 +2988,7 @@
 
     function startForDay(day, options) {
         var force = !!(options && options.force);
+        if (force) restoreGeneration += 1;
         var dayKey = String(day || '');
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
         if (!force && restoreSessionPromise) {
