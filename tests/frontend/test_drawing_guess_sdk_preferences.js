@@ -20,6 +20,14 @@ function assertDeepEqual(actual, expected, message) {
   }
 }
 
+async function waitFor(predicate, message, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -221,6 +229,9 @@ function loadHarness() {
     flushSdkPreferenceChannel: flushSdkPreferenceChannel,
     hydrateSdkPreferenceChannel: hydrateSdkPreferenceChannel,
     hydrateSdkPreferences: hydrateSdkPreferences,
+    setPreferenceWriteRetryDelay: function (value) {
+      SDK_PREFERENCE_WRITE_RETRY_DELAY_MS = Number(value) || 1;
+    },
     saveModelViewSettings: saveModelViewSettings,
     saveColorHistory: saveColorHistory,
     configureSdkMemoryConsent: configureSdkMemoryConsent,
@@ -507,6 +518,101 @@ async function testPreferenceWritesAreSerializedAndCoalesceFinalSnapshot() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assertEqual(activeWrites, 0, 'the final write should settle cleanly');
   assertEqual(writes.length, 2, 'intermediate snapshots should not create extra writes');
+}
+
+async function testFailedPreferenceWriteRetriesWithoutAnotherEdit() {
+  const failures = [
+    function () { return Promise.reject(new Error('temporary_write_failure')); },
+    function () { return Promise.resolve({ ok: true, data: { ok: false, stored: false } }); },
+  ];
+  for (const failFirstWrite of failures) {
+    const harness = loadHarness();
+    const api = harness.api;
+    const writes = [];
+    const client = makeStorageClient({
+      get() { return Promise.resolve(storageResult(undefined, false)); },
+      set(key, value) {
+        writes.push({ key, value });
+        return writes.length === 1 ? failFirstWrite() : Promise.resolve(storedResult());
+      },
+    });
+    api.setPreferenceWriteRetryDelay(2);
+    api.state.sdkClient = client;
+    const channel = api.ensureSdkPreferenceChannels().colorHistory;
+    channel.hydrated = true;
+    api.state.colorHistory = ['#123456', '#abcdef'];
+
+    api.saveColorHistory();
+    await waitFor(
+      () => writes.length === 2 && !channel.inFlight && channel.writeFailures === 0,
+      'a transient write failure did not complete its retry',
+    );
+
+    assertEqual(writes.length, 2, 'a transient write failure should retry without another edit');
+    assertDeepEqual(writes[1].value, ['#123456', '#abcdef'],
+      'the retry should preserve the committed preference snapshot');
+    assertEqual(channel.dirty, false, 'a successful retry should clear the dirty preference state');
+    assertEqual(channel.writeFailures, 0, 'a successful retry should reset the failure budget');
+  }
+}
+
+async function testPreferenceWriteRetriesAreBoundedAndClientScoped() {
+  const boundedHarness = loadHarness();
+  const boundedApi = boundedHarness.api;
+  let attempts = 0;
+  const boundedClient = makeStorageClient({
+    get() { return Promise.resolve(storageResult(undefined, false)); },
+    set() {
+      attempts += 1;
+      return Promise.reject(new Error('persistent_write_failure'));
+    },
+  });
+  boundedApi.setPreferenceWriteRetryDelay(2);
+  boundedApi.state.sdkClient = boundedClient;
+  const boundedChannel = boundedApi.ensureSdkPreferenceChannels().colorHistory;
+  boundedChannel.hydrated = true;
+  boundedApi.state.colorHistory = ['#654321'];
+
+  boundedApi.saveColorHistory();
+  await waitFor(
+    () => attempts === 3 && !boundedChannel.inFlight && !boundedChannel.writeRetryTimer,
+    'persistent preference failures did not exhaust the bounded retry budget',
+  );
+  assertEqual(attempts, 3, 'a persistent write failure should consume only the bounded attempts');
+  assertEqual(boundedChannel.writeFailures, 3,
+    'a persistent write failure did not stop at the configured attempt budget');
+  assertEqual(boundedChannel.dirty, true, 'an exhausted write must remain dirty in memory');
+  assertEqual(boundedChannel.writeRetryTimer, null, 'an exhausted write must not leave a retry timer');
+
+  const disposedHarness = loadHarness();
+  const disposedApi = disposedHarness.api;
+  let disposedAttempts = 0;
+  const disposedClient = makeStorageClient({
+    get() { return Promise.resolve(storageResult(undefined, false)); },
+    set() {
+      disposedAttempts += 1;
+      return Promise.reject(new Error('write_failed_before_dispose'));
+    },
+  });
+  disposedApi.setPreferenceWriteRetryDelay(100);
+  disposedApi.state.sdkClient = disposedClient;
+  const disposedChannel = disposedApi.ensureSdkPreferenceChannels().colorHistory;
+  disposedChannel.hydrated = true;
+  disposedApi.state.colorHistory = ['#abcdef'];
+
+  disposedApi.saveColorHistory();
+  await waitFor(
+    () => Boolean(disposedChannel.writeRetryTimer),
+    'the transient failure did not schedule a retry before the client was disposed',
+  );
+  assert(disposedChannel.writeRetryTimer,
+    'the transient failure did not schedule a retry before the client was disposed');
+  disposedClient.disposed = true;
+  await waitFor(
+    () => disposedChannel.writeRetryTimer === null,
+    'the disposed client retry timer did not settle',
+  );
+  assertEqual(disposedAttempts, 1, 'a disposed SDK client performed a preference retry');
 }
 
 async function testUnavailableStorageNeverFallsBackToRawLocalStorage() {
@@ -1226,6 +1332,8 @@ async function main() {
   await testCommittedWriteWaitsForHydrationBeforePersisting();
   await testFailedHydrationRetriesBeforeMergingAndWriting();
   await testPreferenceWritesAreSerializedAndCoalesceFinalSnapshot();
+  await testFailedPreferenceWriteRetriesWithoutAnotherEdit();
+  await testPreferenceWriteRetriesAreBoundedAndClientScoped();
   await testUnavailableStorageNeverFallsBackToRawLocalStorage();
   await testMemoryConsentUsesSdkAndRejectsLockedMismatch();
   await testPlayerTextCommandsStaySerialized();

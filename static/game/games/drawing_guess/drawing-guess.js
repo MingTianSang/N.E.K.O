@@ -90,6 +90,8 @@
   var MODEL_VIEW_SETTINGS_MAX_COUNT = 32;
   var SDK_PREFERENCE_HYDRATION_MAX_ATTEMPTS = 3;
   var SDK_PREFERENCE_HYDRATION_RETRY_DELAY_MS = 160;
+  var SDK_PREFERENCE_WRITE_MAX_ATTEMPTS = 3;
+  var SDK_PREFERENCE_WRITE_RETRY_DELAY_MS = 160;
   var SDK_ROUTE_CANVAS_DATA_MAX_CHARS = 200 * 1024;
   var boot = window.__DRAWING_GUESS_BOOT__ || {};
 
@@ -407,6 +409,8 @@
       hydrationPromise: null,
       hydrationFailures: 0,
       retryTimer: null,
+      writeFailures: 0,
+      writeRetryTimer: null,
       dirty: false,
       inFlight: false
     };
@@ -465,16 +469,30 @@
     if (!client) return Promise.resolve(false);
     var targetRevision = channel.revision;
     var snapshot = channel.snapshot();
+    if (channel.writeRetryTimer) {
+      clearTimeout(channel.writeRetryTimer);
+      channel.writeRetryTimer = null;
+    }
     channel.dirty = false;
     channel.inFlight = true;
-    return client.storage.set(channel.key, snapshot, { timeoutMs: 8000 }).then(function (response) {
+    var writeFailed = false;
+    var storageWrite;
+    try {
+      storageWrite = client.storage.set(channel.key, snapshot, { timeoutMs: 8000 });
+    } catch (error) {
+      storageWrite = Promise.reject(error);
+    }
+    return Promise.resolve(storageWrite).then(function (response) {
       var data = response && response.data && typeof response.data === 'object' ? response.data : {};
       if (!response || response.ok === false || data.ok === false || data.stored === false) {
+        writeFailed = true;
         channel.dirty = true;
         return false;
       }
+      channel.writeFailures = 0;
       return true;
     }).catch(function () {
+      writeFailed = true;
       channel.dirty = true;
       return false;
     }).finally(function () {
@@ -483,6 +501,19 @@
       if (channel.revision !== targetRevision) {
         channel.dirty = true;
         flushSdkPreferenceChannel(channel);
+        return;
+      }
+      if (writeFailed && channel.dirty) {
+        channel.writeFailures += 1;
+        if (channel.writeFailures < SDK_PREFERENCE_WRITE_MAX_ATTEMPTS
+            && !channel.writeRetryTimer) {
+          channel.writeRetryTimer = setTimeout(function () {
+            channel.writeRetryTimer = null;
+            if (state.sdkClient !== client || client.disposed || !channel.hydrated
+                || !channel.dirty || channel.revision !== targetRevision) return;
+            flushSdkPreferenceChannel(channel);
+          }, SDK_PREFERENCE_WRITE_RETRY_DELAY_MS * channel.writeFailures);
+        }
       }
     });
   }
@@ -490,6 +521,11 @@
   function queueSdkPreferenceWrite(name) {
     var channel = ensureSdkPreferenceChannels()[name];
     if (!channel) return;
+    if (channel.writeRetryTimer) {
+      clearTimeout(channel.writeRetryTimer);
+      channel.writeRetryTimer = null;
+    }
+    channel.writeFailures = 0;
     channel.revision += 1;
     channel.dirty = true;
     var client = sdkStorageClient();

@@ -59,6 +59,9 @@ async function main() {
   const activeIntervals = new Set();
   const activeTimeouts = new Set();
   const disposeGates = { vrm: null, mmd: null, pngtuber: null };
+  let nextMmdAnimationFailure = null;
+  let nextMmdAnimationGate = null;
+  let onNextMmdAnimationLoad = null;
   let live2dManagersCreated = 0;
 
   async function recordRendererDispose(kind) {
@@ -177,6 +180,19 @@ async function main() {
     }
     async init() { calls.push(['mmd-init']); }
     async loadModel(model) { this.currentModel = {}; calls.push(['mmd-model', model]); }
+    async loadAnimation(animation) {
+      calls.push(['mmd-idle-load', animation]);
+      const failure = nextMmdAnimationFailure;
+      nextMmdAnimationFailure = null;
+      const gate = nextMmdAnimationGate;
+      nextMmdAnimationGate = null;
+      const notify = onNextMmdAnimationLoad;
+      onNextMmdAnimationLoad = null;
+      notify?.();
+      if (gate) await gate;
+      if (failure) throw failure;
+    }
+    playAnimation(mode) { calls.push(['mmd-idle-play', mode]); }
     onWindowResize() { calls.push(['mmd-resize']); }
     setEmotion(mood) { calls.push(['mmd-emotion', mood]); }
     pauseRendering() { calls.push(['mmd-pause']); }
@@ -205,7 +221,16 @@ async function main() {
       _reserved: { avatar: { model_type: 'live3d', live3d_sub_type: 'vrm', vrm: { model_path: 'avatar.vrm' } } },
     },
     'MMD Neko': {
-      _reserved: { avatar: { model_type: 'live3d', live3d_sub_type: 'mmd', mmd: { model_path: 'avatar.pmx' } } },
+      _reserved: {
+        avatar: {
+          model_type: 'live3d',
+          live3d_sub_type: 'mmd',
+          mmd: {
+            model_path: 'avatar.pmx',
+            idle_animation: ['/animations/mmd-idle.vmd', '/animations/mmd-idle-2.vmd'],
+          },
+        },
+      },
     },
     'PNG Neko': {
       _reserved: {
@@ -331,6 +356,10 @@ async function main() {
   ]) {
     const descriptor = name === 'Live Neko' ? current : await host.getCharacter(name);
     assert(descriptor?.model?.type === expectedType, `${expectedType} descriptor was not normalized`);
+    if (name === 'MMD Neko') {
+      assert(JSON.stringify(descriptor).includes('mmd-idle') === false,
+        'private MMD motion paths crossed the public Avatar descriptor boundary');
+    }
     descriptors.set(name, descriptor);
   }
 
@@ -396,6 +425,16 @@ async function main() {
     && calls.some((entry) => entry[0] === 'mmd-model')
     && calls.some((entry) => entry[0] === 'pngtuber-model'),
   'the four Avatar renderer types did not follow symmetric host-owned loading paths');
+  const firstMmdModel = calls.findIndex((entry) => entry[0] === 'mmd-model');
+  const firstMmdIdleLoad = calls.findIndex((entry) => entry[0] === 'mmd-idle-load');
+  const firstMmdIdlePlay = calls.findIndex((entry) => entry[0] === 'mmd-idle-play');
+  assert(firstMmdModel >= 0 && firstMmdModel < firstMmdIdleLoad
+    && firstMmdIdleLoad < firstMmdIdlePlay
+    && calls[firstMmdIdleLoad][1] === '/animations/mmd-idle.vmd'
+    && calls[firstMmdIdlePlay][1] === 'idle'
+    && !calls.some((entry) => entry[0] === 'mmd-idle-load'
+      && entry[1] === '/animations/mmd-idle-2.vmd'),
+  'MMD did not load and play the first configured idle motion after its model');
   assert(calls.some((entry) => entry[0] === 'live2d-mouth')
     && calls.some((entry) => entry[0] === 'vrm-speaking' && entry[1] === true)
     && calls.some((entry) => entry[0] === 'mmd-speaking' && entry[1] === true)
@@ -429,6 +468,48 @@ async function main() {
     && calls.some((entry) => entry[0] === 'live2d-model-dispose')
     && calls.some((entry) => entry[0] === 'live2d-pixi-dispose' && entry[1] === false),
   'Live2D disposal did not retire the model and PIXI runtime while preserving the host canvas');
+
+  const mmdDescriptor = descriptors.get('MMD Neko');
+  const rejectedMotionDisposalsBefore = calls.filter(
+    (entry) => entry[0] === 'mmd-dispose-start'
+  ).length;
+  const rejectedMotionPlaysBefore = calls.filter((entry) => entry[0] === 'mmd-idle-play').length;
+  nextMmdAnimationFailure = new Error('broken_optional_motion');
+  const resilientMmd = await host.mount(mountConfig('MMD Neko', mmdDescriptor.model));
+  assert(resilientMmd.getState().ready === true,
+    'a rejected optional MMD idle motion prevented the model from becoming ready');
+  assert(calls.filter((entry) => entry[0] === 'mmd-dispose-start').length
+    === rejectedMotionDisposalsBefore,
+  'a rejected optional MMD idle motion disposed a usable model');
+  assert(calls.filter((entry) => entry[0] === 'mmd-idle-play').length
+    === rejectedMotionPlaysBefore,
+  'a rejected MMD idle motion was played');
+  resilientMmd.dispose();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const staleMmd = await host.mount(mountConfig('MMD Neko', mmdDescriptor.model));
+  const staleMotionPlaysBefore = calls.filter((entry) => entry[0] === 'mmd-idle-play').length;
+  let releaseMmdAnimation;
+  nextMmdAnimationGate = new Promise((resolve) => { releaseMmdAnimation = resolve; });
+  const mmdAnimationStarted = new Promise((resolve) => { onNextMmdAnimationLoad = resolve; });
+  const staleMmdReload = staleMmd.setModel(mmdDescriptor.model);
+  await mmdAnimationStarted;
+  const staleMotionDisposalsBefore = calls.filter(
+    (entry) => entry[0] === 'mmd-dispose-start'
+  ).length;
+  staleMmd.dispose();
+  const staleMmdError = await rejection(staleMmdReload);
+  assert(staleMmdError?.code === 'disposed',
+    'disposing during a pending MMD motion did not cancel the stale model load');
+  assert(calls.filter((entry) => entry[0] === 'mmd-dispose-start').length
+    === staleMotionDisposalsBefore + 1,
+  'the MMD manager waiting on an idle motion was not disposed');
+  releaseMmdAnimation();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert(calls.filter((entry) => entry[0] === 'mmd-idle-play').length
+    === staleMotionPlaysBefore,
+  'a stale MMD manager played its idle motion after disposal');
 
   const replacementSequenceStart = calls.length;
   let releaseVrmDisposal;

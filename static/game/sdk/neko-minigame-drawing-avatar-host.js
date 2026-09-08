@@ -131,6 +131,14 @@
     const paths = { live2d: live2dPath, vrm: vrmPath, mmd: mmdPath, pngtuber: pngPath };
     if (effective === 'vrm' && !paths.vrm) paths.vrm = '/static/vrm/sister1.0.vrm';
     if (effective === 'mmd' && !paths.mmd) paths.mmd = '/static/mmd/Miku/Miku.pmx';
+    const rawMmdIdleAnimations = mmd.idle_animation
+      ?? character?.mmd_idle_animations
+      ?? character?.mmd_idle_animation;
+    const mmdIdleAnimations = (Array.isArray(rawMmdIdleAnimations)
+      ? rawMmdIdleAnimations : [rawMmdIdleAnimations])
+      .slice(0, 16)
+      .map((item) => cleanString(item))
+      .filter(Boolean);
     return {
       name,
       type: effective,
@@ -140,6 +148,7 @@
       idleAnimation: cleanString(character?.idleAnimation),
       idleAnimations: Object.freeze((Array.isArray(character?.idleAnimations)
         ? character.idleAnimations : []).slice(0, 16).map((item) => cleanString(item)).filter(Boolean)),
+      mmdIdleAnimations: Object.freeze(mmdIdleAnimations),
     };
   }
 
@@ -595,7 +604,7 @@
         await retireIfStale(manager, 'vrm', generation);
       }
 
-      async function loadMmd(model, generation) {
+      async function loadMmd(model, descriptor, generation) {
         await waitForRuntime(
           () => Boolean(windowImpl.mmdModuleLoaded) && typeof windowImpl.MMDManager === 'function',
           'mmd-modules-ready', 'mmd-modules-failed', 'mmd', signal,
@@ -617,6 +626,19 @@
         suppressChrome(manager);
         await manager.loadModel(path, {});
         await retireIfStale(manager, 'mmd', generation);
+        const idleAnimation = descriptor?.mmdIdleAnimations?.[0];
+        if (idleAnimation && typeof manager.loadAnimation === 'function') {
+          try {
+            await manager.loadAnimation(idleAnimation);
+            await retireIfStale(manager, 'mmd', generation);
+            manager.playAnimation?.('idle');
+          } catch (error) {
+            // A missing/broken optional motion must not discard a usable model.
+            // Cancellation is different: retireIfStale disposes and rethrows it.
+            await retireIfStale(manager, 'mmd', generation);
+            windowImpl.console?.warn?.('[Drawing Avatar] MMD idle animation failed:', error);
+          }
+        }
       }
 
       async function loadPngtuber(model, descriptor, generation) {
@@ -663,7 +685,7 @@
         try {
           if (type === 'live2d') await loadLive2D(state.model, generation);
           else if (type === 'vrm') await loadVrm(state.model, state.descriptor, generation);
-          else if (type === 'mmd') await loadMmd(state.model, generation);
+          else if (type === 'mmd') await loadMmd(state.model, state.descriptor, generation);
           else await loadPngtuber(state.model, state.descriptor, generation);
           ensureLoadActive(generation);
           state.ready = true;
