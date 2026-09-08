@@ -10,6 +10,8 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var RESTORE_READ_TIMEOUT_MS = 12000;
+    var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -81,6 +83,30 @@
         return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
+        });
+    }
+
+    function waitForRestoreRead(promise, fallback, label) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                console.warn('[NewUserIcebreaker] restore read timed out:', label);
+                resolve(fallback);
+            }, RESTORE_READ_TIMEOUT_MS);
+            Promise.resolve(promise).then(function (value) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(value);
+            }, function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] restore read failed:', label, error);
+                resolve(fallback);
+            });
         });
     }
 
@@ -200,6 +226,9 @@
         return postIcebreakerRoute('/route/end', session, {
             reason: reason || 'icebreaker_complete',
             postgameProactive: { enabled: false }
+        }).then(function (ended) {
+            if (!ended) session.routeEnded = false;
+            return ended;
         });
     }
 
@@ -376,28 +405,27 @@
         return resolveLanlanName() || 'N.E.K.O';
     }
 
-    function loadIcebreakerRouteStateForRestore() {
-        var lanlanName = resolveLanlanName();
+    function loadIcebreakerRouteStateForRestore(lanlanName) {
         var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
-        return fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
+        var statePromise = fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
             return {
                 loaded: !!(data && data.ok === true),
                 state: data && data.ok === true && data.state && typeof data.state === 'object'
                     ? data.state
                     : null
             };
-        }).catch(function (error) {
-            console.warn('[NewUserIcebreaker] route restore state failed:', error);
-            return { loaded: false, state: null };
         });
+        return waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state');
     }
 
     function waitForPageConfigForRestore() {
         var ready = window.pageConfigReady;
-        if (!ready || typeof ready.then !== 'function') return Promise.resolve();
-        return Promise.resolve(ready).catch(function (error) {
-            console.warn('[NewUserIcebreaker] page config wait failed:', error);
-        });
+        if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
+        return waitForRestoreRead(
+            Promise.resolve(ready).then(function () { return true; }),
+            false,
+            'page config'
+        );
     }
 
     function waitForStorageStartupDecisionForRestore() {
@@ -429,18 +457,26 @@
             var dayConfig = scripts && scripts.days ? scripts.days[day] : null;
             var nodeId = String((entry && entry.nodeId) || '');
             var entryLanlanName = String((entry && entry.lanlanName) || '');
+            var updatedAt = Number((entry && entry.updatedAt) || 0);
             if (!entry || entry.started !== true || entry.completed === true) return;
             if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
             if (entryLanlanName !== currentLanlanName) return;
+            var matchesActiveRoute = routeActive
+                && !!routeSessionId
+                && String(entry.sessionId || '') === routeSessionId;
+            if (routeActive && !matchesActiveRoute) return;
+            if (!matchesActiveRoute && (
+                !Number.isFinite(updatedAt)
+                || updatedAt <= 0
+                || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS
+            )) return;
             var candidate = {
                 day: day,
                 dayConfig: dayConfig,
                 entry: entry,
                 nodeId: nodeId,
                 pendingNodeId: String(entry.pendingNodeId || ''),
-                matchesActiveRoute: routeActive
-                    && !!routeSessionId
-                    && String(entry.sessionId || '') === routeSessionId
+                matchesActiveRoute: matchesActiveRoute
             };
             if (
                 !best
@@ -456,9 +492,10 @@
         return best;
     }
 
-    function hasIncompleteStoredSession() {
+    function hasIncompleteStoredSession(lanlanName) {
         var store = readStore();
         var days = store && store.days && typeof store.days === 'object' ? store.days : {};
+        var expectedLanlanName = String(lanlanName || '');
         return Object.keys(days).some(function (day) {
             var entry = days[day];
             return !!(
@@ -467,6 +504,7 @@
                 && entry.completed !== true
                 && entry.sessionId
                 && entry.nodeId
+                && (!expectedLanlanName || String(entry.lanlanName || '') === expectedLanlanName)
             );
         });
     }
@@ -478,16 +516,11 @@
     function discardUnrestorableRoute(routeState, reason) {
         var state = routeState && typeof routeState === 'object' ? routeState : {};
         var lanlanName = String(state.lanlan_name || resolveLanlanName() || '');
+        // An active route without a matching local snapshot may belong to a newer
+        // renderer. Its ownership cannot be proven here, so do not clear or end it.
+        if (state.icebreaker_active === true) return Promise.resolve(false);
         broadcastIcebreakerClearChoicePromptSource(SOURCE, reason || 'icebreaker_restore_unavailable', lanlanName);
-        if (state.icebreaker_active !== true || !state.session_id || !lanlanName) {
-            return Promise.resolve(false);
-        }
-        return endIcebreakerRoute({
-            sessionId: String(state.session_id),
-            lanlanName: lanlanName
-        }, reason || 'icebreaker_restore_unavailable').then(function () {
-            return false;
-        });
+        return Promise.resolve(false);
     }
 
     function restoreInterruptedSession() {
@@ -496,19 +529,22 @@
         if (restoreSessionPromise) return restoreSessionPromise;
         restoreSessionPromise = waitForStorageStartupDecisionForRestore().then(function (canContinue) {
             if (!canContinue || activeSession) return null;
-            return waitForPageConfigForRestore().then(function () {
-                if (activeSession) return null;
+            return waitForPageConfigForRestore().then(function (configReady) {
+                if (!configReady || activeSession) return null;
+                var configuredLanlanName = resolveLanlanName();
+                if (!configuredLanlanName || !hasIncompleteStoredSession(configuredLanlanName)) return null;
                 return Promise.all([
-                    loadIcebreakerRouteStateForRestore(),
-                    loadScripts(),
-                    loadLocale(currentLocale())
+                    loadIcebreakerRouteStateForRestore(configuredLanlanName),
+                    waitForRestoreRead(loadScripts(), null, 'scripts'),
+                    waitForRestoreRead(loadLocale(currentLocale()), null, 'locale')
                 ]);
             });
         }).then(function (results) {
             if (!results) return !!activeSession;
             var routeResult = results[0];
             var scripts = results[1];
-            var localeData = results[2] || {};
+            var localeData = results[2];
+            if (!routeResult.loaded || !scripts || !localeData) return false;
             var configuredLanlanName = resolveLanlanName();
             var restoreLanlanName = String(
                 configuredLanlanName || (routeResult.state && routeResult.state.lanlan_name) || ''
@@ -1314,6 +1350,7 @@
 
     function isTutorialBlockingIcebreaker() {
         try {
+            if (window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false) return true;
             if (window.isInTutorial || window.isNekoHomeTutorialPending === true) return true;
         } catch (_) {}
         try {
@@ -1393,6 +1430,20 @@
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return false;
             handoffDelivered = true;
+            clearChoicePrompt();
+            applyAssistantTextEmotion(text);
+            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
+            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
+            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
+            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
+                return Promise.resolve(p).catch(function () { return false; });
+            });
+            return Promise.all(pendingWrites).then(function (results) {
+                if (!results.every(function (result) { return result === true; })) return false;
+                return endIcebreakerRoute(session, 'icebreaker_handoff');
+            });
+        }).then(function (routeEnded) {
+            if (!handoffDelivered || routeEnded !== true) return false;
             markDay(day, {
                 started: true,
                 completed: true,
@@ -1402,19 +1453,6 @@
                 nodeId: nodeId,
                 pendingNodeId: ''
             });
-            clearChoicePrompt();
-            applyAssistantTextEmotion(text);
-            handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
-            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
-            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
-            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
-                return Promise.resolve(p).catch(function () {});
-            });
-            return Promise.all(pendingWrites).then(function () {
-                return endIcebreakerRoute(session, 'icebreaker_handoff');
-            });
-        }).then(function () {
-            if (!handoffDelivered) return false;
             return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
                 return true;
             });
@@ -1814,10 +1852,10 @@
         var force = !!(options && options.force);
         var dayKey = String(day || '');
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
-        if (!force && restoreSessionPromise) {
+        if (restoreSessionPromise) {
             return restoreSessionPromise.then(function (restored) {
-                if (restored && activeSession && String(activeSession.day || '') === dayKey) return true;
-                if (activeSession) return false;
+                if (!force && restored && activeSession && String(activeSession.day || '') === dayKey) return true;
+                if (!force && activeSession) return false;
                 return startForDay(dayKey, options);
             });
         }

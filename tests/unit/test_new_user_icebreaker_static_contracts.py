@@ -833,6 +833,7 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
+    assert "results.every(function (result) { return result === true; })" in handoff_block
     assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
@@ -842,6 +843,9 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
         "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+        "completed: true"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "dispatchIcebreakerEnded('handoff');"
@@ -1019,11 +1023,14 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
     assert "if (!isTutorialBlockingIcebreaker()) return restoreInterruptedSession();" in bootstrap
     assert "waitForStorageStartupDecisionForRestore().then(function (canContinue)" in restore
-    assert "return waitForPageConfigForRestore().then(function ()" in restore
-    assert "loadIcebreakerRouteStateForRestore()" in restore
+    assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
+    assert "!hasIncompleteStoredSession(configuredLanlanName)" in restore
+    assert "loadIcebreakerRouteStateForRestore(configuredLanlanName)" in restore
+    assert "waitForRestoreRead(loadScripts(), null, 'scripts')" in restore
+    assert "waitForRestoreRead(loadLocale(currentLocale()), null, 'locale')" in restore
     assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
     assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
-    assert "if (!routeResult.loaded) return false;" not in restore
+    assert "if (!routeResult.loaded || !scripts || !localeData) return false;" in restore
     assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
     assert "return startIcebreakerRoute(session).then(function (started)" in restore
     assert "activeSession = session;" in restore
@@ -1037,6 +1044,47 @@ def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_it
     )[0]
     assert "if (!currentLanlanName) return null;" in snapshot_matcher
     assert "if (entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (routeActive && !matchesActiveRoute) return;" in snapshot_matcher
+    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in snapshot_matcher
+
+
+def test_icebreaker_restore_waits_are_bounded_without_timing_out_the_storage_choice():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    storage_wait = runtime.split("function waitForStorageStartupDecisionForRestore()", 1)[1].split(
+        "function findRestorableDaySnapshot",
+        1,
+    )[0]
+    start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState",
+        1,
+    )[0]
+
+    assert "var RESTORE_READ_TIMEOUT_MS = 12000;" in runtime
+    assert "function waitForRestoreRead(promise, fallback, label)" in runtime
+    assert "waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state')" in runtime
+    assert "waitForRestoreRead(" in runtime.split("function waitForPageConfigForRestore()", 1)[1].split(
+        "function waitForStorageStartupDecisionForRestore",
+        1,
+    )[0]
+    assert "waitForRestoreRead" not in storage_wait
+    assert "if (restoreSessionPromise)" in start_for_day
+    assert "if (!force && restoreSessionPromise)" not in start_for_day
+
+
+def test_icebreaker_restore_preserves_unowned_active_routes_and_waits_for_tutorial_startup():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    discard = runtime.split("function discardUnrestorableRoute(routeState, reason)", 1)[1].split(
+        "function restoreInterruptedSession",
+        1,
+    )[0]
+    tutorial_blocker = runtime.split("function isTutorialBlockingIcebreaker()", 1)[1].split(
+        "function deliverNode",
+        1,
+    )[0]
+
+    assert "if (state.icebreaker_active === true) return Promise.resolve(false);" in discard
+    assert "endIcebreakerRoute" not in discard
+    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false" in tutorial_blocker
 
 
 def test_icebreaker_restore_preserves_session_identity_and_transition_state():
