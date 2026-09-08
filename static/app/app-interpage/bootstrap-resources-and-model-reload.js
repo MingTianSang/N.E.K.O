@@ -1654,6 +1654,7 @@ I.mod = window.appInterpage;
                 }, 100);
             }
         }
+        return window._lastModelReloadResult === true;
     }
 
     I.handleReloadModelParametersMessage = async function handleReloadModelParametersMessage(message) {

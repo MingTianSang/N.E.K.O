@@ -12,6 +12,10 @@ const resetSource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-interpage/listeners-and-api.js'),
   'utf8',
 );
+const modelReloadSource = fs.readFileSync(
+  path.resolve(__dirname, '../../static/app/app-interpage/bootstrap-resources-and-model-reload.js'),
+  'utf8',
+);
 const modelDisplaySource = fs.readFileSync(
   path.resolve(__dirname, '../../static/app/app-ui/model-display.js'),
   'utf8',
@@ -481,6 +485,15 @@ test('default-model reset does not persist a superseded temporary reload', async
     harness.calls.filter((call) => call.type !== 'toast').map((call) => call.type),
     ['return', 'reload'],
   );
+});
+
+test('direct model reloads publish their final success result to callers', () => {
+  const handlerStart = modelReloadSource.indexOf('I.handleModelReload = async function handleModelReload');
+  const handlerEnd = modelReloadSource.indexOf('I.handleReloadModelParametersMessage =', handlerStart);
+  const handler = modelReloadSource.slice(handlerStart, handlerEnd);
+
+  assert.match(handler, /resolveReload\(window\._lastModelReloadResult\);/);
+  assert.match(handler, /return window\._lastModelReloadResult === true;\s*}/);
 });
 
 test('default-model reset restores the persisted prior model when PUT reports failure', async () => {
