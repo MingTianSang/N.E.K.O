@@ -244,3 +244,15 @@ function getOrBuildPreviewPayload(_entries, formatId) {
     )
 
     run_node_script(node, harness, check=True, cwd=PROJECT_ROOT)
+
+
+def test_export_preview_locale_change_updates_the_current_replaced_frame():
+    source = CHAT_EXPORT_JS.read_text(encoding="utf-8")
+    modal_start = source.index("function createPreviewModal(targetDocument)")
+    modal_end = source.index("function getPreviewModalDocument(modal)", modal_start)
+    locale_handler = source[modal_start:modal_end].split(
+        "var localeHandler = function () {", 1
+    )[1].split("window.addEventListener('localechange', localeHandler);", 1)[0]
+
+    assert "modal.frame.setAttribute('title'" in locale_handler
+    assert "\n            frame.setAttribute('title'" not in locale_handler

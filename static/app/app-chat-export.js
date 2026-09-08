@@ -2942,7 +2942,7 @@
             setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
-            frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
+            modal.frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
             previewImage.alt = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             closeIcon.alt = translateLabel('common.close', 'Close');
             selectAllButton.textContent = translateLabel('chat.exportSelectAll', 'Select All');
