@@ -356,16 +356,7 @@
         _resetToDefaultModelInFlight = true;
 
         var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-        var previousModelConfig = null;
-        var previousModelPersistencePayload = null;
-        var reloadModel = null;
-        var returnWasNeeded = false;
-        var returnedFromGoodbye = false;
-        var defaultModelPersisted = false;
         try {
-            reloadModel = typeof I.handleModelReload === 'function'
-                ? I.handleModelReload
-                : (typeof window.handleModelReload === 'function' ? window.handleModelReload : null);
             // Fail-fast when there is no character context. This happens if the
             // tray IPC fires before `neko:config-injected`, or on a sub-window
             // that never received the injection. Without lanlan_name we cannot
@@ -375,90 +366,14 @@
                 console.warn('[Model] resetToDefaultModel: 当前没有 lanlan_name，无法持久化默认模型设置');
                 throw new Error('missing_lanlan_name');
             }
-            if (!reloadModel) {
-                throw new Error('model_reload_unavailable');
-            }
-            previousModelConfig = window.lanlan_config && typeof window.lanlan_config === 'object'
-                ? Object.assign({}, window.lanlan_config)
-                : null;
-            if (previousModelConfig) {
-                var previousModelType = String(previousModelConfig.model_type || 'live2d').toLowerCase();
-                var previousLive3dSubType = String(previousModelConfig.live3d_sub_type || '').toLowerCase();
-                if (previousModelType === 'pngtuber') {
-                    previousModelConfig.pngtuber = previousModelConfig.pngtuber
-                        ? Object.assign({}, previousModelConfig.pngtuber)
-                        : null;
-                    previousModelConfig.model_path = previousModelConfig.pngtuber
-                        ? String(previousModelConfig.pngtuber.idle_image || '')
-                        : '';
-                } else if (previousModelType === 'live3d' && previousLive3dSubType === 'mmd') {
-                    previousModelConfig.model_path = String(window.mmdModel || previousModelConfig.mmd || '');
-                } else if (previousModelType === 'live3d' || previousModelType === 'vrm') {
-                    previousModelConfig.model_path = String(window.vrmModel || previousModelConfig.vrm || '');
-                } else if (previousModelType === 'mmd') {
-                    previousModelConfig.model_path = String(window.mmdModel || previousModelConfig.mmd || '');
-                } else {
-                    previousModelConfig.model_path = String(window.cubism4Model || previousModelConfig.live2d || '');
-                }
-                previousModelPersistencePayload = { model_type: previousModelType };
-                if (previousModelType === 'pngtuber') {
-                    previousModelPersistencePayload.pngtuber = previousModelConfig.pngtuber;
-                } else if (previousModelType === 'live3d' && previousLive3dSubType === 'mmd') {
-                    previousModelPersistencePayload.mmd = previousModelConfig.model_path;
-                } else if (previousModelType === 'live3d' || previousModelType === 'vrm') {
-                    previousModelPersistencePayload.model_type = 'live3d';
-                    previousModelPersistencePayload.vrm = previousModelConfig.model_path;
-                } else if (previousModelType === 'mmd') {
-                    previousModelPersistencePayload.model_type = 'live3d';
-                    previousModelPersistencePayload.mmd = previousModelConfig.model_path;
-                } else {
-                    previousModelPersistencePayload.model_type = 'live2d';
-                    previousModelPersistencePayload.live2d = previousModelConfig.model_path;
-                    // page_config does not expose the saved idle motion. Read the
-                    // authoritative character record before changing it so a
-                    // failed reset can restore both the Live2D binding and motion.
-                    var charactersResp = await fetch('/api/characters');
-                    if (!charactersResp.ok) {
-                        throw new Error('previous_model_config_unavailable');
-                    }
-                    var charactersData = await charactersResp.json();
-                    var previousCharacterData = charactersData
-                        && charactersData['猫娘']
-                        && charactersData['猫娘'][lanlanName];
-                    var previousReservedLive2D = previousCharacterData
-                        && previousCharacterData._reserved
-                        && previousCharacterData._reserved.avatar
-                        && previousCharacterData._reserved.avatar.live2d;
-                    var previousAvatarLive2D = previousCharacterData
-                        && previousCharacterData.avatar
-                        && previousCharacterData.avatar.live2d;
-                    var hasOwn = Object.prototype.hasOwnProperty;
-                    if (previousReservedLive2D && hasOwn.call(previousReservedLive2D, 'idle_animation')) {
-                        previousModelPersistencePayload.live2d_idle_animation = previousReservedLive2D.idle_animation;
-                    } else if (previousCharacterData && hasOwn.call(previousCharacterData, 'live2d_idle_animation')) {
-                        previousModelPersistencePayload.live2d_idle_animation = previousCharacterData.live2d_idle_animation;
-                    } else if (previousAvatarLive2D && hasOwn.call(previousAvatarLive2D, 'idle_animation')) {
-                        previousModelPersistencePayload.live2d_idle_animation = previousAvatarLive2D.idle_animation;
-                    } else {
-                        previousModelPersistencePayload.live2d_idle_animation = null;
-                    }
-                }
-            }
-            var visibleReturnBallBeforeReset = document.querySelector(
-                '[id$="-return-button-container"][data-neko-return-visible="true"]'
-            );
-            returnWasNeeded = !!(
-                visibleReturnBallBeforeReset
-                || (window.__appUiParts && window.__appUiParts.nekoCatReturnLifecycle)
-                || (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive())
-            );
+
             // “恢复默认模型”的目标固定为内置 Live2D。先退出 goodbye 并恢复
             // Electron Pet 的完整 viewport，但不要重新显示即将被替换的旧模型；
             // 后面的 PUT + handleModelReload 会直接加载目标 Live2D。
             // helper 即使当前不在 goodbye 也会立即成功；无条件调用还能加入一个
             // 已清除 manager 标志、但尚未完整结束的现有 return lifecycle。
             if (window.appUi && typeof window.appUi.returnFromGoodbye === 'function') {
-                returnedFromGoodbye = await window.appUi.returnFromGoodbye({
+                var returnedFromGoodbye = await window.appUi.returnFromGoodbye({
                     source: 'reset-to-default-model',
                     retryViewportRestore: true,
                     restoreCurrentModel: false
@@ -494,7 +409,6 @@
                 try { errText = await putResp.text(); } catch (_) {}
                 throw new Error('HTTP ' + putResp.status + (errText ? (': ' + errText) : ''));
             }
-            defaultModelPersisted = true;
 
             // Trigger the live model swap. handleModelReload re-fetches the
             // page_config, so it will pick up the freshly-saved default Live2D
@@ -504,7 +418,13 @@
             // need them surfaced so the reset doesn't report success after a
             // failed hot-swap.
             var reloadOpts = { suppressToast: true, throwOnError: true };
-            await reloadModel(lanlanName, reloadOpts);
+            if (typeof I.handleModelReload === 'function') {
+                await I.handleModelReload(lanlanName, reloadOpts);
+            } else if (typeof window.handleModelReload === 'function') {
+                await window.handleModelReload(lanlanName, reloadOpts);
+            } else {
+                console.warn('[Model] handleModelReload 不可用，跳过热切换');
+            }
 
             try {
                 if (typeof window.showStatusToast === 'function') {
@@ -518,33 +438,6 @@
             return { success: true };
         } catch (e) {
             console.error('[Model] 恢复默认模型失败:', e);
-            if (defaultModelPersisted && previousModelPersistencePayload) {
-                try {
-                    var rollbackResp = await fetch(putUrl, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(previousModelPersistencePayload)
-                    });
-                    if (!rollbackResp.ok) {
-                        var rollbackErrText = '';
-                        try { rollbackErrText = await rollbackResp.text(); } catch (_) {}
-                        throw new Error('HTTP ' + rollbackResp.status + (rollbackErrText ? (': ' + rollbackErrText) : ''));
-                    }
-                } catch (persistenceRestoreError) {
-                    console.error('[Model] 默认模型恢复失败后回滚持久化配置也失败:', persistenceRestoreError);
-                }
-            }
-            if (returnWasNeeded && returnedFromGoodbye && previousModelConfig && reloadModel) {
-                try {
-                    await reloadModel(lanlanName, {
-                        temporaryConfig: Object.assign({ success: true }, previousModelConfig),
-                        suppressToast: true,
-                        throwOnError: true
-                    });
-                } catch (restoreError) {
-                    console.error('[Model] 默认模型恢复失败后回退旧模型也失败:', restoreError);
-                }
-            }
             try {
                 if (typeof window.showStatusToast === 'function') {
                     window.showStatusToast(

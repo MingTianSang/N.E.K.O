@@ -445,6 +445,7 @@ def test_a_script_that_merely_runs_long_still_fails_its_deadline(runner):
 
 
 def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling(
+    monkeypatch,
 ):
     """The deadline is measured from node start, not from when the watchdog arms.
 
@@ -454,31 +455,20 @@ def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceili
     level; any top level heavier than the slack and the ceiling fires first,
     taking the diagnosis with it.
 
-    Use the production spawn slack here.  A deliberately shrunken one-second
-    gap raced the watchdog's synchronous Windows stderr flush under the four
-    xdist workers used by CI, so the outer ceiling occasionally killed a
-    correctly diagnosed process before ``process.exit`` completed.
+    Driven with a shrunken slack so the case costs ~2s instead of ~9s.
     """
     node_path = _node_or_skip()
-    script_budget = node_harness._SPAWN_SLACK_SECONDS + 1.0
-    top_level_ms = int(script_budget * 1_000)
+    monkeypatch.setattr(node_harness, "_SPAWN_SLACK_SECONDS", 1.0)
 
-    # Keep the synchronous top level longer than the slack: if the watchdog is
-    # armed after it instead of before it, the outer ceiling still wins and
-    # this regression test fails.  The real five-second gap leaves enough room
-    # for the diagnosed exit even when the Windows runner is saturated.
+    # 2s of synchronous top level - twice the slack - and then a leaked timer.
     script = (
-        f"var until = Date.now() + {top_level_ms};\n"
+        "var until = Date.now() + 2000;\n"
         "while (Date.now() < until) {}\n"
         "setInterval(function () {}, 1000);\n"
         "process.stdout.write('started');\n"
     )
     result = run_node_script(
-        node_path,
-        script,
-        capture_output=True,
-        check=False,
-        timeout=script_budget,
+        node_path, script, capture_output=True, check=False, timeout=2
     )
 
     assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (

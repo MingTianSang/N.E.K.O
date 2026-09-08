@@ -16,7 +16,6 @@
 
     window.appUi = window.appUi || {};
     const I = window.__appUiParts || (window.__appUiParts = {});
-    const NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS = 15000;
 
     I.beginNekoCatReturnLifecycle = function beginNekoCatReturnLifecycle(options = {}) {
         if (I.nekoCatReturnLifecycle) return null;
@@ -106,12 +105,13 @@
         const activeType = visibleTypeMatch ? visibleTypeMatch[1] : configuredActiveType;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs))
             ? Math.max(1000, Number(options.timeoutMs))
-            : NEKO_CAT_RETURN_LIFECYCLE_TIMEOUT_MS;
+            : 15000;
 
         return new Promise((resolve) => {
             let settled = false;
             let timeoutId = null;
             let joinedReturnLifecycle = null;
+            let ownsJoinedReturnLifecycle = false;
             const finish = (restored) => {
                 if (settled) return;
                 settled = true;
@@ -127,7 +127,7 @@
             window.addEventListener('neko:cat-return-abort', handleAbort);
             timeoutId = window.setTimeout(() => {
                 console.warn('[App] 程序化恢复模型超时:', options.source || 'unknown');
-                if (joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
+                if (ownsJoinedReturnLifecycle && joinedReturnLifecycle && !joinedReturnLifecycle.settled) {
                     I.abortNekoCatReturnLifecycle(joinedReturnLifecycle, 'programmatic-return-timeout');
                 }
                 finish(false);
@@ -188,6 +188,7 @@
                 // dispatchEvent 会同步进入 canonical handler 并创建 lifecycle。
                 if (!joinedReturnLifecycle && I.nekoCatReturnLifecycle) {
                     joinedReturnLifecycle = I.nekoCatReturnLifecycle;
+                    ownsJoinedReturnLifecycle = true;
                 }
             };
             dispatchReturnWhenReady().catch((error) => {
