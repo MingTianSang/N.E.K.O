@@ -723,7 +723,7 @@ def test_drawing_guess_static_route_contract():
     assert "els.exitReopenButton.addEventListener('click', showExitConfirm);" in script
     assert "function leaveDrawingGuessPage" in script
     assert "var ROUND_FALLBACK_SECONDS = 5 * 60;" in script
-    assert "var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;" in script
+    assert "var AI_DRAW_REQUEST_TIMEOUT_MS = 90 * 1000;" in script
     assert "var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;" in script
     assert "var AI_DRAW_REVIEW_WIDTH = 384;" in script
     assert "var AI_DRAW_REVIEW_HEIGHT = 288;" in script

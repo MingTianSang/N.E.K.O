@@ -70,7 +70,10 @@
     }, ['image_data_url'])
   });
   var ROUND_FALLBACK_SECONDS = 5 * 60;
-  var AI_DRAW_REQUEST_TIMEOUT_MS = 70 * 1000;
+  // Two bounded model-plan attempts can consume 64 seconds before the persona
+  // line is generated. Match the host route budget so a valid late response is
+  // not abandoned after the backend has already advanced the round.
+  var AI_DRAW_REQUEST_TIMEOUT_MS = 90 * 1000;
   var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;
   var AI_DRAW_PLAN_WIDTH = 800;
   var AI_DRAW_PLAN_HEIGHT = 600;
@@ -3544,6 +3547,23 @@
       // 与其它异步回合回调一致：End/换轮之后的迟到 choose-word 结果不再落地
       if (!isCurrentRoundFlow(flowToken)) return;
       if (!res || !res.ok) {
+        // The first request may have reached the backend even when its response
+        // was lost. A retry then reports the canonical user_drawing state;
+        // resume from that state instead of trapping the player in the picker.
+        var recoveredState = res && res.reason === 'not_word_picking'
+          && res.state && res.state.phase === 'user_drawing'
+          ? res.state
+          : null;
+        var recoveredAnswer = recoveredState && recoveredState.user_draw_answer;
+        if (recoveredAnswer && recoveredAnswer.id) {
+          beginUserDrawing(
+            recoveredAnswer,
+            (recoveredState.timers && recoveredState.timers.draw_seconds)
+              || state.drawPickSeconds
+              || ROUND_FALLBACK_SECONDS
+          );
+          return;
+        }
         restoreDrawPick();
         return;
       }

@@ -253,6 +253,7 @@ function loadHarness() {
     postVisionGuess: postVisionGuess,
     submitFeedbackInput: submitFeedbackInput,
     submitDrawing: submitDrawing,
+    chooseUserDrawWord: chooseUserDrawWord,
     triggerSupplementGuess: triggerSupplementGuess,
     triggerRandomAiGuess: triggerRandomAiGuess,
     handleAiGuessTimeout: handleAiGuessTimeout,
@@ -379,6 +380,35 @@ function loadHarness() {
       };
       updateControls = function () {};
     },
+    installWordChoiceHarness: function (handler, events) {
+      var classes = new Set(['dg-draw-pick-ready']);
+      var reveal = { textContent: '' };
+      var buttons = [];
+      els.drawPick = {
+        classList: {
+          contains: function (name) { return classes.has(name); },
+          add: function () {
+            Array.prototype.slice.call(arguments).forEach(function (name) { classes.add(name); });
+          },
+          remove: function () {
+            Array.prototype.slice.call(arguments).forEach(function (name) { classes.delete(name); });
+          }
+        },
+        querySelectorAll: function () { return buttons; },
+        querySelector: function () { return reveal; }
+      };
+      executeRoundCommand = function (command, payload, timeoutMs) {
+        events.commands.push({ command: command, payload: payload, timeoutMs: timeoutMs });
+        return Promise.resolve(handler(command, payload, timeoutMs));
+      };
+      renderDrawPickOptions = function () { events.restored += 1; };
+      beginUserDrawing = function (answer, seconds) {
+        events.transitions.push({ answer: answer, seconds: seconds });
+        state.phase = 'user_drawing';
+      };
+      addMessage = function () { events.failures += 1; };
+      updateControls = function () {};
+    },
     installNekoMessageSpies: function (events) {
       addMessage = function (_key, text, _params, className) {
         events.push({ kind: 'bubble', text: text, className: className });
@@ -442,9 +472,11 @@ async function testEndWaitsForRoundSessionCreation() {
   const api = harness.api;
   const events = [];
   const roundStart = deferred();
-  const controls = api.installRoundLifecycleHarness(events, (command) => {
+  let aiDrawTimeoutMs = null;
+  const controls = api.installRoundLifecycleHarness(events, (command, _payload, timeoutMs) => {
     if (command === 'round:start') return roundStart.promise;
     if (command === 'round:ai-draw') {
+      aiDrawTimeoutMs = timeoutMs;
       return Promise.resolve({ ok: true, skipped: true, reason: 'not_ai_drawing' });
     }
     throw new Error(`unexpected round command: ${command}`);
@@ -464,6 +496,8 @@ async function testEndWaitsForRoundSessionCreation() {
 
   roundStart.resolve({ ok: true });
   await pendingStart;
+  assertEqual(aiDrawTimeoutMs, 90000,
+    'AI drawing did not use the full registered route budget');
   assertEqual(api.state.roundSessionReady, true, 'a successful /round/start should unlock End');
   assertEqual(controls.endButton.disabled, false, 'End should be enabled once the backend round exists');
   assertEqual(api.finishGame(), true, 'finish should proceed after round creation');
@@ -473,6 +507,42 @@ async function testEndWaitsForRoundSessionCreation() {
   api.updateControls();
   assertEqual(api.state.roundSessionReady, false, 'route cleanup must retire round readiness');
   assertEqual(controls.endButton.disabled, true, 'End must lock again after route cleanup');
+}
+
+async function testWordChoiceRecoversCommittedBackendTransition() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], transitions: [], restored: 0, failures: 0 };
+  api.installWordChoiceHarness((command) => {
+    if (command !== 'round:choose-word') throw new Error(`unexpected command: ${command}`);
+    return {
+      ok: false,
+      reason: 'not_word_picking',
+      state: {
+        phase: 'user_drawing',
+        user_draw_answer: { id: 'cat', label: 'Cat' },
+        timers: { draw_seconds: 137 },
+      },
+    };
+  }, events);
+  api.state.phase = 'drawing_pick';
+  api.state.roundFlowToken = 5;
+  api.state.activeRoundToken = 5;
+  api.state.drawPickChoosing = false;
+  api.state.drawPickOptions = [{ id: 'cat', label: 'Cat' }];
+
+  await api.chooseUserDrawWord('cat');
+
+  assertEqual(events.commands.length, 1, 'word selection did not use the SDK command');
+  assertEqual(events.commands[0].timeoutMs, 10000, 'word selection lost its bounded request timeout');
+  assertEqual(events.transitions.length, 1,
+    'the committed backend transition did not recover the drawing phase');
+  assertEqual(events.transitions[0].answer.id, 'cat',
+    'word-selection recovery did not use the backend-authoritative answer');
+  assertEqual(events.transitions[0].seconds, 137,
+    'word-selection recovery did not use the backend-authoritative draw duration');
+  assertEqual(events.restored, 0, 'the stale word picker was restored after successful recovery');
+  assertEqual(events.failures, 0, 'successful recovery displayed an input failure');
 }
 
 async function testLateRoundStartCannotRestoreEndAfterCleanup() {
@@ -2387,6 +2457,7 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
 
 async function main() {
   await testEndWaitsForRoundSessionCreation();
+  await testWordChoiceRecoversCommittedBackendTransition();
   await testLateRoundStartCannotRestoreEndAfterCleanup();
   await testLateHydrationKeepsLocalSideAndColorChanges();
   await testLateModelViewHydrationMergesWithLocalPriority();
