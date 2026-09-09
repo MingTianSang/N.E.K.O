@@ -256,6 +256,7 @@ function loadHarness() {
     triggerSupplementGuess: triggerSupplementGuess,
     triggerRandomAiGuess: triggerRandomAiGuess,
     handleAiGuessTimeout: handleAiGuessTimeout,
+    stopAiGuessSchedule: stopAiGuessSchedule,
     flushDeferredAiGuessWork: flushDeferredAiGuessWork,
     settleAiGuessTimeout: settleAiGuessTimeout,
     requestGuessTimeout: requestGuessTimeout,
@@ -1605,6 +1606,109 @@ async function testChatDelayedBusyVisionRetryStopsAfterRoundChange() {
     'a chat-delayed busy retry crossed into the next round');
 }
 
+async function testNewVisionGuessCancelsPendingBusyRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  let attempt = 0;
+  api.installRoundCommandSpies((command) => {
+    if (command !== 'round:vision-guess') throw new Error(`unexpected command: ${command}`);
+    attempt += 1;
+    if (attempt === 1) return { ok: false, reason: 'session_busy' };
+    return {
+      ok: true,
+      message: 'newer guess won',
+      guess: { label: 'train' },
+      attempt: 1,
+      max_attempts: 3,
+      state: { phase: 'ai_guess_feedback' },
+    };
+  }, events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.roundFlowToken = 20;
+  api.state.activeRoundToken = 20;
+
+  await api.postVisionGuess('', { image_data_url: 'data:image/jpeg;base64,old-retry' });
+  assert(api.state.aiGuessBusyRetryTimer !== null,
+    'the busy response did not schedule the retry under test');
+  await api.postVisionGuess('', { image_data_url: 'data:image/jpeg;base64,new-guess' });
+  await new Promise((resolve) => setTimeout(resolve, 360));
+
+  assertEqual(events.commands.length, 2,
+    'the superseded busy retry ran after a newer vision guess');
+  assertEqual(events.commands[1].payload.image_data_url, 'data:image/jpeg;base64,new-guess',
+    'the newer vision guess did not retain its own canvas snapshot');
+  assertEqual(api.state.aiGuessBusyRetryTimer, null,
+    'the newer vision guess left the superseded retry timer armed');
+}
+
+async function testStoppingAiGuessScheduleCancelsBusyRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies((command) => {
+    if (command !== 'round:vision-guess') throw new Error(`unexpected command: ${command}`);
+    return { ok: false, reason: 'session_busy' };
+  }, events);
+  api.state.phase = 'ai_guessing';
+  api.state.roundFlowToken = 21;
+  api.state.activeRoundToken = 21;
+
+  await api.postVisionGuess('', { image_data_url: 'data:image/jpeg;base64,cancelled-retry' });
+  assert(api.state.aiGuessBusyRetryTimer !== null,
+    'the busy response did not schedule the retry under test');
+  api.stopAiGuessSchedule();
+  await new Promise((resolve) => setTimeout(resolve, 360));
+
+  assertEqual(events.commands.length, 1,
+    'stopAiGuessSchedule did not cancel the pending busy retry');
+  assertEqual(api.state.aiGuessBusyRetryTimer, null,
+    'stopAiGuessSchedule left the busy retry timer armed');
+}
+
+async function testFeedbackGuessCancelsPendingBusyRetry() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  let visionAttempts = 0;
+  api.installRoundCommandSpies((command) => {
+    if (command === 'round:vision-guess') {
+      visionAttempts += 1;
+      return { ok: false, reason: 'session_busy' };
+    }
+    if (command === 'round:feedback') {
+      return {
+        ok: true,
+        kind: 'ai_guess',
+        message: 'feedback guess won',
+        guess: { label: 'train' },
+        attempt: 1,
+        max_attempts: 3,
+        state: { phase: 'ai_guess_feedback' },
+      };
+    }
+    throw new Error(`unexpected command: ${command}`);
+  }, events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.roundFlowToken = 22;
+  api.state.activeRoundToken = 22;
+
+  await api.postVisionGuess('', { image_data_url: 'data:image/jpeg;base64,old-feedback-retry' });
+  assert(api.state.aiGuessBusyRetryTimer !== null,
+    'the busy response did not schedule the retry under test');
+  await api.submitFeedbackInput('new hint', { request_id: 'new-feedback-guess' });
+  await new Promise((resolve) => setTimeout(resolve, 360));
+
+  assertEqual(visionAttempts, 1,
+    'a busy vision retry ran after a newer feedback guess completed');
+  assertEqual(api.state.aiGuessBusyRetryTimer, null,
+    'the feedback guess left the superseded retry timer armed');
+}
+
 async function testRejectedVisionCommandUnlocksTheRound() {
   const harness = loadHarness();
   const api = harness.api;
@@ -2309,6 +2413,9 @@ async function main() {
   await testBusyVisionRetryPreservesBoundedSnapshot();
   await testBusyVisionRetryWaitsForInFlightChat();
   await testChatDelayedBusyVisionRetryStopsAfterRoundChange();
+  await testNewVisionGuessCancelsPendingBusyRetry();
+  await testStoppingAiGuessScheduleCancelsBusyRetry();
+  await testFeedbackGuessCancelsPendingBusyRetry();
   await testRejectedVisionCommandUnlocksTheRound();
   await testFailedJpegCaptureNeverSendsPngOrEmptyImage();
   await testAutomaticDrawingTimeoutSettlesWhenJpegCaptureFails();

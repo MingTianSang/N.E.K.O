@@ -72,6 +72,15 @@
   const AVATAR_MODEL_PATH_CHARS = 2048;
   const AVATAR_MODEL_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
   const GLOBAL_CONSOLE_CAPTURE_REGISTRIES = new WeakMap();
+  // Keep this set symmetric with the SDK's command-contract rejection. These
+  // fields are removed before trusted route identity is attached.
+  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+  ]);
   const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
     'gamememoryenabled',
     'gameplayerinteractionmemoryenabled',
@@ -1537,13 +1546,7 @@
           seen: new Set(),
           maxBytes: policy.maxRequestBytes,
         });
-        for (const key of [
-          'session_id', 'sessionId', 'game_type', 'gameType',
-          'lanlan_name', 'lanlanName', 'character_name', 'characterName',
-          'window_lanlan_name', 'windowLanlanName',
-          'sdk_route_instance_id', 'sdkRouteInstanceId',
-          'sdk_route_instance_ids', 'routeInstanceId',
-        ]) delete commandPayload[key];
+        for (const key of COMMAND_PAYLOAD_HOST_IDENTITY_KEYS) delete commandPayload[key];
         if (utf8ByteLength(JSON.stringify(commandPayload)) > policy.maxRequestBytes) {
           throw new TypeError('invalid_payload');
         }

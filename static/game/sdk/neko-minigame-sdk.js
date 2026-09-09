@@ -77,6 +77,27 @@
   const DEFAULT_HEARTBEAT_TIMEOUT_MS = 4500;
   const DEFAULT_OUTPUT_INTERVAL_MS = 700;
   const DEFAULT_OUTPUT_TIMEOUT_MS = 8000;
+  // These names mirror the same-origin host command boundary. A game command
+  // contract must describe only caller-owned data: identity and memory policy
+  // are stripped or replaced by the trusted host before the backend request.
+  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+  ]);
+  const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
+    'gamememoryenabled',
+    'gameplayerinteractionmemoryenabled',
+    'gamememoryplayerinteractionenabled',
+    'gameeventreplymemoryenabled',
+    'gamememoryeventreplyenabled',
+    'gamearchivememoryenabled',
+    'gamememoryarchiveenabled',
+    'gamepostgamecontextmemoryenabled',
+    'gamememorypostgamecontextenabled',
+  ]);
   const MANIFEST_TOP_LEVEL_FIELDS = Object.freeze(new Set([
     'id',
     'version',
@@ -264,6 +285,38 @@
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const prototype = Object.getPrototypeOf(value);
     return prototype === Object.prototype || prototype === null;
+  }
+
+  function isMemoryPolicyPayloadField(key) {
+    const normalized = String(key || '').replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    if (normalized === 'memoryenabled' || normalized === 'enablegamememory') return true;
+    return MEMORY_POLICY_NORMALIZED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+  }
+
+  function hostReservedCommandRequestField(schema) {
+    const rootFields = new Set([
+      ...Object.keys(schema.properties || {}),
+      ...(schema.required || []),
+    ]);
+    for (const field of rootFields) {
+      if (COMMAND_PAYLOAD_HOST_IDENTITY_KEYS.includes(field) || isMemoryPolicyPayloadField(field)) {
+        return field;
+      }
+    }
+    // _trustedRuntimePayload also strips memory-policy aliases from a top-level
+    // event object, so declarations at that exact nested boundary are equally
+    // misleading and must be rejected.
+    const eventSchema = schema.properties?.event;
+    if (eventSchema?.type === 'object') {
+      const eventFields = new Set([
+        ...Object.keys(eventSchema.properties || {}),
+        ...(eventSchema.required || []),
+      ]);
+      for (const field of eventFields) {
+        if (isMemoryPolicyPayloadField(field)) return `event.${field}`;
+      }
+    }
+    return '';
   }
 
   function contractInteger(value, fieldName, minimum, maximum, fallback) {
@@ -528,6 +581,14 @@
             0,
             commandSchemaOptions,
           );
+          const hostReservedField = hostReservedCommandRequestField(requestSchema);
+          if (hostReservedField) {
+            fail(
+              'invalid_manifest',
+              `manifest.contracts.commands.${name}.request declares a host-reserved field`,
+              { field: hostReservedField },
+            );
+          }
           normalized[name] = Object.freeze({
             request: requestSchema,
             response: normalizeContractSchema(

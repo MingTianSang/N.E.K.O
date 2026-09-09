@@ -1493,6 +1493,76 @@ async function main() {
   assert(numericRequiredError?.code === 'invalid_manifest',
     'a non-string required entry was coerced into a matching property name');
 
+  // Command payload identity and memory policy are owned by the host. A game
+  // contract that declares either would validate one value in the SDK and send
+  // a stripped or replaced value to the backend.
+  const hostReservedCommandFields = [
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+    'memory_enabled', 'enable_game_memory', 'legacyGameMemoryArchiveEnabled',
+  ];
+  for (const [index, field] of hostReservedCommandFields.entries()) {
+    let reservedFieldError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `reserved-command-field-${index}`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            probe: {
+              request: {
+                type: 'object',
+                properties: { [field]: { type: 'boolean' } },
+                required: index % 2 ? [field] : [],
+                additionalProperties: false,
+              },
+              response: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: true,
+              },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { reservedFieldError = error; }
+    assert(reservedFieldError?.code === 'invalid_manifest',
+      `a command contract declared the host-reserved field ${field}`);
+  }
+  let nestedMemoryPolicyError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'nested-reserved-command-field',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          probe: {
+            request: {
+              type: 'object',
+              properties: {
+                event: {
+                  type: 'object',
+                  properties: { legacyGameMemoryArchiveEnabled: { type: 'boolean' } },
+                  required: ['legacyGameMemoryArchiveEnabled'],
+                },
+              },
+              required: ['event'],
+            },
+            response: { type: 'object', additionalProperties: true },
+          },
+        },
+      },
+    }, { transport });
+  } catch (error) { nestedMemoryPolicyError = error; }
+  assert(nestedMemoryPolicyError?.code === 'invalid_manifest',
+    'a command contract declared memory policy inside the host-filtered event object');
+
   // `String(true)` is 'true', which matches the score-field pattern, so a boolean
   // silently became a board keyed on a field no entry will ever carry.
   let booleanScoreFieldError = null;

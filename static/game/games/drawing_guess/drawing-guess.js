@@ -144,6 +144,8 @@
     drawPickTimer: null,
     drawPickRevealTimer: null,
     aiGuessTimer: null,
+    aiGuessBusyRetryTimer: null,
+    aiGuessBusyRetryGeneration: 0,
     aiGuessNextAt: 0,
     nekoVoiceQueue: [],
     nekoVoiceInFlight: false,
@@ -1395,9 +1397,16 @@
     state.drawPickChoosing = false;
   }
 
+  function cancelAiGuessBusyRetry() {
+    clearTimeout(state.aiGuessBusyRetryTimer);
+    state.aiGuessBusyRetryTimer = null;
+    state.aiGuessBusyRetryGeneration += 1;
+  }
+
   function stopAiGuessSchedule() {
     clearTimeout(state.aiGuessTimer);
     state.aiGuessTimer = null;
+    cancelAiGuessBusyRetry();
     clearTimeout(state.aiGuessTimeoutRetryTimer);
     state.aiGuessTimeoutRetryTimer = null;
     state.aiGuessNextAt = 0;
@@ -3459,6 +3468,7 @@
         return;
       }
       if (res.kind === 'ai_guess') {
+        cancelAiGuessBusyRetry();
         var guessLabel = res.guess ? res.guess.label : '';
         state.pendingAutoGuess = false;
         state.aiGuessAttempts = Number(res.attempt || state.aiGuessAttempts || 0);
@@ -3625,6 +3635,10 @@
       updateControls();
       return Promise.resolve();
     }
+    // A valid newer guess supersedes any retry that was waiting on an earlier
+    // session_busy response in this same round.
+    cancelAiGuessBusyRetry();
+    var busyRetryGeneration = state.aiGuessBusyRetryGeneration;
     state.aiGuessInFlight = true;
     return executeRoundCommand(ROUND_COMMANDS.VISION_GUESS, roundCommandPayload({
       image_data_url: imageDataUrl,
@@ -3636,19 +3650,22 @@
       stopThinkingEventMessage();
       if (!res || !res.ok) {
         if (res && res.reason === 'session_busy' && Number((options && options.busy_retry_count) || 0) < 3) {
+          if (state.aiGuessBusyRetryGeneration !== busyRetryGeneration) return;
           var retryOptions = Object.assign({}, options || {}, {
             busy_retry_count: Number((options && options.busy_retry_count) || 0) + 1
           });
           var retryWhenReady = function () {
+            if (state.aiGuessBusyRetryGeneration !== busyRetryGeneration) return;
+            state.aiGuessBusyRetryTimer = null;
             if (!isCurrentRoundFlow(flowToken)) return;
             if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
             if (state.aiGuessInFlight || state.chatInFlight) {
-              setTimeout(retryWhenReady, 120);
+              state.aiGuessBusyRetryTimer = setTimeout(retryWhenReady, 120);
               return;
             }
             postVisionGuess(userHint, retryOptions);
           };
-          setTimeout(retryWhenReady, 180);
+          state.aiGuessBusyRetryTimer = setTimeout(retryWhenReady, 180);
           return;
         }
         addMessage('drawingGuess.messages.inputFailed', 'Input failed.');

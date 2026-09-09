@@ -189,8 +189,10 @@ and timeout; the mapping is not exposed to game code. The SDK and host retain
 global ceilings of 2 MiB and six minutes, while the SDK admits at most eight
 concurrent command requests. Games without `contracts.commands` do not require
 a command transport. A command request schema must have `type: 'object'` because
-the trusted host merges route identity into that request body; response schemas
-may use any supported JSON type.
+the trusted host merges route identity into that request body. It must not
+declare host-owned route identity or memory-policy fields; those values are
+stripped or replaced at the trust boundary. Response schemas may use any
+supported JSON type.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
