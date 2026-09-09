@@ -1604,7 +1604,7 @@ async function testTimeoutServerBusyUsesWallClockDeadline() {
     commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
   };
   api.setAiGuessTimeoutBusyMaxPolls(1000);
-  api.setAiGuessTimeoutBusyRetryTiming(25, 5);
+  api.setAiGuessTimeoutBusyRetryTiming(150, 10);
   api.installRoundCommandSpies(() => ({ ok: false, reason: 'session_busy' }), events);
   api.state.phase = 'ai_guessing';
   api.state.routeActive = true;

@@ -438,6 +438,12 @@ async function main() {
   catch (error) { inactiveCommandError = error; }
   assert(inactiveCommandError?.code === 'invalid_state' && commandRequests.length === 0,
     'game command reached the host before an active runtime route existed');
+  const resetSession = game.runtime.reset();
+  assert(resetSession.id === 'sdk-test-session'
+    && resetSession.characterName === ''
+    && resetSession.routeInstanceId === ''
+    && Object.isFrozen(resetSession),
+  'runtime reset did not return a complete immutable RuntimeSession');
   const started = await game.runtime.start({ mode: 'default' });
   assert(started.data.payload.mode === 'default', 'runtime start did not use the host transport');
   const routeInstanceId = started.data.payload.sdk_route_instance_id;

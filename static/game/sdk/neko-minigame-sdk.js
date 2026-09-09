@@ -3644,6 +3644,7 @@
           characterName: String(
             normalized?.characterName || normalized?.lanlanName || normalized?.lanlan_name || '',
           ),
+          routeInstanceId: String(runtimeRouteInstanceId || ''),
         });
       },
       async start(payload = {}, requestOptions = {}) {
