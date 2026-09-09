@@ -109,7 +109,7 @@ async function main() {
             'round:ai-draw-review': {
               path: 'ai-draw/review',
               maxRequestBytes: 2097152,
-              maxTimeoutMs: 90000,
+              maxTimeoutMs: 120000,
             },
             'round:input': {
               path: 'input',
@@ -519,7 +519,7 @@ async function main() {
   const reviewResult = await game.commands.execute('round:ai-draw-review', {
     client_round_token: 1,
     image_data_url: reviewImage,
-  }, { timeoutMs: 90000 });
+  }, { timeoutMs: 120000 });
   assert(reviewResult.ok === true && reviewResult.data.ok === true,
     'the drawing review command did not complete through the SDK');
   const reviewCall = calls.find((call) => call.url.endsWith('/ai-draw/review'));

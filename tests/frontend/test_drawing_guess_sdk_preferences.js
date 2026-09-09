@@ -2380,7 +2380,7 @@ async function testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan() {
   assertDeepEqual(Object.keys(result.calls[0].payload).sort(),
     ['client_round_token', 'image_data_url'],
     'drawing review sent model plans or host-owned identity outside its SDK contract');
-  assertEqual(result.calls[0].options.timeoutMs, 90000,
+  assertEqual(result.calls[0].options.timeoutMs, 120000,
     'drawing review did not use its bounded command timeout');
   assertEqual(result.prepared.plan.elements[0].fill, '#f28c8c',
     'the single reviewed correction was not applied');

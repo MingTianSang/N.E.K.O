@@ -74,7 +74,10 @@
   // line is generated. Match the host route budget so a valid late response is
   // not abandoned after the backend has already advanced the round.
   var AI_DRAW_REQUEST_TIMEOUT_MS = 90 * 1000;
-  var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;
+  // Visual review may use 27 seconds and a rejected draft may then use two
+  // 32-second plan-revision attempts. Leave bounded headroom above that
+  // sequential 91-second model budget and match the registered host route.
+  var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 120 * 1000;
   var AI_DRAW_PLAN_WIDTH = 800;
   var AI_DRAW_PLAN_HEIGHT = 600;
   var AI_DRAW_REVIEW_WIDTH = 384;
