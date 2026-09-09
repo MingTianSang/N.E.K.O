@@ -542,7 +542,18 @@ def test_drawing_guess_static_route_contract():
     assert "if (!isGuessTimeoutResult(res)) throw new Error('timeout_transition_unavailable');" in script
     assert "state.guessTimeoutRetryTimer = setTimeout(function ()" in script
     assert "setPhase('loading_round');\n    requestGuessTimeout(flowToken, 0);" in script
-    assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
+    assert "roundSessionReady: false" in script
+    assert "els.endButton.disabled = !routeReady || !state.roundSessionReady;" in script
+    assert "if (!res || !res.ok) throw new Error" in script
+    assert "state.roundSessionReady = true;\n        updateControls();" in script
+    assert (
+        "function finishGame() {\n"
+        "    if (!state.roundSessionReady) return false;\n"
+        "    renderFinalSummary();\n"
+        "    showExitConfirm();\n"
+        "    return true;\n"
+        "  }"
+    ) in script
     assert "return endRoute(false, { finalSummary: true }).finally(showExitConfirm);" not in script
     assert 'id="voice-route-button" class="dg-voice-button"' in html
     assert "function handleVoiceRouteButton" in script

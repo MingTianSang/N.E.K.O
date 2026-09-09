@@ -273,6 +273,55 @@ function loadHarness() {
     handleVoiceRouteButton: handleVoiceRouteButton,
     cleanupRouteResources: cleanupRouteResources,
     startRoute: startRoute,
+    startRound: startRound,
+    finishGame: finishGame,
+    updateControls: updateControls,
+    installRoundLifecycleHarness: function (events, commandHandler) {
+      function control() {
+        return {
+          hidden: false,
+          disabled: false,
+          textContent: '',
+          setAttribute: function () {}
+        };
+      }
+      els = {
+        characterName: control(),
+        sessionId: control(),
+        memoryState: control(),
+        doneButton: control(),
+        nextRoundButton: control(),
+        endButton: control(),
+        clearCanvasButton: control(),
+        tutorialOverlay: { hidden: true },
+        chatSubmit: control(),
+        chatInput: control(),
+        undoTool: control(),
+        redoTool: control(),
+        voiceRouteButton: null,
+        sizePreview: null,
+        exitConfirm: null,
+        exitReopenButton: null,
+        ctx: null
+      };
+      clearNekoVoiceQueue = function () {};
+      hideExitReopenButton = function () {};
+      hideExitConfirm = function () {};
+      resetCanvas = function () {};
+      pushCanvasContextForRoute = function () {};
+      showPlaceholder = function () {};
+      setBadge = function () {};
+      scheduleAiDrawingPlaceholderHint = function () {};
+      renderFinalSummary = function () {
+        state.phase = 'final_summary';
+        events.push('final_summary');
+      };
+      showExitConfirm = function () { events.push('exit_confirm'); };
+      executeRoundCommand = function (command, payload, timeoutMs) {
+        return commandHandler(command, payload, timeoutMs);
+      };
+      return els;
+    },
     installCanvasForCapture: function (canvas) {
       els.canvas = canvas;
     },
@@ -385,6 +434,67 @@ function loadHarness() {
     setCanvasDataUrlFactory(factory) { canvasDataUrlFactory = factory; },
     localStorageReads: () => localStorageReads,
   };
+}
+
+async function testEndWaitsForRoundSessionCreation() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = [];
+  const roundStart = deferred();
+  const controls = api.installRoundLifecycleHarness(events, (command) => {
+    if (command === 'round:start') return roundStart.promise;
+    if (command === 'round:ai-draw') {
+      return Promise.resolve({ ok: true, skipped: true, reason: 'not_ai_drawing' });
+    }
+    throw new Error(`unexpected round command: ${command}`);
+  });
+  api.state.lanlanName = 'SDK Neko';
+  api.state.sessionId = 'drawing-round-readiness';
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+  api.state.phase = 'tutorial';
+
+  const pendingStart = api.startRound();
+  assertEqual(api.state.phase, 'loading_round', 'round start should enter its loading phase');
+  assertEqual(api.state.roundSessionReady, false, 'round session must stay unavailable while /round/start is pending');
+  assertEqual(controls.endButton.disabled, true, 'End must stay disabled before the backend round exists');
+  assertEqual(api.finishGame(), false, 'the finish guard must reject a programmatic early End');
+  assertDeepEqual(events, [], 'an early End must not open an unusable final summary');
+
+  roundStart.resolve({ ok: true });
+  await pendingStart;
+  assertEqual(api.state.roundSessionReady, true, 'a successful /round/start should unlock End');
+  assertEqual(controls.endButton.disabled, false, 'End should be enabled once the backend round exists');
+  assertEqual(api.finishGame(), true, 'finish should proceed after round creation');
+  assertDeepEqual(events, ['final_summary', 'exit_confirm'], 'a valid End should open the final summary and exit confirmation');
+
+  api.cleanupRouteResources();
+  api.updateControls();
+  assertEqual(api.state.roundSessionReady, false, 'route cleanup must retire round readiness');
+  assertEqual(controls.endButton.disabled, true, 'End must lock again after route cleanup');
+}
+
+async function testLateRoundStartCannotRestoreEndAfterCleanup() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const roundStart = deferred();
+  const controls = api.installRoundLifecycleHarness([], (command) => {
+    if (command === 'round:start') return roundStart.promise;
+    throw new Error(`stale flow unexpectedly reached: ${command}`);
+  });
+  api.state.lanlanName = 'SDK Neko';
+  api.state.sessionId = 'drawing-stale-round-start';
+  api.state.routeActive = true;
+
+  const pendingStart = api.startRound();
+  api.state.routeActive = false;
+  api.cleanupRouteResources();
+  api.updateControls();
+  roundStart.resolve({ ok: true });
+  await pendingStart;
+
+  assertEqual(api.state.roundSessionReady, false, 'a stale /round/start success must not restore readiness');
+  assertEqual(controls.endButton.disabled, true, 'a stale /round/start success must not unlock End');
 }
 
 async function testLateHydrationKeepsLocalSideAndColorChanges() {
@@ -2098,6 +2208,8 @@ async function testPageExitPostsVoiceStopBeforeCleanup() {
 }
 
 async function main() {
+  await testEndWaitsForRoundSessionCreation();
+  await testLateRoundStartCannotRestoreEndAfterCleanup();
   await testLateHydrationKeepsLocalSideAndColorChanges();
   await testLateModelViewHydrationMergesWithLocalPriority();
   await testCommittedWriteWaitsForHydrationBeforePersisting();

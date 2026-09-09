@@ -45,6 +45,7 @@ from config.prompts.prompts_drawing_guess import (
     get_drawing_guess_event_roles,
     get_drawing_guess_scene_premise,
 )
+from .memory_policy import _GAME_MEMORY_ARCHIVE_OWNER_FEATURE
 from utils.game_route_state import (
     _get_active_game_route_state,
     _get_route_lock,
@@ -671,6 +672,9 @@ _KOREAN_AFFIRMATIVE_QUESTION_SUFFIXES = frozenset(
 _USER_GUESS_INTENT_RE = re.compile(
     r"(?:"
     r"\b(?:i\s+guess|my\s+guess|is\s+(?:it|this|that)|could\s+it\s+be|maybe\s+(?:it'?s|this\s+is)|looks?\s+like|answer\s+is)\b"
+    r"|\b(?:mi\s+respuesta|la\s+respuesta)\s+es\b"
+    r"|\b(?:minha\s+resposta|a\s+resposta|meu\s+palpite)\s+[eé]\b"
+    r"|\b(?:мой\s+ответ|моя\s+догадка)(?:\s+это)?\b"
     r"|我猜|猜(?:是|这个|這個)|是不是|应该是|應該是|大概是|难道是|難道是|答案是"
     r"|答え|かな|같아|아닌가(?:요)?|정답|palpite|será|parece|creo\s+que"
     r")",
@@ -915,10 +919,10 @@ def _is_hint_request(text: str) -> bool:
 
 
 def _is_direct_answer_request(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
+    lowered = _fold_guess_text(text)
     if not lowered:
         return False
-    return any(token in lowered for token in (
+    return any(_fold_guess_text(token) in lowered for token in (
         "答案是什么",
         "答案是啥",
         "告诉我答案",
@@ -939,9 +943,24 @@ def _is_direct_answer_request(text: str) -> bool:
         "答えを教えて",
         "正解を教えて",
         "정답 알려",
-        "ответ",
-        "resposta",
-        "respuesta",
+        "какой ответ",
+        "скажи ответ",
+        "покажи ответ",
+        "раскрой ответ",
+        "я сдаюсь",
+        "сдаюсь",
+        "qual e a resposta",
+        "diga a resposta",
+        "mostre a resposta",
+        "revele a resposta",
+        "eu desisto",
+        "desisto",
+        "cual es la respuesta",
+        "dime la respuesta",
+        "muestrame la respuesta",
+        "revela la respuesta",
+        "revelame la respuesta",
+        "me rindo",
     ))
 
 
@@ -4292,6 +4311,14 @@ async def drawing_guess_round_start(request: Request):
         if requested_generation:
             session["_sdk_route_instance_id"] = requested_generation
         _drawing_guess_sessions[session_key] = session
+        if requested_generation:
+            # This feature persists its own compact, answer-aware round summaries.
+            # Claim archive ownership only after the active SDK route identity has
+            # been validated and the round session exists under the lifecycle lock,
+            # so generic postgame memory cannot write a second summary.
+            route_state = _get_active_game_route_state(lanlan_name, "drawing_guess")
+            if isinstance(route_state, dict):
+                route_state["game_memory_archive_owner"] = _GAME_MEMORY_ARCHIVE_OWNER_FEATURE
         _sync_active_route_state(session, locale)
         return {"ok": True, "state": _public_round_state(session, locale)}
 

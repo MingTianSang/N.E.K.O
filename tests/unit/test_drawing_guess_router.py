@@ -1482,7 +1482,7 @@ async def test_legacy_round_start_normalizes_memory_consent():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_sdk_round_start_uses_only_host_memory_policy():
-    _put_sdk_drawing_route("dg-sdk-memory-disabled", "route-memory-disabled")
+    disabled_route = _put_sdk_drawing_route("dg-sdk-memory-disabled", "route-memory-disabled")
     disabled_result = await dgr.drawing_guess_round_start(_FakeRequest({
         "lanlan_name": "YUI",
         "session_id": "dg-sdk-memory-disabled",
@@ -1491,7 +1491,7 @@ async def test_sdk_round_start_uses_only_host_memory_policy():
         "memory_consent": "summary",
     }))
 
-    _put_sdk_drawing_route(
+    enabled_route = _put_sdk_drawing_route(
         "dg-sdk-memory-enabled",
         "route-memory-enabled",
         memory_enabled=True,
@@ -1508,6 +1508,8 @@ async def test_sdk_round_start_uses_only_host_memory_policy():
     assert enabled_result["ok"] is True
     assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-disabled"]["memory_consent"] == "none"
     assert dgr._drawing_guess_sessions["YUI:dg-sdk-memory-enabled"]["memory_consent"] == "summary"
+    assert disabled_route["game_memory_archive_owner"] == "feature"
+    assert enabled_route["game_memory_archive_owner"] == "feature"
 
 
 @pytest.mark.unit
@@ -3079,6 +3081,71 @@ async def test_direct_answer_request_can_reveal_without_fixed_template(monkeypat
     assert result["answer"]["id"] == "banana"
     assert result["state"]["phase"] == "word_picking"
     assert len(result["user_draw_options"]) == dgr.USER_DRAW_OPTION_COUNT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("mi respuesta es gato", False),
+        ("minha resposta é gato", False),
+        ("мой ответ — кот", False),
+        ("¿Cuál es la respuesta?", True),
+        ("Qual é a resposta?", True),
+        ("Я сдаюсь", True),
+        ("정답 알려", True),
+    ),
+)
+def test_localized_direct_answer_phrase_detection(text, expected):
+    assert dgr._is_direct_answer_request(text) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_id", "locale", "text"),
+    (
+        ("dg-local-guess-es", "es", "mi respuesta es gato"),
+        ("dg-local-guess-pt", "pt", "minha resposta é gato"),
+        ("dg-local-guess-ru", "ru", "мой ответ — кот"),
+    ),
+)
+async def test_localized_answer_statement_is_a_guess_without_intent_model(
+    monkeypatch,
+    session_id,
+    locale,
+    text,
+):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": locale,
+    }))
+    session = dgr._drawing_guess_sessions[f"YUI:{session_id}"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "cat"
+
+    async def unavailable_intent(**_kwargs):
+        return None
+
+    async def fake_persona_line(**kwargs):
+        assert kwargs["event"] == "user_guess_correct"
+        return "Correct.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_classify_game_input_intent", unavailable_intent)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    result = await dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": locale,
+        "text": text,
+    }))
+
+    assert result["ok"] is True
+    assert result["kind"] == "guess"
+    assert result["correct"] is True
+    assert result["answer"]["id"] == "cat"
+    assert result["state"]["phase"] == "word_picking"
 
 
 @pytest.mark.unit

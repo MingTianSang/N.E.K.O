@@ -165,6 +165,7 @@
     modelResizeHandler: null,
     roundFlowToken: 0,
     activeRoundToken: 0,
+    roundSessionReady: false,
     roundRequestControllers: new Set(),
     guessTimeoutRetryTimer: null,
     aiGuessTimeoutRetryTimer: null,
@@ -985,7 +986,7 @@
     els.doneButton.hidden = roundSummaryOpen || finalSummaryOpen;
     els.nextRoundButton.hidden = !roundSummaryOpen;
     els.endButton.hidden = finalSummaryOpen;
-    els.endButton.disabled = !routeReady;
+    els.endButton.disabled = !routeReady || !state.roundSessionReady;
     els.doneButton.disabled = tutorialOpen || !routeReady || !canvasEditable;
     els.clearCanvasButton.disabled = !canvasEditable;
     els.nextRoundButton.disabled = state.phase !== 'summary' || !routeReady;
@@ -1625,6 +1626,7 @@
   function cleanupRouteResources() {
     beginRoundFlow();
     state.activeRoundToken = state.roundFlowToken;
+    state.roundSessionReady = false;
     state.isDrawing = false;
     if (els.ctx) {
       els.ctx.globalCompositeOperation = 'source-over';
@@ -3230,6 +3232,7 @@
 
   function resetRoundStartState() {
     var token = beginRoundFlow();
+    state.roundSessionReady = false;
     clearNekoVoiceQueue();
     // 后端 _require_session 校验的是 round/start 当时存的 token；此后前端
     // 因终态作废等原因 bump roundFlowToken 时（如 renderFinalSummary），发给
@@ -3276,6 +3279,8 @@
       .then(function (res) {
         ensureCurrentRoundFlow(flowToken);
         if (!res || !res.ok) throw new Error((res && res.reason) || 'round_start_failed');
+        state.roundSessionReady = true;
+        updateControls();
         setPhase('ai_drawing');
         setBadge(t('drawingGuess.phases.ai_drawing', 'Neko drawing'));
         scheduleAiDrawingPlaceholderHint();
@@ -5005,8 +5010,10 @@
   }
 
   function finishGame() {
+    if (!state.roundSessionReady) return false;
     renderFinalSummary();
     showExitConfirm();
+    return true;
   }
 
   function bindEvents() {

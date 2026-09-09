@@ -7053,6 +7053,59 @@ async def test_game_memory_disabled_skips_archive_memory(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_feature_owned_memory_skips_generic_archive_after_policy_refresh(monkeypatch):
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    state = gr_runtime._activate_game_route("drawing_guess", "drawing-1", "Lan")
+    _mark_game_started(state)
+    state["game_memory_archive_owner"] = "feature"
+
+    # Trusted SDK heartbeats and route/end payloads refresh consent fields. The
+    # persistence owner is server-owned and must remain independent from those
+    # repeatedly supplied booleans.
+    gr_runtime._update_game_memory_enabled_from_payload(
+        state,
+        {
+            "game_memory_enabled": True,
+            "game_memory_archive_enabled": True,
+        },
+        "drawing_guess",
+    )
+    assert state["game_memory_archive_enabled"] is True
+    assert state["game_memory_archive_owner"] == "feature"
+
+    async def fail_submit(_archive):
+        raise AssertionError("feature-owned memory must not also write a generic archive")
+
+    _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fail_submit)
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="manual",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"]["status"] == "skipped"
+    assert result["archive_memory"]["reason"] == "game_memory_archive_owned_by_feature"
+    assert result["archive"]["game_memory_archive_owner"] == "feature"
+    assert result["archive"]["game_memory_archive_enabled"] is True
+    assert result["archive"]["memory_skipped"] is True
+    assert state["game_context_organizer"]["error"] == "archive_disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feature_archive_owner_is_a_sink_level_guard():
+    result = await gr_archive._submit_game_archive_to_memory({
+        "game_memory_enabled": True,
+        "game_memory_archive_enabled": True,
+        "game_memory_archive_owner": "feature",
+    })
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "game_memory_archive_owned_by_feature"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_project_speak_uses_manager_project_tts(monkeypatch):
     mgr = _FakeGameRouteManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
