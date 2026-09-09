@@ -82,7 +82,10 @@
   var AI_DRAW_PLAN_MAX_PATH_CHARS = 6000;
   var AI_DRAW_PLAN_MAX_PATH_COMMANDS = 512;
   var ROUND_INPUT_REQUEST_TIMEOUT_MS = 30 * 1000;
-  var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;
+  // The backend may classify feedback and use the full vision-model budget
+  // before producing the persona line, summary evaluation, and optional
+  // memory write. Keep this aligned with the registered 350-second route.
+  var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 50000;
   var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;
   var AI_GUESS_TIMEOUT_MAX_RETRIES = 2;
   var AI_GUESS_TIMEOUT_PHASE_ADVANCE_MAX_RETRIES = 1;
@@ -3639,7 +3642,7 @@
           var retryWhenReady = function () {
             if (!isCurrentRoundFlow(flowToken)) return;
             if (state.phase !== 'ai_guessing' && state.phase !== 'ai_guess_feedback') return;
-            if (state.aiGuessInFlight) {
+            if (state.aiGuessInFlight || state.chatInFlight) {
               setTimeout(retryWhenReady, 120);
               return;
             }

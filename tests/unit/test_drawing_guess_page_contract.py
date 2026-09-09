@@ -116,7 +116,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
             "round:feedback": {
                 "path": "input",
                 "maxRequestBytes": 2097152,
-                "maxTimeoutMs": 330000,
+                "maxTimeoutMs": 350000,
             },
             "round:choose-word": {
                 "path": "choose-word",
@@ -131,7 +131,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
             "round:vision-guess": {
                 "path": "vision-guess",
                 "maxRequestBytes": 2097152,
-                "maxTimeoutMs": 330000,
+                "maxTimeoutMs": 350000,
             },
         },
     }
@@ -728,7 +728,7 @@ def test_drawing_guess_static_route_contract():
     assert "var AI_DRAW_REVIEW_WIDTH = 384;" in script
     assert "var AI_DRAW_REVIEW_HEIGHT = 288;" in script
     assert "var ROUND_INPUT_REQUEST_TIMEOUT_MS = 30 * 1000;" in script
-    assert "var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;" in script
+    assert "var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 50000;" in script
     assert "var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;" in script
     assert "var AI_GUESS_MIN_DELAY_MS = 10000;" in script
     assert "var AI_GUESS_MAX_DELAY_MS = 60000;" in script

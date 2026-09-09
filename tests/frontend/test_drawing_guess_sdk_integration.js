@@ -119,7 +119,7 @@ async function main() {
             'round:feedback': {
               path: 'input',
               maxRequestBytes: 2097152,
-              maxTimeoutMs: 330000,
+              maxTimeoutMs: 350000,
             },
             'round:choose-word': {
               path: 'choose-word',
@@ -134,7 +134,7 @@ async function main() {
             'round:vision-guess': {
               path: 'vision-guess',
               maxRequestBytes: 2097152,
-              maxTimeoutMs: 330000,
+              maxTimeoutMs: 350000,
             },
           },
         },

@@ -1443,6 +1443,8 @@ async function testVisionCommandsUseBoundedSnapshotsAndPreserveFullPng() {
   events.commands.forEach((call) => {
     assertEqual(call.payload.image_data_url, 'data:image/jpeg;base64,480x360',
       `${call.command} sent an unbounded canvas image`);
+    assertEqual(call.timeoutMs, 350000,
+      `${call.command} did not reserve time for final guess post-processing`);
   });
   assertEqual(api.state.userPng, oversizedPng,
     'network image bounding overwrote the full PNG used by summaries and downloads');
@@ -1529,6 +1531,78 @@ async function testBusyVisionRetryPreservesBoundedSnapshot() {
     'the first vision request did not use the trigger snapshot');
   assertEqual(events.commands[1].payload.image_data_url, 'data:image/jpeg;base64,retry-A',
     'the busy retry recaptured a different canvas');
+}
+
+async function testBusyVisionRetryWaitsForInFlightChat() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  const sourceCanvas = harness.sandbox.document.createElement('canvas');
+  sourceCanvas.width = 800;
+  sourceCanvas.height = 600;
+  api.installCanvasForCapture(sourceCanvas);
+  const chat = deferred();
+  let visionAttempt = 0;
+  api.installRoundCommandSpies((command) => {
+    if (command === 'round:input') return chat.promise;
+    if (command !== 'round:vision-guess') throw new Error(`unexpected command: ${command}`);
+    visionAttempt += 1;
+    if (visionAttempt === 1) return { ok: false, reason: 'session_busy' };
+    return {
+      ok: true,
+      message: 'vision recovered',
+      guess: { label: 'train' },
+      attempt: 1,
+      max_attempts: 3,
+      state: { phase: 'summary' },
+    };
+  }, events);
+  api.state.phase = 'user_drawing';
+  api.state.hasDrawn = true;
+  api.state.roundFlowToken = 17;
+  api.state.activeRoundToken = 17;
+
+  const chatRequest = api.submitGameChat('still chatting');
+  api.submitDrawing(true);
+  await waitFor(() => visionAttempt === 1 && !api.state.aiGuessInFlight,
+    'the initial vision request did not receive the simulated busy response');
+  await new Promise((resolve) => setTimeout(resolve, 360));
+
+  assertEqual(visionAttempt, 1,
+    'the busy vision request retried while chat still owned the backend session lock');
+  chat.resolve({ ok: true, message: 'chat finished' });
+  await chatRequest;
+  await waitFor(() => visionAttempt === 2 && events.summaries.length === 1 && !api.state.aiGuessInFlight,
+    'the busy vision request did not retry after chat released the backend session lock');
+  const visionCommands = events.commands.filter((call) => call.command === 'round:vision-guess');
+  assertEqual(visionCommands.length, 2, 'the recovered vision request retried more than once');
+  assertEqual(visionCommands[1].payload.image_data_url, visionCommands[0].payload.image_data_url,
+    'the chat-delayed busy retry lost its original canvas snapshot');
+  assertEqual(events.messages.length, 0, 'the recovered vision request surfaced an input failure');
+  assertEqual(api.state.chatInFlight, false, 'the completed chat left its in-flight lock set');
+}
+
+async function testChatDelayedBusyVisionRetryStopsAfterRoundChange() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
+  api.installRoundCommandSpies((command) => {
+    if (command !== 'round:vision-guess') throw new Error(`unexpected command: ${command}`);
+    return { ok: false, reason: 'session_busy' };
+  }, events);
+  api.state.phase = 'ai_guessing';
+  api.state.roundFlowToken = 18;
+  api.state.activeRoundToken = 18;
+  api.state.chatInFlight = true;
+
+  await api.postVisionGuess('', { image_data_url: 'data:image/jpeg;base64,stale-retry' });
+  api.state.roundFlowToken = 19;
+  api.state.activeRoundToken = 19;
+  api.state.chatInFlight = false;
+  await new Promise((resolve) => setTimeout(resolve, 360));
+
+  assertEqual(events.commands.length, 1,
+    'a chat-delayed busy retry crossed into the next round');
 }
 
 async function testRejectedVisionCommandUnlocksTheRound() {
@@ -2233,6 +2307,8 @@ async function main() {
   await testVisionCommandsUseBoundedSnapshotsAndPreserveFullPng();
   await testDeferredVisionSnapshotsPreserveTriggerImage();
   await testBusyVisionRetryPreservesBoundedSnapshot();
+  await testBusyVisionRetryWaitsForInFlightChat();
+  await testChatDelayedBusyVisionRetryStopsAfterRoundChange();
   await testRejectedVisionCommandUnlocksTheRound();
   await testFailedJpegCaptureNeverSendsPngOrEmptyImage();
   await testAutomaticDrawingTimeoutSettlesWhenJpegCaptureFails();
