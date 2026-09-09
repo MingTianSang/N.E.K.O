@@ -538,7 +538,7 @@
       ],
       "properties": {
         "request": {
-          "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"
+          "$ref": "#/$defs/commandObjectSchema"
         },
         "response": {
           "$ref": "#/$defs/commandContractSchemaOrEnumShorthand"

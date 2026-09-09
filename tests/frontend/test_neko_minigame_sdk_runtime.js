@@ -1029,6 +1029,96 @@ async function main() {
   // Placed last: these connect extra clients, and every assertion above counts
   // handshakes and protocol messages on the shared transport.
 
+  // Command payloads are merged with trusted route identity by the host, so
+  // their root schema must be an object. Keep all other schema roots available
+  // for responses: only the request side has this transport constraint.
+  const INVALID_COMMAND_REQUEST_SCHEMAS = [
+    ['null', null],
+    ['boolean', { type: 'boolean' }],
+    ['number', { type: 'number' }],
+    ['integer', { type: 'integer' }],
+    ['string', { type: 'string' }],
+    ['array', { type: 'array', items: { type: 'string' } }],
+    ['enum shorthand', ['ready', 'waiting']],
+    ['object with scalar keyword', { type: 'object', minLength: 1 }],
+  ];
+  for (const [shape, request] of INVALID_COMMAND_REQUEST_SCHEMAS) {
+    let commandRequestError = null;
+    try {
+      await window.NekoMiniGame.connect({
+        id: `command-${shape.replace(/ /g, '-')}-request-test`,
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+        contracts: {
+          commands: {
+            'round:probe': {
+              request,
+              response: { type: 'object' },
+            },
+          },
+        },
+      }, { transport });
+    } catch (error) { commandRequestError = error; }
+    assert(commandRequestError?.code === 'invalid_manifest',
+      `a command ${shape} request schema was accepted at connect time`);
+  }
+
+  const SCALAR_COMMAND_RESPONSE_CASES = [
+    ['string', { type: 'string', maxLength: 32 }, 'ready'],
+    ['number', { type: 'number' }, 42.5],
+    ['boolean', { type: 'boolean' }, false],
+    ['null', { type: 'null' }, null],
+  ];
+  for (const [shape, responseSchema, responseValue] of SCALAR_COMMAND_RESPONSE_CASES) {
+    const scalarCommandTransport = {
+      ...transport,
+      dispose() {},
+      executeGameCommand: async () => ({
+        ok: true,
+        status: 200,
+        async json() { return responseValue; },
+      }),
+    };
+    const scalarCommandResponseGame = await window.NekoMiniGame.connect({
+      id: `command-${shape}-response-test`,
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      contracts: {
+        commands: {
+          'round:probe': {
+            request: { type: 'object' },
+            response: responseSchema,
+          },
+        },
+      },
+    }, { transport: scalarCommandTransport });
+    assert(scalarCommandResponseGame.manifest.contracts.commands['round:probe'].response.type === shape,
+      `a ${shape} command response schema stopped connecting`);
+    await scalarCommandResponseGame.runtime.start();
+    const scalarCommandResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+    assert(scalarCommandResponse.ok === true && Object.is(scalarCommandResponse.data, responseValue),
+      `a ${shape} JSON command response was replaced before contract validation`);
+
+    if (shape === 'string') {
+      scalarCommandTransport.executeGameCommand = async () => 'direct-ready';
+      const directScalarResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(directScalarResponse.ok === true && directScalarResponse.data === 'direct-ready',
+        'a direct-transport scalar command response was replaced before contract validation');
+
+      scalarCommandTransport.executeGameCommand = async () => ({
+        ok: false,
+        status: 503,
+        async json() { return 'temporarily unavailable'; },
+      });
+      const scalarErrorResponse = await scalarCommandResponseGame.commands.execute('round:probe', {});
+      assert(scalarErrorResponse.ok === false
+        && scalarErrorResponse.status === 503
+        && scalarErrorResponse.data === 'temporarily unavailable',
+      'a scalar HTTP error body was discarded or success-validated');
+    }
+    scalarCommandResponseGame.dispose();
+  }
+
   // The published schema declares minimum/maximum as numbers. `Number()`
   // coercion accepted a numeric-looking string, and turned `minimum: null` --
   // an author writing "no minimum" -- into a hard floor of 0, invisible until a

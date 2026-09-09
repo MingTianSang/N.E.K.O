@@ -1850,6 +1850,7 @@ async def test_timeout_rejects_concurrent_session_request():
             "lanlan_name": "YUI",
             "session_id": "dg-timeout-busy",
             "i18n_language": "en",
+            "timeout_kind": "user_guessing",
         }))
     finally:
         lock.release()
@@ -1880,6 +1881,7 @@ async def test_user_guess_timeout_retry_returns_cached_transition(monkeypatch):
         "lanlan_name": "YUI",
         "session_id": "dg-timeout-retry",
         "i18n_language": "en",
+        "timeout_kind": "user_guessing",
     }
     first = await dgr.drawing_guess_timeout(_FakeRequest(payload))
     retried = await dgr.drawing_guess_timeout(_FakeRequest(payload))
@@ -1888,6 +1890,258 @@ async def test_user_guess_timeout_retry_returns_cached_transition(monkeypatch):
     assert first["phase"] == "word_picking"
     assert retried == first
     assert session["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_id", "text", "expected_kind", "expected_correct"),
+    (
+        ("dg-correct-transition-retry", "apple", "guess", True),
+        ("dg-give-up-transition-retry", "i give up", "give_up", False),
+    ),
+)
+async def test_user_guess_timeout_recovers_completed_input_transition(
+    monkeypatch,
+    session_id,
+    text,
+    expected_kind,
+    expected_correct,
+):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions[f"YUI:{session_id}"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+
+    async def fake_persona_line(**_kwargs):
+        return "The guessing turn is complete.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    identity = {
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "en",
+    }
+    completed = await dgr.drawing_guess_input(_FakeRequest({
+        **identity,
+        "text": text,
+    }))
+
+    assert completed["ok"] is True
+    assert completed["kind"] == expected_kind
+    assert completed["correct"] is expected_correct
+    assert completed["state"]["phase"] == "word_picking"
+    assert session["phase"] == "word_picking"
+    assert session["user_guess_transition_result"] == completed
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        **identity,
+        "timeout_kind": "user_guessing",
+    }))
+
+    assert recovered == completed
+    assert recovered["answer"]["id"] == "apple"
+    assert [option["id"] for option in recovered["user_draw_options"]] == [
+        "cat",
+        "dog",
+        "fish",
+    ]
+    assert session["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_id", "text", "expected_kind", "expected_correct", "fallback_key"),
+    (
+        ("dg-cancel-correct-transition", "apple", "guess", True, "user_correct"),
+        ("dg-cancel-give-up-transition", "i give up", "give_up", False, "guess_timeout"),
+    ),
+)
+async def test_user_guess_cancelled_during_persona_can_recover_transition(
+    monkeypatch,
+    session_id,
+    text,
+    expected_kind,
+    expected_correct,
+    fallback_key,
+):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions[f"YUI:{session_id}"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+    persona_started = asyncio.Event()
+
+    async def blocking_persona_line(**_kwargs):
+        persona_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", blocking_persona_line)
+    task = asyncio.create_task(dgr.drawing_guess_input(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "en",
+        "text": text,
+    })))
+    await asyncio.wait_for(persona_started.wait(), timeout=1.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert session["phase"] == "word_picking"
+    assert session["user_guess_transition_result"]["kind"] == expected_kind
+    assert session["user_guess_transition_result"]["message"] == dgr._localized_line("en", fallback_key)
+    assert dgr._get_session_lock(session).locked() is False
+    assert session["game_chat_history"][-1]["text"] == dgr._localized_line("en", fallback_key)
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "zh-CN",
+        "timeout_kind": "user_guessing",
+    }))
+
+    assert recovered["ok"] is True
+    assert recovered["kind"] == expected_kind
+    assert recovered["correct"] is expected_correct
+    assert recovered["message"] == dgr._localized_line("zh-CN", fallback_key)
+    assert recovered["message_source"] == "fallback"
+    assert recovered["answer"] == dgr._word_public(dgr._WORD_BY_ID["apple"], "zh-CN")
+    assert [option["id"] for option in recovered["user_draw_options"]] == ["cat", "dog", "fish"]
+    assert recovered["state"]["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_guess_timeout_cancelled_during_persona_can_recover_transition(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-cancel-user-timeout-transition",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-cancel-user-timeout-transition"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+    persona_started = asyncio.Event()
+
+    async def blocking_persona_line(**_kwargs):
+        persona_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", blocking_persona_line)
+    task = asyncio.create_task(dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-cancel-user-timeout-transition",
+        "i18n_language": "en",
+        "timeout_kind": "user_guessing",
+    })))
+    await asyncio.wait_for(persona_started.wait(), timeout=1.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert session["phase"] == "word_picking"
+    assert session["user_guess_transition_result"]["kind"] == "user_guess_timeout"
+    assert dgr._get_session_lock(session).locked() is False
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-cancel-user-timeout-transition",
+        "i18n_language": "zh-CN",
+        "timeout_kind": "user_guessing",
+    }))
+
+    assert recovered["kind"] == "user_guess_timeout"
+    assert recovered["message"] == dgr._localized_line("zh-CN", "guess_timeout")
+    assert recovered["answer"] == dgr._word_public(dgr._WORD_BY_ID["apple"], "zh-CN")
+    assert recovered["state"]["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_guess_timeout_builds_defensive_recovery_without_cache():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-user-transition-fallback",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-user-transition-fallback"]
+    session["phase"] = "word_picking"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+    session["user_score"] = 1
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-user-transition-fallback",
+        "i18n_language": "zh-CN",
+        "timeout_kind": "user_guessing",
+    }))
+
+    assert recovered["ok"] is True
+    assert recovered["kind"] == "guess"
+    assert recovered["correct"] is True
+    assert recovered["message"] == dgr._localized_line("zh-CN", "user_correct")
+    assert recovered["answer"] == dgr._word_public(dgr._WORD_BY_ID["apple"], "zh-CN")
+    assert recovered["state"]["phase"] == "word_picking"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_user_guess_timeout_cannot_advance_user_drawing(monkeypatch):
+    session_id = "dg-stale-user-guess-timeout"
+    identity = {
+        "lanlan_name": "YUI",
+        "session_id": session_id,
+        "i18n_language": "en",
+    }
+    await dgr.drawing_guess_round_start(_FakeRequest(identity))
+    session = dgr._drawing_guess_sessions[f"YUI:{session_id}"]
+    session["phase"] = "user_guessing"
+    session["ai_word_id"] = "apple"
+    session["user_word_options"] = ["cat", "dog", "fish"]
+
+    async def fake_persona_line(**_kwargs):
+        return "Correct.", "persona_model"
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    completed = await dgr.drawing_guess_input(_FakeRequest({
+        **identity,
+        "text": "apple",
+    }))
+    assert completed["correct"] is True
+    assert session["phase"] == "word_picking"
+
+    chosen = await dgr.drawing_guess_choose_word(_FakeRequest({
+        **identity,
+        "word_id": "cat",
+    }))
+    assert chosen["ok"] is True
+    assert session["phase"] == "user_drawing"
+
+    stale_timeout = await dgr.drawing_guess_timeout(_FakeRequest({
+        **identity,
+        "timeout_kind": "user_guessing",
+    }))
+
+    assert stale_timeout["ok"] is False
+    assert stale_timeout["reason"] == "stale_timeout_phase"
+    assert stale_timeout["state"]["phase"] == "user_drawing"
+    assert session["phase"] == "user_drawing"
+    assert session["user_word_id"] == "cat"
 
 
 @pytest.mark.unit
@@ -3361,6 +3615,96 @@ async def test_vision_guess_uses_model_structured_guess(monkeypatch):
     assert session["last_ai_guess_correct"] is True
     assert session["last_ai_guess_attempt"] == 1
 
+    history_length = len(session["game_chat_history"])
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-model",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    }))
+    assert recovered == result
+    assert len(session["game_chat_history"]) == history_length
+
+    translated = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-model",
+        "i18n_language": "zh-CN",
+        "timeout_kind": "ai_guessing",
+    }))
+    assert translated["kind"] == "ai_guess"
+    assert translated["message"] == dgr._localized_line("zh-CN", "ai_correct")
+    assert translated["message_source"] == "fallback"
+    assert translated["evaluation"] == dgr._summary_evaluation_fallback("zh-CN", correct=True)
+    assert translated["evaluation_source"] == "fallback"
+    assert translated["guess"] == dgr._word_public(dgr._WORD_BY_ID["banana"], "zh-CN")
+    assert translated["answer"] == dgr._word_public(dgr._WORD_BY_ID["banana"], "zh-CN")
+    assert translated["state"]["user_draw_answer"] == dgr._word_public(
+        dgr._WORD_BY_ID["banana"],
+        "zh-CN",
+    )
+    assert len(session["game_chat_history"]) == history_length
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_completed_vision_guess_cancelled_during_evaluation_keeps_recoverable_summary(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-evaluation-cancelled",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-vision-evaluation-cancelled"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+    evaluation_started = asyncio.Event()
+
+    async def correct_vision_guess(**_kwargs):
+        return {
+            "word": dgr._WORD_BY_ID["banana"],
+            "confidence": 0.9,
+            "message": "That looks like a banana.",
+            "source": "vision_model",
+        }
+
+    async def fake_persona_line(**_kwargs):
+        return "My guess is banana.", "persona_model"
+
+    async def blocking_summary_evaluation(**_kwargs):
+        evaluation_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", correct_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+    monkeypatch.setattr(dgr, "_generate_summary_evaluation", blocking_summary_evaluation)
+    task = asyncio.create_task(dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-evaluation-cancelled",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-used-by-mock",
+    })))
+    await asyncio.wait_for(evaluation_started.wait(), timeout=1.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert session["phase"] == "summary"
+    assert session["ai_guess_attempts"] == 1
+    assert dgr._get_session_lock(session).locked() is False
+    assert session["game_chat_history"][-1]["text"] == "My guess is banana."
+    cached = session["ai_guess_transition_result"]
+    assert cached["kind"] == "ai_guess"
+    assert cached["guess"]["id"] == "banana"
+    assert cached["evaluation"] == dgr._summary_evaluation_fallback("en", correct=True)
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-vision-evaluation-cancelled",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    }))
+    assert recovered == cached
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -3427,6 +3771,130 @@ async def test_vision_guess_uses_text_context_model_when_vision_unavailable(monk
     assert result["state"]["phase"] == "summary"
     assert result["message"] == "Then I will lock in banana."
     assert result["evaluation"] == "The curved little thing reads clearly enough."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_vision_guess_shared_model_budget_cancels_text_and_uses_static_fallback(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-shared-model-budget",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-shared-model-budget"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+    text_guess_started = asyncio.Event()
+    text_guess_cancelled = False
+
+    async def unavailable_vision_guess(**_kwargs):
+        return None
+
+    async def blocking_text_context_guess(**_kwargs):
+        nonlocal text_guess_cancelled
+        text_guess_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            text_guess_cancelled = True
+            raise
+
+    async def fake_persona_line(**_kwargs):
+        return "I will make a fallback guess.", "persona_model"
+
+    monkeypatch.setattr(dgr, "AI_GUESS_MODEL_BUDGET_SECONDS", 0.01)
+    monkeypatch.setattr(dgr, "_generate_vision_guess", unavailable_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_text_context_guess", blocking_text_context_guess)
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", fake_persona_line)
+
+    result = await asyncio.wait_for(dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-shared-model-budget",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-used-by-mock",
+    })), timeout=1.0)
+
+    assert text_guess_started.is_set()
+    assert text_guess_cancelled is True
+    assert result["ok"] is True
+    assert result["source"] == "fallback_static"
+    assert result["correct"] is False
+    assert result["state"]["phase"] == "ai_guess_feedback"
+    assert dgr._get_session_lock(session).locked() is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_vision_guess_external_cancellation_propagates_and_releases_session_lock(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-external-cancel",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-external-cancel"]
+    session["phase"] = "user_drawing"
+    session["user_word_id"] = "banana"
+    vision_guess_started = asyncio.Event()
+    vision_guess_cancelled = False
+    text_guess_called = False
+
+    async def blocking_vision_guess(**_kwargs):
+        nonlocal vision_guess_cancelled
+        vision_guess_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            vision_guess_cancelled = True
+            raise
+
+    async def unexpected_text_context_guess(**_kwargs):
+        nonlocal text_guess_called
+        text_guess_called = True
+        return None
+
+    monkeypatch.setattr(dgr, "AI_GUESS_MODEL_BUDGET_SECONDS", 60.0)
+    monkeypatch.setattr(dgr, "_generate_vision_guess", blocking_vision_guess)
+    monkeypatch.setattr(dgr, "_generate_text_context_guess", unexpected_text_context_guess)
+
+    task = asyncio.create_task(dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-external-cancel",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-used-by-mock",
+    })))
+    await asyncio.wait_for(vision_guess_started.wait(), timeout=1.0)
+    lock = dgr._get_session_lock(session)
+    assert lock.locked() is True
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert vision_guess_cancelled is True
+    assert text_guess_called is False
+    assert lock.locked() is False
+    assert session["ai_guess_attempts"] == 0
+
+    async def retry_vision_guess(**_kwargs):
+        return {
+            "word": dgr._WORD_BY_ID["apple"],
+            "confidence": 0.7,
+            "message": "Maybe it is an apple.",
+            "source": "vision_model",
+        }
+
+    monkeypatch.setattr(dgr, "_generate_vision_guess", retry_vision_guess)
+    retried = await dgr.drawing_guess_vision_guess(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-external-cancel",
+        "i18n_language": "en",
+        "image_data_url": "data:image/png;base64,not-used-by-mock",
+    }))
+
+    assert retried["ok"] is True
+    assert retried["attempt"] == 1
+    assert retried["correct"] is False
+    assert session["ai_guess_attempts"] == 1
 
 
 @pytest.mark.unit
@@ -3752,6 +4220,16 @@ async def test_vision_guess_fallback_does_not_force_success_by_attempt_count(mon
     assert third["state"]["phase"] == "summary"
     assert third["state"]["scores"]["neko"] == 0
 
+    history_length = len(session["game_chat_history"])
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-3",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    }))
+    assert recovered == third
+    assert len(session["game_chat_history"]) == history_length
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -3811,6 +4289,16 @@ async def test_time_expired_user_drawing_settles_after_first_missed_ai_guess(mon
     assert result["message"] == "I am going with apple."
     assert result["evaluation"] == "This drawing kept its little secret pretty well."
 
+    history_length = len(session["game_chat_history"])
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-time-expired-miss",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    }))
+    assert recovered == result
+    assert len(session["game_chat_history"]) == history_length
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -3853,6 +4341,7 @@ async def test_timeout_advances_user_drawing_then_settles_ai_guessing_round(monk
         "lanlan_name": "YUI",
         "session_id": "dg-ai-guessing-timeout",
         "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
     }
     advanced = await dgr.drawing_guess_timeout(_FakeRequest(timeout_payload))
 
@@ -3871,6 +4360,95 @@ async def test_timeout_advances_user_drawing_then_settles_ai_guessing_round(monk
     assert result["state"]["phase"] == "summary"
     assert session["phase"] == "summary"
     assert session["game_chat_history"][-1]["kind"] == "vision_guess"
+
+    history_length = len(session["game_chat_history"])
+    cached = await dgr.drawing_guess_timeout(_FakeRequest(timeout_payload))
+
+    assert cached == result
+    assert len(session["game_chat_history"]) == history_length
+    assert session["phase"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_timeout_recovers_summary_without_cached_transition():
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-summary-recovery",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-ai-summary-recovery"]
+    session["phase"] = "summary"
+    session["user_word_id"] = "banana"
+    session["last_ai_guess_correct"] = False
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-summary-recovery",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    }))
+
+    assert recovered["ok"] is True
+    assert recovered["phase"] == "summary"
+    assert recovered["kind"] == "ai_guess_recovery"
+    assert recovered["answer"]["id"] == "banana"
+    assert recovered["evaluation"] == dgr._summary_evaluation_fallback("en", correct=False)
+    assert recovered["state"]["phase"] == "summary"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ai_timeout_cancelled_during_persona_can_recover_cached_summary(monkeypatch):
+    await dgr.drawing_guess_round_start(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-timeout-cancelled",
+        "i18n_language": "en",
+    }))
+    session = dgr._drawing_guess_sessions["YUI:dg-ai-timeout-cancelled"]
+    session["phase"] = "ai_guess_feedback"
+    session["user_word_id"] = "banana"
+    session["ai_guess_attempts"] = 1
+    persona_started = asyncio.Event()
+
+    async def blocking_persona_line(**_kwargs):
+        persona_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(dgr, "_generate_persona_game_line", blocking_persona_line)
+    task = asyncio.create_task(dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-timeout-cancelled",
+        "i18n_language": "en",
+        "timeout_kind": "ai_guessing",
+    })))
+    await asyncio.wait_for(persona_started.wait(), timeout=1.0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert session["phase"] == "summary"
+    assert session["ai_guess_transition_result"]["kind"] == "ai_guess_timeout"
+    assert dgr._get_session_lock(session).locked() is False
+    assert session["game_chat_history"][-1]["text"] == dgr._localized_line("en", "ai_wrong")
+
+    recovered = await dgr.drawing_guess_timeout(_FakeRequest({
+        "lanlan_name": "YUI",
+        "session_id": "dg-ai-timeout-cancelled",
+        "i18n_language": "zh-CN",
+        "timeout_kind": "ai_guessing",
+    }))
+
+    assert recovered["ok"] is True
+    assert recovered["kind"] == "ai_guess_timeout"
+    assert recovered["message"] == dgr._localized_line("zh-CN", "ai_wrong")
+    assert recovered["evaluation"] == dgr._summary_evaluation_fallback("zh-CN", correct=False)
+    assert recovered["answer"] == dgr._word_public(dgr._WORD_BY_ID["banana"], "zh-CN")
+    assert recovered["state"]["user_draw_answer"] == dgr._word_public(
+        dgr._WORD_BY_ID["banana"],
+        "zh-CN",
+    )
 
 
 @pytest.mark.unit

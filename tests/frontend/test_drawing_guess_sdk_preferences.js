@@ -255,8 +255,12 @@ function loadHarness() {
     submitDrawing: submitDrawing,
     triggerSupplementGuess: triggerSupplementGuess,
     triggerRandomAiGuess: triggerRandomAiGuess,
+    handleAiGuessTimeout: handleAiGuessTimeout,
     flushDeferredAiGuessWork: flushDeferredAiGuessWork,
     settleAiGuessTimeout: settleAiGuessTimeout,
+    requestGuessTimeout: requestGuessTimeout,
+    submitUserGuess: submitUserGuess,
+    submitGameChat: submitGameChat,
     addNekoMessage: addNekoMessage,
     logSdkBestEffort: logSdkBestEffort,
     currentLanguage: currentLanguage,
@@ -274,6 +278,20 @@ function loadHarness() {
     },
     setAiGuessTimeoutBusyMaxPolls: function (value) {
       AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = Math.max(0, Number(value) || 0);
+    },
+    setAiGuessTimeoutBusyRetryTiming: function (windowMs, delayMs) {
+      AI_GUESS_TIMEOUT_BUSY_RETRY_WINDOW_MS = Math.max(1, Number(windowMs) || 1);
+      AI_GUESS_TIMEOUT_BUSY_RETRY_DELAY_MS = Math.max(1, Number(delayMs) || 1);
+    },
+    setAiGuessTimeoutRetryBaseDelay: function (value) {
+      AI_GUESS_TIMEOUT_RETRY_BASE_DELAY_MS = Math.max(1, Number(value) || 1);
+    },
+    setGuessTimeoutRetryDelays: function (baseValue, maxValue) {
+      GUESS_TIMEOUT_RETRY_BASE_DELAY_MS = Math.max(1, Number(baseValue) || 1);
+      GUESS_TIMEOUT_RETRY_MAX_DELAY_MS = Math.max(
+        GUESS_TIMEOUT_RETRY_BASE_DELAY_MS,
+        Number(maxValue) || GUESS_TIMEOUT_RETRY_BASE_DELAY_MS
+      );
     },
     installRoundCommandSpies: function (handler, events) {
       executeRoundCommand = function (command, payload, timeoutMs) {
@@ -299,8 +317,15 @@ function loadHarness() {
         events.phases.push(phase);
       };
       renderSummary = function (response) {
+        state.aiGuessTimeoutSettling = false;
         state.phase = 'summary';
         events.summaries.push(response);
+      };
+      prepareUserDrawing = function (options, seconds) {
+        state.phase = 'drawing_pick';
+        if (events.userDrawPreparations) {
+          events.userDrawPreparations.push({ options: options, seconds: seconds });
+        }
       };
       updateControls = function () {};
     },
@@ -1519,6 +1544,7 @@ async function testTimeoutServerBusyRetriesAreBounded() {
   const events = { commands: [], messages: [], nekoMessages: [], phases: [], summaries: [] };
   api.installRoundCommandSpies(() => ({ ok: false, reason: 'session_busy' }), events);
   api.setAiGuessTimeoutBusyMaxPolls(2);
+  api.setAiGuessTimeoutBusyRetryTiming(1000, 5);
   api.state.phase = 'ai_guessing';
   api.state.roundFlowToken = 25;
   api.state.activeRoundToken = 25;
@@ -1530,6 +1556,140 @@ async function testTimeoutServerBusyRetriesAreBounded() {
   assertEqual(events.commands.length, 3, 'server busy settlement retried past its limit');
   assertEqual(events.messages[0].params.reason, 'session_busy',
     'server busy exhaustion reported the wrong failure');
+}
+
+async function testTimeoutServerBusyKeepsLockUntilRecoveredSummary() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setAiGuessTimeoutBusyMaxPolls(20);
+  api.setAiGuessTimeoutBusyRetryTiming(250, 5);
+  api.installRoundCommandSpies(() => (
+    events.commands.length <= 3
+      ? { ok: false, reason: 'session_busy' }
+      : {
+          ok: true,
+          phase: 'summary',
+          state: { phase: 'summary', user_draw_answer: { id: 'cat', label: 'Cat' } },
+          evaluation: 'Recovered.',
+        }
+  ), events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 27;
+  api.state.activeRoundToken = 27;
+
+  await api.settleAiGuessTimeout();
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the first busy response released the timeout settlement lock');
+  assertEqual(api.submitPlayerText('must stay locked'), false,
+    'text input reopened while the backend transition was still busy');
+  await waitFor(() => events.summaries.length === 1,
+    'timeout settlement did not recover after the backend became ready');
+
+  assertEqual(events.commands.length, 4,
+    'timeout settlement did not retry the expected busy responses exactly once each');
+  assertEqual(events.messages.length, 0,
+    'recoverable busy responses surfaced a false round failure');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'the recovered summary did not release the timeout settlement lock');
+}
+
+async function testTimeoutServerBusyUsesWallClockDeadline() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setAiGuessTimeoutBusyMaxPolls(1000);
+  api.setAiGuessTimeoutBusyRetryTiming(25, 5);
+  api.installRoundCommandSpies(() => ({ ok: false, reason: 'session_busy' }), events);
+  api.state.phase = 'ai_guessing';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 29;
+  api.state.activeRoundToken = 29;
+
+  await api.settleAiGuessTimeout();
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the busy deadline released the lock before its retry window elapsed');
+  await waitFor(() => events.messages.length === 1,
+    'persistent server busy did not stop at the wall-clock deadline');
+
+  assert(events.commands.length >= 2 && events.commands.length < 20,
+    'the wall-clock deadline issued an unbounded number of busy retries');
+  assertEqual(events.messages[0].params.reason, 'session_busy',
+    'the wall-clock deadline reported the wrong failure');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'the expired busy deadline did not release the input lock');
+}
+
+async function testTimeoutRecoversServerSummaryEvenWhenMarkedStale() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies(() => ({
+    ok: false,
+    reason: 'stale_timeout_phase',
+    state: { phase: 'summary', user_draw_answer: { id: 'cat', label: 'Cat' } },
+  }), events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 30;
+  api.state.activeRoundToken = 30;
+
+  await api.settleAiGuessTimeout();
+
+  assertEqual(events.summaries.length, 1,
+    'a server-confirmed summary was rejected because its timeout response was stale');
+  assertEqual(events.messages.length, 0,
+    'a recoverable server summary surfaced a false round failure');
+  assertEqual(api.state.phase, 'summary',
+    'a server-confirmed summary left the client in the guessing phase');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'a recovered server summary did not release the input lock');
+}
+
+async function testDeferredTimeoutSettlesAfterVisionRequestFinishes() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies(() => ({
+    ok: true,
+    phase: 'summary',
+    state: { phase: 'summary', user_draw_answer: { id: 'cat', label: 'Cat' } },
+    evaluation: 'Settled after the request finished.',
+  }), events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 32;
+  api.state.activeRoundToken = 32;
+  api.state.aiGuessInFlight = true;
+
+  api.handleAiGuessTimeout();
+  assertEqual(api.state.pendingAiGuessTimeout, true,
+    'the countdown did not defer settlement behind an active vision request');
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the deferred timeout did not lock new input immediately');
+  assertEqual(events.commands.length, 0,
+    'the deferred timeout raced the still-active vision request');
+
+  api.state.aiGuessInFlight = false;
+  api.flushDeferredAiGuessWork();
+  await waitFor(() => events.summaries.length === 1,
+    'the deferred timeout did not settle after the vision request finished');
+
+  assertEqual(events.commands.length, 1,
+    'the deferred timeout issued an unexpected number of settlement requests');
+  assertEqual(events.commands[0].payload.timeout_kind, 'ai_guessing',
+    'the deferred timeout lost its server-side phase fence');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'the deferred timeout did not release its lock at summary');
 }
 
 async function testTimeoutPhaseAdvanceStopsWhenRoundChanges() {
@@ -1548,6 +1708,254 @@ async function testTimeoutPhaseAdvanceStopsWhenRoundChanges() {
 
   assertEqual(events.commands.length, 1, 'a stale timeout response crossed into the next round');
   assertEqual(events.summaries.length, 0, 'a stale timeout response rendered a summary');
+}
+
+async function testUserGuessUsesFullClassifiedInputBudget() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies(() => ({ ok: true, correct: false, message: 'Try again.' }), events);
+  api.state.phase = 'user_guessing';
+  api.state.roundFlowToken = 41;
+  api.state.activeRoundToken = 41;
+
+  await api.submitUserGuess('maybe a train');
+
+  assertEqual(events.commands.length, 1, 'a user guess issued an unexpected extra command');
+  assertEqual(events.commands[0].command, 'round:input', 'a user guess used the wrong command');
+  assertEqual(events.commands[0].timeoutMs, 30000,
+    'a classified user guess did not receive the route input budget');
+
+  await api.submitGameChat('chat while drawing');
+  assertEqual(events.commands.length, 2, 'round chat issued an unexpected extra command');
+  assertEqual(events.commands[1].command, 'round:input', 'round chat used the wrong command');
+  assertEqual(events.commands[1].timeoutMs, 30000,
+    'round chat did not receive the full route input budget');
+}
+
+function correctUserGuessResponse() {
+  return {
+    ok: true,
+    correct: true,
+    message: 'Correct.',
+    answer: { id: 'train', label: 'Train' },
+    user_draw_options: [{ id: 'cat', label: 'Cat' }],
+    draw_seconds: 60,
+  };
+}
+
+async function testGuessTimeoutRetryIsCancelledWhenPendingInputWins() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const inputResponse = deferred();
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setGuessTimeoutRetryDelays(5, 5);
+  api.installRoundCommandSpies((command) => {
+    if (command === 'round:input') return inputResponse.promise;
+    if (command === 'round:timeout') return { ok: false, reason: 'session_busy' };
+    throw new Error(`unexpected command: ${command}`);
+  }, events);
+  api.state.phase = 'user_guessing';
+  api.state.roundFlowToken = 43;
+  api.state.activeRoundToken = 43;
+
+  const inputPromise = api.submitUserGuess('train');
+  api.state.phase = 'loading_round';
+  await api.requestGuessTimeout(43, 0);
+  assert(api.state.guessTimeoutRetryTimer !== null,
+    'a busy guess timeout did not schedule its recovery retry');
+
+  inputResponse.resolve(correctUserGuessResponse());
+  await inputPromise;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(api.state.phase, 'drawing_pick', 'the winning input did not advance to word picking');
+  assertEqual(api.state.guessTimeoutRetryTimer, null,
+    'the winning input left a guess-timeout retry armed');
+  assertEqual(events.commands.filter((call) => call.command === 'round:timeout').length, 1,
+    'a stale guess-timeout retry ran after the answer advanced the round');
+  assertEqual(events.commands.find((call) => call.command === 'round:timeout').payload.timeout_kind,
+    'user_guessing', 'the guess timeout did not carry its server-side phase fence');
+  assertEqual(events.userDrawPreparations.length, 1,
+    'the winning input did not prepare exactly one drawing choice');
+}
+
+async function testLateGuessTimeoutFailureCannotRearmAfterInputWins() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const timeoutResponse = deferred();
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setGuessTimeoutRetryDelays(5, 5);
+  api.installRoundCommandSpies((command) => {
+    if (command === 'round:timeout') return timeoutResponse.promise;
+    if (command === 'round:input') return correctUserGuessResponse();
+    throw new Error(`unexpected command: ${command}`);
+  }, events);
+  api.state.phase = 'loading_round';
+  api.state.roundFlowToken = 47;
+  api.state.activeRoundToken = 47;
+
+  const timeoutPromise = api.requestGuessTimeout(47, 0);
+  await api.submitUserGuess('train');
+  timeoutResponse.reject(new Error('late timeout failure'));
+  await timeoutPromise;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(api.state.phase, 'drawing_pick', 'a late timeout failure changed the advanced phase');
+  assertEqual(api.state.guessTimeoutRetryTimer, null,
+    'a late timeout failure re-armed recovery after the answer won');
+  assertEqual(events.commands.filter((call) => call.command === 'round:timeout').length, 1,
+    'a late timeout failure started a stale retry');
+  assertEqual(events.messages.length, 0,
+    'a stale timeout failure surfaced after the answer had already advanced');
+}
+
+async function testRecoveredGuessTimeoutWinsWithoutDoubleApplyingInput() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const inputResponse = deferred();
+  const recoveredResponse = correctUserGuessResponse();
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies((command) => {
+    if (command === 'round:input') return inputResponse.promise;
+    if (command === 'round:timeout') return recoveredResponse;
+    throw new Error(`unexpected command: ${command}`);
+  }, events);
+  api.state.phase = 'user_guessing';
+  api.state.roundFlowToken = 49;
+  api.state.activeRoundToken = 49;
+
+  const inputPromise = api.submitUserGuess('train');
+  api.state.phase = 'loading_round';
+  await api.requestGuessTimeout(49, 0);
+
+  assertEqual(api.state.phase, 'drawing_pick',
+    'the recovered input transition did not advance to word picking');
+  assertEqual(events.userDrawPreparations.length, 1,
+    'the recovered input transition did not prepare exactly one drawing choice');
+
+  inputResponse.resolve(recoveredResponse);
+  await inputPromise;
+
+  assertEqual(events.userDrawPreparations.length, 1,
+    'the late original input response applied the recovered transition twice');
+  assertEqual(events.nekoMessages.length, 1,
+    'the late original input response repeated the recovered game message');
+}
+
+async function testGenericWordPickingTimeoutResponseRetriesWithoutBlankReveal() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setGuessTimeoutRetryDelays(5, 5);
+  api.installRoundCommandSpies(() => (
+    events.commands.length === 1
+      ? { ok: true, phase: 'word_picking', state: { phase: 'word_picking' } }
+      : correctUserGuessResponse()
+  ), events);
+  api.state.phase = 'loading_round';
+  api.state.roundFlowToken = 53;
+  api.state.activeRoundToken = 53;
+
+  await api.requestGuessTimeout(53, 0);
+
+  assertEqual(events.nekoMessages.length, 0,
+    'a phase-only timeout response rendered a blank answer reveal');
+  assertEqual(events.userDrawPreparations.length, 0,
+    'a phase-only timeout response prepared drawing choices without option data');
+  assertEqual(api.state.phase, 'loading_round',
+    'a phase-only timeout response displaced the pending input transition');
+  await waitFor(() => events.userDrawPreparations.length === 1,
+    'a phase-only timeout response was not retried to a recoverable transition');
+  assertEqual(events.commands.length, 2,
+    'a malformed timeout transition was retried an unexpected number of times');
+}
+
+async function testAiTimeoutSettlementLocksAllRoundInputAcrossPhaseAdvance() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const firstResponse = deferred();
+  const secondResponse = deferred();
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.installRoundCommandSpies((_command, _payload, _timeoutMs) => (
+    events.commands.length === 1 ? firstResponse.promise : secondResponse.promise
+  ), events);
+  api.state.phase = 'ai_guessing';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 59;
+  api.state.activeRoundToken = 59;
+
+  const settlementPromise = api.settleAiGuessTimeout();
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the first timeout settlement request did not lock the round');
+  assertEqual(api.submitPlayerText('one more hint'), false,
+    'text input remained enabled while timeout settlement was in flight');
+  api.triggerSupplementGuess(false, 'data:image/jpeg;base64,c3RhbGU=');
+  assertEqual(events.commands.length, 1,
+    'supplementary vision input escaped the timeout settlement lock');
+  assertEqual(events.commands[0].payload.timeout_kind, 'ai_guessing',
+    'AI timeout settlement did not carry its server-side phase fence');
+
+  firstResponse.resolve({ ok: true, phase: 'ai_guessing', state: { phase: 'ai_guessing' } });
+  await waitFor(() => events.commands.length === 2,
+    'timeout settlement did not issue its required phase-advance request');
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the settlement lock dropped between phase-advance requests');
+  assertEqual(api.submitPlayerText('still locked'), false,
+    'text input reopened between phase-advance requests');
+
+  secondResponse.resolve({ ok: true, phase: 'summary', state: { phase: 'summary' }, evaluation: 'done' });
+  await settlementPromise;
+
+  assertEqual(events.summaries.length, 1, 'timeout settlement rendered the summary more than once');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'successful timeout settlement did not release the input lock');
+}
+
+async function testAiTimeoutSettlementStaysLockedDuringNetworkBackoff() {
+  const harness = loadHarness();
+  const api = harness.api;
+  const retryResponse = deferred();
+  const events = {
+    commands: [], messages: [], nekoMessages: [], phases: [], summaries: [], userDrawPreparations: [],
+  };
+  api.setAiGuessTimeoutRetryBaseDelay(5);
+  api.installRoundCommandSpies(() => {
+    if (events.commands.length === 1) return Promise.reject(new Error('temporary network failure'));
+    return retryResponse.promise;
+  }, events);
+  api.state.phase = 'ai_guess_feedback';
+  api.state.routeActive = true;
+  api.state.roundFlowToken = 61;
+  api.state.activeRoundToken = 61;
+
+  await api.settleAiGuessTimeout();
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'a retryable network failure released the timeout settlement lock');
+  assertEqual(api.submitPlayerText('retry gap'), false,
+    'text input reopened during timeout retry backoff');
+  await waitFor(() => events.commands.length === 2,
+    'the timeout settlement network retry was not issued');
+  assertEqual(api.state.aiGuessTimeoutSettling, true,
+    'the timeout settlement retry did not retain the input lock');
+
+  retryResponse.resolve({ ok: true, phase: 'summary', state: { phase: 'summary' }, evaluation: 'done' });
+  await waitFor(() => events.summaries.length === 1,
+    'the timeout settlement retry did not reach summary');
+  assertEqual(api.state.aiGuessTimeoutSettling, false,
+    'the retried timeout settlement did not release its input lock');
 }
 
 async function testRepeatedNekoRepliesAreRenderedAndSpoken() {
@@ -1718,7 +2126,18 @@ async function main() {
   await testAutomaticDrawingTimeoutSettlesWhenJpegCaptureFails();
   await testTimeoutResettlesAfterBackendPhaseAdvance();
   await testTimeoutServerBusyRetriesAreBounded();
+  await testTimeoutServerBusyKeepsLockUntilRecoveredSummary();
+  await testTimeoutServerBusyUsesWallClockDeadline();
+  await testTimeoutRecoversServerSummaryEvenWhenMarkedStale();
+  await testDeferredTimeoutSettlesAfterVisionRequestFinishes();
   await testTimeoutPhaseAdvanceStopsWhenRoundChanges();
+  await testUserGuessUsesFullClassifiedInputBudget();
+  await testGuessTimeoutRetryIsCancelledWhenPendingInputWins();
+  await testLateGuessTimeoutFailureCannotRearmAfterInputWins();
+  await testRecoveredGuessTimeoutWinsWithoutDoubleApplyingInput();
+  await testGenericWordPickingTimeoutResponseRetriesWithoutBlankReveal();
+  await testAiTimeoutSettlementLocksAllRoundInputAcrossPhaseAdvance();
+  await testAiTimeoutSettlementStaysLockedDuringNetworkBackoff();
   await testRepeatedNekoRepliesAreRenderedAndSpoken();
   await testDrawingPlanReviewUsesSdkAndAppliesOneReturnedPlan();
   await testDrawingPlanReviewUnavailableKeepsOriginalDrawing();

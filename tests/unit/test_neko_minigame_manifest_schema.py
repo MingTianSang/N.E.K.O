@@ -86,6 +86,56 @@ def test_command_contract_requires_request_and_response(
     assert_invalid(validator, value)
 
 
+@pytest.mark.parametrize(
+    "request_schema",
+    (
+        None,
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "integer"},
+        {"type": "string"},
+        {"type": "array", "items": {"type": "string"}},
+        ["ready", "waiting"],
+        {"type": "object", "minLength": 1},
+    ),
+    ids=(
+        "null",
+        "boolean",
+        "number",
+        "integer",
+        "string",
+        "array",
+        "enum-shorthand",
+        "object-with-scalar-keyword",
+    ),
+)
+def test_command_request_contract_rejects_non_object_shapes_and_keywords(
+    validator: Draft202012Validator,
+    request_schema: object,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:probe": {
+            "request": request_schema,
+            "response": {"type": "object"},
+        },
+    }
+    assert_invalid(validator, value)
+
+
+def test_command_response_contract_still_allows_scalar_schema(
+    validator: Draft202012Validator,
+) -> None:
+    value = manifest()
+    value["contracts"]["commands"] = {
+        "round:probe": {
+            "request": {"type": "object"},
+            "response": {"type": "string", "maxLength": 32},
+        },
+    }
+    validator.validate(value)
+
+
 def test_array_contract_requires_items(validator: Draft202012Validator) -> None:
     value = manifest()
     value["contracts"]["events"]["score"] = {"type": "array"}

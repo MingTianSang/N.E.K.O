@@ -500,12 +500,12 @@ def test_drawing_guess_static_route_contract():
         "user input": (
             r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
             r"roundCommandPayload\(Object\.assign\(\{\s*text: text\s*\},\s*"
-            r"inputMetadata \|\| \{\}\)\),\s*10000\)"
+            r"inputMetadata \|\| \{\}\)\),\s*ROUND_INPUT_REQUEST_TIMEOUT_MS\)"
         ),
         "round chat": (
             r"executeRoundCommand\(ROUND_COMMANDS\.INPUT,\s*"
             r"roundCommandPayload\(Object\.assign\(\{[^}]*summary_chat_only:[^}]*\},\s*"
-            r"options\.inputMetadata \|\| \{\}\)\),\s*20000\)"
+            r"options\.inputMetadata \|\| \{\}\)\),\s*ROUND_INPUT_REQUEST_TIMEOUT_MS\)"
         ),
         "drawing feedback": (
             r"executeRoundCommand\(ROUND_COMMANDS\.FEEDBACK,\s*"
@@ -518,8 +518,8 @@ def test_drawing_guess_static_route_contract():
             r"roundCommandPayload\(\{\s*word_id: wordId\s*\}\),\s*10000\)"
         ),
         "round timeout": (
-            r"executeRoundCommand\(ROUND_COMMANDS\.TIMEOUT,\s*"
-            r"roundCommandPayload\(\),\s*10000\)"
+            r"executeRoundCommand\(\s*ROUND_COMMANDS\.TIMEOUT,\s*"
+            r"roundCommandPayload\(\{\s*timeout_kind: 'user_guessing'\s*\}\),\s*10000\s*\)"
         ),
         "vision guess": (
             r"executeRoundCommand\(ROUND_COMMANDS\.VISION_GUESS,\s*"
@@ -536,7 +536,10 @@ def test_drawing_guess_static_route_contract():
     assert "beginRoundFlow();\n    clearNekoVoiceQueue();\n    state.aiGuessInFlight = false;" in script
     assert "if (state.phase !== 'ai_drawing') return;" in script
     assert "function continueAfterAiDrawingHalf(res, flowToken) {\n    if (!isCurrentRoundFlow(flowToken)) return;" in script
+    assert "cancelGuessTimeoutRetry();\n    prepareUserDrawing(" in script
     assert "function requestGuessTimeout(flowToken, attempt)" in script
+    assert "function isGuessTimeoutFlowActive(flowToken)" in script
+    assert "if (!isGuessTimeoutResult(res)) throw new Error('timeout_transition_unavailable');" in script
     assert "state.guessTimeoutRetryTimer = setTimeout(function ()" in script
     assert "setPhase('loading_round');\n    requestGuessTimeout(flowToken, 0);" in script
     assert "function finishGame() {\n    renderFinalSummary();\n    showExitConfirm();\n  }" in script
@@ -713,6 +716,7 @@ def test_drawing_guess_static_route_contract():
     assert "var AI_DRAW_REVIEW_REQUEST_TIMEOUT_MS = 90 * 1000;" in script
     assert "var AI_DRAW_REVIEW_WIDTH = 384;" in script
     assert "var AI_DRAW_REVIEW_HEIGHT = 288;" in script
+    assert "var ROUND_INPUT_REQUEST_TIMEOUT_MS = 30 * 1000;" in script
     assert "var AI_GUESS_REQUEST_TIMEOUT_MS = ROUND_FALLBACK_SECONDS * 1000 + 10000;" in script
     assert "var AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS = 30 * 1000;" in script
     assert "var AI_GUESS_MIN_DELAY_MS = 10000;" in script
@@ -779,21 +783,32 @@ def test_drawing_guess_static_route_contract():
     assert "res.reason === 'session_busy'" in script
     assert "setTimeout(retryWhenReady, 180);" in script
     assert "aiGuessTimeoutRetryTimer: null" in script
-    assert "state.aiGuessTimeoutRetryTimer = setTimeout(retryWhenReady, 180);" in script
     assert "AI_GUESS_TIMEOUT_MAX_RETRIES = 2" in script
     assert "AI_GUESS_TIMEOUT_PHASE_ADVANCE_MAX_RETRIES = 1" in script
     assert "AI_GUESS_TIMEOUT_BUSY_MAX_POLLS = 50" in script
+    assert "AI_GUESS_TIMEOUT_BUSY_RETRY_WINDOW_MS = AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS" in script
+    assert "AI_GUESS_TIMEOUT_BUSY_RETRY_DELAY_MS = 750" in script
+    assert "aiGuessTimeoutSettling: false" in script
+    assert "function isAiGuessTimeoutSettlementActive(flowToken)" in script
+    assert "function failAiGuessTimeoutSettlement(reason)" in script
+    assert "Date.now() - busyWindowStartedAt >= AI_GUESS_TIMEOUT_BUSY_RETRY_WINDOW_MS" in script
+    settlement_start = script.index("function settleAiGuessTimeout")
+    assert script.index("if (responsePhase === 'summary')", settlement_start) < script.index(
+        "if (!res || !res.ok)", settlement_start
+    )
+    assert "&& !state.aiGuessTimeoutSettling\n      && isCanvasEditablePhase();" in script
+    assert "return !state.aiGuessTimeoutSettling\n      && ['user_guessing'" in script
     assert (
         "executeRoundCommand(\n"
         "      ROUND_COMMANDS.TIMEOUT,\n"
-        "      roundCommandPayload(),\n"
+        "      roundCommandPayload({ timeout_kind: 'ai_guessing' }),\n"
         "      AI_GUESS_SETTLEMENT_REQUEST_TIMEOUT_MS\n"
         "    )"
     ) in script
-    assert "addMessage('drawingGuess.messages.roundFailed', 'Round failed: {{reason}}', { reason: 'session_busy' });\n                updateControls();" in script
+    assert "failAiGuessTimeoutSettlement('session_busy')" in script
     assert "if (attempt < AI_GUESS_TIMEOUT_MAX_RETRIES)" in script
     assert "settleAiGuessTimeout(0, phaseAdvanceAttempt + 1, 0)" in script
-    assert "reason: readableRequestError(err)" in script
+    assert "failAiGuessTimeoutSettlement(readableRequestError(err))" in script
     assert "recentNekoMessages" not in script
     assert "client.speech.speak({" in script
     assert "client.speech.onState(handleSpeechPlaybackState)" in script
@@ -864,7 +879,7 @@ def test_drawing_guess_static_route_contract():
     assert "height: auto;" in html
     assert ".dg-summary:not(.dg-summary-final) .dg-summary-list" in html
     assert "overflow: hidden;" in html
-    assert "state.phase !== 'final_summary'" in script
+    assert "'summary', 'final_summary'].indexOf(state.phase) >= 0" in script
     assert "drawingGuess.summary.finalTitle" in script
     assert "drawingGuess.summary.roundLabel" in script
     assert "drawingGuess.summary.noRounds" in script

@@ -37,16 +37,23 @@ declare namespace NekoMiniGame {
     maxLength?: number;
     minItems?: number;
     maxItems?: number;
-    items?: ContractSchema;
-    properties?: Readonly<Record<string, ContractSchema>>;
+    items?: ContractDeclaration;
+    properties?: Readonly<Record<string, ContractDeclaration>>;
     required?: readonly string[];
     additionalProperties?: boolean;
   }
 
   type ContractDeclaration = ContractSchema | readonly string[];
 
+  interface CommandRequestSchema {
+    type: 'object';
+    properties?: Readonly<Record<string, ContractDeclaration>>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
   interface CommandContract {
-    request: ContractDeclaration;
+    request: CommandRequestSchema;
     response: ContractDeclaration;
   }
 
@@ -244,7 +251,7 @@ declare namespace NekoMiniGame {
     readonly pendingCount: number;
     execute<T extends JsonValue = JsonValue>(
       name: string,
-      payload: JsonValue,
+      payload: Readonly<Record<string, JsonValue>>,
       options?: RequestOptions,
     ): Promise<Response<T>>;
   }

@@ -508,15 +508,28 @@
           if (declaration.request === undefined || declaration.response === undefined) {
             fail('invalid_manifest', `manifest.contracts.commands.${name} requires request and response schemas`);
           }
+          if (!plainObject(declaration.request) || declaration.request.type !== 'object') {
+            fail('invalid_manifest', `manifest.contracts.commands.${name}.request must declare an object schema`);
+          }
+          for (const key of Object.keys(declaration.request)) {
+            if (!['type', 'properties', 'required', 'additionalProperties'].includes(key)) {
+              fail(
+                'invalid_manifest',
+                `manifest.contracts.commands.${name}.request contains an unsupported object-schema keyword`,
+                { key },
+              );
+            }
+          }
           const commandSchemaOptions = { maxStringChars: MAX_COMMAND_CONTRACT_STRING_CHARS };
+          const requestSchema = normalizeContractSchema(
+            declaration.request,
+            `manifest.contracts.commands.${name}.request`,
+            state,
+            0,
+            commandSchemaOptions,
+          );
           normalized[name] = Object.freeze({
-            request: normalizeContractSchema(
-              declaration.request,
-              `manifest.contracts.commands.${name}.request`,
-              state,
-              0,
-              commandSchemaOptions,
-            ),
+            request: requestSchema,
             response: normalizeContractSchema(
               declaration.response,
               `manifest.contracts.commands.${name}.response`,
@@ -2032,20 +2045,30 @@
     });
   }
 
-  async function normalizeTransportResponse(value) {
+  async function normalizeTransportResponse(value, options = {}) {
+    const allowScalarData = options.allowScalarData === true;
     if (value && typeof value.json === 'function') {
       let data = {};
       try { data = await value.json(); } catch (_) { /* invalid/empty response body */ }
+      const scalarData = data === null
+        || typeof data === 'string'
+        || typeof data === 'number'
+        || typeof data === 'boolean';
       return Object.freeze({
         ok: value.ok === true,
         status: Number(value.status || 0),
-        data: data && typeof data === 'object' ? data : {},
+        data: (data && typeof data === 'object') || (allowScalarData && scalarData) ? data : {},
       });
     }
-    const data = value && typeof value === 'object' ? value : {};
+    const objectData = !!value && typeof value === 'object';
+    const scalarData = value === null
+      || typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean';
+    const data = objectData || (allowScalarData && scalarData) ? value : {};
     return Object.freeze({
-      ok: data.ok !== false,
-      status: Number(data.status || 0),
+      ok: objectData ? value.ok !== false : true,
+      status: objectData ? Number(value.status || 0) : 0,
       data,
     });
   }
@@ -3286,7 +3309,7 @@
         }
       };
       requireCurrentCommandRoute();
-      const response = await normalizeTransportResponse(rawResponse);
+      const response = await normalizeTransportResponse(rawResponse, { allowScalarData: true });
       requireCurrentCommandRoute();
       // A failed HTTP or application response does not promise the command's
       // success schema. Preserve its bounded diagnostic body and status rather
