@@ -1660,6 +1660,12 @@ def test_completed_icebreaker_handoff_seeds_galgame_once():
         1,
     )[0]
     assert "!isYuiGuideChatMessage(normalized)" in append_block
+    clear_source_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
+        "function clearIcebreakerChoicePrompt",
+        1,
+    )[0]
+    assert "hasPendingHandoff" in clear_source_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in clear_source_block
 
     node_path = shutil.which("node")
     if not node_path:
@@ -1818,7 +1824,9 @@ def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
         1,
     )[0]
     assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
-    assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "state.choicePrompt.source === normalizedSource" in reset_block
+    assert "hasPendingHandoff" in reset_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in reset_block
     assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
     assert "state.choicePrompt = null;" in reset_block
     assert "invalidatePendingGalgameRequest();" in reset_block

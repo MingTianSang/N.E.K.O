@@ -698,6 +698,7 @@
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt_source'
+            || action === 'icebreaker_reset_session_state'
             || action === 'icebreaker_galgame_handoff'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
@@ -740,6 +741,17 @@
     I.handleIcebreakerBridgeData = function handleIcebreakerBridgeData(data) {
         if (!data || !data.action) return false;
         if (!I.isIcebreakerBridgeAction(data.action)) return false;
+        // Main-process document reloads invalidate Pet's in-memory activeSession.
+        // This reset is intentionally character-agnostic so retained compact/full
+        // chat renderers cannot keep a terminal handoff that the new Pet cannot serve.
+        if (data.action === 'icebreaker_reset_session_state') {
+            if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
+            clearIcebreakerChoicePromptSourceFromBroadcast(
+                'new_user_icebreaker',
+                data.reason || 'icebreaker-session-reset'
+            );
+            return true;
+        }
         if (!data.lanlan_name) return false;
         if (!I.getCurrentLanlanName()) {
             // Full Chat 的 preload 队列会早于异步配置注入排空。身份未知时不能把

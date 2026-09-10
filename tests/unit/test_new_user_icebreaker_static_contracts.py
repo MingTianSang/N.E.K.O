@@ -1268,8 +1268,11 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "clearIcebreakerChoicePromptFromBroadcast(data.sessionId)" in interpage
     assert "clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason)" in interpage
     assert "new CustomEvent('neko:icebreaker-galgame-handoff'" in interpage
+    assert "action === 'icebreaker_reset_session_state'" in interpage
+    assert "data.reason || 'icebreaker-session-reset'" in interpage
     relay_part = (APP_INTERPAGE_PATH / "guide-message-relay.js").read_text(encoding="utf-8")
     assert "case 'icebreaker_galgame_handoff':" in relay_part
+    assert "case 'icebreaker_reset_session_state':" in relay_part
     assert "I.handleIcebreakerBridgeData(event.data);" in relay_part
     icebreaker_flush_block = interpage.split("function flushPendingIcebreakerBridgeActions()", 1)[1].split(
         "function appendIcebreakerChatMessage",

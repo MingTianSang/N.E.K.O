@@ -1662,11 +1662,19 @@
         var normalizedSource = String(source || '');
         if (!normalizedSource) return false;
         if (normalizedSource !== 'new_user_icebreaker') return false;
-        if (!I.state.choicePrompt || I.state.choicePrompt.source !== normalizedSource) return false;
+        var hasMatchingPrompt = !!(
+            I.state.choicePrompt
+            && I.state.choicePrompt.source === normalizedSource
+        );
+        var hasPendingHandoff = !!I.state.pendingIcebreakerGalgameHandoffMessageId;
+        if (!hasMatchingPrompt && !hasPendingHandoff) return false;
         if (window.console && typeof window.console.debug === 'function') {
             window.console.debug('[NewUserIcebreaker] clearChoicePromptBySource:', normalizedSource, reason || '');
         }
-        I.state.choicePrompt = null;
+        if (hasMatchingPrompt) {
+            I.state.choicePrompt = null;
+        }
+        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         if (choicePromptRevealTimer) {
             window.clearTimeout(choicePromptRevealTimer);
             choicePromptRevealTimer = null;

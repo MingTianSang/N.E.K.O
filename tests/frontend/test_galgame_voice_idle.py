@@ -418,6 +418,26 @@ def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
         [{"role": "assistant", "text": "隐藏期间的破冰收尾"}],
     ]
 
+    mock_page.evaluate(
+        """() => window.dispatchEvent(new CustomEvent(
+            'neko:electron-icebreaker-bridge',
+            { detail: {
+                action: 'icebreaker_reset_session_state',
+                timestamp: Date.now(),
+                reason: 'storage-maintenance-reload'
+            } }
+        ))"""
+    )
+    mock_page.evaluate("() => window.reactChatWindowHost.closeWindow()")
+    mock_page.wait_for_timeout(350)
+    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.wait_for_timeout(1200)
+
+    assert [payload["messages"] for payload in galgame_payloads] == [
+        [{"role": "assistant", "text": "隐藏期间的破冰收尾"}],
+        [{"role": "assistant", "text": "隐藏期间的破冰收尾"}],
+    ]
+
 
 @pytest.mark.frontend
 def test_delayed_icebreaker_handoff_does_not_cross_a_newer_turn(
