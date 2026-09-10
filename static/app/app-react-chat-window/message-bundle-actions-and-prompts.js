@@ -1216,7 +1216,7 @@
             icebreakerHandoffMessageId: messageId
         } : null;
         // A hidden window may remain closed while the conversation advances.
-        // In that case consume the stale one-shot approval, then use the normal
+        // In that case discard the stale scoped approval, then use the normal
         // latest-turn path instead of suppressing valid newer GalGame options.
         if (handoffOptions && !getRecentGalgameMessageHistory(handoffOptions).length) {
             I.state.pendingIcebreakerGalgameHandoffMessageId = '';
@@ -2077,17 +2077,20 @@
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
         }
+        var clearedIcebreakerHandoff = false;
         if ((normalized.role === 'assistant' || normalized.role === 'user')
                 && !isYuiGuideChatMessage(normalized)
                 && I.state.pendingIcebreakerGalgameHandoffMessageId
                 && String(normalized.id || '') !== I.state.pendingIcebreakerGalgameHandoffMessageId) {
             I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+            clearedIcebreakerHandoff = true;
         }
         // A new user-role message means the conversation has advanced — even
         // when the message came in via voice / proactive / sendTextPayload
         // rather than the React composer. Invalidate any pending GalGame fetch
         // so its response can't render against the old turn context.
-        if (normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)) {
+        if (normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)
+                || clearedIcebreakerHandoff) {
             I.invalidatePendingGalgameRequest();
         }
         I.renderWindow();

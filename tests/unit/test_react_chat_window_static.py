@@ -1660,6 +1660,8 @@ def test_completed_icebreaker_handoff_seeds_galgame_once():
         1,
     )[0]
     assert "!isYuiGuideChatMessage(normalized)" in append_block
+    assert "clearedIcebreakerHandoff" in append_block
+    assert "|| clearedIcebreakerHandoff" in append_block
     clear_source_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
         "function clearIcebreakerChoicePrompt",
         1,

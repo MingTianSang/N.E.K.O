@@ -490,6 +490,76 @@ def test_delayed_icebreaker_handoff_does_not_cross_a_newer_turn(
 
 
 @pytest.mark.frontend
+def test_inflight_icebreaker_handoff_is_aborted_by_newer_assistant(
+    mock_page: Page, running_server: str
+):
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        """() => !!(
+            window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+        )""",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """() => {
+            window.appState.lanlan_name = 'yui';
+            window.__resolveIcebreakerOptions = null;
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = (url, options) => {
+                if (!String(url).includes('/api/galgame/options')) {
+                    return nativeFetch(url, options);
+                }
+                return new Promise((resolve) => {
+                    window.__resolveIcebreakerOptions = resolve;
+                });
+            };
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            host.setMessages([{
+                id: 'icebreaker-assistant-inflight-final',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: '即将过时的破冰收尾' }]
+            }]);
+            document.getElementById('react-chat-window-overlay').hidden = false;
+            window._realisticGeminiQueue = [];
+            window._isProcessingRealisticQueue = false;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                detail: {
+                    sessionId: 'icebreaker-inflight-session',
+                    messageId: 'icebreaker-assistant-inflight-final'
+                }
+            }));
+        }"""
+    )
+    mock_page.wait_for_function("() => typeof window.__resolveIcebreakerOptions === 'function'")
+    mock_page.evaluate(
+        """() => {
+            window.reactChatWindowHost.appendMessage({
+                id: 'ordinary-assistant-after-handoff',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: '新的主动对话' }]
+            });
+            window.__resolveIcebreakerOptions({
+                ok: true,
+                json: () => Promise.resolve({
+                    options: [{ label: 'A', text: '不应出现的旧选项' }]
+                })
+            });
+        }"""
+    )
+    mock_page.wait_for_timeout(300)
+
+    assert mock_page.locator(".composer-galgame-option").count() == 0
+    assert "不应出现的旧选项" not in mock_page.locator("body").inner_text()
+
+
+@pytest.mark.frontend
 @pytest.mark.parametrize("append_failure", ["throw", "reject", "null"])
 def test_full_chat_bridge_drops_handoff_when_final_bubble_append_fails(
     mock_page: Page, running_server: str, append_failure: str
