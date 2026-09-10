@@ -328,7 +328,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '  你好  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'button' });
     expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
     expect(container.querySelector('[data-compact-chat-state="input"]')).not.toBeNull();
 
@@ -353,7 +353,7 @@ describe('App', () => {
       target: { value: 'cat draft' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft' });
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'cat draft', submitMethod: 'button' });
 
     rerender(
       <App compactChatState="input" onComposerSubmit={onComposerSubmit} />,
@@ -383,7 +383,21 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '喵一下' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '喵一下', submitMethod: 'button' });
+  });
+
+  it('marks a plain Enter submission from the full chat surface', () => {
+    const onComposerSubmit = vi.fn();
+    render(<App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'full Enter send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({
+      text: 'full Enter send',
+      submitMethod: 'enter',
+    });
   });
 
   it('keeps the ordinary full-chat draft separate from the temporary cat draft', () => {
@@ -403,7 +417,7 @@ describe('App', () => {
       target: { value: 'full cat draft' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft' });
+    expect(onComposerSubmit).toHaveBeenLastCalledWith({ text: 'full cat draft', submitMethod: 'button' });
 
     rerender(
       <App chatSurfaceMode="full" onComposerSubmit={onComposerSubmit} />,
@@ -9252,7 +9266,7 @@ describe('App', () => {
     expect(sendButton.querySelector('img')).toHaveAttribute('src', '/static/icons/send_new_icon.png');
     fireEvent.click(sendButton);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send', submitMethod: 'button' });
   });
 
   it('keeps controlled compact input focused after submitting text for continuous typing', async () => {
@@ -9279,7 +9293,7 @@ describe('App', () => {
     expect(document.activeElement).toBe(sendButton);
     fireEvent.click(sendButton);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message', submitMethod: 'button' });
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
     expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
     await waitFor(() => {
@@ -9457,11 +9471,13 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'Test send' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    const enterDispatchResult = fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(enterDispatchResult).toBe(false);
+    expect(input).toHaveValue('Test send');
     expect(onComposerSubmit).not.toHaveBeenCalled();
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send', submitMethod: 'enter' });
   });
 
   it('submits plain Enter when WebKit inserts a line break before keyup', () => {
@@ -9477,7 +9493,7 @@ describe('App', () => {
     });
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline', submitMethod: 'enter' });
     expect(input).toHaveValue('');
   });
 
@@ -9493,7 +9509,7 @@ describe('App', () => {
     });
     fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send', submitMethod: 'enter' });
   });
 
   it('treats an inputType-less text replacement as an IME candidate commit', () => {
@@ -9512,7 +9528,7 @@ describe('App', () => {
     expect(input).toHaveValue('candidate');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate', submitMethod: 'enter' });
   });
 
   it('keeps a Shift+Enter line break without submitting', () => {
@@ -9521,7 +9537,12 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'First line' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    const shiftEnterDispatchResult = fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: true,
+    });
+    expect(shiftEnterDispatchResult).toBe(true);
     fireEvent.input(input, {
       target: { value: 'First line\n' },
       inputType: 'insertLineBreak',
@@ -9552,7 +9573,7 @@ describe('App', () => {
     expect(input).toHaveValue('你好');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('treats macOS WebKit keyCode 229 as IME confirmation until keyup', () => {
@@ -9580,7 +9601,7 @@ describe('App', () => {
     expect(input).toHaveValue('你好');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('submits on the first Enter after an IME commit completed without Enter', () => {
@@ -9593,7 +9614,7 @@ describe('App', () => {
     fireEvent.compositionEnd(input);
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'enter' });
   });
 
   it('does not submit an ASCII candidate committed without composition metadata', () => {
@@ -9614,7 +9635,7 @@ describe('App', () => {
     expect(input).toHaveValue('ok');
 
     pressEnter(input);
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok', submitMethod: 'enter' });
   });
 
   it('allows an explicit pointer send while an IME composition is active', () => {
@@ -9626,7 +9647,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: '你好' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }), { detail: 1 });
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好', submitMethod: 'button' });
   });
 
   it('disables composer submission while the home tutorial owns interaction', () => {
@@ -9675,7 +9696,7 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
     pressEnter(input);
 
-    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble', submitMethod: 'enter' });
     expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();
     expect(screen.queryByText('You')).not.toBeInTheDocument();
   });

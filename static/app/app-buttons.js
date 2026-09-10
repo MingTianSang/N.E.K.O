@@ -1878,7 +1878,8 @@
         host.setOnComposerSubmit(function (detail) {
             return mod.sendTextPayload(detail && detail.text, {
                 source: 'react-chat-window',
-                requestId: detail && detail.requestId
+                requestId: detail && detail.requestId,
+                submitMethod: detail && detail.submitMethod
             });
         });
         if (typeof host.setOnCompactHistoryDrop === 'function') {
@@ -2941,6 +2942,22 @@
             }
         }
 
+        function requestChatAutoCollapseAfterAcceptedEnter(options, requestId) {
+            if (
+                !options
+                || options.submitMethod !== 'enter'
+                || !window.nekoChatWindow
+                || typeof window.nekoChatWindow.requestAutoCollapseAfterEnter !== 'function'
+            ) return false;
+            try {
+                window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: requestId });
+                return true;
+            } catch (error) {
+                console.warn('[Chat] 请求回车发送后自动收起失败:', error);
+                return false;
+            }
+        }
+
         async function sendTextPayloadInternal(rawText, options) {
             options = options || {};
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
@@ -3030,6 +3047,10 @@
                     imageUrls: optimisticImageUrls
                 });
             }
+
+            // Enter 已通过空内容、教程锁和附件预处理校验，即视为发送请求已被聊天逻辑接受。
+            // 必须在首轮 start_session 的异步等待前收起，否则第一次聊天会等初始化完成才响应。
+            requestChatAutoCollapseAfterAcceptedEnter(options, requestId);
 
             function shouldAppendLegacyUserMessage() {
                 return !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
@@ -3309,7 +3330,8 @@
                             detail: {
                                 requestId: requestId,
                                 text: text,
-                                source: messageSource || 'text'
+                                source: messageSource || 'text',
+                                submitMethod: options.submitMethod === 'enter' ? 'enter' : 'button'
                             }
                         }));
                         // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。

@@ -350,7 +350,10 @@
             : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         var detail = {
             text: payload && typeof payload.text === 'string' ? payload.text : '',
-            requestId: requestId
+            requestId: requestId,
+            submitMethod: payload && (payload.submitMethod === 'enter' || payload.submitMethod === 'button')
+                ? payload.submitMethod
+                : 'button'
         };
 
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
@@ -421,7 +424,11 @@
                 console.error('[ReactChatWindow] onComposerSubmit failed:', error);
             }
         } else if (window.appButtons && typeof window.appButtons.sendTextPayload === 'function') {
-            window.appButtons.sendTextPayload(detail.text, { source: 'react-chat-window', requestId: detail.requestId });
+            window.appButtons.sendTextPayload(detail.text, {
+                source: 'react-chat-window',
+                requestId: detail.requestId,
+                submitMethod: detail.submitMethod
+            });
         } else {
             var input = I.$('textInputBox');
             var sendButton = I.$('textSendButton');

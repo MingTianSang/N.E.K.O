@@ -4829,7 +4829,10 @@ function CompactChatApp({
     inputNode.setSelectionRange(selectionEnd, selectionEnd);
   }
 
-  function submitDraft(draftOverride?: string) {
+  function submitDraft(
+    draftOverride?: string,
+    submitMethod: ComposerSubmitPayload['submitMethod'] = 'button',
+  ) {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
     const text = (draftOverride ?? visibleDraft).trim();
@@ -4838,7 +4841,7 @@ function CompactChatApp({
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
-      onComposerSubmit?.({ text });
+      onComposerSubmit?.({ text, submitMethod });
       if (catLocalTextOnly) {
         setCatDraft('');
       } else {
@@ -5897,7 +5900,7 @@ function CompactChatApp({
                   || composerImeCommitPendingRef.current)) {
                 return;
               }
-              submitDraft();
+              submitDraft(undefined, 'button');
             }}>
               {isCompactSurface ? (
                 <div
@@ -6068,6 +6071,12 @@ function CompactChatApp({
                               composerEnterCycleImeRef.current = isImeEnter;
                               composerEnterCycleLineBreakRef.current = false;
                               composerEnterCycleDraftRef.current = event.currentTarget.value;
+
+                              // Plain Enter is submitted on keyup so the complete IME cycle can be
+                              // classified first, but its textarea newline must be canceled now.
+                              if (!event.shiftKey && !isImeEnter) {
+                                event.preventDefault();
+                              }
                             }
                           }}
                           onKeyUp={(event) => {
@@ -6104,7 +6113,10 @@ function CompactChatApp({
 
                             if (shouldSubmit) {
                               event.preventDefault();
-                              submitDraft(shouldRestoreDraft ? draftBeforeEnter : undefined);
+                              submitDraft(
+                                shouldRestoreDraft ? draftBeforeEnter : undefined,
+                                'enter',
+                              );
                             }
                           }}
                           onPointerUp={() => {
