@@ -336,6 +336,22 @@
         I.dispatchHostEvent('action', detail);
     }
 
+    function requestAutoCollapseAfterAcceptedEnter(detail) {
+        if (
+            !detail
+            || detail.submitMethod !== 'enter'
+            || !window.nekoChatWindow
+            || typeof window.nekoChatWindow.requestAutoCollapseAfterEnter !== 'function'
+        ) return false;
+        try {
+            window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: detail.requestId });
+            return true;
+        } catch (error) {
+            console.warn('[ReactChatWindow] request auto-collapse after Enter failed:', error);
+            return false;
+        }
+    }
+
     I.handleComposerSubmit = function handleComposerSubmit(payload) {
         if (
             I.state.homeTutorialInteractionLocked
@@ -359,7 +375,9 @@
         if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
             if (!detail.text.trim()) return;
             if (typeof I.submitCatLocalChatText === 'function') {
-                I.submitCatLocalChatText(detail);
+                if (I.submitCatLocalChatText(detail)) {
+                    requestAutoCollapseAfterAcceptedEnter(detail);
+                }
             }
             return;
         }
@@ -414,6 +432,7 @@
             } catch (error) {
                 console.warn('[NewUserIcebreaker] free text broadcast failed:', error);
             }
+            requestAutoCollapseAfterAcceptedEnter(detail);
             return;
         }
 
