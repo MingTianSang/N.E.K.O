@@ -1212,7 +1212,6 @@
 
     I.fetchPendingIcebreakerGalgameHandoffOrLatest = function fetchPendingIcebreakerGalgameHandoffOrLatest() {
         var messageId = String(I.state.pendingIcebreakerGalgameHandoffMessageId || '');
-        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         var handoffOptions = messageId ? {
             icebreakerHandoffMessageId: messageId
         } : null;
@@ -1220,6 +1219,7 @@
         // In that case consume the stale one-shot approval, then use the normal
         // latest-turn path instead of suppressing valid newer GalGame options.
         if (handoffOptions && !getRecentGalgameMessageHistory(handoffOptions).length) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
             handoffOptions = null;
         }
         I.fetchGalgameOptionsForLatestTurn(handoffOptions || undefined);
@@ -2069,7 +2069,9 @@
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
         }
-        if (I.state.pendingIcebreakerGalgameHandoffMessageId
+        if ((normalized.role === 'assistant' || normalized.role === 'user')
+                && !isYuiGuideChatMessage(normalized)
+                && I.state.pendingIcebreakerGalgameHandoffMessageId
                 && String(normalized.id || '') !== I.state.pendingIcebreakerGalgameHandoffMessageId) {
             I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         }

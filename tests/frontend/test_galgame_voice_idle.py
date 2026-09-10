@@ -304,6 +304,42 @@ def test_full_chat_electron_bridge_waits_for_handoff_bubble_before_galgame(
         {"role": "assistant", "text": "完整聊天框破冰收尾台词"}
     ]
 
+    mock_page.evaluate(
+        """
+        () => {
+            const timestamp = Date.now();
+            const channel = new BroadcastChannel('neko_page_channel');
+            window.__icebreakerTestBroadcastChannel = channel;
+            channel.postMessage({
+                action: 'icebreaker_append_chat_message',
+                lanlan_name: 'yui',
+                message: {
+                    id: 'icebreaker-assistant-broadcast-final',
+                    role: 'assistant',
+                    blocks: [{ type: 'text', text: 'BroadcastChannel 收尾台词' }],
+                    icebreaker: { source: 'new_user_icebreaker', handoff: true }
+                },
+                timestamp
+            });
+            channel.postMessage({
+                action: 'icebreaker_galgame_handoff',
+                lanlan_name: 'yui',
+                detail: {
+                    sessionId: 'broadcast-session-1',
+                    messageId: 'icebreaker-assistant-broadcast-final'
+                },
+                timestamp: timestamp + 1
+            });
+        }
+        """
+    )
+    mock_page.wait_for_timeout(1200)
+
+    assert len(galgame_payloads) == 2
+    assert galgame_payloads[1]["messages"] == [
+        {"role": "assistant", "text": "BroadcastChannel 收尾台词"}
+    ]
+
 
 @pytest.mark.frontend
 def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
@@ -320,7 +356,7 @@ def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
         )
 
     mock_page.route("**/api/galgame/options", _handle)
-    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
     mock_page.wait_for_function(
         """() => !!(
             window.reactChatWindowHost
@@ -333,6 +369,7 @@ def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
     mock_page.evaluate(
         """
         () => {
+            window.appState.lanlan_name = 'yui';
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
                 detail: { page: 'home' }
             }));
@@ -352,6 +389,12 @@ def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
                     messageId: 'icebreaker-assistant-hidden-final'
                 }
             }));
+            host.appendMessage({
+                id: 'yui-guide-after-hidden-handoff',
+                role: 'assistant',
+                source: 'yui_guide',
+                blocks: [{ type: 'text', text: '不应使交接失效的引导消息' }]
+            });
         }
         """
     )
@@ -364,6 +407,16 @@ def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
     assert [payload["messages"] for payload in galgame_payloads] == [[
         {"role": "assistant", "text": "隐藏期间的破冰收尾"}
     ]]
+
+    mock_page.evaluate("() => window.reactChatWindowHost.closeWindow()")
+    mock_page.wait_for_timeout(350)
+    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.wait_for_timeout(1200)
+
+    assert [payload["messages"] for payload in galgame_payloads] == [
+        [{"role": "assistant", "text": "隐藏期间的破冰收尾"}],
+        [{"role": "assistant", "text": "隐藏期间的破冰收尾"}],
+    ]
 
 
 @pytest.mark.frontend

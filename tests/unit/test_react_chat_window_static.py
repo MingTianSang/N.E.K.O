@@ -1655,6 +1655,11 @@ def test_completed_icebreaker_handoff_seeds_galgame_once():
     assert "rememberIcebreakerGalgameHandoff(messageId)" in handoff_listener
     assert "pendingIcebreakerGalgameHandoffMessageId !== messageId" in handoff_listener
     assert "fetchPendingIcebreakerGalgameHandoffOrLatest()" in handoff_listener
+    append_block = react_host.split("function appendMessage(message)", 1)[1].split(
+        "function updateMessage",
+        1,
+    )[0]
+    assert "!isYuiGuideChatMessage(normalized)" in append_block
 
     node_path = shutil.which("node")
     if not node_path:
