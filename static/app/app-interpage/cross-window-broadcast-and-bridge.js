@@ -463,7 +463,10 @@
     var _pendingIcebreakerBridgeActions = [];
     var _icebreakerBridgeFlushTimer = null;
     var _icebreakerBridgeFlushAttempts = 0;
-    var _icebreakerBridgeAppendBarrier = Promise.resolve();
+    var _icebreakerBridgeAppendBarrier = Promise.resolve({
+        messageId: '',
+        succeeded: false
+    });
     var ICEBREAKER_BRIDGE_FLUSH_MAX_ATTEMPTS = 50;
 
     function scheduleIcebreakerBridgeFlush(delay) {
@@ -513,15 +516,22 @@
             try {
                 if (action.type === 'append' && action.message) {
                     shouldOpenHost = true;
-                    var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {
-                        if (!result) return result;
+                    var appendResult;
+                    try {
+                        appendResult = host.appendMessage(action.message);
+                    } catch (error) {
+                        appendResult = Promise.reject(error);
+                    }
+                    var appendPromise = Promise.resolve(appendResult).then(function (result) {
+                        if (!result) return false;
                         return waitForIcebreakerChatHostMounted(host).then(function () {
                             syncIcebreakerAssistantCompactCaption(action.message);
                             finalizeIcebreakerAssistantSubtitleTranslation(action.message);
-                            return result;
+                            return true;
                         });
                     }).catch(function (error) {
                         console.warn('[NewUserIcebreaker] Failed to append bridge message:', error);
+                        return false;
                     });
                     // Full Chat lives in an isolated Electron partition. Its final
                     // handoff signal can arrive while appendMessage is still
@@ -530,7 +540,12 @@
                     _icebreakerBridgeAppendBarrier = Promise.all([
                         _icebreakerBridgeAppendBarrier,
                         appendPromise
-                    ]).then(function () {});
+                    ]).then(function (results) {
+                        return {
+                            messageId: String(action.message.id || ''),
+                            succeeded: results[1] === true
+                        };
+                    });
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
                     shouldOpenHost = true;
@@ -542,7 +557,9 @@
                     host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
                 } else if (action.type === 'galgame_handoff' && action.detail) {
                     (function (handoffDetail) {
-                        Promise.resolve(_icebreakerBridgeAppendBarrier).then(function () {
+                        Promise.resolve(_icebreakerBridgeAppendBarrier).then(function (appendStatus) {
+                            if (!appendStatus || appendStatus.succeeded !== true) return;
+                            if (appendStatus.messageId !== String(handoffDetail.messageId || '')) return;
                             window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
                                 detail: handoffDetail
                             }));

@@ -156,11 +156,23 @@ def test_completed_icebreaker_handoff_seeds_visible_galgame_options(
             }));
             const host = window.reactChatWindowHost;
             host.setGalgameModeEnabled(true, { persist: false, force: true });
-            host.setMessages([{
-                id: 'icebreaker-assistant-final',
-                role: 'assistant',
-                blocks: [{ type: 'text', text: '破冰收尾台词' }]
-            }]);
+            host.setMessages([
+                {
+                    id: 'ordinary-before-icebreaker',
+                    role: 'assistant',
+                    blocks: [{ type: 'text', text: '不应进入请求的旧对话' }]
+                },
+                {
+                    id: 'icebreaker-user-before-final',
+                    role: 'user',
+                    blocks: [{ type: 'text', text: '不应进入请求的破冰对话' }]
+                },
+                {
+                    id: 'icebreaker-assistant-final',
+                    role: 'assistant',
+                    blocks: [{ type: 'text', text: '破冰收尾台词' }]
+                }
+            ]);
             host.setIcebreakerChoicePrompt({
                 sessionId: 'icebreaker-session-1',
                 options: [{ choice: 'A', label: '最后一个选择' }]
@@ -291,3 +303,181 @@ def test_full_chat_electron_bridge_waits_for_handoff_bubble_before_galgame(
     assert galgame_payloads[0]["messages"] == [
         {"role": "assistant", "text": "完整聊天框破冰收尾台词"}
     ]
+
+
+@pytest.mark.frontend
+def test_hidden_icebreaker_handoff_is_consumed_when_chat_reopens(
+    mock_page: Page, running_server: str
+):
+    galgame_payloads = []
+
+    def _handle(route: Route):
+        galgame_payloads.append(route.request.post_data_json)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"success": true, "options": [{"label": "A", "text": "x"}]}',
+        )
+
+    mock_page.route("**/api/galgame/options", _handle)
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        """() => !!(
+            window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+        )""",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            host.setMessages([{
+                id: 'icebreaker-assistant-hidden-final',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: '隐藏期间的破冰收尾' }]
+            }]);
+            document.getElementById('react-chat-window-overlay').hidden = true;
+            window._realisticGeminiQueue = [];
+            window._isProcessingRealisticQueue = false;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                detail: {
+                    sessionId: 'icebreaker-hidden-session',
+                    messageId: 'icebreaker-assistant-hidden-final'
+                }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(300)
+    assert galgame_payloads == []
+
+    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.wait_for_timeout(1200)
+
+    assert [payload["messages"] for payload in galgame_payloads] == [[
+        {"role": "assistant", "text": "隐藏期间的破冰收尾"}
+    ]]
+
+
+@pytest.mark.frontend
+def test_delayed_icebreaker_handoff_does_not_cross_a_newer_turn(
+    mock_page: Page, running_server: str
+):
+    galgame_payloads = []
+
+    def _handle(route: Route):
+        galgame_payloads.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body='{"options": []}')
+
+    mock_page.route("**/api/galgame/options", _handle)
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => !!window.reactChatWindowHost", timeout=10000)
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            host.setMessages([
+                {
+                    id: 'icebreaker-assistant-delayed-final',
+                    role: 'assistant',
+                    blocks: [{ type: 'text', text: '已经过时的收尾' }]
+                },
+                {
+                    id: 'ordinary-user-after-handoff',
+                    role: 'user',
+                    blocks: [{ type: 'text', text: '后续消息' }]
+                }
+            ]);
+            document.getElementById('react-chat-window-overlay').hidden = false;
+            window._realisticGeminiQueue = [];
+            window._isProcessingRealisticQueue = false;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                detail: {
+                    sessionId: 'icebreaker-delayed-session',
+                    messageId: 'icebreaker-assistant-delayed-final'
+                }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(700)
+
+    assert galgame_payloads == []
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("append_failure", ["throw", "reject", "null"])
+def test_full_chat_bridge_drops_handoff_when_final_bubble_append_fails(
+    mock_page: Page, running_server: str, append_failure: str
+):
+    galgame_payloads = []
+
+    def _handle(route: Route):
+        galgame_payloads.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body='{"options": []}')
+
+    mock_page.route("**/api/galgame/options", _handle)
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        """() => !!(
+            window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+            && window.__nekoIcebreakerBridgeReady
+        )""",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """(failure) => {
+            window.appState.lanlan_name = 'yui';
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            document.getElementById('react-chat-window-overlay').hidden = false;
+            host.appendMessage = () => {
+                if (failure === 'throw') throw new Error('sync append failure');
+                if (failure === 'reject') return Promise.reject(new Error('async append failure'));
+                return null;
+            };
+            const messageId = `icebreaker-assistant-failed-${failure}`;
+            const timestamp = Date.now();
+            window.dispatchEvent(new CustomEvent('neko:electron-icebreaker-bridge', {
+                detail: {
+                    action: 'icebreaker_append_chat_message',
+                    lanlan_name: 'yui',
+                    message: {
+                        id: messageId,
+                        role: 'assistant',
+                        blocks: [{ type: 'text', text: '不会成功追加' }]
+                    },
+                    timestamp
+                }
+            }));
+            window.dispatchEvent(new CustomEvent('neko:electron-icebreaker-bridge', {
+                detail: {
+                    action: 'icebreaker_galgame_handoff',
+                    lanlan_name: 'yui',
+                    detail: { sessionId: 'failed-session', messageId },
+                    timestamp: timestamp + 1
+                }
+            }));
+        }""",
+        append_failure,
+    )
+    mock_page.wait_for_timeout(700)
+
+    assert galgame_payloads == []

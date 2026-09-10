@@ -1687,6 +1687,7 @@
         if (decision.action === 'release') {
             var releaseText = decision.reply || getText(localeData, fallback.releaseKey);
             var releaseVoiceKey = fallback.releaseVoiceKey || '';
+            var releaseMessage = null;
             recordFreeTextTurn(session, {
                 userText: info.userText,
                 action: 'release',
@@ -1702,6 +1703,7 @@
                 requestId: info.requestId || ''
             }, session).then(function (message) {
                 if (!didAppendChatMessage(message)) return false;
+                releaseMessage = message;
                 return true;
             }) : Promise.resolve(activeSession === session);
             return releaseAppend.then(function (didAppendRelease) {
@@ -1729,6 +1731,9 @@
                 });
                 if (activeSession === session) {
                     activeSession = null;
+                }
+                if (releaseMessage) {
+                    dispatchIcebreakerGalgameHandoff(session, releaseMessage);
                 }
                 dispatchIcebreakerEnded('free_text_release');
                 return true;

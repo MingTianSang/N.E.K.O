@@ -973,7 +973,7 @@
             if (next && !requestOptions.suppressRefetch) {
                 var overlay = I.getOverlay();
                 if (overlay && !overlay.hidden) {
-                    I.fetchGalgameOptionsForLatestTurn();
+                    I.fetchPendingIcebreakerGalgameHandoffOrLatest();
                 }
             }
         }
@@ -1029,8 +1029,9 @@
             if (!m) continue;
             if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
+            var isApprovedCompletedHandoff = false;
             if (isNewUserIcebreakerChatMessage(m)) {
-                var isApprovedCompletedHandoff = !!(
+                isApprovedCompletedHandoff = !!(
                     icebreakerHandoffMessageId
                     && String(m.id || '') === icebreakerHandoffMessageId
                     && m.role === 'assistant'
@@ -1045,6 +1046,12 @@
                     continue;
                 }
             }
+            // A delayed handoff is valid only while its final bubble is still
+            // the latest conversation turn. Never let its one-shot approval
+            // reach past newer ordinary user/assistant activity.
+            if (icebreakerHandoffMessageId && !collected.length && !isApprovedCompletedHandoff) {
+                return [];
+            }
             var text = '';
             if (Array.isArray(m.blocks)) {
                 for (var j = 0; j < m.blocks.length; j++) {
@@ -1057,6 +1064,10 @@
             text = text.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
             if (!text) continue;
             collected.push({ role: m.role, text: text });
+            // The completed icebreaker handoff intentionally seeds GalGame
+            // from its final assistant line alone. Older scripted or ordinary
+            // history belongs to the conversation before this boundary.
+            if (isApprovedCompletedHandoff) break;
         }
         return collected.reverse();
     }
@@ -1191,6 +1202,28 @@
             I.renderWindow();
         });
     }
+
+    I.rememberIcebreakerGalgameHandoff = function rememberIcebreakerGalgameHandoff(messageId) {
+        var normalizedMessageId = String(messageId || '');
+        if (!normalizedMessageId) return false;
+        I.state.pendingIcebreakerGalgameHandoffMessageId = normalizedMessageId;
+        return true;
+    };
+
+    I.fetchPendingIcebreakerGalgameHandoffOrLatest = function fetchPendingIcebreakerGalgameHandoffOrLatest() {
+        var messageId = String(I.state.pendingIcebreakerGalgameHandoffMessageId || '');
+        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+        var handoffOptions = messageId ? {
+            icebreakerHandoffMessageId: messageId
+        } : null;
+        // A hidden window may remain closed while the conversation advances.
+        // In that case consume the stale one-shot approval, then use the normal
+        // latest-turn path instead of suppressing valid newer GalGame options.
+        if (handoffOptions && !getRecentGalgameMessageHistory(handoffOptions).length) {
+            handoffOptions = null;
+        }
+        I.fetchGalgameOptionsForLatestTurn(handoffOptions || undefined);
+    };
 
     I.handleGalgameModeToggle = function handleGalgameModeToggle() {
         if (I.isHomeTutorialInteractionLocked()) {
@@ -1808,6 +1841,12 @@
             }).filter(Boolean)
             : [];
         I.state.messages = I.sortMessages(normalized);
+        if (I.state.pendingIcebreakerGalgameHandoffMessageId
+                && !I.state.messages.some(function (message) {
+                    return String(message.id || '') === I.state.pendingIcebreakerGalgameHandoffMessageId;
+                })) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+        }
         I._sortKeySeq = nextSortKey;
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
@@ -2030,6 +2069,10 @@
         if (I.state.messages.length > MAX_MESSAGES) {
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
         }
+        if (I.state.pendingIcebreakerGalgameHandoffMessageId
+                && String(normalized.id || '') !== I.state.pendingIcebreakerGalgameHandoffMessageId) {
+            I.state.pendingIcebreakerGalgameHandoffMessageId = '';
+        }
         // A new user-role message means the conversation has advanced — even
         // when the message came in via voice / proactive / sendTextPayload
         // rather than the React composer. Invalidate any pending GalGame fetch
@@ -2088,6 +2131,7 @@
 
     I.clearMessages = function clearMessages() {
         I.state.messages = [];
+        I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         I._sortKeySeq = 0;
         I.invalidatePendingGalgameRequest();
         // 角色切换 / cloud reload 等触发 clearMessages 的路径也必须清掉 mini-game

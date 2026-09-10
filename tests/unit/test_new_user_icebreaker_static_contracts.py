@@ -612,11 +612,15 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "bridge.finalizeTurnWithTranslation(line)" in interpage_subtitle_block
     assert "setSubtitleEnabled(true" not in interpage_subtitle_block
     assert "setTranslateEnabled(true" not in interpage_subtitle_block
-    assert "var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
+    assert "appendResult = host.appendMessage(action.message);" in interpage_runtime
+    assert "appendResult = Promise.reject(error);" in interpage_runtime
+    assert "var appendPromise = Promise.resolve(appendResult).then(function (result) {" in interpage_runtime
+    assert "appendStatus.succeeded !== true" in interpage_runtime
+    assert "appendStatus.messageId !== String(handoffDetail.messageId || '')" in interpage_runtime
     assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
     assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
     assert "finalizeIcebreakerAssistantSubtitleTranslation(action.message);" in interpage_runtime
-    assert interpage_runtime.index("var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
+    assert interpage_runtime.index("var appendPromise = Promise.resolve(appendResult).then(function (result) {") < interpage_runtime.index(
         "return waitForIcebreakerChatHostMounted(host).then(function () {"
     ) < interpage_runtime.index(
         "syncIcebreakerAssistantCompactCaption(action.message);"
@@ -1446,6 +1450,9 @@ def test_icebreaker_free_text_llm_flow_uses_session_snapshot_after_async_append(
     assert "return speakLine(releaseText, releaseVoiceKey);" in runtime
     assert "}).catch(function () {}).then(function () {" in runtime
     assert "didAppendRelease" in runtime
+    assert "var releaseMessage = null;" in runtime
+    assert "releaseMessage = message;" in runtime
+    assert "dispatchIcebreakerGalgameHandoff(session, releaseMessage);" in runtime
     assert "var releaseAppend = releaseText ? appendAssistantChatMessage(releaseText, {" in runtime
     assert "}) : Promise.resolve(activeSession === session);" in runtime
     assert "if (!didAppendRelease || activeSession !== session) return false;" in runtime

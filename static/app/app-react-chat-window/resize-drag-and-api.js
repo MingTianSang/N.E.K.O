@@ -523,10 +523,12 @@
                 ? event.detail
                 : {};
             var messageId = String(detail.messageId || '');
-            if (!messageId || !I.state.galgameModeEnabled) return;
+            if (!messageId) return;
             if (detail.sessionId) {
                 I.clearIcebreakerChoicePrompt(String(detail.sessionId));
             }
+            I.rememberIcebreakerGalgameHandoff(messageId);
+            if (!I.state.galgameModeEnabled) return;
             var overlay = I.getOverlay();
             if (!overlay || overlay.hidden) return;
             var seqAtSchedule = I.state._galgameRequestSeq;
@@ -535,9 +537,8 @@
                 if (I.state._galgameRequestSeq !== seqAtSchedule) return;
                 var overlayNow = I.getOverlay();
                 if (!overlayNow || overlayNow.hidden) return;
-                I.fetchGalgameOptionsForLatestTurn({
-                    icebreakerHandoffMessageId: messageId
-                });
+                if (I.state.pendingIcebreakerGalgameHandoffMessageId !== messageId) return;
+                I.fetchPendingIcebreakerGalgameHandoffOrLatest();
             });
         });
 

@@ -1652,7 +1652,9 @@ def test_completed_icebreaker_handoff_seeds_galgame_once():
     )[1].split("function isNewUserIcebreakerTurnEndEvent", 1)[0]
     assert "clearIcebreakerChoicePrompt(String(detail.sessionId));" in handoff_listener
     assert "waitForAssistantBubblesFlushed(4000)" in handoff_listener
-    assert "icebreakerHandoffMessageId: messageId" in handoff_listener
+    assert "rememberIcebreakerGalgameHandoff(messageId)" in handoff_listener
+    assert "pendingIcebreakerGalgameHandoffMessageId !== messageId" in handoff_listener
+    assert "fetchPendingIcebreakerGalgameHandoffOrLatest()" in handoff_listener
 
     node_path = shutil.which("node")
     if not node_path:
@@ -1674,7 +1676,22 @@ const handoff = {{
     blocks: [{{ type: 'text', text: 'final handoff' }}],
     icebreaker: {{ source: 'new_user_icebreaker', handoff: true }}
 }};
-context.I.state.messages = [handoff];
+const ordinaryBefore = {{
+    id: 'ordinary-before',
+    role: 'assistant',
+    blocks: [{{ type: 'text', text: 'old ordinary history' }}]
+}};
+const icebreakerBefore = {{
+    id: 'icebreaker-user-before',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'old scripted history' }}]
+}};
+const ordinaryAfter = {{
+    id: 'ordinary-after',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'newer turn' }}]
+}};
+context.I.state.messages = [ordinaryBefore, icebreakerBefore, handoff];
 assert.equal(JSON.stringify(vm.runInContext('getRecentGalgameMessageHistory()', context)), '[]');
 assert.equal(
     JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'wrong' }})", context)),
@@ -1683,6 +1700,11 @@ assert.equal(
 assert.equal(
     JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
     '[{{"role":"assistant","text":"final handoff"}}]'
+);
+context.I.state.messages.push(ordinaryAfter);
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
+    '[]'
 );
 """
     result = run_node_script(
