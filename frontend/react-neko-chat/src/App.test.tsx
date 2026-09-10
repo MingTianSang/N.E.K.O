@@ -9480,6 +9480,43 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send', submitMethod: 'enter' });
   });
 
+  it('finishes a plain Enter submission when the compact input blurs before keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Send on blur' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.blur(input);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledTimes(1);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send on blur', submitMethod: 'enter' });
+    expect(input).toHaveValue('');
+  });
+
+  it('does not turn Shift+Enter or IME confirmation into a submission on blur', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Keep draft' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    fireEvent.blur(input);
+
+    fireEvent.focus(input);
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+    });
+    fireEvent.blur(input);
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('Keep draft');
+  });
+
   it('submits plain Enter when WebKit inserts a line break before keyup', () => {
     const onComposerSubmit = vi.fn();
     renderInputApp({ onComposerSubmit });

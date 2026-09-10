@@ -4832,6 +4832,7 @@ function CompactChatApp({
   function submitDraft(
     draftOverride?: string,
     submitMethod: ComposerSubmitPayload['submitMethod'] = 'button',
+    { refocusCompactInput = true }: { refocusCompactInput?: boolean } = {},
   ) {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
@@ -4848,7 +4849,8 @@ function CompactChatApp({
         setDraft('');
       }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
-      shouldRefocusCompactInput = isCompactSurface
+      shouldRefocusCompactInput = refocusCompactInput
+        && isCompactSurface
         && effectiveCompactChatState === 'input'
         && text.length > 0;
     } finally {
@@ -4859,6 +4861,26 @@ function CompactChatApp({
         }
       });
     }
+  }
+
+  function completeComposerEnterCycle() {
+    const shouldSubmit = composerEnterCycleActiveRef.current
+      && !composerEnterCycleShiftRef.current
+      && !composerEnterCycleImeRef.current
+      && !composerIsComposingRef.current
+      && !composerImeCommitPendingRef.current;
+    const draftBeforeEnter = composerEnterCycleDraftRef.current;
+    const shouldRestoreDraft = composerEnterCycleLineBreakRef.current
+      && !composerEnterCycleShiftRef.current;
+
+    composerEnterCycleActiveRef.current = false;
+    composerEnterCycleShiftRef.current = false;
+    composerEnterCycleImeRef.current = false;
+    composerEnterCycleLineBreakRef.current = false;
+    composerEnterCycleDraftRef.current = '';
+    composerImeCommitPendingRef.current = false;
+
+    return { draftBeforeEnter, shouldRestoreDraft, shouldSubmit };
   }
 
   const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
@@ -6087,21 +6109,11 @@ function CompactChatApp({
                               return;
                             }
 
-                            const shouldSubmit = composerEnterCycleActiveRef.current
-                              && !composerEnterCycleShiftRef.current
-                              && !composerEnterCycleImeRef.current
-                              && !composerIsComposingRef.current
-                              && !composerImeCommitPendingRef.current;
-                            const draftBeforeEnter = composerEnterCycleDraftRef.current;
-                            const shouldRestoreDraft = composerEnterCycleLineBreakRef.current
-                              && !composerEnterCycleShiftRef.current;
-
-                            composerEnterCycleActiveRef.current = false;
-                            composerEnterCycleShiftRef.current = false;
-                            composerEnterCycleImeRef.current = false;
-                            composerEnterCycleLineBreakRef.current = false;
-                            composerEnterCycleDraftRef.current = '';
-                            composerImeCommitPendingRef.current = false;
+                            const {
+                              draftBeforeEnter,
+                              shouldRestoreDraft,
+                              shouldSubmit,
+                            } = completeComposerEnterCycle();
 
                             if (shouldRestoreDraft) {
                               if (catLocalTextOnly) {
@@ -6126,13 +6138,29 @@ function CompactChatApp({
                             }
                           }}
                           onBlur={() => {
+                            const {
+                              draftBeforeEnter,
+                              shouldRestoreDraft,
+                              shouldSubmit,
+                            } = completeComposerEnterCycle();
                             composerIsComposingRef.current = false;
                             composerImeCommitPendingRef.current = false;
-                            composerEnterCycleActiveRef.current = false;
-                            composerEnterCycleImeRef.current = false;
-                            composerEnterCycleShiftRef.current = false;
-                            composerEnterCycleLineBreakRef.current = false;
-                            composerEnterCycleDraftRef.current = '';
+
+                            if (shouldRestoreDraft) {
+                              if (catLocalTextOnly) {
+                                setCatDraft(draftBeforeEnter);
+                              } else {
+                                setDraft(draftBeforeEnter);
+                              }
+                            }
+
+                            if (shouldSubmit) {
+                              submitDraft(
+                                draftBeforeEnter,
+                                'enter',
+                                { refocusCompactInput: false },
+                              );
+                            }
                             scheduleCompactInputCollapse();
                           }}
                         />
