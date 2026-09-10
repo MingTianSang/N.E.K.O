@@ -3103,3 +3103,30 @@ def test_text_mode_screenshot_payload_always_tags_interaction_request():
     assert "if (text)" not in screenshot_block
     assert "msg.request_id = requestId" not in screenshot_block
     assert "request_id: requestId" in text_block
+
+
+def test_deferred_enter_submission_requests_auto_collapse_once_before_queue_flush():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    public_send_block = script.split("async function sendTextPayload(rawText, options)", 1)[1].split(
+        "mod.sendTextPayload = sendTextPayload",
+        1,
+    )[0]
+    deferral_block = public_send_block.split("if (options.skipAvatarInteractionDeferral !== true", 1)[1].split(
+        "return sendTextPayloadInternal",
+        1,
+    )[0]
+
+    assert "var deferredOptions = Object.assign({}, options);" in deferral_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)" in deferral_block
+    assert "deferredOptions.autoCollapseAfterEnterRequested = true;" in deferral_block
+    assert "queueDeferredTextSubmission(text, deferredOptions);" in deferral_block
+    assert deferral_block.index("requestChatAutoCollapseAfterAcceptedEnter") < deferral_block.index(
+        "queueDeferredTextSubmission"
+    )
+
+    internal_send_block = script.split("async function sendTextPayloadInternal(rawText, options)", 1)[1].split(
+        "function shouldAppendLegacyUserMessage()",
+        1,
+    )[0]
+    assert "if (options.autoCollapseAfterEnterRequested !== true)" in internal_send_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(options, requestId);" in internal_send_block

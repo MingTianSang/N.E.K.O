@@ -3050,7 +3050,9 @@
 
             // Enter 已通过空内容、教程锁和附件预处理校验，即视为发送请求已被聊天逻辑接受。
             // 必须在首轮 start_session 的异步等待前收起，否则第一次聊天会等初始化完成才响应。
-            requestChatAutoCollapseAfterAcceptedEnter(options, requestId);
+            if (options.autoCollapseAfterEnterRequested !== true) {
+                requestChatAutoCollapseAfterAcceptedEnter(options, requestId);
+            }
 
             function shouldAppendLegacyUserMessage() {
                 return !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
@@ -3386,7 +3388,12 @@
                     && !hasScreenshots
                     && !hasExtraImages
                     && hasPendingAvatarInteractionContinuation()) {
-                queueDeferredTextSubmission(text, options);
+                var deferredOptions = Object.assign({}, options);
+                if (deferredOptions.autoCollapseAfterEnterRequested !== true
+                        && requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)) {
+                    deferredOptions.autoCollapseAfterEnterRequested = true;
+                }
+                queueDeferredTextSubmission(text, deferredOptions);
                 textInputBox.value = '';
                 textInputComposing = false;
                 lastTextCompositionEndAt = 0;
