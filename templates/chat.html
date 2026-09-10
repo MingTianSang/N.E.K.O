@@ -182,10 +182,10 @@
            注：full 窗口 transparent:true 且同期 lanlan_frd 无 vibrancy/acrylic（已核 git 全史），
            桌面是锐透出来的、非 OS 磨砂 —— 与当年一致，纯 CSS 半透明，无需 lanlan_frd 配合。 */
         body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
-            background: rgba(255, 255, 255, calc(0.35 * var(--neko-chat-opacity-factor, 1)));
+            background: rgba(255, 255, 255, calc(0.35 * var(--neko-chat-opacity-factor, 1) + 0.3 * max(0, var(--neko-chat-opacity-factor, 1) - 1)));
         }
         [data-theme="dark"] body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
-            background: rgba(50, 50, 72, calc(0.35 * var(--neko-chat-opacity-factor, 1)));
+            background: rgba(50, 50, 72, calc(0.35 * var(--neko-chat-opacity-factor, 1) + 0.3 * max(0, var(--neko-chat-opacity-factor, 1) - 1)));
         }
         /* ──────────────────────────────────────────────────────────────────────
            full 形态在**共享 /chat（compact）**上不注入，仅在此留档：

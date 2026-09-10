@@ -23,6 +23,9 @@
   });
 
   function normalizeUiOpacity(value) {
+    if (value === null || (typeof value === 'string' && value.trim() === '')) {
+      return DEFAULT_UI_OPACITY;
+    }
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue)) return DEFAULT_UI_OPACITY;
     return Math.min(100, Math.max(0, Math.round(numericValue)));
