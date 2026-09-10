@@ -1020,6 +1020,8 @@
     }
 
     function getRecentGalgameMessageHistory() {
+        var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
+        var icebreakerHandoffMessageId = String(requestOptions.icebreakerHandoffMessageId || '');
         var msgs = Array.isArray(I.state.messages) ? I.state.messages : [];
         var collected = [];
         for (var i = msgs.length - 1; i >= 0 && collected.length < I.GALGAME_HISTORY_LIMIT; i--) {
@@ -1028,11 +1030,20 @@
             if (isYuiGuideChatMessage(m)) continue;
             if (m.role !== 'assistant' && m.role !== 'user') continue;
             if (isNewUserIcebreakerChatMessage(m)) {
+                var isApprovedCompletedHandoff = !!(
+                    icebreakerHandoffMessageId
+                    && String(m.id || '') === icebreakerHandoffMessageId
+                    && m.role === 'assistant'
+                );
                 // While the latest conversation turn belongs to the scripted
                 // icebreaker, do not fall back to an older ordinary assistant
-                // turn and generate unrelated GalGame choices for it.
-                if (!collected.length) return [];
-                continue;
+                // turn and generate unrelated GalGame choices for it. The sole
+                // exception is the final handoff line explicitly released by the
+                // completed icebreaker session; that one line seeds GalGame once.
+                if (!isApprovedCompletedHandoff) {
+                    if (!collected.length) return [];
+                    continue;
+                }
             }
             var text = '';
             if (Array.isArray(m.blocks)) {
@@ -1076,6 +1087,7 @@
     }
 
     I.fetchGalgameOptionsForLatestTurn = function fetchGalgameOptionsForLatestTurn() {
+        var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!I.state.galgameModeEnabled) return;
         // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
@@ -1084,7 +1096,7 @@
         // （Codex P2）。icebreaker 运行在 home tutorial 之外，galgameTemporarilyDisabled
         // 此时并不覆盖它，故须单独按 choicePrompt 拦。
         if (I.state.choicePrompt && I.state.choicePrompt.source === 'new_user_icebreaker') return;
-        var history = getRecentGalgameMessageHistory();
+        var history = getRecentGalgameMessageHistory(requestOptions);
         if (!history.length) return;
         if (history[history.length - 1].role !== 'assistant') return;
 

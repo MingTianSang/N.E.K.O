@@ -463,6 +463,7 @@
     var _pendingIcebreakerBridgeActions = [];
     var _icebreakerBridgeFlushTimer = null;
     var _icebreakerBridgeFlushAttempts = 0;
+    var _icebreakerBridgeAppendBarrier = Promise.resolve();
     var ICEBREAKER_BRIDGE_FLUSH_MAX_ATTEMPTS = 50;
 
     function scheduleIcebreakerBridgeFlush(delay) {
@@ -512,7 +513,7 @@
             try {
                 if (action.type === 'append' && action.message) {
                     shouldOpenHost = true;
-                    return Promise.resolve(host.appendMessage(action.message)).then(function (result) {
+                    var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {
                         if (!result) return result;
                         return waitForIcebreakerChatHostMounted(host).then(function () {
                             syncIcebreakerAssistantCompactCaption(action.message);
@@ -522,6 +523,14 @@
                     }).catch(function (error) {
                         console.warn('[NewUserIcebreaker] Failed to append bridge message:', error);
                     });
+                    // Full Chat lives in an isolated Electron partition. Its final
+                    // handoff signal can arrive while appendMessage is still
+                    // committing the preceding assistant bubble, so retain a
+                    // cross-batch barrier for the semantic handoff below.
+                    _icebreakerBridgeAppendBarrier = Promise.all([
+                        _icebreakerBridgeAppendBarrier,
+                        appendPromise
+                    ]).then(function () {});
                 } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
                     host.setIcebreakerChoicePrompt(action.prompt);
                     shouldOpenHost = true;
@@ -531,6 +540,16 @@
                         && action.source === 'new_user_icebreaker'
                         && typeof host.clearChoicePromptBySource === 'function') {
                     host.clearChoicePromptBySource(action.source, action.reason || 'icebreaker-bridge');
+                } else if (action.type === 'galgame_handoff' && action.detail) {
+                    (function (handoffDetail) {
+                        Promise.resolve(_icebreakerBridgeAppendBarrier).then(function () {
+                            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                                detail: handoffDetail
+                            }));
+                        }).catch(function (error) {
+                            console.warn('[NewUserIcebreaker] Failed to dispatch GalGame handoff:', error);
+                        });
+                    })(action.detail);
                 }
             } catch (error) {
                 console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
@@ -567,6 +586,14 @@
             type: 'clear_prompt_source',
             source: String(source || ''),
             reason: String(reason || '')
+        });
+    }
+
+    function dispatchIcebreakerGalgameHandoffFromBroadcast(detail) {
+        if (!I.isStandaloneChatPage()) return;
+        queueIcebreakerBridgeAction({
+            type: 'galgame_handoff',
+            detail: detail && typeof detail === 'object' ? detail : {}
         });
     }
 
@@ -654,6 +681,7 @@
             || action === 'icebreaker_set_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt'
             || action === 'icebreaker_clear_choice_prompt_source'
+            || action === 'icebreaker_galgame_handoff'
             || action === 'icebreaker_choice_selected'
             || action === 'icebreaker_free_text_submitted';
     }
@@ -719,6 +747,10 @@
             case 'icebreaker_clear_choice_prompt_source':
                 if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason);
+                return true;
+            case 'icebreaker_galgame_handoff':
+                if (I.isDuplicateMessage(data.action, data.timestamp)) return true;
+                dispatchIcebreakerGalgameHandoffFromBroadcast(data.detail || data);
                 return true;
             case 'icebreaker_choice_selected':
                 if (I.isDuplicateMessage(data.action, data.timestamp)) return true;

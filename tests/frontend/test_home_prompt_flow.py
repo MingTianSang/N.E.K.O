@@ -5979,19 +5979,34 @@ def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succ
             localStorage.getItem('neko.new_user_icebreaker.v1')
         ).days['1'].completed === true"""
     )
+    mock_page.wait_for_function(
+        """() => window.__icebreakerBridgeEvents.some(
+            (event) => event.action === 'icebreaker_galgame_handoff'
+        )"""
+    )
     completed = mock_page.evaluate(
-        """() => ({
-            routeEndCount: window.__routeEndCount,
-            routeStateCount: window.__routeStateCount,
-            messages: window.__icebreakerBridgeEvents
+        """() => {
+            const messageEvents = window.__icebreakerBridgeEvents
                 .filter((event) => event.action === 'icebreaker_append_chat_message')
-                .map((event) => event.message.role),
-        })"""
+            const handoff = window.__icebreakerBridgeEvents.find(
+                (event) => event.action === 'icebreaker_galgame_handoff'
+            );
+            return {
+                routeEndCount: window.__routeEndCount,
+                routeStateCount: window.__routeStateCount,
+                messages: messageEvents.map((event) => event.message.role),
+                handoffMatchesFinalMessage: handoff.detail.messageId
+                    === messageEvents[messageEvents.length - 1].message.id,
+                handoffSessionId: handoff.detail.sessionId,
+            };
+        }"""
     )
     assert completed == {
         "routeEndCount": 2,
         "routeStateCount": 2,
         "messages": ["assistant", "user", "assistant"],
+        "handoffMatchesFinalMessage": True,
+        "handoffSessionId": session_id,
     }
 
 

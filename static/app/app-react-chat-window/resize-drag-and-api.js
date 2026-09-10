@@ -518,6 +518,29 @@
             I.clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
         });
 
+        window.addEventListener('neko:icebreaker-galgame-handoff', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            var messageId = String(detail.messageId || '');
+            if (!messageId || !I.state.galgameModeEnabled) return;
+            if (detail.sessionId) {
+                I.clearIcebreakerChoicePrompt(String(detail.sessionId));
+            }
+            var overlay = I.getOverlay();
+            if (!overlay || overlay.hidden) return;
+            var seqAtSchedule = I.state._galgameRequestSeq;
+            I.waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!I.state.galgameModeEnabled) return;
+                if (I.state._galgameRequestSeq !== seqAtSchedule) return;
+                var overlayNow = I.getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                I.fetchGalgameOptionsForLatestTurn({
+                    icebreakerHandoffMessageId: messageId
+                });
+            });
+        });
+
         function isNewUserIcebreakerTurnEndEvent(event) {
             var detail = event && event.detail && typeof event.detail === 'object'
                 ? event.detail

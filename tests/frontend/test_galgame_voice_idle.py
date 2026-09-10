@@ -36,7 +36,12 @@ def test_galgame_options_gated_by_chat_window_visibility(
 
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     mock_page.wait_for_function(
-        "() => !!(window.appState && window.reactChatWindowHost)",
+        """() => !!(
+            window.appState
+            && window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+        )""",
         timeout=10000,
     )
 
@@ -49,7 +54,7 @@ def test_galgame_options_gated_by_chat_window_visibility(
                 window.dispatchEvent(new CustomEvent(name, { detail: { page: 'home' } }));
             });
             const host = window.reactChatWindowHost;
-            host.setGalgameModeEnabled(true, { persist: false });
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
             // 注入一段以 assistant 结尾的历史 —— 这样「没发请求」不会被归因到
             // history 为空，而唯一归因到 overlay.hidden 这道关。
             host.setMessages([
@@ -57,6 +62,7 @@ def test_galgame_options_gated_by_chat_window_visibility(
                 { id: 'a1', role: 'assistant', blocks: [{ type: 'text', text: '在的呀' }] },
             ]);
             const overlay = document.getElementById('react-chat-window-overlay');
+            if (overlay) overlay.hidden = true;
             return {
                 galgameEnabled: host.isGalgameModeEnabled(),
                 overlayHidden: !overlay || overlay.hidden,
@@ -86,6 +92,13 @@ def test_galgame_options_gated_by_chat_window_visibility(
     mock_page.evaluate(
         """
         () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            window.reactChatWindowHost.setGalgameModeEnabled(true, {
+                persist: false,
+                force: true
+            });
             // 直接揭开 overlay（不走完整 openWindow，避免 React bundle 异步 mount
             // 的时序）—— turn-end handler 只读 overlay.hidden。
             document.getElementById('react-chat-window-overlay').hidden = false;
@@ -102,3 +115,179 @@ def test_galgame_options_gated_by_chat_window_visibility(
     assert any("/api/galgame/options" in url for url in galgame_requests), (
         f"对照失败：overlay 可见时 turn-end 应触发选项生成，实际: {galgame_requests}"
     )
+
+
+@pytest.mark.frontend
+def test_completed_icebreaker_handoff_seeds_visible_galgame_options(
+    mock_page: Page, running_server: str
+):
+    galgame_payloads = []
+
+    def _handle(route: Route):
+        galgame_payloads.append(route.request.post_data_json)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"success": true, "options": ['
+                '{"label": "A", "text": "x"},'
+                '{"label": "B", "text": "y"},'
+                '{"label": "C", "text": "z"}]}'
+            ),
+        )
+
+    mock_page.route("**/api/galgame/options", _handle)
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        """() => !!(
+            window.appState
+            && window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+        )""",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            host.setMessages([{
+                id: 'icebreaker-assistant-final',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: '破冰收尾台词' }]
+            }]);
+            host.setIcebreakerChoicePrompt({
+                sessionId: 'icebreaker-session-1',
+                options: [{ choice: 'A', label: '最后一个选择' }]
+            });
+            document.getElementById('react-chat-window-overlay').hidden = false;
+            window._realisticGeminiQueue = [];
+            window._isProcessingRealisticQueue = false;
+            window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
+                detail: { source: 'new_user_icebreaker', timestamp: Date.now() }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(500)
+    assert galgame_payloads == [], "普通破冰 turn-end 仍应被 GalGame 隔离"
+
+    mock_page.evaluate(
+        """
+        () => {
+            // 页面其余首启脚本可能在 domcontentloaded 后才真正拉起教程；在主张前
+            // 再释放一次，避免测试把异步教程锁误判成交接失败。
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            window.reactChatWindowHost.setGalgameModeEnabled(true, {
+                persist: false,
+                force: true
+            });
+            document.getElementById('react-chat-window-overlay').hidden = false;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-galgame-handoff', {
+                detail: {
+                    sessionId: 'icebreaker-session-1',
+                    messageId: 'icebreaker-assistant-final'
+                }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(1200)
+
+    assert len(galgame_payloads) == 1
+    assert galgame_payloads[0]["messages"] == [
+        {"role": "assistant", "text": "破冰收尾台词"}
+    ]
+
+
+@pytest.mark.frontend
+def test_full_chat_electron_bridge_waits_for_handoff_bubble_before_galgame(
+    mock_page: Page, running_server: str
+):
+    galgame_payloads = []
+
+    def _handle(route: Route):
+        galgame_payloads.append(route.request.post_data_json)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"success": true, "options": ['
+                '{"label": "A", "text": "x"},'
+                '{"label": "B", "text": "y"},'
+                '{"label": "C", "text": "z"}]}'
+            ),
+        )
+
+    mock_page.route("**/api/galgame/options", _handle)
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        """() => !!(
+            window.appState
+            && window.reactChatWindowHost
+            && window.reactChatWindowHost.isMounted
+            && window.reactChatWindowHost.isMounted()
+            && window.__nekoIcebreakerBridgeReady
+        )""",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.appState.lanlan_name = 'yui';
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: { page: 'home' }
+            }));
+            const host = window.reactChatWindowHost;
+            host.setGalgameModeEnabled(true, { persist: false, force: true });
+            document.getElementById('react-chat-window-overlay').hidden = false;
+
+            const timestamp = Date.now();
+            const finalMessage = {
+                id: 'icebreaker-assistant-full-final',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: '完整聊天框破冰收尾台词' }],
+                icebreaker: {
+                    source: 'new_user_icebreaker',
+                    sessionId: 'full-chat-session-1',
+                    handoff: true
+                }
+            };
+            window.dispatchEvent(new CustomEvent('neko:electron-icebreaker-bridge', {
+                detail: {
+                    action: 'icebreaker_append_chat_message',
+                    lanlan_name: 'yui',
+                    message: finalMessage,
+                    timestamp
+                }
+            }));
+            // Electron IPC sends this immediately after the append message. The
+            // Full Chat bridge must delay it until appendMessage has committed.
+            window.dispatchEvent(new CustomEvent('neko:electron-icebreaker-bridge', {
+                detail: {
+                    action: 'icebreaker_galgame_handoff',
+                    lanlan_name: 'yui',
+                    detail: {
+                        sessionId: 'full-chat-session-1',
+                        messageId: 'icebreaker-assistant-full-final'
+                    },
+                    timestamp: timestamp + 1
+                }
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(1500)
+
+    assert len(galgame_payloads) == 1
+    assert galgame_payloads[0]["messages"] == [
+        {"role": "assistant", "text": "完整聊天框破冰收尾台词"}
+    ]

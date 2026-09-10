@@ -612,11 +612,11 @@ def test_icebreaker_assistant_messages_update_compact_caption_like_normal_chat()
     assert "bridge.finalizeTurnWithTranslation(line)" in interpage_subtitle_block
     assert "setSubtitleEnabled(true" not in interpage_subtitle_block
     assert "setTranslateEnabled(true" not in interpage_subtitle_block
-    assert "return Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
+    assert "var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {" in interpage_runtime
     assert "return waitForIcebreakerChatHostMounted(host).then(function () {" in interpage_runtime
     assert "syncIcebreakerAssistantCompactCaption(action.message);" in interpage_runtime
     assert "finalizeIcebreakerAssistantSubtitleTranslation(action.message);" in interpage_runtime
-    assert interpage_runtime.index("return Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
+    assert interpage_runtime.index("var appendPromise = Promise.resolve(host.appendMessage(action.message)).then(function (result) {") < interpage_runtime.index(
         "return waitForIcebreakerChatHostMounted(host).then(function () {"
     ) < interpage_runtime.index(
         "syncIcebreakerAssistantCompactCaption(action.message);"
@@ -848,6 +848,8 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     )
     assert "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
+    assert "var handoffMessage = null;" in handoff_block
+    assert "handoffMessage = message;" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
@@ -866,6 +868,10 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
         "return Promise.resolve(handoffSpeechPromise)"
     )
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
+    assert "dispatchIcebreakerGalgameHandoff(session, handoffMessage);" in handoff_block
+    assert handoff_block.index("dispatchIcebreakerGalgameHandoff(session, handoffMessage);") < handoff_block.index(
+        "dispatchIcebreakerEnded('handoff');"
+    )
     assert "if (activeSession === session) {" in handoff_block
     assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
@@ -1242,6 +1248,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "action: 'icebreaker_append_chat_message'" in runtime
     assert "action: 'icebreaker_set_choice_prompt'" in runtime
     assert "action: 'icebreaker_clear_choice_prompt'" in runtime
+    assert "action: 'icebreaker_galgame_handoff'" in runtime
     assert "lanlan_name: resolveSessionLanlanName(activeSession)" in runtime
 
     assert "handleIcebreakerBridgeData" in interpage
@@ -1251,10 +1258,12 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "case 'icebreaker_set_choice_prompt'" in interpage
     assert "case 'icebreaker_clear_choice_prompt'" in interpage
     assert "case 'icebreaker_clear_choice_prompt_source'" in interpage
+    assert "case 'icebreaker_galgame_handoff'" in interpage
     assert "appendIcebreakerChatMessage(data.message)" in interpage
     assert "setIcebreakerChoicePromptFromBroadcast(data.prompt)" in interpage
     assert "clearIcebreakerChoicePromptFromBroadcast(data.sessionId)" in interpage
     assert "clearIcebreakerChoicePromptSourceFromBroadcast(data.source, data.reason)" in interpage
+    assert "new CustomEvent('neko:icebreaker-galgame-handoff'" in interpage
     icebreaker_flush_block = interpage.split("function flushPendingIcebreakerBridgeActions()", 1)[1].split(
         "function appendIcebreakerChatMessage",
         1,
@@ -1262,6 +1271,10 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "shouldOpenHost = true" in icebreaker_flush_block
     assert "host.openWindow()" in icebreaker_flush_block
     assert "action.source === 'new_user_icebreaker'" in icebreaker_flush_block
+    assert "_icebreakerBridgeAppendBarrier" in interpage
+    assert "action.type === 'galgame_handoff'" in icebreaker_flush_block
+    assert "Promise.resolve(_icebreakerBridgeAppendBarrier)" in icebreaker_flush_block
+    assert "dispatchIcebreakerGalgameHandoffFromBroadcast(data.detail || data)" in interpage
     assert "case 'icebreaker_choice_selected'" in interpage
     assert "postIcebreakerBridgeEvent('icebreaker_choice_selected'" in interpage
     assert "case 'icebreaker_free_text_submitted'" in interpage
