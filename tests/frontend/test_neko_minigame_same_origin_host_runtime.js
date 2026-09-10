@@ -70,6 +70,10 @@ async function main() {
   );
   const calls = [];
   const listeners = new Map();
+  let trustedAvatarFactoryCalls = 0;
+  let trustedAvatarMounts = 0;
+  let trustedAvatarDisposals = 0;
+  let forgedAvatarMounts = 0;
   let releaseProtocolTwo;
   let markProtocolTwoStarted;
   let releaseDelayedDrain;
@@ -183,6 +187,7 @@ async function main() {
   const hostLaunchRegistrations = Object.fromEntries(
     [...[
       'example-game',
+      'aliased-avatar-game',
       'waiting-lock-game',
       'third-party-game',
       'speech-only-game',
@@ -190,13 +195,31 @@ async function main() {
       'logger-one',
       'logger-two',
       'log-timeout-game',
+      'invalid-command-game',
     ], ...Array.from({ length: 70 }, (_unused, index) => `overflow-game-${index}`)]
       .map((gameId) => [gameId, {
       mode: gameId === 'example-game' ? 'registered' : 'development',
       gameId,
       publisherId: 'test-host',
       version: '1.0.0',
-      allowedCapabilities: defaultCapabilities,
+      allowedCapabilities: gameId === 'aliased-avatar-game'
+        ? ['runtime', 'logging', 'avatar-renderer']
+        : defaultCapabilities,
+      ...(gameId === 'aliased-avatar-game' ? {
+        routeGameType: 'shared_avatar_backend',
+      } : {}),
+      ...(gameId === 'example-game' ? {
+        commandRoutes: {
+          'round:input': {
+            path: 'round/input',
+            maxRequestBytes: 400 * 1024,
+            maxTimeoutMs: 1250,
+          },
+        },
+      } : {}),
+      ...(gameId === 'invalid-command-game' ? {
+        commandRoutes: { 'round:input': { path: '../admin' } },
+      } : {}),
       capabilityProviders: gameId === 'example-game' ? {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
       } : {},
@@ -207,6 +230,40 @@ async function main() {
     nekoCapabilityProviders: {
       'example-game': {
         quickLines: async () => jsonResponse({ ok: true, lines: ['ready'] }),
+      },
+      'aliased-avatar-game': {
+        avatarHostFactory({ windowImpl, documentImpl, fetchImpl: trustedFetch }) {
+          trustedAvatarFactoryCalls += 1;
+          assert(windowImpl === windowMock
+            && documentImpl === windowMock.document
+            && typeof trustedFetch === 'function',
+          'the trusted Avatar factory did not receive bounded host dependencies');
+          return {
+            async mount(config) {
+              trustedAvatarMounts += 1;
+              return { config, dispose() {} };
+            },
+            async getCurrentCharacter() {
+              return {
+                name: 'Shared Neko',
+                model: { type: 'mmd', path: '/models/shared-neko.pmx' },
+                rendererAvailable: true,
+                privatePrompt: 'must-not-cross-the-boundary',
+              };
+            },
+            async getCharacter(name) {
+              return {
+                name,
+                model: { type: 'pngtuber', path: '/models/shared-neko.png' },
+                rendererAvailable: true,
+              };
+            },
+            async listCharacters() {
+              return ['Shared Neko', 'PNG Neko', 'Shared Neko'];
+            },
+            dispose() { trustedAvatarDisposals += 1; },
+          };
+        },
       },
     },
     remove() { this.removed = true; },
@@ -288,6 +345,17 @@ async function main() {
   } catch (error) { missingRegistrationError = error; }
   assert(missingRegistrationError?.code === 'game_unregistered',
     'a game minted a registered host identity without a launch registration');
+  let invalidCommandRegistrationError = null;
+  try {
+    window.createNekoMiniGameSameOriginHost({
+      gameType: 'invalid-command-game',
+      fetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+  } catch (error) { invalidCommandRegistrationError = error; }
+  assert(invalidCommandRegistrationError?.code === 'game_unregistered',
+    'a launch registration with a traversing command route was accepted');
   let overflowRegistrationError = null;
   try {
     window.createNekoMiniGameSameOriginHost({
@@ -299,6 +367,51 @@ async function main() {
   } catch (error) { overflowRegistrationError = error; }
   assert(overflowRegistrationError?.code === 'game_unregistered',
     'the host launch registry exceeded its page-lifetime capacity bound');
+
+  const aliasedAvatarHost = createHost({
+    gameType: 'aliased-avatar-game',
+    routeGameType: 'forged-route',
+    sessionId: 'aliased-avatar-session',
+    fetchImpl,
+    windowImpl: windowMock,
+    navigatorImpl: windowMock.navigator,
+    avatarHost: { mount() { forgedAvatarMounts += 1; } },
+    trustedAvatarHost: { mount() { forgedAvatarMounts += 1; } },
+  });
+  const aliasedAvatarHandshake = aliasedAvatarHost.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'aliased-avatar-game',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'avatar-renderer'],
+      optionalCapabilities: [],
+    },
+  });
+  assert(aliasedAvatarHandshake.grantedCapabilities.includes('avatar-renderer')
+    && trustedAvatarFactoryCalls === 1,
+  'the bootstrap-owned Avatar provider was not granted');
+  const currentAvatarCharacter = await aliasedAvatarHost.getAvatarCharacter();
+  const namedAvatarCharacter = await aliasedAvatarHost.getAvatarCharacter('PNG Neko');
+  const avatarCharacterNames = await aliasedAvatarHost.listAvatarCharacters();
+  const mountedAvatar = await aliasedAvatarHost.mountAvatar({ slot: 'shared-avatar' });
+  assert(currentAvatarCharacter.name === 'Shared Neko'
+    && currentAvatarCharacter.model.type === 'mmd'
+    && currentAvatarCharacter.privatePrompt === undefined
+    && namedAvatarCharacter.model.type === 'pngtuber'
+    && avatarCharacterNames.join(',') === 'Shared Neko,PNG Neko'
+    && trustedAvatarMounts === 1
+    && forgedAvatarMounts === 0
+    && mountedAvatar.config.slot === 'shared-avatar',
+  'the Avatar facade did not project and use the bootstrap-owned provider');
+  await aliasedAvatarHost.start({ sdk_route_instance_id: 'aliased-avatar-generation' });
+  const aliasedStartCall = calls.find((call) => (
+    call.url === '/api/game/shared_avatar_backend/route/start'
+  ));
+  assert(aliasedStartCall?.body.game_type === 'shared_avatar_backend',
+    'the host trusted a caller-supplied route alias instead of its registration');
+  aliasedAvatarHost.dispose();
+  assert(trustedAvatarDisposals === 1,
+    'the bootstrap-owned Avatar provider was not disposed with its host');
 
   const host = createHost({
     gameType: 'example-game',
@@ -320,6 +433,14 @@ async function main() {
         'dialogue', 'quick-lines', 'context-read', 'memory', 'storage', 'leaderboard-local', 'speech-output',
         'voice-input',
       ],
+      contracts: {
+        commands: {
+          'round:input': {
+            request: { type: 'object' },
+            response: { type: 'object' },
+          },
+        },
+      },
     },
   });
   assert(handshake.grantedCapabilities.includes('context-read'),
@@ -379,13 +500,14 @@ async function main() {
   const startResponse = await host.start({
     session_id: 'attacker-session',
     lanlan_name: 'Attacker Neko',
+    sdk_route_instance_id: 'route-generation-1',
     game_memory_archive_enabled: false,
     legacyGameMemoryEnabled: false,
     legacy_game_memory_event_reply_enabled: false,
   });
   const startData = await startResponse.clone().json();
   host.applyRouteState(startData.state);
-  const startCall = calls.find((call) => call.url.endsWith('/route/start'));
+  const startCall = calls.find((call) => call.url === '/api/game/example-game/route/start');
   assert(startCall.body.session_id === 'client-session',
     'route start trusted an application-supplied session id');
   assert(startCall.body.game_memory_enabled === true,
@@ -398,6 +520,69 @@ async function main() {
   assert(!Object.hasOwn(startCall.body, 'legacyGameMemoryEnabled')
     && !Object.hasOwn(startCall.body, 'legacy_game_memory_event_reply_enabled'),
   'caller-controlled legacy memory aliases survived the trusted host boundary');
+  const commandEnvelope = (payload, routeInstanceId = 'route-generation-1') => ({
+    protocolVersion: '1',
+    sequence: 1,
+    type: 'round:input',
+    sessionId: 'server-session',
+    routeInstanceId,
+    payload,
+  });
+  const commandResponse = await host.executeGameCommand(
+    'round:input',
+    commandEnvelope({
+      text: 'hello',
+      session_id: 'attacker-session',
+      game_type: 'attacker-game',
+      lanlan_name: 'Attacker Neko',
+      sdk_route_instance_id: 'attacker-generation',
+    }),
+    { timeoutMs: 5000 },
+  );
+  assert((await commandResponse.json()).accepted === true,
+    'a declared command did not receive its endpoint response');
+  const commandCall = calls.filter((call) => call.url.endsWith('/round/input')).at(-1);
+  assert(commandCall?.url === '/api/game/example-game/round/input'
+    && commandCall.body.text === 'hello'
+    && commandCall.body.session_id === 'server-session'
+    && commandCall.body.game_type === 'example-game'
+    && commandCall.body.lanlan_name === 'Server Neko'
+    && commandCall.body.sdk_route_instance_id === 'route-generation-1',
+  'the command endpoint or trusted runtime identity was not host-owned');
+  let oversizedCommandError = null;
+  const commandCallsBeforeOversize = calls.filter(
+    (call) => call.url.endsWith('/round/input'),
+  ).length;
+  try {
+    await host.executeGameCommand(
+      'round:input',
+      commandEnvelope({ text: 'x'.repeat((400 * 1024) + 1) }),
+    );
+  } catch (error) { oversizedCommandError = error; }
+  assert(oversizedCommandError?.code === 'invalid_payload'
+    && calls.filter((call) => call.url.endsWith('/round/input')).length === commandCallsBeforeOversize,
+  'a command above its host-owned request policy reached the backend');
+  let staleCommandError = null;
+  try {
+    await host.executeGameCommand(
+      'round:input',
+      commandEnvelope({ text: 'stale' }, 'stale-generation'),
+    );
+  } catch (error) { staleCommandError = error; }
+  assert(staleCommandError?.code === 'session_invalid',
+    'a command escaped its active route-generation fence');
+  const rejectedBeaconEnd = await host.end(
+    { force_end_http_error: true },
+    { useBeacon: true },
+  );
+  assert(rejectedBeaconEnd.ok === false,
+    'the failed beacon fallback probe did not reject route end');
+  const commandAfterRejectedBeaconEnd = await host.executeGameCommand(
+    'round:input',
+    commandEnvelope({ text: 'retry after rejected end' }),
+  );
+  assert((await commandAfterRejectedBeaconEnd.json()).accepted === true,
+    'a rejected beacon fallback retired the still-retryable command route');
   const ungrantedHost = createHost({
     gameType: 'third-party-game',
     sessionId: 'ungranted-session',
