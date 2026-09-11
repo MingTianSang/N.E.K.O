@@ -883,6 +883,12 @@ bounded slot until it settles, preventing retries from accumulating abandoned
 work. `pendingQueryCount` includes those still-settling transport calls. Discovery
 is available before start, and after exit requires a new/reset lifecycle.
 
+The bundled `NekoMiniGameDrawingAvatarHost` provider also accepts these query
+options directly. Its current-role, catalog and canonical-model lookups share
+one cancellation scope and total deadline. Independent callers do not share a
+cancellable catalog fetch; cancelled lookups never populate its bounded model
+descriptor cache or silently become a Live2D fallback result.
+
 Discovery is read-only: looking at another character does **not** change the
 game's runtime/voice identity. Bind explicitly before any pregame context,
 quick-lines, preload, speech or route request:

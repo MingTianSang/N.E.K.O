@@ -700,6 +700,162 @@ async function main() {
   const sdkPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-sdk.js');
   vm.runInContext(fs.readFileSync(sdkPath, 'utf8'), context, { filename: sdkPath });
 
+  // Public metadata queries own their deadline, cancellation and raw-work slots.
+  function queryProbe(fetcher) {
+    const timers = new Map();
+    let nextTimer = 0;
+    const probe = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl: {
+        ...windowMock,
+        setTimeout(callback, delay) { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+      },
+      fetchImpl: fetcher,
+      avatarRuntime: { create: () => ({ mount: async (config) => config, dispose: async () => {} }) },
+    });
+    return { probe, timers };
+  }
+  const queryCatalog = { 猫娘: { Example: { model_type: 'live2d', model_path: '/example.model3.json' } } };
+  for (const stage of ['current', 'catalog', 'canonical']) {
+    const owner = new AbortController();
+    let entered;
+    let release;
+    let blocked = true;
+    let calls = 0;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const { probe, timers } = queryProbe(async (url, options) => {
+      calls += 1;
+      const target = url.includes('current_catgirl') ? 'current'
+        : url.includes('current_live2d_model') ? 'canonical' : 'catalog';
+      const payload = target === 'current' ? { current_catgirl: 'Example' }
+        : target === 'canonical' ? { success: true, model_info: { path: '/resolved.model3.json' } }
+          : queryCatalog;
+      if (blocked && target === stage) {
+        entered(options.signal);
+        // Deliberately ignore abort until released to exercise late completion.
+        return await new Promise((resolve) => { release = () => resolve(jsonResponse(payload)); });
+      }
+      return jsonResponse(payload);
+    });
+    const pending = rejection(probe.getCurrentCharacter({ signal: owner.signal, timeoutMs: 17 }));
+    try {
+      const signal = await withTimeout(started, `query did not reach ${stage}`);
+      owner.abort();
+      assert((await withTimeout(pending, `${stage} caller did not cancel`))?.code === 'cancelled',
+        `${stage} cancellation lost its public error`);
+      assert(signal.aborted, `${stage} fetch did not receive the caller cancellation`);
+      release();
+      await new Promise(setImmediate);
+      assert(timers.size === 0, `${stage} cancellation retained query timers`);
+      const beforeMount = calls;
+      blocked = false;
+      await probe.mount({ slot: 'drawing-guess-character', characterName: 'Example',
+        model: { type: 'live2d', path: '/resolved.model3.json' } });
+      assert(calls > beforeMount, `${stage} late result populated the descriptor cache`);
+    } finally { release?.(); await pending; await probe.dispose(); }
+  }
+
+  {
+    const pendingFetches = [];
+    const { probe, timers } = queryProbe((_url, options) => new Promise((resolve) => {
+      pendingFetches.push({ signal: options.signal, resolve });
+    }));
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        const owner = new AbortController();
+        const pending = rejection(probe.getCharacter('Example', { signal: owner.signal }));
+        await new Promise(setImmediate);
+        owner.abort();
+        assert((await withTimeout(pending, 'query cancellation stalled'))?.code === 'cancelled');
+      }
+      assert((await probe.getCharacter('Example').then(() => null, (error) => error))?.code === 'busy',
+        'cancelled but unsettled metadata requests bypassed the four-slot limit');
+      assert(pendingFetches.length === 4, 'metadata raw work exceeded four slots');
+      for (const pending of pendingFetches) pending.resolve(jsonResponse(queryCatalog));
+      await new Promise(setImmediate);
+      assert(timers.size === 0, 'settled abandoned metadata leaked timers');
+      const next = probe.listCharacters({ timeoutMs: 17 });
+      await new Promise(setImmediate);
+      assert(pendingFetches.length === 5, 'raw query slots were not released after settlement');
+      pendingFetches[4].resolve(jsonResponse(queryCatalog));
+      assert((await next)[0] === 'Example');
+    } finally {
+      for (const pending of pendingFetches) pending.resolve(jsonResponse(queryCatalog));
+      await probe.dispose();
+    }
+  }
+
+  {
+    const fetches = [];
+    const { probe, timers } = queryProbe((_url, options) => new Promise((resolve, reject) => {
+      const abort = () => reject(new Error('transport aborted'));
+      options.signal.addEventListener('abort', abort, { once: true });
+      fetches.push({ signal: options.signal, finish() {
+        options.signal.removeEventListener('abort', abort);
+        resolve(jsonResponse(queryCatalog));
+      } });
+    }));
+    const owner = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const add = owner.signal.addEventListener.bind(owner.signal);
+    const remove = owner.signal.removeEventListener.bind(owner.signal);
+    owner.signal.addEventListener = (...args) => { added += 1; add(...args); };
+    owner.signal.removeEventListener = (...args) => { removed += 1; remove(...args); };
+    const cancelled = rejection(probe.listCharacters({ signal: owner.signal }));
+    const independent = probe.listCharacters({ timeoutMs: 999999 });
+    try {
+      await new Promise(setImmediate);
+      assert(fetches.length === 2, 'independent callers shared a cancellable catalog request');
+      assert([...timers.values()].some((timer) => timer.delay === 30000),
+        'metadata timeout was not capped at 30 seconds');
+      owner.abort();
+      assert((await withTimeout(cancelled, 'abort-aware fetch did not settle'))?.code === 'cancelled');
+      assert(!fetches[1].signal.aborted, 'cancelling one query aborted another consumer');
+      fetches[1].finish();
+      assert((await independent)[0] === 'Example');
+      await new Promise(setImmediate);
+      assert(added === removed && timers.size === 0, 'query listener or timer was retained');
+      const calls = fetches.length;
+      assert((await rejection(probe.getCharacter('Example', { signal: owner.signal })))?.code === 'cancelled');
+      assert((await rejection(probe.listCharacters({ timeoutMs: NaN })))?.code === 'invalid_timeout');
+      assert(fetches.length === calls, 'invalid or pre-cancelled query reached the network');
+      const pending = rejection(probe.listCharacters());
+      await new Promise(setImmediate);
+      await probe.dispose();
+      assert((await withTimeout(pending, 'disposed query stalled'))?.code === 'disposed');
+      await new Promise(setImmediate);
+      assert(timers.size === 0, 'provider disposal leaked query timers');
+    } finally {
+      for (const request of fetches) request.finish();
+      await probe.dispose();
+    }
+  }
+
+  {
+    let reachedCanonical;
+    const canonicalStarted = new Promise((resolve) => { reachedCanonical = resolve; });
+    const { probe, timers } = queryProbe(async (url, options) => {
+      if (url.includes('current_catgirl')) return jsonResponse({ current_catgirl: 'Example' });
+      if (!url.includes('current_live2d_model')) return jsonResponse(queryCatalog);
+      reachedCanonical();
+      return await new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    });
+    const pending = rejection(probe.getCurrentCharacter({ timeoutMs: 17 }));
+    try {
+      await withTimeout(canonicalStarted, 'deadline query did not reach canonical lookup');
+      const deadlines = [...timers.values()].filter((timer) => timer.delay === 17);
+      assert(deadlines.length === 1, 'metadata query did not retain one shared total deadline');
+      deadlines[0].callback();
+      assert((await withTimeout(pending, 'query deadline did not settle'))?.code === 'timeout',
+        'Live2D fallback swallowed the metadata timeout');
+      await new Promise(setImmediate);
+      assert(timers.size === 0, 'metadata timeout leaked timers');
+    } finally { await probe.dispose(); await pending; }
+  }
+
   // Exercise both rejecting await boundaries, not only a fulfilled aborted fetch.
   for (const stage of ['fetch', 'body', 'network']) {
     let abortRequest;
