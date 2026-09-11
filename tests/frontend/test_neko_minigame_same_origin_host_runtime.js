@@ -129,7 +129,11 @@ async function main() {
         return {
           ok: true,
           status: 200,
-          async json() { return responseData; },
+          async json() {
+            markDelayedDrainStarted();
+            await delayedDrainGate;
+            return responseData;
+          },
           clone() {
             return {
               async json() {
@@ -375,7 +379,7 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
-    avatarHost: { mount() { forgedAvatarMounts += 1; } },
+    // New integrations use the registered factory; legacy injection is tested separately.
     trustedAvatarHost: { mount() { forgedAvatarMounts += 1; } },
   });
   const aliasedAvatarHandshake = aliasedAvatarHost.connectGame({

@@ -20,6 +20,46 @@
   const live2dNativeBaselines = new WeakMap();
   const disposedRawControllers = new WeakSet();
 
+  // Read-only, bounded analyser facade for speech played in another window.
+  // Frequency bins are real player samples; the time-domain facade preserves
+  // only RMS amplitude for basic Live2D mouth opening, not recorded audio.
+  function createSpeechAnalyser() {
+    let frame = null;
+    let expiresAt = 0;
+    let context = Object.freeze({ sampleRate: 48000 });
+    const current = () => Date.now() <= expiresAt ? frame : null;
+    return Object.freeze({
+      get frequencyBinCount() { return current()?.bins.length || 256; },
+      get fftSize() { return this.frequencyBinCount * 2; },
+      get context() { return context; },
+      update(value) {
+        if (!value || !Array.isArray(value.bins) || value.bins.length < 16
+          || value.bins.length > 256 || (value.bins.length & (value.bins.length - 1)) !== 0
+          || !value.bins.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+          || !Number.isFinite(value.rms) || value.rms < 0 || value.rms > 1
+          || !Number.isFinite(value.sampleRate) || value.sampleRate < 1000 || value.sampleRate > 192000) {
+          frame = null;
+          expiresAt = 0;
+          return false;
+        }
+        frame = { bins: value.bins.slice(), rms: value.rms };
+        context = Object.freeze({ sampleRate: value.sampleRate });
+        expiresAt = Date.now() + 750;
+        return true;
+      },
+      clear() { frame = null; expiresAt = 0; },
+      getByteFrequencyData(target) {
+        target.fill(0);
+        const bins = current()?.bins;
+        if (bins) target.set(bins.slice(0, target.length));
+      },
+      getByteTimeDomainData(target) {
+        const amplitude = Math.min(127, Math.round((current()?.rms || 0) * 128));
+        for (let i = 0; i < target.length; i++) target[i] = 128 + (i % 2 ? amplitude : -amplitude);
+      },
+    });
+  }
+
   class NekoMiniGameAvatarHostError extends Error {
     constructor(code, message, details = {}) {
       super(message);
@@ -397,6 +437,12 @@
             return state.raw.setSpeaking(active);
           });
         },
+        setSpeechPlayback(frame) {
+          return enqueueStateOperation(state, 'setSpeechPlayback', () => {
+            if (typeof state.raw.setSpeechPlayback !== 'function') return false;
+            return state.raw.setSpeechPlayback(frame);
+          });
+        },
         focus(point) {
           ensureState(state, 'focus');
           return state.raw.focus(point);
@@ -525,6 +571,7 @@
   global.NekoMiniGameAvatarHost = Object.freeze({
     create,
     fitLive2DModel,
+    createSpeechAnalyser,
     Error: NekoMiniGameAvatarHostError,
   });
 })(window);

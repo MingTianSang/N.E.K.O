@@ -494,6 +494,46 @@ async function main() {
     'a successful command response bypassed its declared response contract');
   transport.executeGameCommand = successfulCommandTransport;
 
+  // Headers are not completion: body reads keep the deadline and raw capacity.
+  for (const reason of ['cancelled', 'timeout']) {
+    const abort = new AbortController();
+    let watchdog;
+    const bodies = [];
+    const signals = [];
+    transport.executeGameCommand = async (_name, _envelope, options) => ({
+      ok: true, status: 200,
+      json: () => new Promise(resolve => { bodies.push(resolve); signals.push(options.signal); }),
+    });
+    const requests = Array.from({ length: 8 }, () => game.commands.execute(
+      'round:input', { text: 'pending body' }, { signal: abort.signal, timeoutMs: 250 },
+    ).then(() => 'unexpected_success', error => error.code));
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert(bodies.length === 8 && game.commands.pendingCount === 8,
+        'command headers released pending capacity before reading the response body');
+      if (reason === 'cancelled') abort.abort();
+      const completed = await Promise.race([
+        Promise.all(requests),
+        new Promise(resolve => { watchdog = setTimeout(() => resolve(['hung']), 1000); }),
+      ]);
+      assert(completed.length === 8 && completed.every(code => code === reason),
+        `command body did not settle on ${reason}`);
+      assert(signals.every(signal => signal.aborted), 'command body lost cancellation signal');
+      const overflow = await game.commands.execute('round:input', { text: 'overflow' })
+        .then(() => 'unexpected_success', error => error.code);
+      assert(overflow === 'busy' && bodies.length === 8,
+        'cancelled command bodies freed raw capacity before settling');
+    } finally {
+      clearTimeout(watchdog);
+      bodies.forEach(resolve => resolve({ ok: true, echo: 'late body' }));
+      await Promise.all(requests);
+      await new Promise(resolve => setImmediate(resolve));
+      transport.executeGameCommand = successfulCommandTransport;
+    }
+    assert((await game.commands.execute('round:input', { text: 'released' })).data.echo === 'released',
+      'settled command bodies did not release raw capacity');
+  }
+
   const wideCommandText = 'x'.repeat(300 * 1024);
   const wideCommandResult = await game.commands.execute('round:input', { text: wideCommandText });
   assert(wideCommandResult.data.echo.length === wideCommandText.length,
@@ -812,6 +852,44 @@ async function main() {
   assert(listenerLimitError?.code === 'busy', 'listener growth was not bounded');
   stateListeners.forEach((unsubscribe) => unsubscribe());
 
+  const originalPublishProtocol = transport.publishGameProtocol;
+  let settleProtocolBody;
+  const protocolBody = new Promise(resolve => { settleProtocolBody = resolve; });
+  const bodySignals = [];
+  transport.publishGameProtocol = (_kind, _payload, options) => {
+    bodySignals.push(options.signal);
+    return { ok: false, status: 409, json: () => protocolBody };
+  };
+  const bodyAbort = new AbortController();
+  const bodyProtocolCalls = Array.from({ length: 8 }, (_, index) => game.events.emit(
+    'round-started', { round: index + 1 }, { signal: bodyAbort.signal, timeoutMs: 250 },
+  ).then(() => 'success', error => error.code));
+  await new Promise(resolve => setImmediate(resolve));
+  let bodyBusy;
+  void game.events.emit('round-started', { round: 9 }).then(
+    () => { bodyBusy = { code: 'unexpected_success' }; }, error => { bodyBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyBusy?.code === 'busy', 'protocol headers retired the slot before the JSON body');
+  bodyAbort.abort();
+  assert((await Promise.all(bodyProtocolCalls)).every(code => code === 'cancelled'),
+    'protocol body ignored cancellation after response headers');
+  assert(bodySignals.every(signal => signal.aborted), 'protocol cancellation lost the transport signal');
+  let bodyStillBusy;
+  void game.events.emit('round-started', { round: 10 }).then(
+    () => { bodyStillBusy = { code: 'unexpected_success' }; }, error => { bodyStillBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyStillBusy?.code === 'busy',
+    'a cancelled protocol request freed its slot before the abandoned body settled');
+  settleProtocolBody({ detail: 'late conflict' });
+  await new Promise(resolve => setImmediate(resolve));
+  transport.publishGameProtocol = originalPublishProtocol;
+
+  const recoveredProtocol = await game.events.emit('round-started', { round: 11 });
+  assert(recoveredProtocol.ok === true && recoveredProtocol.data.accepted === true,
+    'protocol request did not succeed after abandoned response bodies settled');
+
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })
@@ -1123,6 +1201,59 @@ async function main() {
       'a scalar HTTP error body was discarded or success-validated');
     }
     scalarCommandResponseGame.dispose();
+  }
+
+  for (const action of ['end', 'reset', 'dispose']) {
+    let releaseBody;
+    let bodySignal;
+    const commandTransport = {
+      ...transport,
+      dispose() {},
+      getRuntimeState: () => ({ sessionId: `command-${action}`, characterName: 'Example' }),
+      resetRuntime() { return this.getRuntimeState(); },
+      applyRuntimeState() { return this.getRuntimeState(); },
+      start: async payload => ({ ok: true, state: {
+        game_route_active: true, session_id: payload.session_id,
+      } }),
+      executeGameCommand: async (_name, _payload, options) => ({
+        ok: true, status: 200,
+        json: () => new Promise(resolve => { releaseBody = resolve; bodySignal = options.signal; }),
+      }),
+    };
+    const commandGame = await window.NekoMiniGame.connect({
+      id: `command-${action}`, version: '1', requiredCapabilities: ['runtime', 'logging'],
+      contracts: { commands: { probe: { request: { type: 'object' }, response: { type: 'boolean' } } } },
+    }, { transport: commandTransport });
+    let pending;
+    let watchdog;
+    try {
+      await commandGame.runtime.start();
+      pending = commandGame.commands.execute('probe', {}, { timeoutMs: 250 })
+        .then(() => 'unexpected_success', error => error.code);
+      await new Promise(resolve => setImmediate(resolve));
+      assert(typeof releaseBody === 'function', 'command did not reach its response body');
+      if (action === 'dispose') commandGame.dispose();
+      else {
+        await commandGame.runtime.end();
+        if (action === 'reset') commandGame.runtime.reset();
+      }
+      const result = await Promise.race([pending, new Promise(resolve => {
+        watchdog = setTimeout(() => resolve('hung'), 1000);
+      })]);
+      assert(result === (action === 'dispose' ? 'disposed' : 'cancelled') && bodySignal.aborted,
+        `command body survived runtime ${action}`);
+      if (action !== 'dispose') {
+        await commandGame.runtime.start();
+        releaseBody(true);
+        await new Promise(resolve => setImmediate(resolve));
+        assert(await pending === 'cancelled', 'old command delivered into the replacement route');
+      }
+    } finally {
+      clearTimeout(watchdog);
+      releaseBody?.(true);
+      commandGame.dispose();
+      if (pending) await pending;
+    }
   }
 
   // The published schema declares minimum/maximum as numbers. `Number()`

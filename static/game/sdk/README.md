@@ -168,6 +168,7 @@ const game = await NekoMiniGame.connect({
 await game.events.emit('round-started', { round: 1 });
 await game.state.update('score', { player: 2, opponent: 1 });
 await game.results.submit('match', { winner: 'player' });
+await game.runtime.start();
 const analysis = await game.commands.execute('match:analyze', { snapshot: serializedGameState });
 
 const unsubscribeStance = game.controls.on('stance', ({ payload }) => {
@@ -193,6 +194,13 @@ the trusted host merges route identity into that request body. It must not
 declare host-owned route identity or memory-policy fields; those values are
 stripped or replaced at the trust boundary. Response schemas may use any
 supported JSON type.
+
+The command deadline covers both transport dispatch and response-body reading.
+Cancellation, route end/reset and client disposal settle waiting callers and
+discard late results. A transport that ignores abort keeps its bounded raw slot
+until the body settles: `pendingCount` may be zero after cancellation while new
+commands still receive `busy`. This prevents repeated retries from accumulating
+abandoned body reads; capacity is released when those reads actually finish.
 
 The supported schema subset intentionally excludes executable or expensive
 keywords such as regex patterns, `$ref`, `oneOf` and custom validators. It
@@ -611,6 +619,66 @@ character voice, language and exact text automatically reuses the host cache.
 
 ## Avatar renderer
 
+The trusted launch node can register `nekoCapabilityProviders[gameId].avatarHostFactory`
+before the same-origin bootstrap consumes it. The factory runs only after host
+identity and constructor validation. It returns a fresh synchronous provider with
+`mount(config)` and `dispose()`; each host owns exactly one provider. Optional
+Avatar initialization failure leaves runtime/logging usable; a game requiring
+`avatar-renderer` fails its capability handshake instead.
+
+**New game integrations must use this trusted factory registration and the public
+`game.avatar` discovery methods below.** Legacy injection and internal host
+character reads are transitional compatibility for existing integrations, not
+alternative recommended APIs. The existing soccer integration can continue
+unchanged during this transition and will migrate separately; no removal date
+is set.
+
+Existing trusted same-origin `createNekoMiniGameSameOriginHost({ avatarHost })`
+injection remains supported and takes precedence over a registered factory. No
+factory is called in that case. Successful host construction transfers disposal
+ownership of the injected provider, as before. The legacy host `getCharacter()`
+still returns the original Response and updates its character identity; existing
+adapters do not need to migrate immediately. These mechanisms are not isolation
+from hostile code sharing the same origin.
+
+The factory receives `windowImpl`, `documentImpl`, `fetchImpl`, a lifetime
+`signal`, `onCleanup(fn)` and `characterSource`. Register partial allocations with
+`onCleanup` immediately (at most 16 callbacks). They run on failure or disposal,
+after signal cancellation. Use these callbacks for resources not already owned
+by the returned provider, whose `dispose()` runs once. Factories must not share
+provider instances between hosts. Async factories are unsupported; an accidentally
+returned promise is observed and its eventual provider is disposed.
+
+Public display-only role discovery uses the same `avatar-renderer` capability:
+
+```js
+const current = await game.avatar.getCurrentCharacter({ timeoutMs: 10000 });
+const selected = await game.avatar.getCharacter('Neko', { signal });
+const names = await game.avatar.listCharacters({ signal });
+```
+
+Descriptors contain only `{ name, model: { type, path } | null, rendererAvailable }`.
+Names are limited to 128 Unicode code points, paths to 2048, and lists to 256 names. Unknown
+explicit names return `null`, not the current character. The standard host reads
+the existing role registry and canonical model-path endpoints; it keeps no role
+data copy and exposes no persona, memory, credentials or raw response fields.
+The mount contract accepts Live2D, VRM, MMD and PNGtuber descriptors, but the
+registered provider must implement the corresponding renderer. The default
+character source reports Live2D/VRM availability only; providers that support
+MMD/PNGtuber supply their own display-only descriptors and availability flags.
+
+A trusted provider may optionally implement `getCurrentCharacter(options)`,
+`getCharacter(name, options)` and `listCharacters(options)`. Missing methods use
+the built-in source; factory `characterSource` exposes that same source to
+adapters. Forward supplied query options when using it. Each SDK client and host
+limits underlying queries to four, with a 10-second default deadline and 30-second
+maximum covering the full provider/body read. Cancellation, reset, route exit,
+page exit and disposal settle waiting SDK promises and discard late results.
+Timers and signal listeners are released; a provider ignoring abort retains its
+bounded slot until it settles, preventing retries from accumulating abandoned
+work. `pendingQueryCount` includes those still-settling transport calls. Discovery
+is available before start, and after exit requires a new/reset lifecycle.
+
 The public game mounts an Avatar through `game.avatar`:
 
 ```js
@@ -631,10 +699,36 @@ const avatar = await game.avatar.mount({
 avatar.focus({ x: 320, y: 180 });
 avatar.setEmotion('happy');
 await avatar.setView({ scale: 190, x: 0, y: 28 });
-await avatar.setSpeaking(true);
 await avatar.setModel({ type: 'vrm', path: '/models/opponent.vrm' });
 avatar.dispose();
 ```
+
+### Automatic speech mouth motion
+
+Basic `game.speech.speak()` playback automatically drives the mounted character;
+games must not maintain a separate `setSpeaking(true/false)` loop. Set
+`characterName` from the public character descriptor when mounting. Only models
+matching the SDK session character follow its speech. A sole unnamed model is
+the default target; multiple unnamed models are not guessed to be speakers.
+
+The SDK uses its own speech correlation and route generation, not HTTP acceptance
+or a guessed text duration. The existing player bridge carries at most 256
+low-frequency spectrum bytes plus RMS amplitude every 200ms while actually
+playing. This works through same-document events, BroadcastChannel and the
+existing single latest-state storage fallback; it does not capture the microphone
+or retain audio history. It is basic sampled mouth motion, not phoneme-accurate
+lip synchronization. Suspended playback, stop, cancellation, route exit, pause
+and disposal stop motion; missing playback updates expire after 750ms.
+
+Trusted renderer providers implement the optional internal
+`setSpeechPlayback({ active, mouthFrame })` callback. The Avatar host runtime
+forwards it; `createSpeechAnalyser()` adapts bounded snapshots for existing
+renderer lip-sync engines. Each controller has one in-flight update and at most one
+replaceable latest frame, rather than accumulating a playback queue. Unsupported
+legacy providers remain usable but do not acquire mouth support automatically;
+their renderer adapter must implement this callback once, not the game author
+on every utterance. Advanced manual `setSpeaking()` remains available for
+compatibility, but is unnecessary for normal SDK speech.
 
 When the trusted host provides character discovery, games can call
 `avatar.listCharacters()`, `avatar.getCurrentCharacter()` and
@@ -665,6 +759,16 @@ waits on disposal, and releases animation frames, observers, window listeners,
 engine controllers, and model resources.
 
 ## Ownership and disposal
+
+Managed context, memory, storage, leaderboard, dialogue, speech and protocol
+requests include response JSON consumption in their deadlines and cancellation
+scope. Pending waiters do not retire when only response headers arrive. The
+same-origin REST host buffers complete responses under its fetch signal/deadline
+and returns readable Response objects, preserving legacy HTTP status and clone
+behavior. A timed-out/cancelled waiter settles immediately; an underlying transport
+that ignores abort still occupies a bounded raw-work slot until settlement.
+This also prevents repeated retries from accumulating abandoned body readers.
+The host's streaming speech bridge is separate and is not buffered by this path.
 
 Games should dispose individual controllers when a slot is permanently removed
 and call `game.dispose()` when leaving the page. `game.dispose()` stops managed
