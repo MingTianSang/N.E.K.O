@@ -609,9 +609,17 @@ declare namespace NekoMiniGame {
     /** Matching session characters automatically follow SDK speech playback. */
     characterName?: string;
     model: AvatarModel;
-    viewport: { mode: 'fixed' | 'container' | 'host-window'; width?: number; height?: number };
+    /** Maximum display rectangle. Fixed mode requires both dimensions. */
+    viewport: { mode: 'fixed'; width: number; height: number }
+      | { mode: 'container' | 'host-window'; width?: number; height?: number };
     fit?: {
-      mode?: 'contain' | 'cover' | 'native';
+      /** contain is the default; width/height can crop the other axis. */
+      mode?: 'contain' | 'cover' | 'native' | 'width' | 'height';
+      /** Default true. False preserves native size times scaleMultiplier. */
+      autoScale?: boolean;
+      /** Soft CSS-pixel minima; ignored in manual/native mode. */
+      minWidth?: number;
+      minHeight?: number;
       align?: string;
       padding?: number;
       scaleMultiplier?: number;

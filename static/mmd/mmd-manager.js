@@ -85,26 +85,26 @@ class MMDManager {
 
     // ═══════════════════ 初始化 ═══════════════════
 
-    async init(canvasId = 'mmd-canvas', containerId = 'mmd-container') {
+    async init(canvasId = 'mmd-canvas', containerId = 'mmd-container', options = {}) {
         if (!this.core) {
             throw new Error('[MMD Manager] MMDCore 模块未加载');
         }
 
-        await this.core.init(canvasId, containerId);
+        await this.core.init(canvasId, containerId, options);
 
         // 初始化交互
-        if (this.interaction) {
+        if (this.interaction && options.embed !== true) {
             this.interaction.initDragAndZoom();
         }
 
         // 初始化鼠标跟踪
-        if (this.cursorFollow) {
+        if (this.cursorFollow && options.embed !== true) {
             this.cursorFollow.init();
             this.cursorFollow.setLocalTrackingEnabled(window.humanoidLocalTrackingEnabled === true);
         }
 
         // 设置浮动按钮
-        if (typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
+        if (options.embed !== true && typeof this.setupFloatingButtons === 'function' && !window._cardExportPage) {
             this.setupFloatingButtons();
         }
 

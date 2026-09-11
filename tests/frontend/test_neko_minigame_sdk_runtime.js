@@ -768,6 +768,21 @@ async function main() {
   assert(mountedAvatarConfig?.viewport?.width === 200, 'avatar viewport was not normalized');
   assert(mountedAvatarConfig?.resize?.mode === 'fixed', 'fixed resize policy was not forwarded');
   assert(Object.isFrozen(mountedAvatarConfig.fit), 'avatar layout contract must be immutable');
+  assert(mountedAvatarConfig.fit.autoScale === true, 'automatic fit must default on');
+  const fitTestConfig = { slot: 'fit-test', model: { type: 'mmd', path: '/example.pmx' },
+    viewport: { mode: 'fixed', width: 200, height: 300 } };
+  for (const mode of ['width', 'height', 'native']) {
+    const fitted = await game.avatar.mount({ ...fitTestConfig,
+      fit: { mode, autoScale: false, minHeight: 180 } });
+    assert(mountedAvatarConfig.fit.autoScale === false && mountedAvatarConfig.fit.minHeight === 180,
+      'SDK dropped manual scaling/minimum configuration');
+    fitted.dispose();
+  }
+  for (const fit of [{ autoScale: 'false' }, { minWidth: -1 }, { minHeight: Infinity }]) {
+    let invalid = null;
+    try { await game.avatar.mount({ ...fitTestConfig, fit }); } catch (error) { invalid = error; }
+    assert(invalid?.code === 'invalid_request', 'SDK accepted invalid fit inputs');
+  }
   avatar.focus({ x: 12, y: 34 });
   avatar.setEmotion('smile');
   await avatar.setView({ scale: 190, x: 4, y: 28 });
@@ -911,7 +926,7 @@ async function main() {
   assert(voiceStopped === 0, 'SDK duplicated transport-owned voice cleanup');
   assert(controlBridgeStopped === 0, 'SDK duplicated transport-owned control cleanup');
   assert(disposed === 1, 'dispose did not release the injected transport');
-  assert(avatarDisposed === 8, 'dispose did not release active avatar controllers');
+  assert(avatarDisposed === 11, 'dispose did not release eight active and three fit-test controllers');
   let disposedError = null;
   try { await game.voice.toggle(); }
   catch (error) { disposedError = error; }

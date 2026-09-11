@@ -70,3 +70,6 @@ game.commands.execute('round:input', { text: 'example' }, { timeoutMs: 1000 });
 // @ts-expect-error Speaking state is a boolean, not a display string.
 avatar.setSpeaking('true');
 void [viewResult, speakingResult, generation];
+game.avatar.mount({ slot: 'fit-example', model: { type: 'mmd', path: '/example.pmx' },
+  viewport: { mode: 'fixed', width: 200, height: 300 },
+  fit: { mode: 'height', autoScale: true, minHeight: 180, align: 'bottom-center' } });

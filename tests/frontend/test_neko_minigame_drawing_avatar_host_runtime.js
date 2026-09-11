@@ -160,6 +160,14 @@ async function verifyConfiguredLive2DIdleReplay() {
 }
 
 async function main() {
+  const { pathToFileURL } = require('node:url');
+  const THREE = await import(pathToFileURL(path.resolve(__dirname, '../../static/libs/three.module.js')).href);
+  const createGeometry = () => new THREE.Mesh(new THREE.BoxGeometry(1, 4, 0.5));
+  const createCamera = () => {
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 2000);
+    camera.position.set(0, 0, 70);
+    return camera;
+  };
   const sdkDir = path.resolve(__dirname, '../../static/game/sdk');
   const genericPath = path.join(sdkDir, 'neko-minigame-avatar-host.js');
   const drawingPath = path.join(sdkDir, 'neko-minigame-drawing-avatar-host.js');
@@ -312,7 +320,11 @@ async function main() {
         destroy(removeView) { calls.push(['live2d-pixi-dispose', removeView]); },
       };
     }
-    async ensurePIXIReady() { calls.push(['live2d-init']); }
+    async ensurePIXIReady(_canvas, _container, options) {
+      assert(options.resizeMode === 'fixed' && options.width > 0 && options.height > 0,
+        'Live2D provider left desktop window resize enabled');
+      calls.push(['live2d-init']);
+    }
     async loadModel(config, options) {
       calls.push(['live2d-model', config.url, options?.suppressInitialIdle === true]);
       if (options?.suppressInitialIdle === true) {
@@ -355,13 +367,16 @@ async function main() {
       };
       this.expression = { setMood(mood) { calls.push(['vrm-emotion', mood]); } };
     }
-    async initThreeJS(_canvas, _container, lighting) {
+    async initThreeJS(_canvas, _container, lighting, options) {
+      assert(options.embed === true && options.resizeMode === 'fixed', 'VRM init borrowed desktop layout');
+      this.camera = createCamera();
       this.lighting = lighting;
       calls.push(['vrm-init', lighting?.ambient]);
       return true;
     }
     async loadModel(model, options) {
-      this.currentModel = {};
+      assert(options.embed === true, 'VRM restored desktop preferences');
+      this.currentModel = { vrm: { scene: createGeometry() } };
       const effectiveIdleAnimation = options?.idleAnimation
         || windowMock.lanlan_config?.vrmIdleAnimation
         || '/static/vrm/animation/wait03.vrma.gz';
@@ -386,9 +401,14 @@ async function main() {
         stopLipSync() { calls.push(['mmd-stop-speaking']); },
       };
     }
-    async init() { calls.push(['mmd-init']); }
-    async loadModel(model) {
-      this.currentModel = {};
+    async init(_canvas, _container, options) {
+      assert(options.embed === true, 'MMD init borrowed fullscreen layout');
+      this.camera = createCamera();
+      calls.push(['mmd-init']);
+    }
+    async loadModel(model, options) {
+      assert(options.embed === true, 'MMD restored desktop preferences');
+      this.currentModel = { mesh: createGeometry() };
       calls.push(['mmd-model', model, this.enablePhysics, this.physicsStrength]);
     }
     applySettings(settings) {
@@ -399,8 +419,8 @@ async function main() {
     }
     async loadAnimation(animation) {
       calls.push(['mmd-idle-load', animation]);
-      const failure = nextMmdAnimationFailure;
-      nextMmdAnimationFailure = null;
+      const failure = animation === '/static/mmd/animation/wait03.vmd' ? null : nextMmdAnimationFailure;
+      if (animation !== '/static/mmd/animation/wait03.vmd') nextMmdAnimationFailure = null;
       const gate = nextMmdAnimationGate;
       nextMmdAnimationGate = null;
       const notify = onNextMmdAnimationLoad;
@@ -417,8 +437,25 @@ async function main() {
     async dispose() { await recordRendererDispose('mmd'); }
   }
 
+  let nextPngImagePending = false;
+  let nextPngImageBroken = false;
+  const pngImages = [];
   class PNGTuberManagerMock {
-    async load(config) { calls.push(['pngtuber-model', config.idle_image, config.mirror]); }
+    constructor() {
+      const events = new Map();
+      this.image = this.imageElement = { complete: !nextPngImagePending,
+        naturalWidth: nextPngImageBroken ? 0 : 512, naturalHeight: nextPngImageBroken ? 0 : 512,
+        style: {}, events,
+        addEventListener(name, callback) { events.set(name, callback); },
+        removeEventListener(name) { events.delete(name); },
+      };
+      nextPngImagePending = false; nextPngImageBroken = false;
+      pngImages.push(this.image);
+    }
+    async load(config) {
+      this.config = config;
+      calls.push(['pngtuber-model', config.idle_image, config.mirror]);
+    }
     setSpeaking(active) { calls.push(['pngtuber-speaking', active]); }
     setState(name) { calls.push(['pngtuber-emotion', name]); }
     pauseRendering() { calls.push(['pngtuber-pause']); }
@@ -604,6 +641,7 @@ async function main() {
   };
 
   const windowMock = {
+    THREE,
     console: { warn() {}, error() {} },
     document: { getElementById: (id) => elements[id] || null },
     fetch: fetchImpl,
@@ -786,8 +824,15 @@ async function main() {
         'controller.setModel accepted a model outside its trusted character binding');
     }
     const initialView = controller.getState().view;
-    assert(initialView.scale === 325.63 && initialView.x === -0.96 && initialView.y === 66.41,
-      `${expectedType} controller did not use the drawing game's configured default view`);
+    assert(initialView.scale === 100 && initialView.x === 0 && initialView.y === 0,
+      `${expectedType} controller applied a game-specific default zoom`);
+    if (expectedType === 'mmd' || expectedType === 'vrm') {
+      await controller.resize({ width: 200, height: 300 },
+        { mode: 'contain', align: 'bottom-center', padding: 6 });
+      const layout = controller.getState().layout;
+      assert(layout.width <= 188.0001 && Math.abs(layout.y + layout.height - 294) < 0.001,
+        `${expectedType} provider did not apply public bounds fitting`);
+    }
     await controller.setView({ scale: 190, x: 2, y: 28 });
     await controller.setSpeaking(true);
     await controller.setEmotion('happy');
@@ -865,11 +910,15 @@ async function main() {
   const firstMmdInit = calls.findIndex((entry) => entry[0] === 'mmd-init');
   const firstMmdSettingsFetch = calls.findIndex((entry) => entry[0] === 'mmd-settings-fetch');
   const firstMmdSettingsApply = calls.findIndex((entry) => entry[0] === 'mmd-settings-apply');
-  const firstMmdIdleLoad = calls.findIndex((entry) => entry[0] === 'mmd-idle-load');
+  const firstMmdReferenceLoad = calls.findIndex((entry) => entry[0] === 'mmd-idle-load'
+    && entry[1] === '/static/mmd/animation/wait03.vmd');
+  const firstMmdIdleLoad = calls.findIndex((entry) => entry[0] === 'mmd-idle-load'
+    && entry[1] === '/animations/mmd-idle.vmd');
   const firstMmdIdlePlay = calls.findIndex((entry) => entry[0] === 'mmd-idle-play');
   assert(firstMmdInit >= 0 && firstMmdInit < firstMmdSettingsFetch
     && firstMmdSettingsFetch < firstMmdModel
     && firstMmdModel < firstMmdSettingsApply
+    && firstMmdSettingsApply < firstMmdReferenceLoad && firstMmdReferenceLoad < firstMmdIdleLoad
     && firstMmdSettingsApply < firstMmdIdleLoad
     && firstMmdIdleLoad < firstMmdIdlePlay
     && calls[firstMmdSettingsFetch][1] === 'MMD Neko'
@@ -896,7 +945,7 @@ async function main() {
   const legacyMmdModel = calls.findIndex((entry) => entry[0] === 'mmd-model'
     && entry[1] === '/mmd-resolved/legacy-avatar.pmx');
   const legacyMmdIdleLoad = calls.findIndex((entry, index) => index > legacyMmdModel
-    && entry[0] === 'mmd-idle-load');
+    && entry[0] === 'mmd-idle-load' && entry[1] !== '/static/mmd/animation/wait03.vmd');
   assert(legacyMmdModel >= 0 && legacyMmdIdleLoad > legacyMmdModel
     && calls[legacyMmdIdleLoad][1] === '/animations/mmd-legacy-list.vmd'
     && !calls.some((entry) => entry.includes('/animations/mmd-stale-singular.vmd')),
@@ -1137,6 +1186,28 @@ async function main() {
   await replacementController.dispose();
 
   assert(host.activeCount === 0, 'debug-style Avatar replacement leaked a controller');
+
+  const pngModel = descriptors.get('PNG Neko').model;
+  const pngResize = await host.mount(mountConfig('PNG Neko', pngModel));
+  const loadedImage = pngImages.at(-1);
+  loadedImage.naturalWidth = 1000;
+  loadedImage.naturalHeight = 500;
+  loadedImage.events.get('load')();
+  assert(Math.abs(pngResize.getState().layout.width / pngResize.getState().layout.height - 2) < 0.00001,
+    'a talking/emotion image kept the previous image aspect ratio');
+  nextPngImagePending = true;
+  const waitingImage = pngResize.setModel(pngModel);
+  const waitingImageResult = rejection(waitingImage);
+  await new Promise(resolve => setImmediate(resolve));
+  assert(pngImages.at(-1).events.size === 2, 'pending image did not install bounded load/error listeners');
+  pngResize.dispose();
+  const waitingImageError = await withTimeout(waitingImageResult, 'pending image was not cancelled');
+  assert(waitingImageError?.code === 'disposed', 'pending image reload ignored controller disposal');
+  assert(pngImages.every(image => image.events.size === 0), 'image listener retained a retired controller');
+  nextPngImageBroken = true;
+  const brokenImage = await rejection(host.mount(mountConfig('PNG Neko', pngModel)));
+  assert(brokenImage?.code === 'renderer_unavailable', 'broken image was reported ready');
+  assert(pngImages.every(image => image.events.size === 0), 'broken image leaked listeners');
 
   let releaseLiveModelFetch;
   liveModelFetchGate = new Promise((resolve) => { releaseLiveModelFetch = resolve; });

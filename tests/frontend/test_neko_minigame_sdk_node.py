@@ -10,6 +10,7 @@ from tests.node_harness import run_node_script
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 NODE_RUNTIME_TESTS = (
+    "test_neko_minigame_avatar_fit_runtime.js",
     "test_neko_minigame_audio_host_runtime.js",
     "test_neko_minigame_context_memory_runtime.js",
     "test_neko_minigame_leaderboard_runtime.js",

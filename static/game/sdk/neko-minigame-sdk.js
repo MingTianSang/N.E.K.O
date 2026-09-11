@@ -136,7 +136,7 @@
   const AVATAR_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
   const MAX_AVATAR_CHARACTER_NAME_CHARS = 128;
   const AVATAR_VIEWPORT_MODES = Object.freeze(['fixed', 'container', 'host-window']);
-  const AVATAR_FIT_MODES = Object.freeze(['contain', 'cover', 'native']);
+  const AVATAR_FIT_MODES = Object.freeze(['contain', 'cover', 'native', 'width', 'height']);
   const AVATAR_ALIGNMENTS = Object.freeze([
     'top-left', 'top-center', 'top-right',
     'center-left', 'center', 'center-right',
@@ -1572,8 +1572,14 @@
     if (!AVATAR_ALIGNMENTS.includes(align)) {
       fail('invalid_request', 'avatar fit.align is invalid', { align });
     }
+    if (fitInput.autoScale !== undefined && typeof fitInput.autoScale !== 'boolean') {
+      fail('invalid_request', 'avatar fit.autoScale must be boolean');
+    }
     const fit = Object.freeze({
       mode: fitMode,
+      autoScale: fitInput.autoScale !== false && fitMode !== 'native',
+      minWidth: finiteNumber(fitInput.minWidth ?? 0, 'avatar fit.minWidth', { minimum: 0, maximum: 16384 }),
+      minHeight: finiteNumber(fitInput.minHeight ?? 0, 'avatar fit.minHeight', { minimum: 0, maximum: 16384 }),
       align,
       padding: finiteNumber(fitInput.padding ?? 0, 'avatar fit.padding', {
         minimum: 0,

@@ -105,9 +105,9 @@
 
   function normalizeView(value = {}) {
     return Object.freeze({
-      scale: boundedNumber(value.scale, 0.5, 5000, 325.63),
-      x: boundedNumber(value.x, -5000, 5000, -0.96),
-      y: boundedNumber(value.y, -5000, 5000, 66.41),
+      scale: boundedNumber(value.scale, 0.5, 5000, 100),
+      x: boundedNumber(value.x, -5000, 5000, 0),
+      y: boundedNumber(value.y, -5000, 5000, 0),
     });
   }
 
@@ -402,7 +402,7 @@
       return windowImpl.appState?.globalAnalyser || windowImpl.globalAnalyser || null;
     }
 
-    function createController({ config, signal }) {
+    function createController({ config, viewport, signal }) {
       const characterName = cleanString(config?.characterName, NAME_LIMIT);
       const descriptor = trustedDescriptorForModel(characterName, config?.model);
       const state = {
@@ -411,7 +411,11 @@
         descriptor,
         model: null,
         view: normalizeView(),
-        viewport: null,
+        viewport,
+        fit: config.fit || {},
+        layout: null,
+        nativeLive2DScale: null,
+        imageCleanup: null,
         baseViewport: null,
         ready: false,
         paused: false,
@@ -566,10 +570,14 @@
       }
 
       function disposeManager() {
+        state.imageCleanup?.();
+        state.imageCleanup = null;
         if (state.disposePromise) return state.disposePromise;
         stopSpeaking();
         const manager = state.manager;
         const kind = state.kind;
+        const referenceModel = kind === 'vrm' ? manager?.currentModel?.vrm?.scene : manager?.currentModel?.mesh;
+        if (referenceModel) avatarRuntime.releasePerspectiveReference(referenceModel, manager.camera);
         state.manager = null;
         state.ready = false;
         if (!manager) return Promise.resolve();
@@ -588,35 +596,114 @@
         if (!manager?.pixi_app?.renderer || !model) return;
         const width = Math.max(1, Math.round(state.viewport.width));
         const height = Math.max(1, Math.round(state.viewport.height));
-        if (!state.baseViewport) state.baseViewport = { width, height };
-        const fitWidth = Math.max(1, Math.min(width, state.baseViewport.width));
-        const fitHeight = Math.max(1, Math.min(height, state.baseViewport.height));
-        try {
-          manager.pixi_app.renderer.resize(width, height);
-          const canvas = manager.pixi_app.view || manager.pixi_app.renderer.view;
-          canvas?.style?.setProperty?.('width', `${width}px`, 'important');
-          canvas?.style?.setProperty?.('height', `${height}px`, 'important');
-          model.anchor?.set?.(0.5, 0.5);
-          let bounds = null;
-          try { bounds = model.getLocalBounds?.() || null; } catch (_) { bounds = null; }
-          const rawWidth = bounds?.width > 0 ? bounds.width : 1200;
-          const rawHeight = bounds?.height > 0 ? bounds.height : 1800;
-          let scale = Math.min(fitWidth * 0.78 / rawWidth, fitHeight * 0.86 / rawHeight)
-            * (state.view.scale / 100);
-          if (!Number.isFinite(scale) || scale <= 0) scale = Math.min(fitWidth, fitHeight) / 1600;
-          scale = Math.max(0.025, Math.min(0.68, scale));
-          model.scale?.set?.(scale);
-          model.x = fitWidth * 0.5;
-          model.y = fitHeight * 0.5;
-          let rendered = null;
-          try { rendered = model.getBounds?.() || null; } catch (_) { rendered = null; }
-          if (rendered?.width > 0 && rendered?.height > 0) {
-            model.x += fitWidth * 0.5 - (rendered.x + rendered.width / 2);
-            model.y += fitHeight * 0.5 - (rendered.y + rendered.height / 2);
+        manager.pixi_app.renderer.resize(width, height);
+        const canvas = manager.pixi_app.view || manager.pixi_app.renderer.view;
+        canvas?.style?.setProperty?.('width', `${width}px`, 'important');
+        canvas?.style?.setProperty?.('height', `${height}px`, 'important');
+        model.anchor?.set?.(0.5, 0.5);
+        const bounds = model.getLocalBounds?.();
+        if (!bounds?.width || !bounds?.height) return;
+        if (state.nativeLive2DScale == null) state.nativeLive2DScale = Math.abs(model.scale.x) || 1;
+        const native = state.nativeLive2DScale;
+        const layout = avatarRuntime.fitRectangle({ width: bounds.width * native,
+          height: bounds.height * native }, state.viewport, state.fit);
+        const scale = native * layout.scale * state.view.scale / 100;
+        model.scale?.set?.(scale);
+        const aligned = avatarRuntime.fitRectangle({ width: bounds.width * scale,
+          height: bounds.height * scale }, state.viewport,
+          { ...state.fit, autoScale: false, scaleMultiplier: 1 });
+        const rendered = model.getBounds?.();
+        if (rendered?.width > 0 && rendered?.height > 0) {
+          model.x += aligned.x - rendered.x;
+          model.y += aligned.y - rendered.y;
+        }
+        model.x += width * (state.view.x / 100);
+        model.y += height * (state.view.y / 100);
+        state.layout = layout;
+      }
+
+      function fitPngtuber(manager) {
+        if (state.disposed || !state.viewport || !manager?.image) return;
+        const image = manager.image;
+        const width = image.naturalWidth || image.width;
+        const height = image.naturalHeight || image.height;
+        if (!(width > 0 && height > 0)) return;
+        const layout = avatarRuntime.fitRectangle({ width, height }, state.viewport, state.fit);
+        const scaled = { width: layout.width * state.view.scale / 100,
+          height: layout.height * state.view.scale / 100 };
+        const aligned = avatarRuntime.fitRectangle(scaled, state.viewport,
+          { ...state.fit, autoScale: false, scaleMultiplier: 1 });
+        const bounce = manager.currentSpeakingBounceTransform?.() || {};
+        const breathing = manager.currentLayeredBreathingTransform?.() || {};
+        const hop = manager.currentTalkingHopTransform?.() || {};
+        const sx = (manager.config?.mirror ? -1 : 1) * (bounce.scaleX || 1)
+          * (breathing.scaleX || 1) * (hop.scaleX || 1);
+        const sy = (bounce.scaleY || 1) * (breathing.scaleY || 1) * (hop.scaleY || 1);
+        Object.assign(image.style, {
+          position: 'absolute', left: `${aligned.x + state.viewport.width * state.view.x / 100}px`,
+          top: `${aligned.y + state.viewport.height * state.view.y / 100}px`, right: 'auto', bottom: 'auto',
+          width: `${scaled.width}px`, height: `${scaled.height}px`, maxWidth: 'none', maxHeight: 'none',
+          transformOrigin: 'center bottom',
+          transform: `translateY(${(bounce.y || 0) + (breathing.y || 0) + (hop.y || 0)}px) scale(${sx}, ${sy})`,
+        });
+        state.layout = layout;
+      }
+
+      function observeImage(manager) {
+        const image = manager.imageElement;
+        if (!image?.addEventListener || manager.image !== image) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          let waiting = true;
+          let timer = null;
+          const finish = (error) => {
+            if (!waiting) return;
+            waiting = false;
+            if (timer !== null) windowImpl.clearTimeout(timer);
+            timer = null;
+            signal?.removeEventListener('abort', onAbort);
+            if (error) reject(error); else resolve();
+          };
+          const onLoad = () => { fitPngtuber(manager); finish(); };
+          const onError = () => finish(new DrawingAvatarHostError('renderer_unavailable', 'Avatar image failed to load'));
+          const onAbort = () => finish(new DrawingAvatarHostError('disposed', 'Avatar image load cancelled'));
+          image.addEventListener('load', onLoad);
+          image.addEventListener('error', onError);
+          signal?.addEventListener('abort', onAbort, { once: true });
+          // One listener pair per controller, retained for talking/emotion image
+          // changes; one initial timer, released on success/error/cancel/dispose.
+          state.imageCleanup = () => {
+            image.removeEventListener('load', onLoad);
+            image.removeEventListener('error', onError);
+            onAbort();
+          };
+          timer = windowImpl.setTimeout(onError, 15000);
+          if (signal?.aborted) onAbort();
+          else if (image.complete) {
+            if (image.naturalWidth > 0) onLoad(); else onError();
           }
-          model.x += fitWidth * (state.view.x / 100);
-          model.y += fitHeight * (state.view.y / 100);
-        } catch (_) { /* a later ResizeObserver pass can retry */ }
+        });
+      }
+
+      function fitRenderer() {
+        if (!state.viewport || !state.manager) return;
+        const manager = state.manager;
+        const layer = documentImpl.getElementById(`${state.kind}-container`);
+        if (layer?.style) Object.assign(layer.style, {
+          position: 'absolute', left: '0', top: '0',
+          width: `${state.viewport.width}px`, height: `${state.viewport.height}px`, overflow: 'hidden',
+        });
+        if (state.kind === 'live2d') fitLive2D();
+        else if (state.kind === 'pngtuber') fitPngtuber(manager);
+        else {
+          manager.onWindowResize?.();
+          manager.renderer?.setSize?.(state.viewport.width, state.viewport.height);
+          manager.effect?.setSize?.(state.viewport.width, state.viewport.height);
+          const model = state.kind === 'mmd' ? manager.currentModel?.mesh : manager.currentModel?.vrm?.scene;
+          if (model && manager.camera) {
+            state.layout = avatarRuntime.fitPerspectiveModel(windowImpl.THREE, model, manager.camera,
+              state.viewport, state.fit, state.view);
+          }
+        }
       }
 
       async function restoreLive2DIdle(manager, descriptor, generation) {
@@ -702,9 +789,11 @@
         const initialized = typeof manager.ensurePIXIReady === 'function'
           ? manager.ensurePIXIReady('live2d-canvas', 'live2d-container', {
             backgroundAlpha: 0, antialias: true,
+            resizeMode: 'fixed', width: state.viewport.width, height: state.viewport.height,
           })
           : manager.initPIXI('live2d-canvas', 'live2d-container', {
             backgroundAlpha: 0, antialias: true,
+            resizeMode: 'fixed', width: state.viewport.width, height: state.viewport.height,
           });
         await initialized;
         await retireIfStale(manager, 'live2d', generation);
@@ -732,18 +821,35 @@
         suppressChrome(manager);
         const path = typeof windowImpl.convertVRMModelPath === 'function'
           ? windowImpl.convertVRMModelPath(model.path) : model.path;
-        const ok = await manager.initThreeJS('vrm-canvas', 'vrm-container', descriptor?.lighting || null);
+        const ok = await manager.initThreeJS('vrm-canvas', 'vrm-container', descriptor?.lighting || null,
+          { embed: true, resizeMode: 'fixed' });
         await retireIfStale(manager, 'vrm', generation);
         if (ok === false) fail('renderer_unavailable', 'VRM scene initialization failed');
         suppressChrome(manager);
         await manager.loadModel(path, {
           canvasId: 'vrm-canvas',
           containerId: 'vrm-container',
+          embed: true,
           // Never let this isolated renderer borrow another character's global idle motion.
           idleAnimation: descriptor?.idleAnimation || VRM_DEFAULT_IDLE,
           idleAnimations: descriptor?.idleAnimations || undefined,
         });
         await retireIfStale(manager, 'vrm', generation);
+        await avatarRuntime.preparePerspectiveReference(windowImpl.THREE, manager, {
+          type: 'vrm', signal, isCurrent: () => !state.disposed && state.modelGeneration === generation,
+        });
+        await retireIfStale(manager, 'vrm', generation);
+        const presentationIdle = descriptor?.idleAnimation || VRM_DEFAULT_IDLE;
+        if (presentationIdle !== VRM_DEFAULT_IDLE && typeof manager.playVRMAAnimation === 'function') {
+          try {
+            await manager.playVRMAAnimation(presentationIdle, { loop: true, immediate: true, isIdle: true,
+              shouldApply: () => !state.disposed && state.modelGeneration === generation });
+            await retireIfStale(manager, 'vrm', generation);
+          } catch (error) {
+            await retireIfStale(manager, 'vrm', generation);
+            windowImpl.console?.warn?.('[Drawing Avatar] VRM presentation idle failed:', error);
+          }
+        }
       }
 
       async function loadMmd(model, descriptor, generation) {
@@ -762,7 +868,7 @@
         const path = typeof windowImpl._mmdConvertPath === 'function'
           ? windowImpl._mmdConvertPath(model.path) : model.path;
         if (!manager.core?.renderer) {
-          await manager.init('mmd-canvas', 'mmd-container');
+          await manager.init('mmd-canvas', 'mmd-container', { embed: true });
           await retireIfStale(manager, 'mmd', generation);
         }
         let savedSettings = null;
@@ -790,10 +896,11 @@
           windowImpl.console?.warn?.('[Drawing Avatar] MMD settings request failed:', error);
         }
         suppressChrome(manager);
-        await manager.loadModel(path, {});
+        await manager.loadModel(path, { embed: true });
         await retireIfStale(manager, 'mmd', generation);
         if (savedSettings && typeof manager.applySettings === 'function') {
-          const { physics: _physics, ...nonPhysicsSettings } = savedSettings;
+          const nonPhysicsSettings = { lighting: savedSettings.lighting,
+            rendering: savedSettings.rendering, cursorFollow: savedSettings.cursorFollow };
           try {
             await manager.applySettings(nonPhysicsSettings);
             await retireIfStale(manager, 'mmd', generation);
@@ -803,10 +910,15 @@
             windowImpl.console?.warn?.('[Drawing Avatar] MMD settings apply failed:', error);
           }
         }
-        const idleAnimation = descriptor?.mmdIdleAnimations?.[0];
+        const previousIdle = manager.currentAnimationUrl;
+        await avatarRuntime.preparePerspectiveReference(windowImpl.THREE, manager, {
+          type: 'mmd', signal, isCurrent: () => !state.disposed && state.modelGeneration === generation,
+        });
+        await retireIfStale(manager, 'mmd', generation);
+        const idleAnimation = descriptor?.mmdIdleAnimations?.[0] || previousIdle;
         if (idleAnimation && typeof manager.loadAnimation === 'function') {
           try {
-            await manager.loadAnimation(idleAnimation);
+            await manager.loadAnimation(idleAnimation, { immediate: true });
             await retireIfStale(manager, 'mmd', generation);
             manager.playAnimation?.('idle');
           } catch (error) {
@@ -826,6 +938,11 @@
         ensureLoadActive(generation);
         const manager = new windowImpl.PNGTuberManager('pngtuber-container');
         state.manager = manager;
+        const applyTransform = manager.applyTransform?.bind(manager);
+        manager.applyTransform = (...args) => {
+          applyTransform?.(...args);
+          fitPngtuber(manager);
+        };
         suppressChrome(manager);
         const config = { ...(descriptor?.pngtuber || {}) };
         if (!config.idle_image) config.idle_image = model.path;
@@ -840,6 +957,8 @@
         manager.setSpeaking?.(false);
         manager.setState?.('idle');
         manager.show?.();
+        await observeImage(manager);
+        await retireIfStale(manager, 'pngtuber', generation);
       }
 
       async function setModel(model) {
@@ -857,6 +976,8 @@
         state.kind = type;
         state.model = Object.freeze({ type, path });
         state.baseViewport = null;
+        state.nativeLive2DScale = null;
+        state.layout = null;
         state.mouthParameterId = '';
         setLayer(type);
         try {
@@ -910,9 +1031,7 @@
         async setView(value) {
           if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           state.view = normalizeView(value);
-          if (state.kind === 'live2d') fitLive2D();
-          else if (state.kind === 'vrm') state.manager?.onWindowResize?.();
-          else if (state.kind === 'mmd') state.manager?.onWindowResize?.();
+          fitRenderer();
           return state.view;
         },
         async setSpeaking(active) {
@@ -1005,13 +1124,14 @@
             paused: state.paused,
             speaking: state.speaking,
             view: state.view,
+            layout: state.layout,
           });
         },
-        async resize(viewport) {
+        async resize(viewport, fit = state.fit) {
+          if (state.disposed) fail('disposed', 'Avatar controller has been disposed');
           state.viewport = viewport;
-          if (state.kind === 'live2d') fitLive2D();
-          else if (state.kind === 'vrm') state.manager?.onWindowResize?.();
-          else if (state.kind === 'mmd') state.manager?.onWindowResize?.();
+          state.fit = fit;
+          fitRenderer();
         },
         dispose() {
           if (state.disposed) return state.disposePromise || Promise.resolve();

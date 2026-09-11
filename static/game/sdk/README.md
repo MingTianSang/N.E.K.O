@@ -829,3 +829,93 @@ resource disposal for registered slots.
 * `neko-minigame-manifest.schema.json`: runtime manifest and contract schema.
 * `neko-minigame-avatar-host.js` and `neko-minigame-audio-host.js`: trusted
   N.E.K.O host helpers, not APIs exposed to untrusted games.
+# Avatar display sizing
+
+## Stable 3D reference pose
+
+Trusted VRM providers must initialize the engine with `embed: true`, as the
+bundled provider does. The embedding host then owns framing: interaction bounds
+continue to update, but desktop automatic FOV expansion/relaxation cannot undo
+the SDK fit or deliberate cropping. Non-embedded desktop behavior is unchanged;
+MMD's corresponding bounds update already leaves the camera projection alone.
+
+VRM/MMD fitting uses a precise, model-root-local reference box rather than the
+engine's cached `SkinnedMesh.boundingBox`. Animated engines may leave that box
+at the original T-pose even after the arms move down. The reference is measured
+once per model, then reused for resize/view changes; it does not follow each
+animation frame or change bone/physics scale.
+
+The trusted provider calls
+`await NekoMiniGameAvatarHost.preparePerspectiveReference(THREE, manager, {type, signal, isCurrent})`
+after loading a VRM/MMD and before the first fit. This runs the bundled `wait03`
+reference animation with immediate frame-zero evaluation, updates the engine
+pose, and verifies that the wrists are below the upper arms and the head is above
+the hips. A name such as `idle` alone is not evidence of an arms-down pose.
+The shared provider subsequently restores a separately configured presentation
+idle; providers must do the same if their presentation animation differs.
+Invoke preparation within the host's bounded model-load lifecycle and pass its
+cancellation/identity guard; do not call it each frame or on every resize.
+
+`fitPerspectiveModel(...).reference` reports `source`, `reason`, `animation`, and
+`height` (in model-root local units). Successful reference validation reports
+`standing-reference`. Missing animations/bone mappings or failed posture checks
+use `current-pose-fallback`: the precisely measured pre-preparation pose, not a
+claimed arms-down reference. A provider which cannot prepare a reference can
+still fit; the first fit captures and freezes its current pose as a fallback.
+Explicit `capturePerspectiveReference(THREE, model)` replaces that snapshot;
+`releasePerspectiveReference(model, camera)` releases reference/native-camera
+state on replacement/disposal. The cache has one entry per weakly held model,
+stores no model reference in its value, and follows root transforms without
+resampling animated vertices.
+
+The measured height is **geometry height**, including hair and attached geometry,
+not anatomical head-to-foot bone height. `height` fitting fills the padded frame
+vertically and can crop wide hair/arms; `contain` preserves the whole reference
+box and may show different heights for different models. Later poses may extend
+beyond the reference and be clipped. This contract does not guarantee identical
+visible body heights across assets and does not force games to use height mode.
+
+The required `viewport` defines the maximum **display rectangle** in CSS pixels,
+not independent scaling of the model's width and height. Pixels outside it are
+clipped. Use `viewport: { mode: 'fixed', width: 200, height: 300 }` for an explicit
+maximum. Existing `container` and `host-window` modes remain supported: their
+measured dimensions provide the maximum instead.
+
+```js
+await game.avatar.mount({
+  slot: 'character', characterName: character.name, model: character.model,
+  viewport: { mode: 'fixed', width: 200, height: 300 },
+  fit: { mode: 'contain', autoScale: true, minHeight: 180,
+    align: 'bottom-center', padding: 6 },
+});
+```
+
+* `autoScale` defaults to `true`. `contain` (default) enlarges or shrinks the
+  complete model into the padded rectangle without stretching.
+* `mode: 'height'` fills its height; `mode: 'width'` fills its width. The other
+  axis may be clipped. `cover` fills both axes and may crop.
+* Optional `minWidth` / `minHeight` are soft lower bounds, useful with a reduced
+  `scaleMultiplier`. If they conflict with containment/the chosen axis, that
+  maximum wins. `getState().layout.minimumSatisfied` reports the result in the
+  bundled provider; it does not interrupt loading. Manual mode ignores minima.
+* `autoScale: false` (or legacy `mode: 'native'`) preserves the native initial
+  projected/pixel size multiplied by `scaleMultiplier`, including across resize.
+  Native units differ between models; automatic sizing is recommended.
+* `setView({scale: 100, x: 0, y: 0})` is a separate explicit zoom/pan override,
+  expressed in percentages, applied after fit. It may intentionally crop. The
+  bundled provider starts at this neutral view, not a game's saved zoom.
+
+The trusted host's `NekoMiniGameAvatarHost` exports `fitRectangle`,
+`fitLive2DModel`, and `fitPerspectiveModel(THREE, model, camera, viewport, fit, view)`.
+Custom providers must execute the same policy. Nested trusted controllers can
+forward `resize(viewport, fit)` to the inner host controller; silently accepting
+resize without forwarding does not implement this contract. This is a trusted
+provider hook, not a new unvalidated game transport operation.
+
+The bundled multi-model provider uses embedded rendering, retaining model
+content settings while excluding desktop layout preferences. Perspective fit
+uses the model's world-space bounding box, not the entire scene/lights. Image
+fit uses the image/canvas dimensions (including transparent padding), not an
+alpha silhouette. Fit runs on load, view changes and resize, not on every 3D
+animation frame; movements outside the fitted bounds can still clip. Desktop
+renderer initialization remains unchanged when embedding is not requested.
