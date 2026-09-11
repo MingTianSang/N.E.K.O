@@ -1276,6 +1276,10 @@
     pendingIcebreakerBridgeMessages.forEach(function (message) {
         I.handleIcebreakerBridgeData(message);
     });
+    var desktopIcebreakerBridge = window.nekoElectronIcebreakerBridge;
+    if (desktopIcebreakerBridge && typeof desktopIcebreakerBridge.send === 'function') {
+        desktopIcebreakerBridge.send({ action: 'icebreaker_page_ready' });
+    }
     I.yuiGuideInterpageResources.addEventListener(
         window,
         'neko:config-injected',
