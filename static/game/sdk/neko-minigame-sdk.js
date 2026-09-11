@@ -116,7 +116,7 @@
   // the post-negotiation check below have to mean exactly the same set.
   // `speech-output` is deliberately absent: speech.speak() is accepted pre-route.
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
-    'memory', 'context-read', 'leaderboard-server', 'voice-input',
+    'memory', 'context-read', 'leaderboard-server', 'voice-input', 'vision',
   ]);
   const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results', 'commands']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
@@ -151,6 +151,7 @@
     'avatar-renderer',
     'audio',
     'speech-output',
+    'vision',
     'context-read',
     'memory',
     'storage',
@@ -159,6 +160,8 @@
   ]);
   const MANDATORY_CAPABILITIES = Object.freeze(['logging']);
   const PUBLIC_TRANSPORT_ERROR_CODES = Object.freeze([
+    'invalid_image', 'image_unavailable', 'unsupported_attachment',
+    'invalid_region', 'capture_unavailable', 'capture_source_mismatch', 'capture_denied', 'capture_changed',
     'invalid_manifest',
     'invalid_handshake',
     'invalid_contract',
@@ -1478,6 +1481,8 @@
           && typeof transport.stopVoiceControlBridge === 'function';
       case 'avatar-renderer':
         return typeof transport.mountAvatar === 'function';
+      case 'vision':
+        return typeof transport.analyzeGameVision === 'function';
       case 'audio':
         return typeof transport.mountAudio === 'function';
       case 'speech-output':
@@ -2214,6 +2219,7 @@
     const speechPreloadPendingRequests = new Set();
     const protocolPendingRequests = new Set();
     const commandPendingRequests = new Set();
+    const visionPendingRequests = new Set();
     // Fixed SDK request groups only; each raw group shares its public limit.
     // Ignoring abort cannot free capacity for unlimited abandoned body reads.
     const managedHostInFlight = new Map();
@@ -2570,6 +2576,7 @@
     }
 
     function setRuntimePhase(nextPhase, reason = '') {
+      if (['ending', 'ended', 'inactive'].includes(nextPhase)) abortManagedRequests(visionPendingRequests, 'cancelled');
       const normalized = String(nextPhase || 'idle');
       if (runtimePhase === normalized) return;
       const previous = runtimePhase;
@@ -3867,6 +3874,7 @@
         stopRuntimeMonitoring();
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
+        abortManagedRequests(visionPendingRequests, 'cancelled');
         abortManagedRequests(commandPendingRequests, 'cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
         cancelAvatarQueries('cancelled');
@@ -4157,6 +4165,82 @@
       onError(handler) {
         ensureActive('controls.onError');
         return subscribe('control-error', handler);
+      },
+    });
+
+    const vision = Object.freeze({
+      get pendingCount() { return visionPendingRequests.size; },
+      async analyze(input, requestOptions = {}) {
+        const operation = 'vision.analyze';
+        requireCapability('vision', operation);
+        requireActiveRuntimeRoute(operation);
+        const attached = plainObject(input) && ('attachments' in input || 'text' in input);
+        const allowed = attached ? ['text', 'attachments'] : ['region', 'prompt'];
+        if (!plainObject(input) || Object.keys(input).some(key => !allowed.includes(key))) {
+          fail('invalid_request', 'Vision expects text/attachments or region/prompt');
+        }
+        let request;
+        if (attached) {
+          if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16384
+            || !Array.isArray(input.attachments) || input.attachments.length < 1 || input.attachments.length > 4) {
+            fail('invalid_request', 'Vision expects bounded text and 1–4 images');
+          }
+          let bytes = 0;
+          const attachments = input.attachments.map(item => {
+            if (!plainObject(item) || Object.keys(item).some(key => !['type', 'source', 'label', 'mimeType'].includes(key))) {
+              fail('invalid_request', 'Invalid vision attachment');
+            }
+            if (item.type !== 'image') fail('unsupported_attachment', 'Only image attachments are supported');
+            const metadata = normalizeBoundedJson({ type:item.type,
+              ...(item.label !== undefined ? {label:item.label} : {}),
+              ...(item.mimeType !== undefined ? {mimeType:item.mimeType} : {}) }, operation, 1024);
+            if ((metadata.label !== undefined && (typeof metadata.label !== 'string' || metadata.label.length > 128))
+              || (metadata.mimeType !== undefined && !['image/jpeg','image/png','image/webp'].includes(metadata.mimeType))) {
+              fail('invalid_request', 'Invalid image label or MIME type');
+            }
+            let source = item.source;
+            if (typeof source === 'string') {
+              if (!source || source.length > (source.startsWith('data:') ? Math.ceil(2*1024*1024/3)*4+64 : 2048)) {
+                fail('invalid_request', 'Image address exceeds the input budget');
+              }
+              if (source.startsWith('data:')) bytes += Math.max(0,source.length-64)*3/4;
+            } else if (typeof Blob !== 'undefined' && source instanceof Blob) {
+              if (!source.size || source.size > 2*1024*1024) fail('invalid_request', 'Image exceeds the input budget');
+              bytes += source.size;
+            } else if (source instanceof ArrayBuffer || source instanceof Uint8Array) {
+              if (!source.byteLength || source.byteLength > 2*1024*1024 || !metadata.mimeType) {
+                fail('invalid_request', 'Binary images require a MIME type and a bounded body');
+              }
+              bytes += source.byteLength;
+              source = source instanceof ArrayBuffer ? source.slice(0) : new Uint8Array(source);
+            } else fail('invalid_request', 'Unsupported image source');
+            if (bytes > 6*1024*1024) fail('invalid_request', 'Images exceed the total input budget');
+            return Object.freeze({...metadata,source});
+          });
+          request = {text:input.text,attachments:Object.freeze(attachments)};
+        } else {
+          request = normalizeBoundedJson(input, operation, 20 * 1024);
+          if (typeof request.prompt !== 'string' || !request.prompt.trim() || request.prompt.length > 4096) {
+            fail('invalid_request', 'Vision prompt must contain 1–4096 characters');
+          }
+        }
+        const generation = runtimeRouteInstanceId;
+        const session = runtimeSession();
+        const value = await performManagedHostRequest({
+          operation, pendingSet: visionPendingRequests, limit: 1,
+          timeoutMs: 90000, maximumTimeoutMs: 90000, requestOptions,
+          invoke: options => transport.analyzeGameVision(runtimeCapabilityPayload({ ...request, session_id: session.id }), options),
+        });
+        requireActiveRuntimeRoute(operation);
+        if (generation !== runtimeRouteInstanceId || session.id !== runtimeSession().id) {
+          fail('session_invalid', 'Vision result belongs to a retired route');
+        }
+        if (!plainObject(value) || typeof value.text !== 'string' || !value.text.trim() || value.text.length > 8192
+          || (!attached && (!Number.isInteger(value.width) || value.width < 1 || value.width > 1280
+          || !Number.isInteger(value.height) || value.height < 1 || value.height > 720))) {
+          fail('invalid_response', 'Invalid vision result');
+        }
+        return Object.freeze(attached ? {text:value.text} : { text: value.text, width: value.width, height: value.height });
       },
     });
 
@@ -5694,6 +5778,7 @@
       state,
       controls,
       commands,
+      vision,
       results,
       context,
       memory,
@@ -5716,6 +5801,7 @@
         stopRuntimeOperation({ preserveEnd: disposeOptions.preserveRuntimeEnd === true });
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
+        abortManagedRequests(visionPendingRequests, 'disposed');
         abortManagedRequests(commandPendingRequests, 'disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
         cancelAvatarQueries('disposed');

@@ -56,6 +56,7 @@ from ._shared import (  # noqa: F401
     _coerce_payload_bool,
     _coerce_payload_float,
 )
+from .vision import game_sdk_vision_analyze  # noqa: F401
 from .char_info import (  # noqa: F401
     _extract_request_language_full,
     _absorb_request_language,

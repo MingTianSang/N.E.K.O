@@ -157,6 +157,9 @@
   const adapterUrl = String(launchConfig.adapterUrl || DEFAULT_ADAPTER_URL);
 
   window.nekoMiniGameSameOriginHostReady = (async () => {
+      if (Object.values(registrations).some(record => record.allowedCapabilities.includes('vision'))) {
+        await loadAdapterScript('/static/game/sdk/neko-minigame-vision-host.js', documentImpl, Object.freeze({}));
+      }
       await loadAdapterScript(adapterUrl, documentImpl, registrations);
       if (typeof window.createNekoMiniGameSameOriginHost !== 'function') {
         throw new Error('MINIGAME_HOST_ADAPTER_FACTORY_MISSING');

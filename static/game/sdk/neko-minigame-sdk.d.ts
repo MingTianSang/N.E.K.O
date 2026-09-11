@@ -12,6 +12,7 @@ declare namespace NekoMiniGame {
     | 'avatar-renderer'
     | 'audio'
     | 'speech-output'
+    | 'vision'
     | 'context-read'
     | 'memory'
     | 'storage'
@@ -654,6 +655,29 @@ declare namespace NekoMiniGame {
     disposeAll(): void;
   }
 
+  type VisionUnit = 'px' | 'percent';
+  interface VisionPoint { x: number; y: number }
+  type VisionRegion =
+    | { kind: 'element'; selector: string }
+    | { kind: 'rect'; unit: VisionUnit; x: number; y: number; width: number; height: number }
+    | { kind: 'edges'; unit: VisionUnit; top: number; right: number; bottom: number; left: number }
+    | { kind: 'corners'; unit: VisionUnit; topLeft: VisionPoint; topRight: VisionPoint;
+        bottomRight: VisionPoint; bottomLeft: VisionPoint };
+  interface VisionResult { readonly text: string; readonly width: number; readonly height: number }
+  type VisionImageMimeType = 'image/jpeg' | 'image/png' | 'image/webp';
+  type VisionAttachment = {
+    type: 'image'; label?: string;
+  } & ({ source: string | Blob; mimeType?: VisionImageMimeType }
+    | { source: Uint8Array | ArrayBuffer; mimeType: VisionImageMimeType });
+  interface VisionAnalysisResult { readonly text: string }
+  interface Vision {
+    readonly pendingCount: number;
+    /** Ordered images in one call; no screen-sharing permission for supplied images. */
+    analyze(input: { text: string; attachments: readonly VisionAttachment[] }, options?: RequestOptions): Promise<VisionAnalysisResult>;
+    /** One user-authorized capture, active runtime required. No automatic speech or memory writes. */
+    analyze(input: { region: VisionRegion; prompt: string }, options?: RequestOptions): Promise<VisionResult>;
+  }
+
   interface Client {
     readonly manifest: NormalizedManifest;
     readonly host: HostInfo;
@@ -663,6 +687,7 @@ declare namespace NekoMiniGame {
     readonly state: StatePublisher;
     readonly controls: Controls;
     readonly commands: Commands;
+    readonly vision: Vision;
     readonly results: ResultPublisher;
     readonly context: ContextReader;
     readonly memory: Memory;

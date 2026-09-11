@@ -70,6 +70,26 @@ game.commands.execute('round:input', { text: 'example' }, { timeoutMs: 1000 });
 // @ts-expect-error Speaking state is a boolean, not a display string.
 avatar.setSpeaking('true');
 void [viewResult, speakingResult, generation];
+const visionResult: Promise<NekoMiniGame.VisionResult> = game.vision.analyze({
+  region: { kind: 'rect', unit: 'percent', x: 0, y: 0, width: 50, height: 100 }, prompt: 'Describe the board.',
+});
+game.vision.analyze({ region: { kind: 'element', selector: '#board' }, prompt: 'What changed?' });
+game.vision.analyze({ region: { kind: 'edges', unit: 'px', top: 10, left: 10, right: 10, bottom: 10 }, prompt: 'Observe.' });
+// @ts-expect-error Coordinates have explicit units, not an assumed device-pixel convention.
+game.vision.analyze({ region: { kind: 'rect', x: 0, y: 0, width: 50, height: 50 }, prompt: 'Observe.' });
+void visionResult;
+const imagesResult: Promise<NekoMiniGame.VisionAnalysisResult> = game.vision.analyze({
+  text:'Compare the two states', attachments:[
+    {type:'image',source:'/before.png',label:'before'},
+    {type:'image',source:new Blob(),label:'after'},
+    {type:'image',source:new Uint8Array(),mimeType:'image/png'},
+  ],
+});
+// @ts-expect-error Raw binary input requires its image MIME type.
+game.vision.analyze({text:'Observe',attachments:[{type:'image',source:new Uint8Array()}]});
+// @ts-expect-error Future modality discriminators are not implemented yet.
+game.vision.analyze({text:'Listen',attachments:[{type:'audio',source:'/audio.wav'}]});
+void imagesResult;
 game.avatar.mount({ slot: 'fit-example', model: { type: 'mmd', path: '/example.pmx' },
   viewport: { mode: 'fixed', width: 200, height: 300 },
   fit: { mode: 'height', autoScale: true, minHeight: 180, align: 'bottom-center' } });

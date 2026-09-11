@@ -465,6 +465,7 @@
         1024,
       );
       this._pendingRequests = new Map();
+      this._visionOperations = new Set();
       this._rawRequests = new Set();
       this._pendingStorageLockLimit = boundedPositiveInteger(
         options.storageLockPendingLimit,
@@ -705,6 +706,7 @@
         'logging',
         'voice-input',
         'speech-output',
+        ...(window.NekoMiniGameVisionHost?.available(this._window) ? ['vision'] : []),
         'context-read',
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
@@ -1638,6 +1640,67 @@
       return result.finally(() => {
         this._protocolQueueDepth = Math.max(0, this._protocolQueueDepth - 1);
       });
+    }
+
+    async analyzeGameVision(payload, options = {}) {
+      this._requireGrantedCapability('vision', 'vision.analyze');
+      this._requireGrantedCapability('runtime', 'vision.analyze');
+      const identity = this._activeCommandRouteIdentity;
+      const current = () => !this._disposed && identity && identity === this._activeCommandRouteIdentity
+        && identity.sessionId === this.sessionId && identity.lanlanName === this.routeLanlanName
+        && identity.routeInstanceId === payload?.sdk_route_instance_id
+        && identity.sessionId === payload?.session_id;
+      if (!current()) throw this._hostError('session_invalid', 'Vision requires the current route');
+      const attached = 'attachments' in payload || 'text' in payload;
+      if (attached && ('region' in payload || 'prompt' in payload)) {
+        throw this._hostError('invalid_request', 'Do not mix attachments with capture input');
+      }
+      const input = cloneTrustedJsonData(attached ? {text:payload.text} : { region: payload.region, prompt: payload.prompt },
+        { nodes: 0, bytes: 0, seen: new Set(), maxBytes: 64 * 1024 });
+      const text = attached ? input.text : input.prompt;
+      if (typeof text !== 'string' || !text.trim() || text.length > (attached ? 16384 : 4096)) {
+        throw this._hostError('invalid_request', 'Vision text exceeds the input budget');
+      }
+      if (options.signal?.aborted) throw this._hostError('cancelled', 'Vision cancelled');
+      if (this._visionOperations.size) throw this._hostError('busy', 'Vision is already pending');
+      const controller = new this._window.AbortController();
+      this._visionOperations.add(controller);
+      const abort = () => controller.abort();
+      options.signal?.addEventListener('abort', abort, { once: true });
+      const timeout = this._window.setTimeout(abort, Math.min(options.timeoutMs || 90000, 90000));
+      const watch = this._window.setInterval(() => { if (!current()) abort(); }, 100);
+      try {
+        let capture;
+        let attachments;
+        if (attached) {
+          attachments = await window.NekoMiniGameVisionHost.normalizeAttachments(payload.attachments, {
+            windowImpl:this._window, signal:controller.signal,
+          });
+        } else {
+          capture = await window.NekoMiniGameVisionHost.capture(input.region, {
+            windowImpl: this._window, signal: controller.signal, timeoutMs: Math.min(options.timeoutMs || 30000, 30000),
+          });
+        }
+        if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+        const response = await this._postWithCsrf(this._gameEndpoint('vision/analyze'), {
+          session_id: identity.sessionId, lanlan_name: identity.lanlanName,
+          sdk_route_instance_id: identity.routeInstanceId,
+          ...(attached ? {text:text.trim(), attachments} : {prompt:text.trim(), image_data_url:capture.imageDataUrl}),
+        }, { signal: controller.signal, timeoutMs: 60000, operation: 'vision.analyze' });
+        // Body consumption remains under the capture/request lifetime and raw slot.
+        const data = await response.json();
+        if (!current() || controller.signal.aborted) throw this._hostError('cancelled', 'Vision route retired');
+        if (!response.ok || data?.ok !== true) {
+          throw this._hostError('request_failed', 'Vision analysis failed', { reason: String(data?.reason || '').slice(0, 80) });
+        }
+        if (typeof data.text !== 'string' || data.text.length > 8192) throw this._hostError('invalid_response', 'Invalid vision result');
+        return attached ? {text:data.text} : { text: data.text, width: capture.width, height: capture.height };
+      } finally {
+        controller.abort();
+        this._window.clearTimeout(timeout); this._window.clearInterval(watch);
+        options.signal?.removeEventListener('abort', abort);
+        this._visionOperations.delete(controller);
+      }
     }
 
     async executeGameCommand(nameInput, envelope = {}, options = {}) {
@@ -3513,6 +3576,7 @@
     dispose(options = {}) {
       if (this._disposed) return;
       this._disposed = true;
+      for (const controller of this._visionOperations) controller.abort();
       for (const controller of this._pendingStorageLockControllers) {
         try { controller.abort(); } catch (_) { /* already aborted */ }
       }

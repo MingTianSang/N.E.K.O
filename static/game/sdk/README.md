@@ -13,7 +13,7 @@ continue to own their schemas and validators.
 
 * `logging` is mandatory for every game and must be declared in
   `requiredCapabilities`.
-* `runtime`, `dialogue`, `quick-lines`, `voice-input`, `speech-output`, `audio`,
+* `runtime`, `dialogue`, `quick-lines`, `voice-input`, `speech-output`, `vision`, `audio`,
   `avatar-renderer`, `leaderboard-local`, and `leaderboard-server` are requested
   only when a game needs them.
 * `quick-lines` is a separate optional capability layered on `dialogue`; a
@@ -616,6 +616,181 @@ The caller chooses the text, timing and whether loading should await completion.
 Preloading does not play audio, show a bubble, mirror text, create a chat turn,
 emit turn-end or write memory. A later `speech.speak()` for the same effective
 character voice, language and exact text automatically reuses the host cache.
+
+## Vision: text and image attachments
+
+The optional `vision` capability analyzes supplied images or captures **one
+region of the current game tab**, using the project's configured `vision` model. It requires
+`runtime` and an active route. The trusted page registration must explicitly
+allow `vision`; adding it to a game manifest alone does not grant it. The official
+same-origin bootstrap loads `neko-minigame-vision-host.js` for such registrations.
+Games must use the public facade, not the capture helper or backend endpoint.
+
+```js
+const observation = await game.vision.analyze({
+  text: 'Compare the before and after states.',
+  attachments: [
+    { type: 'image', source: '/assets/before.png', label: 'before' },
+    { type: 'image', source: canvasBlob, label: 'after' },
+    // Raw bytes require an explicit MIME type:
+    // { type: 'image', source: pngBytes, mimeType: 'image/png' },
+  ],
+}, { signal: roundAbortController.signal, timeoutMs: 60000 });
+showObservation(observation.text);
+```
+
+`source` accepts a relative/HTTP(S) URL, same-origin blob URL, image data URL,
+`Blob`/`File`, `Uint8Array` or `ArrayBuffer`. Supplied images do not open a screen
+sharing picker. URL reads happen in the browser with CORS, same-origin
+credentials only, no redirects and no referrer; inaccessible resources fail,
+never fall back to a server URL proxy. Binary sources require `mimeType`;
+untyped Blobs also need it. MIME types must be `image/jpeg`, `image/png` or
+`image/webp`. The server verifies the actual static format (no SVG/GIF/animated
+images), strips metadata, composites transparency onto white and proportionally
+reduces to at most 1280×1280 before sending to the model.
+
+The attachment array preserves order in **one model request**, with optional
+labels (128 characters each). A bad image fails the whole request, not a partial
+analysis. Limits are 1–4 images, 2 MiB source bytes per image, 6 MiB total,
+source dimensions at most 4096 on either axis and 4 megapixels per image,
+text at most 16384 characters, and output at most 8192 characters. Results are
+`{text}`; input images are not echoed. Only `type: 'image'` works today. Other
+modalities are reserved for future implementations and explicitly rejected.
+Neither images nor text are automatically written to chat/memory or spoken.
+
+### Trusted backend reuse
+
+Games with server-owned state can use the same service without moving private
+rules/answers to the browser or making a preliminary image-description call:
+
+```python
+from utils.game_vision import analyze_game_vision
+
+raw_text = await analyze_game_vision(
+    text=question,
+    attachments=[{"type": "image", "image_data_url": canvas_data_url, "label": "board"}],
+    system_prompt=trusted_game_prompt,
+    max_completion_tokens=420,
+    timeout=30,
+    is_current=lambda: round_is_still_current(),
+)
+```
+
+This is a **trusted Python service**, not a browser system-prompt override. It
+accepts validated-data-URL image attachments only, never fetches URLs, and
+returns raw model text for the game to parse. Trusted system text is limited to
+32768 characters, output budget to 1–4096 tokens, trusted-server timeout to >0
+and ≤300 seconds (default 35). The browser HTTP endpoint keeps its fixed
+55-second request deadline and default 35-second model budget; browser input
+cannot override the trusted-server timeout. Default output budget is 1024 tokens. All callers share four raw
+model slots with no waiting queue and `max_retries=0`. Cancellation uses normal
+task cancellation; even providers ignoring cancellation retain their slot until
+settlement. `ValueError` reasons include `busy`, `timeout`, `route_inactive`,
+`invalid_payload`, `invalid_image`, `unsupported_attachment`,
+`vision_unavailable`, `invalid_model_response` and `vision_failed`.
+
+The game retains session authorization, round/route identity, state locks,
+post-await checks, parsing, judgement, attempts and explicit fallback policy.
+Use `is_current` and cancel the parent task when its owning request/round ends.
+The service does not grant authorization, mutate game state, retry guesses,
+write logs/memory, or play speech. A text-only fallback must not be presented
+as a successful visual observation.
+
+Regression entry points: `tests/unit/test_game_vision_service.py`,
+`tests/unit/test_minigame_vision.py` and
+`tests/frontend/test_neko_minigame_vision_runtime.js` (also in the SDK Node pytest
+wrapper). These verify contracts/resources, not a specific game's full workflow
+or a paid model's answer quality.
+
+### Game-region capture convenience
+
+The existing `{region, prompt}` overload remains compatible and returns
+`{text, width, height}`. It is mutually exclusive with `{text, attachments}`
+and uses the same model service after capture. Only this overload needs current-tab
+capture support and user authorization:
+
+```js
+// Add 'vision' to optionalCapabilities (and request 'runtime' as usual).
+// Call from a player action: the browser requires transient user activation.
+lookButton.addEventListener('click', async () => {
+  if (!game.capabilities.has('vision')) return showVisionUnavailable();
+  try {
+    const observation = await game.vision.analyze({
+      region: { kind: 'element', selector: '#game-board' },
+      prompt: 'Describe the positions of the pieces on this board.',
+    }, { signal: roundAbortController.signal, timeoutMs: 90000 });
+    showObservation(observation.text);
+  } catch (error) {
+    showVisionError(error.code);
+  }
+});
+```
+
+Region forms (all describe an axis-aligned rectangle in the **visible game
+viewport**, never physical monitor coordinates):
+
+```js
+// CSS pixels from the visible viewport's top-left; device scaling is handled internally.
+{ kind: 'rect', unit: 'px', x: 100, y: 50, width: 600, height: 400 }
+// Percentages from 0 to 100, independently relative to viewport width/height.
+{ kind: 'rect', unit: 'percent', x: 10, y: 10, width: 80, height: 80 }
+// Inward offsets from each viewport edge (also accepts unit: 'percent').
+{ kind: 'edges', unit: 'px', top: 40, right: 20, bottom: 40, left: 20 }
+// Four named corners; polygons and reversed corners are rejected, not expanded.
+{ kind: 'corners', unit: 'percent', topLeft: { x: 10, y: 10 },
+  topRight: { x: 90, y: 10 }, bottomRight: { x: 90, y: 90 }, bottomLeft: { x: 10, y: 90 } }
+```
+
+An element selector must match exactly one connected element. Capture uses its
+visible bounding rectangle, **including anything visually covering it**; it is
+not an isolated DOM reconstruction. Offscreen/partially clipped regions, empty
+regions, ambiguous selectors and non-rectangular corners are rejected. The SDK
+does not scroll, hide overlays, expand the region or capture an entire screen
+as a fallback. Movement/scrolling/resizing during capture requires a retry.
+Pinch-zoomed visual viewports are currently unsupported.
+
+The player must authorize sharing **this game tab** for each request. A fresh
+Capture Handle identifies the selected document; `preferCurrentTab` is only a
+browser hint. Picking another tab, an application window or a monitor fails
+with `capture_source_mismatch` **before pixels are read or uploaded**. This
+first implementation requires a secure, top-level Chromium-compatible context
+with Capture Handle and video-frame callbacks. Other browsers, embedded frames,
+or Electron builds without these APIs reject the capture request with
+`capture_unavailable`; supplied-image analysis remains available when browser
+binary/fetch APIs are present. Electron
+does not silently use native desktop capture; a future authenticated page-only
+IPC adapter may implement the same public contract. The helper temporarily owns
+the game document's Capture Handle configuration; do not concurrently replace it
+from another capture integration.
+
+For the capture overload, only the cropped JPEG is uploaded to the project backend and configured model
+provider (normal provider cost/data policies apply). The shared stream stops
+immediately after capture, **before** model inference. The SDK does not persist
+images, prompts or results, append chat, write memory, speak, or run a background
+capture loop. A game decides how to consume `text` using other public APIs.
+`width` and `height` describe the compressed image, not the original viewport.
+
+Bounds: one SDK vision request and one raw capture/picker per page, capture at
+most 30 seconds, total SDK deadline at most 90 seconds, JPEG at most 1280×720 and
+2 MiB as a data URL, prompt at most 4096 characters, result at most 8192
+characters. Backend admission is four raw requests with no waiting queue;
+request deadline is 55 seconds and the model client timeout is 35 seconds.
+The server validates Origin/CSRF, actual image format/dimensions, active session
+and route generation. It re-encodes JPEGs to drop uploaded metadata. End, reset,
+disposal, disconnect, source changes and timeout discard late results and cancel
+work. An uninterruptible permission picker retains its capture slot; a stream
+that arrives after cancellation is immediately stopped. A provider that ignores
+cancellation retains its backend slot until settlement rather than admitting
+unbounded work.
+
+Stable capture errors include `invalid_region`, `capture_denied`,
+`capture_unavailable`, `capture_source_mismatch`, and `capture_changed`; managed
+requests also use `busy`, `timeout`, `cancelled`, `disposed` and `request_failed`.
+Missing model configuration is a request failure, not a fabricated observation.
+Developer tests: `tests/frontend/test_neko_minigame_vision_runtime.js` and
+`tests/unit/test_minigame_vision.py` cover geometry, identity, cancellation,
+limits and server behavior. They do not replace a real browser/Electron picker
+and configured-model acceptance test.
 
 ## Avatar renderer
 
