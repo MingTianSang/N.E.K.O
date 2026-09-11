@@ -35,7 +35,7 @@ async function environment(factory, fetchImpl) {
   const launch = {
     textContent: JSON.stringify({ registrations: { 'example-game': {
       mode: 'registered', gameId: 'example-game', version: '1.0.0',
-      allowedCapabilities: ['runtime', 'logging', 'avatar-renderer'],
+      allowedCapabilities: ['runtime', 'logging', 'avatar-renderer', 'speech-output'],
     } } }),
     nekoCapabilityProviders: { 'example-game': { avatarHostFactory: factory } }, remove() {},
   };
@@ -55,9 +55,9 @@ async function environment(factory, fetchImpl) {
   return {
     w, timers, listeners,
     host: (extra = {}) => w.createNekoMiniGameSameOriginHost({ gameType: 'example-game', ...extra }),
-    async game(host, required = true) {
+    async game(host, required = true, extra = []) {
       const game = await w.NekoMiniGame.connect({ id: 'example-game', version: '1.0.0',
-        requiredCapabilities: ['runtime', 'logging', ...(required ? ['avatar-renderer'] : [])],
+        requiredCapabilities: ['runtime', 'logging', ...(required ? ['avatar-renderer'] : []), ...extra],
         optionalCapabilities: required ? [] : ['avatar-renderer'],
       }, { transport: host, windowImpl: w, documentImpl: w.document });
       game.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
@@ -192,8 +192,9 @@ async function queries() {
       try {
         if (length <= 128) {
           assert.deepEqual(await game.avatar.listCharacters(), [name]);
-          assert.deepEqual(await game.avatar.getCurrentCharacter(), value);
-          assert.deepEqual(await game.avatar.getCharacter(name), value);
+          const expected = customTransport ? value : { ...value, languagePreference: { locale: '', resolved: false }, fallbackModels: [] };
+          assert.deepEqual(await game.avatar.getCurrentCharacter(), expected);
+          assert.deepEqual(await game.avatar.getCharacter(name), expected);
         } else {
           await assert.rejects(game.avatar.listCharacters(), { code: 'invalid_response' });
           await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
@@ -231,7 +232,8 @@ async function queries() {
   }
   const env = await environment(() => ({ mount() {}, dispose() {} }));
   const game = await env.game(env.host());
-  assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor);
+  assert.deepEqual(await game.avatar.getCurrentCharacter(), { ...descriptor,
+    languagePreference: { locale: 'ja', resolved: true }, fallbackModels: [] });
   assert.equal(await game.avatar.getCharacter('Missing'), null, 'unknown name fell back to current character');
   assert.deepEqual(await game.avatar.listCharacters(), ['Neko', 'Other']);
   assert.equal(Object.isFrozen(await game.avatar.getCurrentCharacter()), true);
@@ -293,6 +295,120 @@ async function queries() {
     }
     client.dispose();
     assert.equal(actual.timers.size, 0);
+  }
+}
+
+async function characterBinding() {
+  const requests = [];
+  const data = { lanlan_name: 'Selected', model_type: 'live3d', live3d_sub_type: 'vrm',
+    vrm_path: '/user_vrm/selected.vrm', live2d_path: '/workshop/canonical/model.model3.json',
+    language: 'zh-TW', language_preference_resolved: true, api_key: 'private' };
+  const env = await environment(() => ({ mount() {}, dispose() {} }), async (url, options) => {
+    requests.push({ url: String(url), body: options?.body });
+    return response(String(url).includes('/character') ? data : { ok: true, active: true });
+  });
+  const host = env.host(); const game = await env.game(host);
+  try {
+    const found = await game.avatar.getCurrentCharacter();
+    assert.deepEqual(found.languagePreference, { locale: 'zh-TW', resolved: true });
+    assert.deepEqual(found.fallbackModels, [{ type: 'live2d', path: data.live2d_path }]);
+    assert.equal(found.api_key, undefined);
+    assert.equal(host.routeLanlanName, '', 'read-only discovery changed the selected character');
+    const bound = await game.runtime.bindCharacter();
+    assert.equal(bound.name, 'Selected');
+    assert.equal(game.runtime.state, 'idle');
+    assert.equal(game.runtime.session.characterName, 'Selected');
+    assert.equal(requests.some(request => request.body), false, 'binding started a backend route');
+    assert.equal(await game.runtime.bindCharacter('Missing'), null);
+    assert.equal(game.runtime.session.characterName, 'Selected');
+    await game.runtime.start();
+    const payload = JSON.parse(requests.find(request => request.url.endsWith('/route/start')).body);
+    assert.equal(payload.lanlan_name, 'Selected');
+    await assert.rejects(game.runtime.bindCharacter('Selected'), { code: 'invalid_state' });
+  } finally { game.dispose(); }
+  assert.equal(env.timers.size, 0);
+
+  // Once a character-scoped request has been constructed, even a completed
+  // preload may have server-side work. Selection requires a reset, not rebinding.
+  const lockedEnv = await environment(() => ({ mount() {}, dispose() {} }));
+  const lockedHost = lockedEnv.host(); const lockedGame = await lockedEnv.game(lockedHost);
+  lockedHost._trustedRuntimePayload({});
+  await assert.rejects(lockedGame.runtime.bindCharacter(), { code: 'invalid_state' });
+  assert.equal(lockedHost.routeLanlanName, '');
+  lockedGame.runtime.reset();
+  assert.equal((await lockedGame.runtime.bindCharacter('Neko')).name, 'Neko');
+  lockedGame.dispose(); assert.equal(lockedEnv.timers.size, 0);
+
+  const outputEnv = await environment(() => ({ mount() {}, dispose() {} }));
+  const outputHost = outputEnv.host();
+  // Use a custom transport output implementation to exercise the SDK lock as
+  // well as the standard host lock above. No real TTS request is made.
+  outputHost.startSpeechOutputBridge = () => true;
+  outputHost.preloadSpeechOutput = async () => response({ ok: true });
+  const outputGame = await outputEnv.game(outputHost, true, ['speech-output']);
+  await outputGame.runtime.bindCharacter();
+  await outputGame.speech.preload(['Example line']);
+  await assert.rejects(outputGame.runtime.bindCharacter(), { code: 'invalid_state' });
+  outputGame.runtime.reset();
+  assert.equal((await outputGame.runtime.bindCharacter()).name, 'Neko');
+  outputGame.dispose(); assert.equal(outputEnv.timers.size, 0);
+
+  for (const action of ['reset', 'abort', 'timeout', 'dispose']) {
+    const gate = deferred();
+    const e = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: () => gate.promise }));
+    const h = e.host(); const client = await e.game(h); const abort = new AbortController();
+    const pending = client.runtime.bindCharacter(undefined, { signal: abort.signal, timeoutMs: 250 })
+      .then(() => 'unexpected', error => error.code);
+    await tick();
+    await assert.rejects(client.runtime.start(), { code: 'busy' });
+    await assert.rejects(client.runtime.bindCharacter(), { code: 'busy' });
+    if (action === 'reset') client.runtime.reset();
+    else if (action === 'abort') abort.abort();
+    else if (action === 'dispose') client.dispose();
+    else for (const timer of [...e.timers.values()]) timer.fn();
+    assert.equal(await pending, action === 'dispose' ? 'disposed' : action === 'timeout' ? 'timeout' : 'cancelled');
+    gate.resolve(descriptor); await tick();
+    assert.equal(h.routeLanlanName, '', `${action}: late query rebound the character`);
+    client.dispose(); assert.equal(e.timers.size, 0);
+  }
+}
+
+async function characterMetadata() {
+  for (const customTransport of [false, true]) {
+    let value;
+    const env = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: async () => value }));
+    const host = env.host();
+    if (customTransport) host.getAvatarCharacter = async () => value;
+    const game = await env.game(host);
+    try {
+      for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+        value = { ...descriptor, languagePreference: { locale: 'zh-TW', resolved: true, secret: 'hidden' },
+          fallbackModels: [{ type, path: '/canonical/model', api_key: 'hidden' }], persona: 'hidden' };
+        const result = await game.avatar.getCurrentCharacter();
+        assert.deepEqual(result.languagePreference, { locale: 'zh-TW', resolved: true });
+        assert.deepEqual(result.fallbackModels, [{ type, path: '/canonical/model' }]);
+        assert.equal(result.persona, undefined);
+        assert(Object.isFrozen(result.languagePreference) && Object.isFrozen(result.fallbackModels)
+          && Object.isFrozen(result.fallbackModels[0]));
+      }
+      for (const resolved of [false, true]) {
+        value = { ...descriptor, languagePreference: { locale: '', resolved }, fallbackModels: [] };
+        assert.deepEqual((await game.avatar.getCurrentCharacter()).languagePreference, { locale: '', resolved });
+      }
+      value = descriptor;
+      assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor, 'old custom descriptors must remain valid');
+      for (const extra of [
+        { languagePreference: { locale: 'zh-TW', resolved: 'true' } },
+        { languagePreference: { locale: 'x'.repeat(33), resolved: true } },
+        { languagePreference: null }, { fallbackModels: Array(5).fill(descriptor.model) },
+        { fallbackModels: [{ type: 'unknown', path: '/model' }] },
+        { fallbackModels: [{ type: 'vrm', path: 'x'.repeat(2049) }] },
+      ]) {
+        value = { ...descriptor, ...extra };
+        await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
+      }
+    } finally { game.dispose(); }
+    assert.equal(env.timers.size, 0);
   }
 }
 
@@ -382,6 +498,8 @@ const watchdog = setTimeout(() => { throw new Error('Avatar discovery test did n
   if (!process.argv.includes('--bodies-only')) {
     if (!process.argv.includes('--queries-only')) await factories();
     if (!process.argv.includes('--factories-only')) await queries();
+    if (!process.argv.includes('--factories-only')) await characterBinding();
+    if (!process.argv.includes('--factories-only')) await characterMetadata();
   }
   if (!process.argv.includes('--queries-only') && !process.argv.includes('--factories-only')) await hostBodies();
   console.log('mini-game avatar discovery runtime test passed');

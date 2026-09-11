@@ -2181,6 +2181,8 @@
     const avatarQueryRequests = new Set();
     const avatarQueriesInFlight = new Set();
     let avatarQueryGeneration = {};
+    let characterBindingPending = false;
+    let characterBindingLocked = false;
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
@@ -2715,6 +2717,7 @@
     }
 
     function runtimeCapabilityPayload(payload) {
+      characterBindingLocked = true;
       const routeInstanceId = String(runtimeRouteInstanceId || '').trim();
       return Object.freeze({
         ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
@@ -3879,6 +3882,7 @@
         // fifth clear here is unreachable and would be an untestable guard.
         // If a new route-loss path is ever added, retire the generation THERE.
         const state = transport.resetRuntime({ newSession: resetOptions.newSession === true });
+        characterBindingLocked = false;
         memoryConsentEnabled = false;
         memoryConsentLocked = false;
         memoryConsentConfigured = false;
@@ -3898,8 +3902,33 @@
           routeInstanceId: String(runtimeRouteInstanceId || ''),
         });
       },
+      async bindCharacter(name, options = {}) {
+        const operation = 'runtime.bindCharacter';
+        requireCapability('runtime', operation);
+        const requested = name === undefined ? '' : avatarCharacterName(name);
+        if (characterBindingPending) fail('busy', 'Character binding is pending');
+        const canBind = () => runtimePhase === 'idle' && !runtimeRouteEstablished
+          && runtimeRouteInstanceIds.length === 0 && !characterBindingLocked;
+        if (!canBind()) fail('invalid_state', 'Bind before pregame requests; end/reset before changing character');
+        if (typeof transport.bindRuntimeCharacter !== 'function') fail('transport_unavailable', 'Character binding unavailable');
+        const generation = avatarQueryGeneration;
+        characterBindingPending = true;
+        try {
+          const value = await queryAvatar(operation, 'getAvatarCharacter', [requested], options, avatarCharacterDescriptor);
+          ensureActive(operation);
+          if (generation !== avatarQueryGeneration) fail('cancelled', 'Character binding belongs to an exited lifecycle');
+          if (options.signal?.aborted) fail('cancelled', 'Character binding cancelled');
+          if (!canBind()) fail('invalid_state', 'The runtime changed during character lookup');
+          if (!value || (requested && value.name !== requested)) return null;
+          // No await between the final lifecycle check and the local host commit.
+          transport.bindRuntimeCharacter(value.name);
+          if (runtimeSession().characterName !== value.name) fail('invalid_response', 'Host did not bind the selected character');
+          return value;
+        } finally { characterBindingPending = false; }
+      },
       async start(payload = {}, requestOptions = {}) {
         requireCapability('runtime', 'runtime.start');
+        if (characterBindingPending) fail('busy', 'Character binding is pending');
         if (runtimePhase === 'starting' || runtimePhase === 'running' || runtimePhase === 'ending') {
           fail('busy', 'The runtime lifecycle is already active', { state: runtimePhase });
         }
@@ -5105,6 +5134,9 @@
         fail('transport_unavailable', 'The host speech output bridge is unavailable');
       }
       const request = normalizeSpeechRequest(requestInput);
+      // Capture ownership is constructed below, before the managed invocation.
+      // Do not let an asynchronous character lookup rebind in that gap.
+      characterBindingLocked = true;
       const speechMetadata = Object.freeze({
         ownerToken: { cancelled: false },
         priority: request.priority,
@@ -5457,7 +5489,24 @@
         }
         model = Object.freeze({ type: raw.type, path: raw.path.trim() });
       }
-      return Object.freeze({ name, model, rendererAvailable: Boolean(model && value.rendererAvailable === true) });
+      const metadata = {};
+      if (value.languagePreference !== undefined) {
+        const preference = value.languagePreference;
+        if (!plainObject(preference) || typeof preference.resolved !== 'boolean' || typeof preference.locale !== 'string'
+          || preference.locale.length > 32 || (preference.locale && !/^[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2}$/i.test(preference.locale))) {
+          fail('invalid_response', 'Invalid language preference');
+        }
+        metadata.languagePreference = Object.freeze({ locale: preference.resolved ? preference.locale : '', resolved: preference.resolved });
+      }
+      if (value.fallbackModels !== undefined) {
+        if (!Array.isArray(value.fallbackModels) || value.fallbackModels.length > 4) fail('invalid_response', 'Invalid fallback models');
+        metadata.fallbackModels = Object.freeze(value.fallbackModels.map(raw => {
+          if (!plainObject(raw) || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(raw.type)
+            || typeof raw.path !== 'string' || !raw.path.trim() || raw.path.length > 2048) fail('invalid_response', 'Invalid fallback model');
+          return Object.freeze({ type: raw.type, path: raw.path.trim() });
+        }));
+      }
+      return Object.freeze({ name, model, rendererAvailable: Boolean(model && value.rendererAvailable === true), ...metadata });
     }
 
     function cancelAvatarQueries(reason) {

@@ -21,6 +21,15 @@ for (const nonPlain of [[], new Date(), new Map(), () => ({}), sameShape]) {
 }
 // @ts-expect-error Serialized JSON is not an object payload.
 runtime.start('{"game_started":true}');
+runtime.bindCharacter();
+runtime.bindCharacter('Example', { signal: new AbortController().signal }).then(character => {
+  const locale: string | undefined = character?.languagePreference?.locale;
+  const resolved: boolean | undefined = character?.languagePreference?.resolved;
+  const fallback: Readonly<NekoMiniGame.AvatarModel> | undefined = character?.fallbackModels?.[0];
+  void [locale, resolved, fallback];
+});
+// @ts-expect-error Binding accepts a name, not a raw private character payload.
+runtime.bindCharacter({ lanlan_name: 'Example' });
 // @ts-expect-error Null is not an object payload.
 runtime.end(null);
 // @ts-expect-error Scalar callbacks must not satisfy the payload contract.

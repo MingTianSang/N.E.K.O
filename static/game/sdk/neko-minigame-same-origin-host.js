@@ -430,6 +430,7 @@
           || `${this.gameType}_${Date.now().toString(36)}_${randomIdSuffix(options.windowImpl || window)}`,
         lanlanName: '',
       };
+      this._characterBindingLocked = false;
       this._fetchImpl = options.fetchImpl || window.fetch.bind(window);
       this._navigator = options.navigatorImpl || window.navigator;
       this._window = options.windowImpl || window;
@@ -1190,6 +1191,7 @@
 
     resetSession({ newSession = false } = {}) {
       this._activeCommandRouteIdentity = null;
+      this._characterBindingLocked = false;
       if (newSession || !this._session.id) {
         this._cancelVoiceControlRequests('cancelled');
         // Same entropy as the constructor's generator: a reset that mints a
@@ -1221,6 +1223,7 @@
     }
 
     _trustedRuntimePayload(payload = {}, options = {}) {
+      this._characterBindingLocked = true;
       const source = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload
         : {};
@@ -1309,11 +1312,57 @@
       if (!data?.lanlan_name || (name && data.lanlan_name !== name)) return null;
       const type = data.model_type === 'live3d' ? data.live3d_sub_type : data.model_type;
       const path = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path }[type];
+      const fallbackModels = Object.entries({ live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path })
+        .filter(([candidate, candidatePath]) => candidatePath && !(candidate === type && candidatePath === path))
+        .map(([candidate, candidatePath]) => ({ type: candidate, path: candidatePath }));
       return {
         name: data.lanlan_name,
         model: path ? { type, path } : null,
         rendererAvailable: Boolean(path && ['live2d', 'vrm'].includes(type)),
+        languagePreference: { locale: data.language || '', resolved: data.language_preference_resolved === true },
+        fallbackModels,
       };
+    }
+
+    _avatarMetadata(value) {
+      const result = {};
+      if (value.languagePreference !== undefined) {
+        const preference = value.languagePreference;
+        if (!preference || typeof preference.resolved !== 'boolean' || typeof preference.locale !== 'string'
+          || preference.locale.length > 32 || (preference.locale && !/^[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2}$/i.test(preference.locale))) {
+          throw this._hostError('invalid_response', 'Invalid language preference');
+        }
+        result.languagePreference = Object.freeze({ locale: preference.resolved ? preference.locale : '', resolved: preference.resolved });
+      }
+      if (value.fallbackModels !== undefined) {
+        if (!Array.isArray(value.fallbackModels) || value.fallbackModels.length > 4) {
+          throw this._hostError('invalid_response', 'Invalid fallback models');
+        }
+        result.fallbackModels = Object.freeze(value.fallbackModels.map(model => {
+          if (!model || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
+            || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048) {
+            throw this._hostError('invalid_response', 'Invalid fallback model');
+          }
+          return Object.freeze({ type: model.type, path: model.path.trim() });
+        }));
+      }
+      return result;
+    }
+
+    // Synchronous local selection only. The SDK validates discovery and its
+    // lifecycle before this commit; no backend route or global character change.
+    bindRuntimeCharacter(name) {
+      this._requireGrantedCapability('runtime', 'runtime.bindCharacter');
+      this._requireGrantedCapability('avatar-renderer', 'runtime.bindCharacter');
+      if (this._disposed) throw this._hostError('disposed', 'Host disposed');
+      if (this._characterBindingLocked || this._activeCommandRouteIdentity) {
+        throw this._hostError('invalid_state', 'Bind the character before runtime requests');
+      }
+      if (typeof name !== 'string' || !name.trim() || name.length > 256 || Array.from(name).length > 128) {
+        throw this._hostError('invalid_request', 'Invalid character name');
+      }
+      this._session.lanlanName = name.trim();
+      return this.getRuntimeState();
     }
 
     async _readAvatarNames(options = {}) {
@@ -1388,6 +1437,7 @@
           name: characterName.trim(),
           model: model == null ? null : Object.freeze({ type: model.type, path: model.path.trim() }),
           rendererAvailable: Boolean(model && value.rendererAvailable === true),
+          ...this._avatarMetadata(value),
         });
       });
     }

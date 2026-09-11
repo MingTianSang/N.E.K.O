@@ -657,7 +657,18 @@ const selected = await game.avatar.getCharacter('Neko', { signal });
 const names = await game.avatar.listCharacters({ signal });
 ```
 
-Descriptors contain only `{ name, model: { type, path } | null, rendererAvailable }`.
+Descriptors contain `{ name, model: { type, path } | null, rendererAvailable }`
+and optional `languagePreference: { locale, resolved }` and `fallbackModels`.
+The standard source supplies both additions; older custom providers may omit
+them. `resolved: true` with an empty locale means the stored preference was read
+successfully and is unset; `resolved: false` (or an absent field) means unavailable,
+not permission to overwrite the stored preference with a guessed locale.
+Locale variants such as `zh-TW` are preserved. `fallbackModels` contains at most
+four `{ type, path }` alternatives from the host's canonical model resolution,
+excluding the primary model in the standard source. It is not a hard-coded
+default character and does not guarantee renderer support. Select an alternative
+supported by your registered renderer, or show an unavailable state if none exists.
+No automatic renderer retry or global model preference write is performed.
 Names are limited to 128 Unicode code points, paths to 2048, and lists to 256 names. Unknown
 explicit names return `null`, not the current character. The standard host reads
 the existing role registry and canonical model-path endpoints; it keeps no role
@@ -678,6 +689,34 @@ Timers and signal listeners are released; a provider ignoring abort retains its
 bounded slot until it settles, preventing retries from accumulating abandoned
 work. `pendingQueryCount` includes those still-settling transport calls. Discovery
 is available before start, and after exit requires a new/reset lifecycle.
+
+Discovery is read-only: looking at another character does **not** change the
+game's runtime/voice identity. Bind explicitly before any pregame context,
+quick-lines, preload, speech or route request:
+
+```js
+const character = await game.runtime.bindCharacter(undefined, { signal }); // current role
+// Or bindCharacter(selectedName, { signal }) for an explicit selection.
+if (!character) throw new Error('Selected character is unavailable');
+if (!character.model || !character.rendererAvailable) {
+  throw new Error('Choose a supported canonical fallback or show model unavailable');
+}
+await game.avatar.mount({ slot: 'opponent', characterName: character.name,
+  model: character.model, viewport: { mode: 'container' } });
+// Existing pregame operations and runtime.start() now use this same identity.
+```
+
+Binding requires `runtime` and `avatar-renderer`, returns the validated descriptor,
+and only changes this host's local session selection. It does not start a backend
+route, capture voice, or switch the main page's character. Omitted name resolves
+the current character; an unknown explicit name returns `null` without mutation.
+Bind only in `idle`, before character-scoped requests; after such requests or an
+active route, end/reset first. While a binding is pending, another bind/start is
+`busy`. Cancellation, reset, end, page exit, disposal or a changed lifecycle discard
+late selection results. Binding uses the same bounded discovery request slots and
+deadlines. Custom transports may optionally implement synchronous
+`bindRuntimeCharacter(name)` and update `getRuntimeState()` atomically; absent
+support reports `transport_unavailable`. Existing legacy adapters remain compatible.
 
 The public game mounts an Avatar through `game.avatar`:
 

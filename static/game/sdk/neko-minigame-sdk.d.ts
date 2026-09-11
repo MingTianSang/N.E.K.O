@@ -200,6 +200,8 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
+    /** Resolve and bind locally before pregame requests. Omit name for current character. */
+    bindCharacter(name?: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
     /**
      * Accepts object interfaces without index signatures. Static checking only
      * excludes primitives; runtime requires a bounded plain JSON object and rejects
@@ -597,6 +599,10 @@ declare namespace NekoMiniGame {
     readonly name: string;
     readonly model: Readonly<AvatarModel> | null;
     readonly rendererAvailable: boolean;
+    /** Empty locale + resolved=true means explicitly no stored preference; false means unavailable. */
+    readonly languagePreference?: Readonly<{ locale: string; resolved: boolean }>;
+    /** Canonical host-supplied alternatives, at most four. Never invented by the game. */
+    readonly fallbackModels?: readonly Readonly<AvatarModel>[];
   }
   interface AvatarMountConfiguration {
     slot: string;
