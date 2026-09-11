@@ -267,6 +267,9 @@
         const value = await response.json();
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         return value;
+      } catch (cause) {
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        throw cause;
       } finally {
         windowImpl.clearTimeout(timer);
         for (const signal of signals) signal.removeEventListener('abort', abort);

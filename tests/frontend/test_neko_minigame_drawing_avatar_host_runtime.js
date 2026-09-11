@@ -422,13 +422,16 @@ async function main() {
     }
     async loadAnimation(animation) {
       calls.push(['mmd-idle-load', animation]);
-      const failure = animation === '/static/mmd/animation/wait03.vmd' ? null : nextMmdAnimationFailure;
-      if (animation !== '/static/mmd/animation/wait03.vmd') nextMmdAnimationFailure = null;
-      const gate = nextMmdAnimationGate;
-      nextMmdAnimationGate = null;
-      const notify = onNextMmdAnimationLoad;
-      onNextMmdAnimationLoad = null;
-      notify?.();
+      const isReference = animation === '/static/mmd/animation/wait03.vmd';
+      const failure = isReference ? null : nextMmdAnimationFailure;
+      const gate = isReference ? null : nextMmdAnimationGate;
+      const notify = isReference ? null : onNextMmdAnimationLoad;
+      if (!isReference) {
+        nextMmdAnimationFailure = null;
+        nextMmdAnimationGate = null;
+        onNextMmdAnimationLoad = null;
+      }
+      notify?.(animation);
       if (gate) await gate;
       if (failure) throw failure;
     }
@@ -696,6 +699,34 @@ async function main() {
   vm.runInContext(fs.readFileSync(drawingPath, 'utf8'), context, { filename: drawingPath });
   const sdkPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-sdk.js');
   vm.runInContext(fs.readFileSync(sdkPath, 'utf8'), context, { filename: sdkPath });
+
+  // Exercise both rejecting await boundaries, not only a fulfilled aborted fetch.
+  for (const stage of ['fetch', 'body', 'network']) {
+    let abortRequest;
+    let cleared = false;
+    const cause = new Error('request rejection');
+    cause.name = stage === 'network' ? 'TypeError' : 'AbortError';
+    const requestHost = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl: {
+        ...windowMock,
+        setTimeout(callback) { abortRequest = callback; return 1; },
+        clearTimeout() { cleared = true; },
+      },
+      fetchImpl: async () => {
+        if (stage !== 'body') {
+          if (stage !== 'network') abortRequest();
+          throw cause;
+        }
+        return { ok: true, json: async () => { abortRequest(); throw cause; } };
+      },
+    });
+    try {
+      const failure = await rejection(requestHost.listCharacters());
+      assert(stage === 'network' ? failure === cause : failure?.code === 'cancelled',
+        `${stage} rejection did not preserve the Avatar cancellation contract`);
+      assert(cleared, `${stage} rejection leaked its request timer`);
+    } finally { await requestHost.dispose(); }
+  }
 
   const host = windowMock.NekoMiniGameDrawingAvatarHost.create({
     windowImpl: windowMock,
@@ -1229,10 +1260,12 @@ async function main() {
   nextMmdAnimationGate = new Promise((resolve) => { releaseMmdAnimation = resolve; });
   const mmdAnimationStarted = new Promise((resolve) => { onNextMmdAnimationLoad = resolve; });
   const staleMmdReload = staleMmd.setModel(mmdDescriptor.model);
-  await withTimeout(
+  const pausedMmdAnimation = await withTimeout(
     mmdAnimationStarted,
     'timed out waiting for the stale MMD idle motion load to start',
   );
+  assert(pausedMmdAnimation !== '/static/mmd/animation/wait03.vmd',
+    'reference animation consumed the configured-idle cancellation probe');
   const staleMotionDisposalsBefore = calls.filter(
     (entry) => entry[0] === 'mmd-dispose-start'
   ).length;
