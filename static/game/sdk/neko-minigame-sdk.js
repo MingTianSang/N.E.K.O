@@ -5608,7 +5608,7 @@
       }
       if (value.fallbackModels !== undefined) {
         if (!Array.isArray(value.fallbackModels) || value.fallbackModels.length > 4) fail('invalid_response', 'Invalid fallback models');
-        metadata.fallbackModels = Object.freeze(value.fallbackModels.map(raw => {
+        metadata.fallbackModels = Object.freeze(Array.from(value.fallbackModels, raw => {
           if (!plainObject(raw) || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(raw.type)
             || typeof raw.path !== 'string' || !raw.path.trim() || raw.path.length > 2048) fail('invalid_response', 'Invalid fallback model');
           return Object.freeze({ type: raw.type, path: raw.path.trim() });
