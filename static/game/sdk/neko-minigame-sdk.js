@@ -5738,10 +5738,16 @@
           let reason = '';
           let rawSettled = false;
           let callerSettled = false;
+          let released = false;
           const release = () => {
-            if (!rawSettled || !callerSettled) return;
+            if (!rawSettled || !callerSettled || released) return;
+            released = true;
             controllerState.manualSpeakingPending = false;
             controllerState.speechIdleResolve = null;
+            // A late stop may have changed the renderer after timeout restored
+            // manual ownership. Reapply that intent once, using the existing
+            // bounded operation and its current lifecycle guards.
+            if (reason === 'timeout' && !active) restoreManualSpeaking();
             syncAvatarSpeech();
           };
           let cancel;
