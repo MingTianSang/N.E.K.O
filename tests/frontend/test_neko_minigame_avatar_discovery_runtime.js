@@ -553,6 +553,24 @@ async function characterBinding() {
 }
 
 async function characterMetadata() {
+  for (const type of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const env = await environment(({characterSource}) => ({
+      mount() {}, dispose() {},
+      async getCharacter(name, options) {
+        const value = await characterSource.getCharacter(name, options);
+        return value && {...value, rendererAvailable: ['live2d','vrm'].includes(value.model?.type)};
+      },
+    }), async () => response({lanlan_name:'Neko', model_type:type, [`${type}_path`]:'/model'}));
+    const host = env.host(); const game = await env.game(host);
+    try {
+      for (const value of [await game.avatar.getCharacter('Neko'), await game.avatar.getCurrentCharacter()]) {
+        assert.equal(value.model.type, type);
+        assert.equal(value.rendererAvailable, ['live2d','vrm'].includes(type),
+          'provider discovery availability was overwritten by HTTP fallback');
+      }
+    } finally { game.dispose(); }
+    assert.equal(env.timers.size, 0);
+  }
   for (const customTransport of [false, true]) {
     let value;
     const env = await environment(() => ({ mount() {}, dispose() {}, getCurrentCharacter: async () => value }));
