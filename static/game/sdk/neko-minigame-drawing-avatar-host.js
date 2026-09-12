@@ -447,18 +447,24 @@
         : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
-      const configuredMmd = cleanString(configured.paths.mmd).replace(/\\/g, '/');
-      if (configuredMmd && !/^(https?:\/\/|\/)/.test(configuredMmd)) {
+      const relativeTypes = ['vrm', 'mmd'].filter((type) => {
+        const path = cleanString(configured.paths[type]).replace(/\\/g, '/');
+        return path && !/^(https?:\/\/|\/)/.test(path);
+      });
+      if (relativeTypes.length) {
         // The browser cannot decide which filesystem owns a relative model.
         // Use the existing game-independent character projection, not a
-        // guessed static prefix, for both primary and fallback MMD models.
+        // guessed static prefix, for both primary and fallback 3D models.
         const resolved = await json(
           `/api/game/sdk-avatar/character?lanlan_name=${encodeURIComponent(requested)}`, requestOptions,
         );
         if (resolved?.lanlan_name !== requested) fail('invalid_response', 'Avatar character identity changed');
-        const path = cleanString(resolved?.mmd_path);
-        configured.paths = Object.freeze({ ...configured.paths, mmd: path });
-        if (configured.type === 'mmd') configured.path = path;
+        const paths = { ...configured.paths };
+        for (const type of relativeTypes) {
+          paths[type] = cleanString(resolved?.[`${type}_path`]);
+          if (configured.type === type) configured.path = paths[type];
+        }
+        configured.paths = Object.freeze(paths);
       }
       if (configured.type === 'live2d' || configured.paths.live2d) {
         // An optional fallback is only advertised when canonical resolution
