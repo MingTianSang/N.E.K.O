@@ -927,7 +927,12 @@ route, capture voice, or switch the main page's character. Omitted name resolves
 the current character; an unknown explicit name returns `null` without mutation.
 Bind only in `idle`, before character-scoped requests and Avatar mounting; after
 such requests or an active route, end/reset first. Dispose existing Avatars and
-wait for pending mounts before rebinding. While a binding is pending, another
+wait for pending mounts before rebinding. `reset()` cannot terminate a custom
+host's unresolved `mountAvatar()` promise. Such raw mounts retain the existing
+eight-renderer/pending-mount capacity until actual settlement; fix/cancel the
+underlying host operation (or dispose the client and host) before recovering.
+Do not repeatedly recreate clients around a provider that ignores disposal.
+While a binding is pending, another
 bind/start/mount is `busy`. Cancellation, reset, end, page exit, disposal or a changed lifecycle discard
 late selection results. Binding uses the same bounded discovery request slots and
 deadlines. Custom transports may optionally implement synchronous
