@@ -1029,6 +1029,43 @@ async function main() {
   }
   calls.length = 0;
 
+  for (const stage of ['already-failed', 'event', 'ready-after-failure', 'dispose']) {
+    const timers = new Map();
+    let nextTimer = 0;
+    const localWindow = {...windowMock,
+      mmdModuleLoaded: stage === 'ready-after-failure',
+      _mmdModulesFailed: stage.includes('failure') || stage === 'already-failed' ? ['mmd-core.js'] : null,
+      setTimeout(callback, delay) { timers.set(++nextTimer, {callback, delay}); return nextTimer; },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const probe = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl:localWindow, fetchImpl, avatarRuntime:windowMock.NekoMiniGameAvatarHost,
+    });
+    let mounted;
+    let settled = false;
+    let result;
+    try {
+      const descriptor = await probe.getCharacter('MMD Neko');
+      result = probe.mount(mountConfig('MMD Neko', descriptor.model)).then(
+        value => { settled = true; mounted = value; return null; },
+        error => { settled = true; return error; },
+      );
+      for (let i = 0; i < 30 && !settled && !timers.size; i++) await new Promise(setImmediate);
+      if (stage === 'event') {
+        localWindow._mmdModulesFailed = ['mmd-core.js'];
+        for (const handler of [...(listeners.get('mmd-modules-failed') || [])]) handler();
+      } else if (stage === 'dispose') await probe.dispose();
+      if (stage === 'already-failed') assert(settled && timers.size === 0,
+        'mount missed the persistent MMD failure and waited for another event');
+      const error = await withTimeout(result, `MMD ${stage} did not settle`);
+      assert(stage === 'ready-after-failure' ? mounted && !error : error && !mounted,
+        `MMD ${stage} lost failure/readiness/cancellation priority`);
+      assert(timers.size === 0 && !listeners.get('mmd-modules-ready')?.size
+        && !listeners.get('mmd-modules-failed')?.size, `MMD ${stage} retained runtime wait resources`);
+    } finally { await mounted?.dispose(); await probe.dispose(); await result; }
+  }
+  calls.length = 0;
+
   const host = windowMock.NekoMiniGameDrawingAvatarHost.create({
     windowImpl: windowMock,
     documentImpl: windowMock.document,

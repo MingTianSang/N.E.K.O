@@ -494,13 +494,17 @@
       });
     }
 
-    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal, timeoutMs = 10000) {
+    function waitForRuntime(predicate, readyEvent, failedEvent, label, signal,
+      timeoutMs = 10000, hasFailed = () => false) {
       if (signal?.aborted) {
         return Promise.reject(new DrawingAvatarHostError(
           'disposed', `${label} renderer load was cancelled`, { type: label },
         ));
       }
       if (predicate()) return Promise.resolve();
+      if (hasFailed()) return Promise.reject(new DrawingAvatarHostError(
+        'renderer_unavailable', `${label} failed to initialize`, { type: label },
+      ));
       return new Promise((resolve, reject) => {
         let settled = false;
         let timer = null;
@@ -532,6 +536,11 @@
             'renderer_unavailable', `${label} timed out`, { type: label },
           ));
         }, timeoutMs);
+        // An earlier loader failure may predate this mount's subscription.
+        // Readiness wins if a later successful attempt left an old marker.
+        if (signal?.aborted) onAbort();
+        else if (predicate()) finish();
+        else if (hasFailed()) onFailed();
       });
     }
 
@@ -1017,6 +1026,7 @@
         await waitForRuntime(
           () => Boolean(windowImpl.mmdModuleLoaded) && typeof windowImpl.MMDManager === 'function',
           'mmd-modules-ready', 'mmd-modules-failed', 'mmd', signal,
+          10000, () => Boolean(windowImpl._mmdModulesFailed),
         );
         ensureLoadActive(generation);
         const manager = new windowImpl.MMDManager();
