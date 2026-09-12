@@ -953,6 +953,57 @@ async function main() {
     } finally { await requestHost.dispose(); }
   }
 
+  // A mount lifetime signal is not a query deadline. Both mandatory model
+  // JSON and optional MMD settings must cancel a stalled response body.
+  for (const name of ['Live Neko', 'MMD Neko']) {
+    const timers = new Map();
+    let nextTimer = 0;
+    let response;
+    let cancelled = 0;
+    const localWindow = { ...windowMock,
+      setTimeout(callback, delay) { timers.set(++nextTimer, {callback, delay}); return nextTimer; },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const probe = windowMock.NekoMiniGameDrawingAvatarHost.create({
+      windowImpl: localWindow,
+      fetchImpl: async (url, options) => {
+        assert(!Object.hasOwn(options, 'managedDeadline'), 'private deadline option leaked to fetch');
+        if (url === '/resolved/live.model3.json' || url.endsWith('/mmd_settings')) {
+          response = new Response(new ReadableStream({
+            start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
+            cancel() { cancelled += 1; },
+          }));
+          return response;
+        }
+        return fetchImpl(url, options);
+      },
+      avatarRuntime: windowMock.NekoMiniGameAvatarHost,
+    });
+    let mounted;
+    let result;
+    try {
+      const descriptor = await probe.getCharacter(name);
+      result = probe.mount(mountConfig(name, descriptor.model)).then(
+        value => { mounted = value; return null; }, error => error,
+      );
+      for (let i = 0; i < 30 && !response?.body.locked; i++) await new Promise(setImmediate);
+      assert(response?.body.locked, `${name}: mount did not reach JSON stream`);
+      assert(timers.size === 1 && [...timers.values()][0].delay === 10000,
+        `${name}: mount JSON lost its local deadline`);
+      [...timers.values()][0].callback();
+      const error = await withTimeout(result, `${name}: mount JSON timeout did not settle`);
+      assert(name === 'Live Neko' ? error && !mounted : !error && mounted,
+        `${name}: mandatory/optional JSON failure handling changed`);
+      assert(cancelled === 1 && !response.body.locked && timers.size === 0,
+        `${name}: timed-out JSON retained body or timer`);
+    } finally {
+      await mounted?.dispose();
+      await probe.dispose();
+      await result;
+    }
+  }
+  calls.length = 0;
+
   const host = windowMock.NekoMiniGameDrawingAvatarHost.create({
     windowImpl: windowMock,
     documentImpl: windowMock.document,

@@ -282,7 +282,7 @@
       // until actual settlement so repeated timeouts cannot accumulate work.
       const raw = Promise.resolve().then(() => {
         if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
-        return invoke({ signal: controller.signal });
+        return invoke({ signal: controller.signal, managedDeadline: true });
       }).finally(() => queries.delete(controller));
       try {
         const result = await Promise.race([raw, cancelled]);
@@ -296,6 +296,7 @@
     }
 
     async function json(url, requestOptions = {}) {
+      const { managedDeadline = false, ...fetchOptions } = requestOptions;
       const controller = new (windowImpl.AbortController || AbortController)();
       const signals = [lifetime.signal, requestOptions.signal].filter(Boolean);
       const abort = () => controller.abort();
@@ -303,13 +304,13 @@
         if (signal.aborted) abort();
         else signal.addEventListener('abort', abort, { once: true });
       }
-      // Managed queries and mounts already own a total deadline. A second
-      // per-fetch timer would silently shorten that caller's 10–30s budget.
-      const timer = requestOptions.signal ? null : windowImpl.setTimeout(abort, 10000);
+      // Only query() owns a total deadline. Mount signals represent disposal,
+      // so their model/settings reads still need a local network deadline.
+      const timer = managedDeadline ? null : windowImpl.setTimeout(abort, 10000);
       try {
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         const response = await fetchImpl(url, {
-          cache: 'no-store', credentials: 'same-origin', ...requestOptions, signal: controller.signal,
+          cache: 'no-store', credentials: 'same-origin', ...fetchOptions, signal: controller.signal,
         });
         const cancelBody = () => {
           try { response?.body?.cancel?.()?.catch?.(() => {}); } catch (_) { /* already closed */ }
