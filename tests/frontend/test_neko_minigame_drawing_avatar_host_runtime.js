@@ -30,11 +30,7 @@ async function withTimeout(promise, message, timeoutMs = 2000) {
 }
 
 function jsonResponse(data, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async json() { return data; },
-  };
+  return new Response(JSON.stringify(data), {status, headers:{'Content-Type':'application/json'}});
 }
 
 function element(width = 420, height = 360) {
@@ -624,7 +620,7 @@ async function main() {
     if (target === '/api/characters/current_catgirl') return jsonResponse({ current_catgirl: 'Live Neko' });
     if (target.includes('/api/characters/current_live2d_model?')) {
       if (canonicalFailure === 'network') throw new Error('canonical unavailable');
-      if (canonicalFailure === 'json') return {ok:true, json:async () => { throw new SyntaxError('bad JSON'); }};
+      if (canonicalFailure === 'json') return new Response('{');
       if (canonicalFailure === 'not-found') return jsonResponse({success:false});
       return jsonResponse({ success: true, model_info: { path: '/resolved/live.model3.json' } });
     }
@@ -697,6 +693,7 @@ async function main() {
     cancelAnimationFrame(id) { frames.delete(id); },
   };
   const context = vm.createContext({
+    TextDecoder,
     window: windowMock,
     console: windowMock.console,
     setTimeout,
@@ -727,10 +724,17 @@ async function main() {
   }
   const queryCatalog = { 猫娘: { Example: { model_type: 'live2d', model_path: '/example.model3.json' } } };
   {
+    const {probe, timers} = queryProbe(async () => jsonResponse({...queryCatalog, padding:'x'.repeat(3*1024*1024)}));
+    try {
+      assert((await probe.listCharacters())[0] === 'Example', 'catalog inherited a 2 MiB image/command limit');
+      assert(timers.size === 0, 'large valid catalog retained a timer');
+    } finally { await probe.dispose(); }
+  }
+  {
     let finishBody;
-    const { probe, timers } = queryProbe(async () => ({ ok: true, json: () => new Promise(resolve => {
-      finishBody = () => resolve(queryCatalog);
-    }) }));
+    const { probe, timers } = queryProbe(async () => new Response(new ReadableStream({start(controller) {
+      finishBody = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify(queryCatalog))); controller.close(); };
+    }})));
     const pending = probe.listCharacters({ timeoutMs: 30000 });
     pending.catch(() => {});
     try {
@@ -741,7 +745,38 @@ async function main() {
       finishBody();
       assert((await pending)[0] === 'Example', 'valid late response body was cancelled at 10s');
       assert(timers.size === 0, 'completed body retained deadline');
-    } finally { finishBody?.(); await probe.dispose(); }
+    } finally { await probe.dispose(); }
+  }
+  for (const action of ['large', 'header', 'abort', 'timeout', 'dispose', 'read-error', 'late']) {
+    let cancelled = 0, response, release;
+    const owner = new AbortController();
+    let first = true;
+    const {probe, timers} = queryProbe(async () => {
+      if (!first) return jsonResponse(queryCatalog);
+      first = false;
+      response = new Response(new ReadableStream({start(controller) {
+        if (action === 'large') controller.enqueue(new Uint8Array(16*1024*1024+1));
+        else controller.enqueue(new TextEncoder().encode('{'));
+      }, pull() { if (action === 'read-error') throw new Error('broken reader'); },
+      cancel() { cancelled++; return new Promise(() => {}); }}),
+      {headers: action === 'header' ? {'Content-Length':String(16*1024*1024+1)} : {}});
+      if (action === 'late') await new Promise(resolve => { release=resolve; });
+      return response;
+    });
+    const pending = rejection(probe.listCharacters({signal:owner.signal,timeoutMs:31}));
+    try {
+      await new Promise(setImmediate);
+      if (action === 'abort' || action === 'late') owner.abort();
+      if (action === 'timeout') for (const timer of [...timers.values()]) timer.callback();
+      if (action === 'dispose') await probe.dispose();
+      release?.();
+      assert(await withTimeout(pending, `${action}: response did not terminate`));
+      await new Promise(setImmediate);
+      assert(!response.body.locked, `${action}: reader lock retained`);
+      if (action !== 'read-error') assert(cancelled === 1, `${action}: response body not cancelled`);
+      assert(timers.size === 0, `${action}: timer retained`);
+      if (action !== 'dispose') assert((await probe.listCharacters())[0] === 'Example', 'query slot retained');
+    } finally { release?.(); await probe.dispose(); }
   }
   for (const stage of ['current', 'catalog', 'canonical', 'mmd', 'fallback']) {
     const owner = new AbortController();
@@ -907,7 +942,7 @@ async function main() {
           if (stage !== 'network') abortRequest();
           throw cause;
         }
-        return { ok: true, json: async () => { abortRequest(); throw cause; } };
+        return new Response(new ReadableStream({pull() { abortRequest(); throw cause; }}));
       },
     });
     try {
