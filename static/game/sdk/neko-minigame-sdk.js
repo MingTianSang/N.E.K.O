@@ -5805,7 +5805,7 @@
 
         function restoreManualSpeaking() {
           if (controllerState.manualSpeaking && !controllerState.disposed && !controllerState.paused
-            && !controllerState.manualSpeakingPending) {
+            && !controllerState.manualSpeakingPending && controllerState.modelChanging === 0) {
             // Optional motion must not replace a model/resume result or error.
             void updateManualSpeaking(true).catch(() => {});
           }
