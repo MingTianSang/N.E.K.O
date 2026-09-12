@@ -1164,7 +1164,14 @@
               : state.kind === 'mmd' ? state.manager?.animationModule : state.manager;
             const method = state.kind === 'pngtuber' ? 'setSpeaking' : 'startLipSync';
             if (typeof target?.[method] !== 'function') state.speaking = false;
-            else target[method](state.kind === 'pngtuber' ? true : speechAnalyser);
+            else {
+              try { target[method](state.kind === 'pngtuber' ? true : speechAnalyser); }
+              catch (error) {
+                stopSpeaking();
+                state.automaticSpeech = false;
+                throw error;
+              }
+            }
           }
           return state.speaking;
         },

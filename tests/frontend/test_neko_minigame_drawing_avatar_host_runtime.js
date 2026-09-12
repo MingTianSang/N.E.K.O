@@ -182,6 +182,7 @@ async function main() {
     'pngtuber-container': element(),
   };
   const calls = [];
+  let failSpeechStart = false;
   const analyser = {
     fftSize: 8,
     getByteTimeDomainData(data) { data.fill(144); },
@@ -365,7 +366,7 @@ async function main() {
     constructor() {
       this.currentModel = null;
       this.animation = {
-        startLipSync(value) { calls.push(['vrm-speaking', value === analyser]); },
+        startLipSync(value) { if (failSpeechStart) throw new Error('start failed'); calls.push(['vrm-speaking', value === analyser]); },
         stopLipSync() { calls.push(['vrm-stop-speaking']); },
       };
       this.expression = { setMood(mood) { calls.push(['vrm-emotion', mood]); } };
@@ -400,7 +401,7 @@ async function main() {
       this.enablePhysics = true;
       this.physicsStrength = 1.0;
       this.animationModule = {
-        startLipSync(value) { calls.push(['mmd-speaking', value === analyser]); },
+        startLipSync(value) { if (failSpeechStart) throw new Error('start failed'); calls.push(['mmd-speaking', value === analyser]); },
         stopLipSync() { calls.push(['mmd-stop-speaking']); },
       };
     }
@@ -462,7 +463,7 @@ async function main() {
       this.config = config;
       calls.push(['pngtuber-model', config.idle_image, config.mirror]);
     }
-    setSpeaking(active) { calls.push(['pngtuber-speaking', active]); }
+    setSpeaking(active) { if (active && failSpeechStart) throw new Error('start failed'); calls.push(['pngtuber-speaking', active]); }
     setState(name) { calls.push(['pngtuber-emotion', name]); }
     pauseRendering() { calls.push(['pngtuber-pause']); }
     resumeRendering() { calls.push(['pngtuber-resume']); }
@@ -1144,6 +1145,12 @@ async function main() {
     const remoteFrame = { active: true, mouthFrame: {
       bins: Array(128).fill(110), sampleRate: 12000, rms: 0.2,
     } };
+    if (expectedType !== 'live2d') {
+      failSpeechStart = true;
+      assert(await rejection(controller.setSpeechPlayback(remoteFrame)), 'start failure was swallowed');
+      failSpeechStart = false;
+      assert(!controller.getState().speaking, `${expectedType}: failed start retained speaking`);
+    }
     await controller.setSpeechPlayback(remoteFrame);
     assert(controller.getState().speaking === true, `${expectedType} automatic speech did not start`);
     const starts = calls.filter(entry => entry[0] === `${expectedType}-speaking`).length;
