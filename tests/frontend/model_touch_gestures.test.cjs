@@ -49,11 +49,11 @@ function load(harness, filename, extra = {}) {
     return context;
 }
 
-function live2d() {
+function live2d(extra = {}) {
     const h = dom();
     load(h, 'static/avatar/avatar-touch-gestures.js');
     class Live2DManager {}
-    const context = load(h, 'static/live2d/live2d-interaction.js', { Live2DManager });
+    const context = load(h, 'static/live2d/live2d-interaction.js', { Live2DManager, ...extra });
     // Keep the real event handlers and coordinate conversion; exclude unrelated
     // peek presentation and persistence side effects from this gesture fixture.
     vm.runInContext('clearLive2DPeek = () => {};', context);
@@ -106,6 +106,55 @@ test('Live2D pinch keeps its midpoint anchor and resumes one-finger drag without
     assert.equal(h.saved(), 1);
     assert.equal(h.buttonsDisabled(), false);
     assert.equal(h.captured.size, 0);
+});
+
+test('Live2D pinch supersedes an active snap before capturing its anchor', async () => {
+    const frames = [];
+    const h = live2d({ requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+        cancelAnimationFrame() {}, performance: { now: () => 0 } });
+    h.manager._live2DDragGeneration = 4;
+    const snap = h.manager._performSnapAnimation(h.model,
+        { startX: 100, startY: 100, targetX: 400, targetY: 300 });
+    frames.shift()(100);
+    const startX = h.model.x;
+    h.canvas.fire('pointerdown', pointer(1, startX + 100));
+    h.canvas.fire('pointerdown', pointer(2, startX + 200));
+    assert.equal(h.manager._live2DDragGeneration, 5);
+    assert.equal(h.manager._isSnapping, false);
+    h.document.fire('pointermove', pointer(2, startX + 250));
+    const anchor = { x: h.model.x, y: h.model.y };
+    frames.shift()(300);
+    assert.equal(await snap, false);
+    assert.deepEqual({ x: h.model.x, y: h.model.y }, anchor, 'stale snap cannot overwrite the pinch');
+    h.document.fire('pointerup', pointer(2, startX + 250));
+    h.document.fire('pointerup', pointer(1, startX + 100));
+    await new Promise(setImmediate);
+    assert.equal(h.saved(), 1);
+});
+
+test('host-owned Live2D dragging permits pinch scaling without competing position writes', async () => {
+    const h = live2d();
+    let hostOwns = true;
+    h.window.__nekoNiriPetPhysicalCrop = { hostModelDragOwnershipVersion: 1,
+        isHostModelDragActive: () => hostOwns };
+    h.canvas.fire('pointerdown', pointer(1, 200));
+    h.document.fire('pointermove', pointer(1, 220));
+    assert.equal(h.model.x, 100, 'single-finger position belongs to the host');
+    h.canvas.fire('pointerdown', pointer(2, 320));
+    h.document.fire('pointermove', pointer(2, 370));
+    assert.equal(h.model.scale.x, 1.5);
+    assert.equal(h.model.x, 100, 'pinch cannot overwrite the host position');
+    h.document.fire('pointerup', pointer(2, 370));
+    h.document.fire('pointerup', pointer(1, 220));
+    await new Promise(setImmediate);
+    assert.equal(h.saved(), 0, 'the host owns terminal settlement');
+    assert.equal(h.buttonsDisabled(), false);
+    assert.equal(h.captured.size, 0);
+    hostOwns = false;
+    h.canvas.fire('pointerdown', pointer(1, 200));
+    h.document.fire('pointermove', pointer(1, 220));
+    assert.equal(h.model.x, 120, 'ordinary dragging resumes once host ownership ends');
+    h.manager._touchGestures.dispose();
 });
 
 test('cancellation, lost capture, locking and disposal clear every touch and never save a cancelled pinch', () => {

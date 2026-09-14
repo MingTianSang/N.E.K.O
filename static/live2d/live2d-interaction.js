@@ -2354,8 +2354,7 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
         enabled: () => !this.isLocked && this._isModelReadyForInteraction
             && this.currentModel === model
             && !document.body?.classList.contains('yui-guide-home-ui-suppressed')
-            && !document.body?.classList.contains('yui-taking-over')
-            && !isLive2DHostModelDragActive(),
+            && !document.body?.classList.contains('yui-taking-over'),
         hitTest: event => {
             const point = getLive2DRendererPointer(event, this);
             return !!point && model.containsPoint(point);
@@ -2367,6 +2366,13 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
                 if (drag) drag.start(points[0]);
             } else {
                 if (this.isLive2DPeekActive()) return;
+                // A pinch supersedes pending drag settlement just like a pan.
+                // Invalidate the old snap before capturing the new anchor.
+                this._live2DDragGeneration = (Number(this._live2DDragGeneration) || 0) + 1;
+                if (this._live2DActiveSnapAnimation) {
+                    this._live2DActiveSnapAnimation = null;
+                    this._isSnapping = false;
+                }
                 const center = window.NekoModelTouchGestures.midpoint(points);
                 const point = getLive2DRendererPointer(center, this);
                 pinch = { scale: model.scale.x, local: getLive2DModelLocalGrabPoint(model, point) };
@@ -2379,7 +2385,10 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
             } else if (pinch?.local) {
                 if (this.isLive2DPeekActive()) { pinch = null; return; }
                 model.scale.set(Math.max(SCALE_LIMITS.MIN, Math.min(SCALE_LIMITS.MAX, pinch.scale * gesture.ratio)));
-                placeLive2DGrabPointAtPointer(model, pinch.local, getLive2DRendererPointer(gesture.center, this));
+                // Host ownership excludes local position writes, not scaling.
+                if (!isLive2DHostModelDragActive()) {
+                    placeLive2DGrabPointAtPointer(model, pinch.local, getLive2DRendererPointer(gesture.center, this));
+                }
                 this.boostLinuxX11InteractiveFPS?.(1400);
             }
         },
