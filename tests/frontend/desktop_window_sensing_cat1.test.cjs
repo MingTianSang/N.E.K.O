@@ -655,6 +655,13 @@ test('shared scenes preserve only opaque keys and geometry, including background
   runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null,
     windows: [{ key: 'window-2', kind: 'app', rect: { ...rect, x: 400 }, collisionOnly: false }] });
   assert.notEqual(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows[0].collisionOnly, true);
-  runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null, windows: {} });
-  assert.deepEqual(plain(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows), []);
+  for (const windows of [undefined, null, {}, false, 'invalid']) {
+    runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null, windows });
+    const current = runtime.window.nekoDesktopWindowSensingContext.getCurrent();
+    assert.equal(Object.hasOwn(current, 'windows'), false, 'malformed scenes preserve the legacy rect fallback');
+    assert.deepEqual(plain(current.rect), rect);
+  }
+  runtime.publishChanged({ status: 'current', sessionId: 'session-1', rect, changes: [], movement: null, windows: [] });
+  assert.deepEqual(plain(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows), [],
+    'an explicit empty scene must not resurrect the legacy container');
 });

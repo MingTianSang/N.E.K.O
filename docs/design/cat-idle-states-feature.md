@@ -257,7 +257,7 @@ compact、mirror 与 idle-dock 都不是 Cat Mind 主动动作，也不允许 Ca
 唯一数据链如下：
 
 ```text
-N.E.K.O-PC main（约 16ms 串行读取下一轮）
+N.E.K.O-PC main（约 16ms 串行更新；静止时原生窗口列表约 200ms 读取一次）
   -> IPC / preload bridge
   -> app-desktop-window-sensing.js（唯一猫形态 session owner，CAT1/CAT2/CAT3 共用）
   -> nekoDesktopWindowSensingContext（只读 current + subscribe，包含窗口列表）
@@ -267,11 +267,11 @@ N.E.K.O-PC main（约 16ms 串行读取下一轮）
        -> door walk（只由既有毛线球 walk 查询 current）
 ```
 
-`16ms` 是上一轮读取完成后安排下一轮的间隔，不是 `setInterval`，也不保证每次 native 读取一定在 16ms 内完成。结果统一带 `sessionId + revision`，状态为 `current / changed / unavailable`；窗口切换通过 `identity`，移动与缩放分别通过 `position / size` 表达。CAT1/CAT2/CAT3 切换保留会话与重力；退出猫形态、goodbye 清理或页面卸载时 owner 先清共享结果再停止 session，旧 session 和迟到回调不能重新写入。睡眠期间共享窗口事实继续更新，但不发布 CAT1 observation。
+配套 PC PR #495 中，`16ms` 是上一轮更新完成后安排下一轮的间隔，不是 `setInterval`，也不保证每次 native 读取一定在 16ms 内完成。自身界面每轮按最新窗口位置投影；原生窗口列表在静止时缓存约 `200ms`，检测到鼠标移动或原生窗口变化时恢复逐轮读取，最后一次变化后保留 `400ms` 快速采样再降频。缓存投影不变时不重复发送 IPC；实际原生读取保留 `current` 样本，供重力计算采样间隔。结果统一带 `sessionId + revision`，状态为 `current / changed / unavailable`；窗口切换通过 `identity`，移动与缩放分别通过 `position / size` 表达。CAT1/CAT2/CAT3 切换保留会话与重力；退出猫形态、goodbye 清理或页面卸载时 owner 先清共享结果再停止 session，旧 session 和迟到回调不能重新写入，新 session 也不复用旧原生缓存。睡眠期间共享窗口事实继续更新，但不发布 CAT1 observation。
 
-Electron 正式入口每轮枚举全部可见窗口，保留从前到后的顺序，并筛选与模型所在屏幕相交的矩形，排除屏幕外的最小化窗口和桌面壁纸。`rect` 继续供原窗口演出使用；`windows` 为重力提供完整场景，每项只含会话内稳定的 `key`、`kind: external/app` 和 DIP `rect`。焦点切换不改变同一窗口的 key；窗口退出列表后重新出现会获得新 key。后台窗口单独移动时，即使主 `rect` 不变，也会发布完整列表。PID、native handle、标题和进程路径不通过 IPC 或 preload 对外暴露。
+Electron 正式入口按上述节奏枚举全部可见窗口，保留从前到后的顺序，并筛选与模型所在屏幕相交的矩形，排除屏幕外的最小化窗口和桌面壁纸。`rect` 继续供原窗口演出使用；`windows` 为重力提供完整场景，每项只含会话内稳定的 `key`、`kind: external/app` 和 DIP `rect`。焦点切换不改变同一窗口的 key；窗口退出列表后重新出现会获得新 key。后台窗口单独移动时，即使主 `rect` 不变，也会发布完整列表。PID、native handle、标题和进程路径不通过 IPC 或 preload 对外暴露。
 
-原生列表中的自身窗口按主进程、关联 Electron 进程和已知 native handle 排除，Pet 透明承载窗永不成为碰撞面。其他自身窗口只采用已有输入区域/精确 shape 上报的普通可见界面区域，以当前内容窗口坐标投影；没有可靠区域、隐藏、透明度为零、最小化载体、拖拽或捕获期间的整窗输入范围都不回退成整窗碰撞。保留区域间透明空隙及已知原生层叠顺序；原生列表未列出的置顶浮层按置顶界面处理。
+原生列表中的自身窗口按主进程、关联 Electron 进程和已知 native handle 排除，Pet 透明承载窗永不成为碰撞面。其他自身透明窗口只采用碰撞区域 bridge 上报的已绘制可见界面区域，以当前内容窗口坐标投影，包括聊天面板、字幕设置面板和 AgentHUD；没有可靠区域、隐藏、透明度为零、最小化载体、拖拽或捕获期间的整窗输入范围都不回退成整窗碰撞。已知不透明的 `settings` 窗口在尚无区域上报时采用内容边界；显式空上报仍保持为空。保留区域间透明空隙及已知原生层叠顺序；原生列表未列出的置顶浮层按置顶界面处理。
 
 上沿、探头、门式三个动作纳入现有 CAT1 独立动作占用与清理链。上沿和探头注册到桌面窗口候选协调层；门式由毛线球 journey 调用。各动作分别持有自己的目标、阶段、临时 class、RAF/timer 与恢复信息。重力直接订阅共享窗口事实，不注册候选、不占 independent-action 锁、不接管素材；动作的位置更新通过共享物理约束，playground 的猫 body 委托同一物理时钟积分。
 

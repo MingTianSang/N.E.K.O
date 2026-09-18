@@ -131,7 +131,7 @@
             changes: Object.freeze(changes),
             movement: movement ? Object.freeze(movement) : null,
             rect: Object.freeze(rect),
-            ...(value.windows !== undefined ? { windows: readWindowScene(value.windows) } : {}),
+            ...(Array.isArray(value.windows) ? { windows: readWindowScene(value.windows) } : {}),
             timestamp: Date.now(),
         });
     }
