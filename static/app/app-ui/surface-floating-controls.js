@@ -434,6 +434,10 @@
         const SOCIAL_OPEN_DEDUPE_MS = 1200;
         const SOCIAL_OPEN_RELEASE_DELAY_MS = 800;
         const SOCIAL_WINDOW_NAME = 'neko-social';
+        const SOCIAL_OAUTH_CALLBACK_PATHS = new Set([
+            '/oauth/callback',
+            '/api/card-drop/oauth/callback'
+        ]);
 
         function getSocialOpenState() {
             if (!window.__nekoSocialOpenState || typeof window.__nekoSocialOpenState !== 'object') {
@@ -527,9 +531,20 @@
             if (!socialWindow) return null;
             try {
                 const href = String(socialWindow.location && socialWindow.location.href || '');
+                let isOAuthCallback = false;
+                try {
+                    const callbackUrl = new URL(href, window.location.href);
+                    isOAuthCallback = callbackUrl.origin === window.location.origin
+                        && SOCIAL_OAUTH_CALLBACK_PATHS.has(
+                            callbackUrl.pathname.replace(/\/+$/, '') || '/'
+                        );
+                } catch (_) { /* keep treating an unparseable URL as an existing page */ }
                 return {
                     socialWindow,
-                    existing: href !== '' && href !== 'about:blank'
+                    // The OAuth callback is a completed one-shot page, not the
+                    // community surface. Reuse that named window for the next
+                    // feed navigation instead of focusing a dead-end callback.
+                    existing: href !== '' && href !== 'about:blank' && !isOAuthCallback
                 };
             } catch (_) {
                 // A cross-origin community page cannot expose location to the

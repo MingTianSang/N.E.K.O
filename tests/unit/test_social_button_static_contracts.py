@@ -291,6 +291,96 @@ const fetch = async url => {
 
 
 @pytest.mark.unit
+def test_social_oauth_callback_window_is_reused_for_community_navigation():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[listener_start:source.index("// 睡觉按钮（请她离开）", listener_start)]
+    helpers = "\n".join(
+        _extract_js_function(source, signature)
+        for signature in (
+            "function getSocialOpenState()",
+            "function getOpenSocialWindow()",
+            "function rememberSocialWindow(socialWindow, generation = null)",
+            "function forgetSocialWindow(socialWindow, generation = null)",
+            "function focusOpenSocialWindow()",
+            "function probeNamedSocialWindow()",
+        )
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+const SOCIAL_WINDOW_NAME = 'neko-social';
+const SOCIAL_OAUTH_CALLBACK_PATHS = new Set([
+    '/oauth/callback',
+    '/api/card-drop/oauth/callback'
+]);
+let onClick;
+let createdPopups = 0;
+let popup = null;
+const makePopup = () => ({
+    closed: false,
+    location: {
+        href: 'about:blank',
+        replace(url) { this.href = url; },
+    },
+    focus() {},
+    close() { this.closed = true; },
+});
+const window = {
+    location: new URL('http://localhost:48911/'),
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: (_url, name) => {
+        if (name === SOCIAL_WINDOW_NAME && popup && !popup.closed) return popup;
+        popup = makePopup();
+        createdPopups += 1;
+        return popup;
+    },
+};
+const document = { documentElement: { getAttribute: () => 'light' } };
+const shouldIgnoreSocialOpenRequest = () => {
+    const state = getSocialOpenState();
+    if (state.inFlight) return true;
+    state.inFlight = true;
+    state.lastStartedAt = Date.now();
+    state.generation = (Number(state.generation) || 0) + 1;
+    return false;
+};
+const releaseSocialOpenRequest = () => { getSocialOpenState().inFlight = false; };
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const response = body => ({ ok: true, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/card-drop/sync-ticket') return response({ sync_ticket: '' });
+    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: '' });
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+""" + helpers + "\n" + listener + r"""
+(async () => {
+    await onClick();
+    assert.equal(createdPopups, 1);
+    assert.match(popup.location.href, /^https:\/\/community\.example\/feed/);
+
+    // A refreshed renderer loses the in-memory reference while the named
+    // popup remains on the local OAuth callback page. It must be navigated to
+    // the community feed instead of being mistaken for an already-open feed.
+    window.__nekoSocialOpenState = null;
+    popup.location.href = 'http://localhost:48911/oauth/callback?code=done';
+    await onClick();
+    assert.equal(createdPopups, 1, 'the callback window is reused');
+    assert.match(popup.location.href, /^https:\/\/community\.example\/feed/);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_slow_social_proof_survives_the_initial_window_navigation_budget():
     node = shutil.which("node")
     if not node:
