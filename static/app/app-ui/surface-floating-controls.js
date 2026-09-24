@@ -433,6 +433,7 @@
 
         const SOCIAL_OPEN_DEDUPE_MS = 1200;
         const SOCIAL_OPEN_RELEASE_DELAY_MS = 800;
+        const SOCIAL_WINDOW_NAME = 'neko-social';
 
         function getSocialOpenState() {
             if (!window.__nekoSocialOpenState || typeof window.__nekoSocialOpenState !== 'object') {
@@ -440,6 +441,7 @@
                     inFlight: false,
                     lastStartedAt: 0,
                     releaseTimer: null,
+                    generation: 0,
                     // Keep the community window singleton across click handlers;
                     // only a closed window may be opened again.
                     windowRef: null
@@ -455,6 +457,13 @@
             try {
                 if (socialWindow.closed) {
                     state.windowRef = null;
+                    state.inFlight = false;
+                    state.lastStartedAt = 0;
+                    state.generation = (Number(state.generation) || 0) + 1;
+                    if (state.releaseTimer) {
+                        clearTimeout(state.releaseTimer);
+                        state.releaseTimer = null;
+                    }
                     return null;
                 }
             } catch (_) {
@@ -464,15 +473,22 @@
             return socialWindow;
         }
 
-        function rememberSocialWindow(socialWindow) {
+        function rememberSocialWindow(socialWindow, generation = null) {
+            const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return socialWindow;
+            }
             if (socialWindow) {
-                getSocialOpenState().windowRef = socialWindow;
+                state.windowRef = socialWindow;
             }
             return socialWindow;
         }
 
-        function forgetSocialWindow(socialWindow) {
+        function forgetSocialWindow(socialWindow, generation = null) {
             const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return;
+            }
             if (!socialWindow || state.windowRef === socialWindow) {
                 state.windowRef = null;
             }
@@ -492,6 +508,36 @@
             return true;
         }
 
+        function isSocialOpenRequestCurrent(generation) {
+            return generation === null
+                || generation === undefined
+                || Number(getSocialOpenState().generation) === Number(generation);
+        }
+
+        function probeNamedSocialWindow() {
+            let socialWindow = null;
+            try {
+                // An empty URL returns an existing named window without navigating
+                // it. If the name is not present, it creates the blank popup that
+                // the browser flow can reuse for the current user gesture.
+                socialWindow = window.open('', SOCIAL_WINDOW_NAME);
+            } catch (_) {
+                return null;
+            }
+            if (!socialWindow) return null;
+            try {
+                const href = String(socialWindow.location && socialWindow.location.href || '');
+                return {
+                    socialWindow,
+                    existing: href !== '' && href !== 'about:blank'
+                };
+            } catch (_) {
+                // A cross-origin community page cannot expose location to the
+                // opener; that is the existing-window case we need to recover.
+                return { socialWindow, existing: true };
+            }
+        }
+
         function shouldIgnoreSocialOpenRequest() {
             const now = Date.now();
             const state = getSocialOpenState();
@@ -505,16 +551,25 @@
             }
             state.inFlight = true;
             state.lastStartedAt = now;
+            state.generation = (Number(state.generation) || 0) + 1;
             return false;
         }
 
-        function releaseSocialOpenRequest() {
+        function releaseSocialOpenRequest(generation = null) {
             const state = getSocialOpenState();
+            if (generation !== null && Number(state.generation) !== Number(generation)) {
+                return;
+            }
             if (state.releaseTimer) {
                 clearTimeout(state.releaseTimer);
             }
+            const releaseGeneration = generation === null ? null : Number(generation);
             state.releaseTimer = setTimeout(() => {
                 const latestState = getSocialOpenState();
+                if (releaseGeneration !== null
+                    && Number(latestState.generation) !== releaseGeneration) {
+                    return;
+                }
                 latestState.inFlight = false;
                 latestState.releaseTimer = null;
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
@@ -624,7 +679,30 @@
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
+            const socialOpenGeneration = typeof getSocialOpenState === 'function'
+                ? (Number(getSocialOpenState().generation) || 0)
+                : null;
+            const releaseSocialOpenRequestForFlow = () => {
+                if (typeof releaseSocialOpenRequest === 'function') {
+                    releaseSocialOpenRequest(socialOpenGeneration);
+                }
+            };
             const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            let pendingSocialWindow = null;
+            if (!isElectron && typeof probeNamedSocialWindow === 'function') {
+                const probe = probeNamedSocialWindow();
+                if (probe && probe.existing) {
+                    rememberSocialWindow(probe.socialWindow, socialOpenGeneration);
+                    try { probe.socialWindow.focus && probe.socialWindow.focus(); } catch (_) { /* ignore */ }
+                    const releaseExistingSocialWindowRequest = releaseSocialOpenRequestForFlow;
+                    releaseExistingSocialWindowRequest();
+                    return;
+                }
+                if (probe && probe.socialWindow) {
+                    pendingSocialWindow = probe.socialWindow;
+                    rememberSocialWindow(pendingSocialWindow, socialOpenGeneration);
+                }
+            }
             let socialOpenRequestReleased = false;
             let popupRef = null;
             const closePopup = () => {
@@ -636,10 +714,16 @@
                         popupRef.close();
                     }
                 } catch (_) { /* ignore */ }
-                if (typeof forgetSocialWindow === 'function') forgetSocialWindow(popupRef);
+                if (typeof forgetSocialWindow === 'function') {
+                    forgetSocialWindow(popupRef, socialOpenGeneration);
+                }
                 popupRef = null;
             };
             const navigateBrowserPopup = (targetUrl, options = {}) => {
+                if (typeof isSocialOpenRequestCurrent === 'function'
+                    && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
+                    return true;
+                }
                 if (!popupRef) {
                     return false;
                 }
@@ -686,7 +770,9 @@
                         }
                         try {
                             if (popupRef.closed) {
-                                if (typeof forgetSocialWindow === 'function') forgetSocialWindow(popupRef);
+                                if (typeof forgetSocialWindow === 'function') {
+                                    forgetSocialWindow(popupRef, socialOpenGeneration);
+                                }
                                 popupRef = null;
                                 return false;
                             }
@@ -714,6 +800,10 @@
                 return false;
             };
             const openElectronSocialWindow = (targetUrl) => {
+                if (typeof isSocialOpenRequestCurrent === 'function'
+                    && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
+                    return true;
+                }
                 // frameName=neko-social：NEKO-PC setWindowOpenHandler 靠名字识别社区窗，
                 // 强制 frame/thickFrame + 原生最小/最大/关（尤其 Windows 右上角）。
                 // features 为兜底提示；最终以主进程 overrideBrowserWindowOptions 为准。
@@ -728,7 +818,9 @@
                 if (!socialWin) {
                     return false;
                 }
-                if (typeof rememberSocialWindow === 'function') rememberSocialWindow(socialWin);
+                if (typeof rememberSocialWindow === 'function') {
+                    rememberSocialWindow(socialWin, socialOpenGeneration);
+                }
                 registerSocialThemeTarget(socialWin, resolvedTargetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
@@ -879,7 +971,12 @@
                     // 浏览器通常只为一次用户手势放行一个弹窗。先保留唯一的
                     // WindowProxy，完成登录态判断后再决定导航到社区或 OAuth。
                     // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
-                    popupRef = window.open('about:blank', '_blank');
+                    if (pendingSocialWindow) {
+                        popupRef = pendingSocialWindow;
+                        pendingSocialWindow = null;
+                    } else {
+                        popupRef = window.open('about:blank', '_blank');
+                    }
                     if (!popupRef) {
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
@@ -890,7 +987,9 @@
                         }
                         return;
                     }
-                    if (typeof rememberSocialWindow === 'function') rememberSocialWindow(popupRef);
+                    if (typeof rememberSocialWindow === 'function') {
+                        rememberSocialWindow(popupRef, socialOpenGeneration);
+                    }
                     try {
                         const popupRoot = popupRef.document.documentElement;
                         const popupDark = isResolvedDarkTheme();
@@ -1035,7 +1134,7 @@
                         const shouldWaitForOAuth = (isElectron && oauthLaunched)
                             || (!isElectron && browserOAuthStarted);
                         if (shouldWaitForOAuth) {
-                            releaseSocialOpenRequest();
+                            releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
                                 browserOAuthTimeoutMs,
@@ -1103,7 +1202,7 @@
                 }
             } finally {
                 if (!socialOpenRequestReleased) {
-                    releaseSocialOpenRequest();
+                    releaseSocialOpenRequestForFlow();
                 }
             }
         });

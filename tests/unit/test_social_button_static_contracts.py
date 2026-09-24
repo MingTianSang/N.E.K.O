@@ -53,7 +53,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "const SOCIAL_OPEN_DEDUPE_MS = 1200;" in source
     assert "window.__nekoSocialOpenState" in source
     assert "function shouldIgnoreSocialOpenRequest()" in source
-    assert "function releaseSocialOpenRequest()" in source
+    assert "function releaseSocialOpenRequest(generation = null)" in source
 
     listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
     listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
@@ -63,7 +63,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
         "fetch('/api/system/social/config')"
     )
     assert "let socialOpenRequestReleased = false;" in listener
-    assert listener.count("releaseSocialOpenRequest();") == 2
+    assert listener.count("releaseSocialOpenRequestForFlow();") == 2
     assert "if (!socialOpenRequestReleased)" in listener
     # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
     helper_start = listener.index("const openElectronSocialWindow = (targetUrl) => {")
@@ -76,7 +76,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
         electron_helper,
     )
     assert "openElectronSocialWindow(url)" in listener
-    assert listener.index("releaseSocialOpenRequest();") > listener.index("openElectronSocialWindow(url)")
+    assert listener.index("releaseSocialOpenRequestForFlow();") > listener.index("openElectronSocialWindow(url)")
     assert "fetch('/api/card-drop/sync-ticket', {" in listener
     assert "hashParams.set('native_sync', syncTicket)" in listener
     assert "fetch('/api/card-drop/native-delegate', {" in listener
@@ -186,6 +186,108 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert main_flow.index("const initialNativeHandoffReadiness = waitForInitialNativeProof(") < main_flow.index(
         "const [initialSyncTicket, clientId] = await Promise.all(["
     )
+
+
+@pytest.mark.unit
+def test_social_existing_window_is_reused_and_closed_window_reopens():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[listener_start:source.index("// 睡觉按钮（请她离开）", listener_start)]
+    helpers = "\n".join(
+        _extract_js_function(source, signature)
+        for signature in (
+            "function getSocialOpenState()",
+            "function getOpenSocialWindow()",
+            "function rememberSocialWindow(socialWindow, generation = null)",
+            "function forgetSocialWindow(socialWindow, generation = null)",
+            "function focusOpenSocialWindow()",
+            "function probeNamedSocialWindow()",
+        )
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+const SOCIAL_WINDOW_NAME = 'neko-social';
+let onClick;
+let openCalls = 0;
+let createdPopups = 0;
+let focusCalls = 0;
+let popup = null;
+const makePopup = () => ({
+    closed: false,
+    location: {
+        href: 'about:blank',
+        replace(url) { this.href = url; },
+    },
+    focus() { focusCalls += 1; },
+    close() { this.closed = true; },
+});
+const window = {
+    location: new URL('http://localhost:48911/'),
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: (_url, name) => {
+        openCalls += 1;
+        if (name === SOCIAL_WINDOW_NAME && popup && !popup.closed) return popup;
+        popup = makePopup();
+        createdPopups += 1;
+        return popup;
+    },
+};
+const document = { documentElement: { getAttribute: () => 'light' } };
+const shouldIgnoreSocialOpenRequest = () => {
+    const state = getSocialOpenState();
+    if (state.inFlight) return true;
+    state.inFlight = true;
+    state.lastStartedAt = Date.now();
+    return false;
+};
+const releaseSocialOpenRequest = () => { getSocialOpenState().inFlight = false; };
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const response = body => ({ ok: true, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/card-drop/sync-ticket') return response({ sync_ticket: '' });
+    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: '' });
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+""" + helpers + "\n" + listener + r"""
+(async () => {
+    await onClick();
+    assert.equal(openCalls, 1, 'the first click opens one named popup');
+    const firstPopup = popup;
+    const initialFocusCalls = focusCalls;
+    await onClick();
+    assert.equal(openCalls, 1, 'a second click reuses the existing popup');
+    assert.equal(popup, firstPopup);
+    assert.equal(focusCalls, initialFocusCalls + 1, 'a second click focuses the existing popup');
+
+    // Simulate a renderer refresh: the in-memory reference is gone, but the
+    // named cross-origin popup is still discoverable and must not be recreated.
+    window.__nekoSocialOpenState = null;
+    Object.defineProperty(popup.location, 'href', {
+        configurable: true,
+        get() { throw new Error('cross-origin'); },
+    });
+    const refreshFocusCalls = focusCalls;
+    await onClick();
+    assert.equal(createdPopups, 1, 'refresh recovery does not create another popup');
+    assert.equal(focusCalls, refreshFocusCalls + 1, 'refresh recovery focuses the named popup');
+
+    popup.closed = true;
+    window.__nekoSocialOpenState = null;
+    await onClick();
+    assert.equal(createdPopups, 2, 'a closed popup can be opened again');
+    assert.notEqual(popup, firstPopup);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit
@@ -434,7 +536,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         r"closePopup\(\);",
         listener,
     )
-    assert listener.index("releaseSocialOpenRequest();") < listener.index(
+    assert listener.index("releaseSocialOpenRequestForFlow();") < listener.index(
         "await waitForOAuthCompletion("
     )
     assert listener.index("await waitForOAuthCompletion(") < listener.index(
