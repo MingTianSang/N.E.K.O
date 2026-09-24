@@ -439,10 +439,57 @@
                 window.__nekoSocialOpenState = {
                     inFlight: false,
                     lastStartedAt: 0,
-                    releaseTimer: null
+                    releaseTimer: null,
+                    // Keep the community window singleton across click handlers;
+                    // only a closed window may be opened again.
+                    windowRef: null
                 };
             }
             return window.__nekoSocialOpenState;
+        }
+
+        function getOpenSocialWindow() {
+            const state = getSocialOpenState();
+            const socialWindow = state.windowRef;
+            if (!socialWindow) return null;
+            try {
+                if (socialWindow.closed) {
+                    state.windowRef = null;
+                    return null;
+                }
+            } catch (_) {
+                // A cross-origin WindowProxy may reject property access. Keep the
+                // reference in that case; focus() below is still safe to try.
+            }
+            return socialWindow;
+        }
+
+        function rememberSocialWindow(socialWindow) {
+            if (socialWindow) {
+                getSocialOpenState().windowRef = socialWindow;
+            }
+            return socialWindow;
+        }
+
+        function forgetSocialWindow(socialWindow) {
+            const state = getSocialOpenState();
+            if (!socialWindow || state.windowRef === socialWindow) {
+                state.windowRef = null;
+            }
+        }
+
+        function focusOpenSocialWindow() {
+            const socialWindow = getOpenSocialWindow();
+            if (!socialWindow) return false;
+            try {
+                if (typeof socialWindow.focus === 'function') socialWindow.focus();
+            } catch (_) {
+                // If the native window disappeared between the closed check and
+                // focus(), clear the stale reference so the next click can reopen it.
+                forgetSocialWindow(socialWindow);
+                return false;
+            }
+            return true;
         }
 
         function shouldIgnoreSocialOpenRequest() {
@@ -571,6 +618,9 @@
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
             }
+            if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
+                return;
+            }
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
@@ -586,6 +636,7 @@
                         popupRef.close();
                     }
                 } catch (_) { /* ignore */ }
+                if (typeof forgetSocialWindow === 'function') forgetSocialWindow(popupRef);
                 popupRef = null;
             };
             const navigateBrowserPopup = (targetUrl, options = {}) => {
@@ -635,6 +686,7 @@
                         }
                         try {
                             if (popupRef.closed) {
+                                if (typeof forgetSocialWindow === 'function') forgetSocialWindow(popupRef);
                                 popupRef = null;
                                 return false;
                             }
@@ -676,6 +728,7 @@
                 if (!socialWin) {
                     return false;
                 }
+                if (typeof rememberSocialWindow === 'function') rememberSocialWindow(socialWin);
                 registerSocialThemeTarget(socialWin, resolvedTargetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
@@ -837,6 +890,7 @@
                         }
                         return;
                     }
+                    if (typeof rememberSocialWindow === 'function') rememberSocialWindow(popupRef);
                     try {
                         const popupRoot = popupRef.document.documentElement;
                         const popupDark = isResolvedDarkTheme();
