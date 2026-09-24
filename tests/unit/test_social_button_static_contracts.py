@@ -203,6 +203,7 @@ def test_social_existing_window_is_reused_and_closed_window_reopens():
             "function getOpenSocialWindow()",
             "function rememberSocialWindow(socialWindow, generation = null)",
             "function forgetSocialWindow(socialWindow, generation = null)",
+            "function isSocialOAuthCallbackWindow(socialWindow)",
             "function focusOpenSocialWindow()",
             "function probeNamedSocialWindow()",
         )
@@ -305,6 +306,7 @@ def test_social_oauth_callback_window_is_reused_for_community_navigation():
             "function getOpenSocialWindow()",
             "function rememberSocialWindow(socialWindow, generation = null)",
             "function forgetSocialWindow(socialWindow, generation = null)",
+            "function isSocialOAuthCallbackWindow(socialWindow)",
             "function focusOpenSocialWindow()",
             "function probeNamedSocialWindow()",
         )
@@ -364,6 +366,13 @@ const fetch = async url => {
 (async () => {
     await onClick();
     assert.equal(createdPopups, 1);
+    assert.match(popup.location.href, /^https:\/\/community\.example\/feed/);
+
+    // A saved callback reference must be classified before focusOpenSocialWindow
+    // returns, otherwise the click would stop at the callback page.
+    popup.location.href = 'http://localhost:48911/oauth/callback?code=done';
+    await onClick();
+    assert.equal(createdPopups, 1, 'a saved callback window is reused');
     assert.match(popup.location.href, /^https:\/\/community\.example\/feed/);
 
     // A refreshed renderer loses the in-memory reference while the named

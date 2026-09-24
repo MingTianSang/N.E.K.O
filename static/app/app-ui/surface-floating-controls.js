@@ -501,6 +501,13 @@
         function focusOpenSocialWindow() {
             const socialWindow = getOpenSocialWindow();
             if (!socialWindow) return false;
+            if (isSocialOAuthCallbackWindow(socialWindow)) {
+                // Let the click flow probe the named window again and reuse it
+                // for the community feed instead of trapping the user on the
+                // completed OAuth callback page.
+                forgetSocialWindow(socialWindow);
+                return false;
+            }
             try {
                 if (typeof socialWindow.focus === 'function') socialWindow.focus();
             } catch (_) {
@@ -518,6 +525,20 @@
                 || Number(getSocialOpenState().generation) === Number(generation);
         }
 
+        function isSocialOAuthCallbackWindow(socialWindow) {
+            if (!socialWindow) return false;
+            try {
+                const href = String(socialWindow.location && socialWindow.location.href || '');
+                const callbackUrl = new URL(href, window.location.href);
+                return callbackUrl.origin === window.location.origin
+                    && SOCIAL_OAUTH_CALLBACK_PATHS.has(
+                        callbackUrl.pathname.replace(/\/+$/, '') || '/'
+                    );
+            } catch (_) {
+                return false;
+            }
+        }
+
         function probeNamedSocialWindow() {
             let socialWindow = null;
             try {
@@ -531,20 +552,13 @@
             if (!socialWindow) return null;
             try {
                 const href = String(socialWindow.location && socialWindow.location.href || '');
-                let isOAuthCallback = false;
-                try {
-                    const callbackUrl = new URL(href, window.location.href);
-                    isOAuthCallback = callbackUrl.origin === window.location.origin
-                        && SOCIAL_OAUTH_CALLBACK_PATHS.has(
-                            callbackUrl.pathname.replace(/\/+$/, '') || '/'
-                        );
-                } catch (_) { /* keep treating an unparseable URL as an existing page */ }
                 return {
                     socialWindow,
                     // The OAuth callback is a completed one-shot page, not the
                     // community surface. Reuse that named window for the next
                     // feed navigation instead of focusing a dead-end callback.
-                    existing: href !== '' && href !== 'about:blank' && !isOAuthCallback
+                    existing: href !== '' && href !== 'about:blank'
+                        && !isSocialOAuthCallbackWindow(socialWindow)
                 };
             } catch (_) {
                 // A cross-origin community page cannot expose location to the
