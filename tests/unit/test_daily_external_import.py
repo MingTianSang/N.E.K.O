@@ -401,6 +401,41 @@ async def test_same_import_keeps_protected_policy_on_cross_section_collision():
 
 
 @pytest.mark.asyncio
+async def test_same_import_keeps_protected_policy_across_semantic_collision():
+    event_date = "2026-07-12"
+    existing = _daily_fact("主人喜欢茉莉花茶", event_date)
+    existing.update({"id": "fact-existing", "hash": "legacy-hash"})
+    existing["external_import"] = existing.pop("_external_import")
+    existing["external_import"]["forge_eligible"] = True
+    existing["forge_eligible"] = True
+    harness = _PersistHarness(_FakeTimeIndexed([("fact-existing", 0.9)]))
+    harness._mem.append(existing)
+
+    protected = {
+        **_daily_fact("主人偏爱茉莉花茶", event_date),
+        "_external_import": {
+            **_daily_fact("主人偏爱茉莉花茶", event_date)["_external_import"],
+            "forge_eligible": False,
+        },
+    }
+    normal = {
+        **_daily_fact("主人喜欢茉莉花茶", event_date),
+        "_external_import": {
+            **_daily_fact("主人喜欢茉莉花茶", event_date)["_external_import"],
+            "forge_eligible": True,
+        },
+    }
+
+    created = await harness._apersist_new_facts(
+        "Neko", [protected, normal], semantic_dedup=True,
+    )
+
+    assert existing["forge_eligible"] is False
+    assert created
+    assert all(f["forge_eligible"] is False for f in created)
+
+
+@pytest.mark.asyncio
 async def test_fts_dedup_exempts_cross_date_daily_hits():
     # FTS5 近似命中的既存 fact 若是「不同日期的 daily」→ 豁免（跨日期重复事件
     # 各自落盘）；同日期近似命中仍挡（兜 LLM 重抽输出不稳定的重试幂等）。
@@ -515,6 +550,41 @@ async def test_multi_batch_day_with_failed_batch_persists_nothing_and_retries_fu
     assert retry["failed_days"] == 0
     assert retry["skipped_days"] == 0       # 没被指纹误 skip
     assert retry["added"] == 2              # 两批都重抽成功
+
+
+@pytest.mark.asyncio
+async def test_multi_batch_failure_waits_for_all_llm_tasks(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS", 20)
+    finished = asyncio.Event()
+
+    class _AsyncFailureHarness(_DailyHarness):
+        async def _allm_extract_facts(
+            self, lanlan_name, messages, *, treat_malformed_as_failure=False,
+        ):
+            text = "\n".join(getattr(m, "content", "") for m in messages)
+            self.extract_inputs.append(text)
+            if "boom" in text:
+                await asyncio.sleep(0.01)
+                raise RuntimeError("batch failed")
+            await asyncio.sleep(0.05)
+            finished.set()
+            return [{"text": "slow batch fact", "importance": 5}]
+
+    harness = _AsyncFailureHarness(lambda _journal: [])
+    candidates = _daily(
+        "memories/2026-07-12.md", "2026-07-12",
+        "boom " * 30, "slow " * 30,
+    )
+
+    result = await harness.aimport_external_daily(
+        "Neko", candidates, "hermes", "t",
+    )
+
+    assert result["failed_days"] == 1
+    assert finished.is_set()
+    assert harness.persisted == []
 
 
 @pytest.mark.asyncio

@@ -3504,6 +3504,11 @@ class FactStore:
         provenance_updated_count = 0
         external_import_updated_count = 0
         daily_protected_hashes: set[str] = set()
+        # Fact ids protected by a forge-ineligible daily fragment in this
+        # persistence call.  Exact hashes already have a fast path above, but
+        # semantic arbitration can match a differently worded fact; tracking
+        # the matched id keeps the producer-owned policy monotonic there too.
+        daily_protected_fact_ids: dict[str, set[str]] = {}
         # (entry, 原 source, 原 signal_processed, forge 标记是否存在, 原值)：
         # 落盘/索引失败时还原 in-place 升级的全部字段。
         # in-place 升级，否则重试撞守卫直接跳过保存。
@@ -3682,6 +3687,40 @@ class FactStore:
             self._apply_external_import_provenance(existing, incoming)
             external_import_updated_count += 1
             return True
+
+        def _mark_daily_protected_fact(
+            fact_entry: dict | None, event_date: str | None,
+        ) -> None:
+            if not event_date or not isinstance(fact_entry, dict):
+                return
+            fact_id = fact_entry.get('id')
+            if fact_id:
+                daily_protected_fact_ids.setdefault(event_date, set()).add(
+                    str(fact_id),
+                )
+
+        def _is_daily_protected_fact(
+            fact_entry: dict | None, event_date: str | None,
+        ) -> bool:
+            return bool(
+                event_date
+                and isinstance(fact_entry, dict)
+                and fact_entry.get('id')
+                and str(fact_entry['id'])
+                in daily_protected_fact_ids.get(event_date, set())
+            )
+
+        def _preserve_daily_policy(incoming: dict | None) -> dict | None:
+            """Copy an incoming daily marker when semantic protection wins."""
+            if (
+                not isinstance(incoming, dict)
+                or incoming.get('section') != 'daily'
+                or incoming.get('forge_eligible') is not True
+            ):
+                return incoming
+            protected = dict(incoming)
+            protected['forge_eligible'] = False
+            return protected
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3774,6 +3813,8 @@ class FactStore:
             )
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
+                if incoming_daily_policy is False:
+                    _mark_daily_protected_fact(existing, daily_event_date)
                 source_upgrade = (
                     existing is not None
                     and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
@@ -3966,9 +4007,25 @@ class FactStore:
                 if is_dup:
                     if duplicate_hit is not None:
                         if duplicate_hit.get('id') in facts_by_id:
+                            semantic_protected = (
+                                incoming_daily_policy is True
+                                and _is_daily_protected_fact(
+                                    duplicate_hit, daily_event_date,
+                                )
+                            )
+                            if incoming_daily_policy is False:
+                                _mark_daily_protected_fact(
+                                    duplicate_hit, daily_event_date,
+                                )
+                            if semantic_protected:
+                                external_import = _preserve_daily_policy(
+                                    external_import,
+                                )
                             _reconcile_daily_external_import(
                                 duplicate_hit, external_import,
-                                preserve_protected=preserve_protected,
+                                preserve_protected=(
+                                    preserve_protected or semantic_protected
+                                ),
                             )
                             _reconcile_existing_provenance(
                                 duplicate_hit, dedup_stage='semantic',
@@ -3981,14 +4038,48 @@ class FactStore:
                         if not _daily_external_import_needs_refresh(
                             duplicate_hit, external_import,
                         ):
+                            if incoming_daily_policy is False:
+                                _mark_daily_protected_fact(
+                                    duplicate_hit, daily_event_date,
+                                )
                             continue
+                        semantic_protected = (
+                            incoming_daily_policy is True
+                            and _is_daily_protected_fact(
+                                duplicate_hit, daily_event_date,
+                            )
+                        )
+                        if incoming_daily_policy is False:
+                            _mark_daily_protected_fact(
+                                duplicate_hit, daily_event_date,
+                            )
+                        if semantic_protected:
+                            external_import = _preserve_daily_policy(
+                                external_import,
+                            )
                         arbitration_hit = None
                     else:
                         continue
                 if arbitration_hit is not None:
+                    semantic_protected = (
+                        incoming_daily_policy is True
+                        and _is_daily_protected_fact(
+                            arbitration_hit[0], daily_event_date,
+                        )
+                    )
+                    if incoming_daily_policy is False:
+                        _mark_daily_protected_fact(
+                            arbitration_hit[0], daily_event_date,
+                        )
+                    if semantic_protected:
+                        external_import = _preserve_daily_policy(
+                            external_import,
+                        )
                     _reconcile_daily_external_import(
                         arbitration_hit[0], external_import,
-                        preserve_protected=preserve_protected,
+                        preserve_protected=(
+                            preserve_protected or semantic_protected
+                        ),
                     )
 
             created_at_iso = datetime.now().isoformat()
@@ -4079,6 +4170,8 @@ class FactStore:
             # get() 返 None → 跳过 upgrade，新观察的 user_observation 升级被
             # 静默丢弃 (Codex P2 round-10 on PR #1408)。
             hash_to_existing[content_hash] = fact_entry
+            if fact_entry.get('external_import', {}).get('forge_eligible') is False:
+                _mark_daily_protected_fact(fact_entry, daily_event_date)
             new_facts.append(fact_entry)
             if arbitration_hit is not None:
                 near_dup_pairs.append(
@@ -5319,10 +5412,18 @@ class FactStore:
 
             extracted_batches = await asyncio.gather(
                 *(_extract_batch(batch_text) for batch_text, _ in batches),
+                return_exceptions=True,
             )
             for (_batch_text, forge_eligible), extracted in zip(
                 batches, extracted_batches, strict=True,
             ):
+                if isinstance(extracted, BaseException):
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 外部 daily 抽取批次异常，"
+                        f"放弃 {source_file}（整天重试重抽）",
+                        exc_info=extracted,
+                    )
+                    return 0, True
                 if extracted is None:
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
