@@ -158,7 +158,7 @@ test('host-owned Live2D dragging permits pinch scaling without competing positio
 });
 
 test('cancellation, lost capture, locking and disposal clear every touch and never save a cancelled pinch', () => {
-    for (const reason of ['pointercancel', 'lostpointercapture', 'blur', 'lock', 'dispose']) {
+    for (const reason of ['pointercancel', 'lostpointercapture', 'blur', 'lock', 'edge-lock', 'dispose']) {
         const h = live2d();
         h.canvas.fire('pointerdown', pointer(10, 200));
         h.canvas.fire('pointerdown', pointer(20, 300));
@@ -166,6 +166,11 @@ test('cancellation, lost capture, locking and disposal clear every touch and nev
         if (reason === 'blur') h.window.fire('blur');
         else if (reason === 'dispose') h.manager._touchGestures.dispose();
         else if (reason === 'lock') { h.manager.isLocked = true; h.document.fire('pointermove', pointer(10, 190)); }
+        else if (reason === 'edge-lock') {
+            h.window.edgePeekLockEnabled = true;
+            h.manager._live2DPeekState = { active: true, phase: 'peeking', model: h.model };
+            h.document.fire('pointermove', pointer(10, 190));
+        }
         else (reason === 'lostpointercapture' ? h.canvas : h.document).fire(reason, pointer(10, 200));
         assert.equal(h.manager._touchGestures.active, false, reason);
         assert.equal(h.manager._isDraggingModel, false, reason);
