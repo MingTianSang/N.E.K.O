@@ -70,6 +70,18 @@ class _FakeFactStore:
         return self.daily_outcome
 
 
+class _RecordingDailyFactStore(_FakeFactStore):
+    def __init__(self):
+        super().__init__()
+        self.candidates = None
+
+    async def aimport_external_daily(self, name, candidates, source_format, imported_at):
+        self.candidates = candidates
+        return await super().aimport_external_daily(
+            name, candidates, source_format, imported_at,
+        )
+
+
 @pytest.fixture
 def wire(monkeypatch):
     def _wire(persona_manager, fact_store=None):
@@ -190,6 +202,28 @@ async def test_daily_extraction_keeps_request_locale(wire):
 
     assert result["status"] == "success"
     assert fact_store.language == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_route_preserves_producer_deny_when_breadcrumb_is_bounded(wire):
+    fact_store = _RecordingDailyFactStore()
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 1, "skipped": 0, "fused": True},
+        }),
+        fact_store,
+    )
+    daily = _daily_cand("memory/2026-07-31.md", "2026-07-31")
+    daily["source_section"] = "x" * 600
+    daily["forge_eligible"] = False
+
+    result = await routes_mod.import_external_markdown(
+        _request([daily]),
+    )
+
+    assert result["status"] == "success"
+    assert fact_store.candidates[0]["forge_eligible"] is False
 
 
 @pytest.mark.asyncio

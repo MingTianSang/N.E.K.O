@@ -106,6 +106,41 @@ async def test_daily_grouped_by_day_and_event_date_stamped():
 
 
 @pytest.mark.asyncio
+async def test_daily_mixed_sections_keep_forge_policy_per_extracted_batch():
+    def stub(journal):
+        return [{"text": f"fact from: {journal}", "importance": 6}]
+
+    harness = _DailyHarness(stub)
+    source_file = "memories/2026-07-14.md"
+    candidates = [
+        {
+            "text": "猫娘互动记录: 播放了一首歌",
+            "source_file": source_file,
+            "source_section": "猫娘互动记录",
+            "event_date": "2026-07-14",
+            "forge_eligible": False,
+        },
+        {
+            "text": "用户偏好: 喜欢茉莉花茶",
+            "source_file": source_file,
+            "source_section": "用户偏好",
+            "event_date": "2026-07-14",
+            "forge_eligible": True,
+        },
+    ]
+
+    result = await harness.aimport_external_daily(
+        "Neko", candidates, "hermes", "t",
+    )
+
+    assert result == {"added": 2, "days": 1, "failed_days": 0, "skipped_days": 0}
+    persisted = [f for batch in harness.persisted for f in batch]
+    assert [
+        f["_external_import"]["forge_eligible"] for f in persisted
+    ] == [False, True]
+
+
+@pytest.mark.asyncio
 async def test_daily_extraction_failure_is_best_effort_skipped():
     def stub(journal):
         return None if "boom" in journal else [{"text": "ok fact", "importance": 5}]

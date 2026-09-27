@@ -1678,9 +1678,13 @@ async def preview_external_memory_import(request: Request):
         # 回退到无预估文案。
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
         daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
-        daily_by_file: dict[str, list[str]] = {}
+        daily_by_file: dict[str, dict[bool, list[str]]] = {}
         for item in daily_cands:
-            daily_by_file.setdefault(str(item.get("source_file") or ""), []).append(item["text"])
+            source_file = str(item.get("source_file") or "")
+            forge_eligible = item.get("forge_eligible", True) is not False
+            daily_by_file.setdefault(source_file, {}).setdefault(
+                forge_eligible, [],
+            ).append(item["text"])
 
         # count_tokens / 分批逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件
         # 循环，与上面 _prepare_external_import 一致 offload 到线程池。daily 调用
@@ -1692,7 +1696,8 @@ async def preview_external_memory_import(request: Request):
             daily_tokens = sum(count_tokens(item["text"]) for item in daily_cands)
             daily_calls = sum(
                 len(batch_daily_fragments(texts, EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS))
-                for texts in daily_by_file.values()
+                for policy_groups in daily_by_file.values()
+                for texts in policy_groups.values()
             )
             return persona_tokens, daily_tokens, daily_calls
 

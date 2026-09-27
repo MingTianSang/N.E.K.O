@@ -510,8 +510,11 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
             raise HTTPException(status_code=400, detail="Invalid candidate fields")
         source_section = str(candidate.get("source_section") or "")
         # Recompute the policy from importer-owned section metadata instead of
-        # trusting a browser-supplied boolean.
+        # trusting a browser-supplied allow decision. A producer-computed deny
+        # is monotonic here so a bounded breadcrumb cannot erase it.
         forge_eligible = is_forge_eligible_section(source_section)
+        if candidate.get("forge_eligible") is False:
+            forge_eligible = False
         event_date = candidate.get("event_date")
         if target == "persona":
             # 带齐 provenance（source_file / source_section / event_date）传给融合层：

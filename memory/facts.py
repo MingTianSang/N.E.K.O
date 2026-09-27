@@ -5059,12 +5059,13 @@ class FactStore:
         (``memory/`` or ``memories/YYYY-MM-DD.md``) are free-form journal prose,
         so rather than appending their raw fragments verbatim they are run through
         the conversation fact-extraction LLM. Candidates are grouped by source
-        file (one file == one day); each day's fragments are joined into a single
-        user turn and extracted independently so the day's ``event_date`` can be
-        stamped onto every fact it yields. A day whose joined fragments exceed
-        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` is split into multiple
-        extraction batches (``batch_daily_fragments``) rather than truncated —
-        no journal tail is silently dropped (Greptile P1). Days run concurrently
+        file (one file == one day); fragments with different forge policies are
+        extracted in separate user turns so each fact keeps its producer policy,
+        while the day's ``event_date`` is stamped onto every fact it yields. A
+        policy group's text that exceeds ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS``
+        is split into multiple extraction batches (``batch_daily_fragments``)
+        rather than truncated — no journal tail is silently dropped (Greptile
+        P1). Days run concurrently
         under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
         sequentially would blow past the upstream 240s forwarding window);
         batches within a day run sequentially; persistence stays serialized by
@@ -5130,18 +5131,6 @@ class FactStore:
             )
             for source_file, group in by_file.items()
         }
-        # A daily file can contain more than one heading. Keep the safe
-        # producer decision for the whole extracted day: if any source fragment
-        # is explicitly non-forgeable, facts extracted from that mixed batch do
-        # not become forge candidates. Missing metadata remains eligible for
-        # compatibility with callers that predate this marker.
-        day_forge_eligibility = {
-            source_file: all(
-                candidate.get("forge_eligible", True) is not False
-                for candidate in group
-            )
-            for source_file, group in by_file.items()
-        }
         # 指纹掺 event_date：不同日期的重复例行日记（文本逐字相同）各自是新的
         # 一天，不能被对方的指纹 skip（Codex P2）——与 fact 去重键含日期同理。
         day_fps = {
@@ -5161,12 +5150,29 @@ class FactStore:
         # 分批预计算 + cap 按「总抽取调用数」而非天数：单个超大日记文件能拆出
         # 几十批串行调用，len(pending) 拦不住它撞 240s 墙（Codex P2）。tiktoken
         # 编码是同步 CPU，offload 线程池。
-        batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
+        def _daily_policy_groups(group: list[dict]) -> list[tuple[bool, list[dict]]]:
+            """Keep forge policy attached when one journal mixes sections."""
+            grouped: dict[bool, list[dict]] = {}
+            for candidate in group:
+                forge_eligible = candidate.get("forge_eligible", True) is not False
+                grouped.setdefault(forge_eligible, []).append(candidate)
+            return list(grouped.items())
+
+        batches_by_file: dict[str, list[tuple[str, bool]]] = await asyncio.to_thread(
             lambda: {
-                source_file: batch_daily_fragments(
-                    [p for p in (str(g.get("text") or "").strip() for g in group) if p],
-                    EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
-                )
+                source_file: [
+                    (batch, forge_eligible)
+                    for forge_eligible, policy_group in _daily_policy_groups(group)
+                    for batch in batch_daily_fragments(
+                        [
+                            text for text in (
+                                str(g.get("text") or "").strip()
+                                for g in policy_group
+                            ) if text
+                        ],
+                        EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
+                    )
+                ]
                 for source_file, group in pending.items()
             }
         )
@@ -5188,8 +5194,8 @@ class FactStore:
             # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
             # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
             # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
-            day_extracted: list[dict] = []
-            for batch_text in batches:
+            day_extracted: list[tuple[dict, bool]] = []
+            for batch_text, forge_eligible in batches:
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
@@ -5218,7 +5224,9 @@ class FactStore:
                         f"数组，放弃 {source_file}（整天重试重抽）"
                     )
                     return 0, True
-                day_extracted.extend(batch_facts)
+                day_extracted.extend(
+                    (fact, forge_eligible) for fact in batch_facts
+                )
             if not day_extracted:
                 # 空抽取天：LLM 判该日无 fact，无 fact 载体存指纹，只能靠 sidecar，
                 # 否则每次重导都重抽该天并占 cap 配额（Codex P2 follow-up）。
@@ -5242,7 +5250,8 @@ class FactStore:
                     "放弃本次写入"
                 )
                 return 0, False
-            for fact in day_extracted:
+            persisted_facts = []
+            for fact, forge_eligible in day_extracted:
                 # Stamp provenance; _apersist_new_facts_locked turns event_date
                 # into event_start_at and tags the entry as external_import.
                 # day_fingerprint 是重导幂等的依据（见 docstring）。
@@ -5253,11 +5262,12 @@ class FactStore:
                     "event_date": event_date,
                     "imported_at": imported_at,
                     "day_fingerprint": day_fps[source_file],
-                    "forge_eligible": day_forge_eligibility[source_file],
+                    "forge_eligible": forge_eligible,
                 }
+                persisted_facts.append(fact)
             try:
                 new_facts = await self._apersist_new_facts(
-                    lanlan_name, day_extracted, semantic_dedup=True,
+                    lanlan_name, persisted_facts, semantic_dedup=True,
                 )
             except Exception:
                 # persist 失败（FTS/JSON 写错等）也要清该天 sidecar：本请求已抽出真实

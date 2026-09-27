@@ -81,6 +81,23 @@ def test_interaction_section_carries_explicit_forge_policy():
     assert is_forge_eligible_section("猫粮互动记录 / 播放记录") is False
 
 
+def test_long_heading_path_preserves_interaction_policy_after_bounding():
+    long_parent = "parent-" + ("x" * 180)
+    sources = collect_markdown_files([{
+        "path": "workspace/MEMORY.md",
+        "content": (
+            f"# {long_parent}\n## {long_parent}\n"
+            f"### {long_parent}\n#### {long_parent}\n"
+            "##### 猫娘互动记录\n- 不应进入锻造候选\n"
+        ),
+    }])
+
+    fact = next(c for c in build_import_candidates(sources)["candidates"] if c["target"] == "facts")
+    assert len(fact["source_section"]) <= MAX_SECTION_CHARS
+    assert "猫娘互动记录" in fact["source_section"]
+    assert fact["forge_eligible"] is False
+
+
 def test_hermes_section_delimiter_and_security_warning():
     sources = collect_markdown_files([
         {

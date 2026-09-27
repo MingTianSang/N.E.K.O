@@ -387,6 +387,34 @@ def is_forge_eligible_section(section: str) -> bool:
     return not normalized_sections.intersection(blocked_sections)
 
 
+def _bounded_source_section(section: str) -> str:
+    """Bound a breadcrumb while retaining every producer-owned deny label.
+
+    The full heading path is used for the policy decision, but the serialized
+    breadcrumb is capped for prompt/storage budgets. If a denied heading would
+    fall beyond that cap, append the exact heading label inside the bounded
+    value so the commit path can preserve the deny decision without trusting a
+    free-form candidate body.
+    """
+    if len(section) <= MAX_SECTION_CHARS:
+        return section
+    bounded = section[:MAX_SECTION_CHARS]
+    blocked = []
+    blocked_labels = {
+        _normalised_text(value): value for value in _FORGE_INELIGIBLE_SECTIONS
+    }
+    for part in section.split("/"):
+        label = blocked_labels.get(_normalised_text(part))
+        if label and label not in blocked:
+            blocked.append(label)
+    if not blocked:
+        return bounded
+    suffix = " / ".join(blocked)
+    separator = " / … / "
+    prefix_budget = max(0, MAX_SECTION_CHARS - len(separator) - len(suffix))
+    return f"{section[:prefix_budget].rstrip()}{separator}{suffix}"
+
+
 def _suspicious_patterns(text: str) -> list[str]:
     return [pattern_id for pattern_id, pattern in _INJECTION_PATTERNS if pattern.search(text)]
 
@@ -443,7 +471,7 @@ def build_import_candidates(
                 "text": text,
                 "kind": kind,
                 "source_file": source.path,
-                "source_section": fragment["section"][:MAX_SECTION_CHARS],
+                "source_section": _bounded_source_section(fragment["section"]),
                 "forge_eligible": is_forge_eligible_section(fragment["section"]),
                 "event_date": event_date,
                 "warning_patterns": hits,
