@@ -557,6 +557,38 @@ async def test_archived_daily_same_policy_does_not_reactivate(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_legacy_archived_daily_without_policy_does_not_reactivate(tmp_path):
+    import json
+
+    archived = _daily_fact("went to the gym", "2026-07-12")
+    archived.update({"id": "fact-archived", "hash": "archived-hash"})
+    archived["external_import"] = archived.pop("_external_import")
+    archived.pop("forge_eligible", None)
+    archived["external_import"].pop("forge_eligible", None)
+
+    class _ArchivedHarness(_PersistHarness):
+        def _facts_archive_path(self, name):
+            return str(tmp_path / "facts_archive.json")
+
+    archive_path = tmp_path / "facts_archive.json"
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+    harness = _ArchivedHarness(_FakeTimeIndexed([("fact-archived", 1.0)]))
+    incoming = {
+        "text": "went to the gym", "importance": 6, "entity": "master",
+        "_external_import": {
+            **archived["external_import"],
+            "day_fingerprint": "fp-legacy-reimport",
+            "forge_eligible": True,
+        },
+    }
+
+    created = await harness._apersist_new_facts("Neko", [incoming])
+
+    assert created == []
+    assert harness._mem == []
+
+
+@pytest.mark.asyncio
 async def test_multi_batch_day_with_failed_batch_persists_nothing_and_retries_fully():
     # 多批天任一批失败 → 整天原子放弃（不落盘任何批、不留指纹），重试从头
     # 重抽——否则早批带全天指纹落盘后，重试被指纹整天 skip、失败批内容永久

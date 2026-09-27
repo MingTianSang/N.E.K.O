@@ -3682,6 +3682,10 @@ class FactStore:
                 existing_meta = existing.get('external_import')
                 if isinstance(existing_meta, dict):
                     current_policy = existing_meta.get('forge_eligible')
+            if not isinstance(current_policy, bool):
+                # Legacy facts predate the explicit marker and were eligible
+                # by default; retain that behavior during archive dedup.
+                current_policy = existing.get('source') != 'ai_disclosure'
             return current_policy != incoming_policy
 
         def _reconcile_daily_external_import(
