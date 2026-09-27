@@ -5169,10 +5169,10 @@ class FactStore:
         policy group's text that exceeds ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS``
         is split into multiple extraction batches (``batch_daily_fragments``)
         rather than truncated — no journal tail is silently dropped (Greptile
-        P1). Days run concurrently
-        under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
+        P1). Days and their batches share
+        ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
         sequentially would blow past the upstream 240s forwarding window);
-        batches within a day run sequentially; persistence stays serialized by
+        persistence stays serialized by
         the per-character persist lock. Best-effort per day, atomic within a
         day: when any batch fails (None) or crashes the whole day persists
         nothing — no facts, no fingerprint — and is counted in ``failed_days``
@@ -5320,7 +5320,7 @@ class FactStore:
             extracted_batches = await asyncio.gather(
                 *(_extract_batch(batch_text) for batch_text, _ in batches),
             )
-            for (batch_text, forge_eligible), extracted in zip(
+            for (_batch_text, forge_eligible), extracted in zip(
                 batches, extracted_batches, strict=True,
             ):
                 if extracted is None:
