@@ -3503,6 +3503,7 @@ class FactStore:
         upgraded_count = 0
         provenance_updated_count = 0
         external_import_updated_count = 0
+        daily_protected_hashes: set[str] = set()
         # (entry, 原 source, 原 signal_processed, forge 标记是否存在, 原值)：
         # 落盘/索引失败时还原 in-place 升级的全部字段。
         # in-place 升级，否则重试撞守卫直接跳过保存。
@@ -3632,9 +3633,31 @@ class FactStore:
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
 
+        def _daily_external_import_needs_refresh(
+            existing: dict | None, incoming: dict | None,
+        ) -> bool:
+            if (
+                existing is None
+                or not isinstance(incoming, dict)
+                or incoming.get('section') != 'daily'
+            ):
+                return False
+            current = existing.get('external_import')
+            incoming_policy = incoming.get('forge_eligible')
+            return (
+                not isinstance(current, dict)
+                or current.get('section') != 'daily'
+                or current.get('day_fingerprint') != incoming.get('day_fingerprint')
+                or (
+                    isinstance(incoming_policy, bool)
+                    and existing.get('forge_eligible') != incoming_policy
+                )
+            )
+
         def _reconcile_daily_external_import(
             existing: dict | None, incoming: dict | None, *, force: bool = False,
-        ) -> None:
+            preserve_protected: bool = False,
+        ) -> bool:
             """Refresh daily policy metadata when an exact fact is re-imported."""
             nonlocal external_import_updated_count
             if (
@@ -3642,20 +3665,11 @@ class FactStore:
                 or not isinstance(incoming, dict)
                 or incoming.get('section') != 'daily'
             ):
-                return
-            current = existing.get('external_import')
-            incoming_policy = incoming.get('forge_eligible')
-            policy_changed = (
-                isinstance(incoming_policy, bool)
-                and existing.get('forge_eligible') != incoming_policy
-            )
-            fingerprint_changed = (
-                not isinstance(current, dict)
-                or current.get('section') != 'daily'
-                or current.get('day_fingerprint') != incoming.get('day_fingerprint')
-            )
-            if not (force or policy_changed or fingerprint_changed):
-                return
+                return False
+            if preserve_protected and existing.get('forge_eligible') is False:
+                return False
+            if not (force or _daily_external_import_needs_refresh(existing, incoming)):
+                return False
             keys = ('external_import', 'forge_eligible', 'tags', 'signal_processed',
                     'event_start_at')
             previous = {
@@ -3667,6 +3681,7 @@ class FactStore:
             external_import_snapshots.append((existing, previous))
             self._apply_external_import_provenance(existing, incoming)
             external_import_updated_count += 1
+            return True
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3745,6 +3760,18 @@ class FactStore:
             if memory_subject is not None:
                 hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
             content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+            incoming_daily_policy = (
+                external_import.get('forge_eligible')
+                if external_import
+                and external_import.get('section') == 'daily'
+                else None
+            )
+            if incoming_daily_policy is False:
+                daily_protected_hashes.add(content_hash)
+            preserve_protected = (
+                incoming_daily_policy is True
+                and content_hash in daily_protected_hashes
+            )
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
                 source_upgrade = (
@@ -3752,8 +3779,9 @@ class FactStore:
                     and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
                     and source == 'user_observation'
                 )
-                _reconcile_daily_external_import(
+                daily_external_updated = _reconcile_daily_external_import(
                     existing, external_import, force=source_upgrade,
+                    preserve_protected=preserve_protected,
                 )
                 if source_upgrade:
                     # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
@@ -3773,8 +3801,13 @@ class FactStore:
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
-                    if external_import is not None:
+                    if external_import is not None and (
+                        external_import.get('section') != 'daily'
+                        or daily_external_updated
+                    ):
                         self._apply_external_import_provenance(existing, external_import)
+                    elif preserve_protected:
+                        existing['forge_eligible'] = False
                     # 给 save_facts 的单调 read-merge 留纸条：这次的 False 是故意
                     # 翻回来的，别按"只能 False→True"把它顶回 True。放在 provenance
                     # 之后并复查一次实际值——外部导入会把它重新封回 True，那种情况
@@ -3931,16 +3964,32 @@ class FactStore:
                         break
                     raw_limit = 200
                 if is_dup:
-                    # Archived absorbed rows are outside this active-facts
-                    # commit; only an active survivor can be reconciled here.
-                    if (
-                        duplicate_hit is not None
-                        and duplicate_hit.get('id') in facts_by_id
-                    ):
-                        _reconcile_existing_provenance(
-                            duplicate_hit, dedup_stage='semantic',
-                        )
-                    continue
+                    if duplicate_hit is not None:
+                        if duplicate_hit.get('id') in facts_by_id:
+                            _reconcile_daily_external_import(
+                                duplicate_hit, external_import,
+                                preserve_protected=preserve_protected,
+                            )
+                            _reconcile_existing_provenance(
+                                duplicate_hit, dedup_stage='semantic',
+                            )
+                            continue
+                        # Archived facts cannot be updated by the active-facts
+                        # save path. If the daily policy/fingerprint changed,
+                        # keep an active carrier with the new provenance below;
+                        # otherwise preserve the existing archive dedup guard.
+                        if not _daily_external_import_needs_refresh(
+                            duplicate_hit, external_import,
+                        ):
+                            continue
+                        arbitration_hit = None
+                    else:
+                        continue
+                if arbitration_hit is not None:
+                    _reconcile_daily_external_import(
+                        arbitration_hit[0], external_import,
+                        preserve_protected=preserve_protected,
+                    )
 
             created_at_iso = datetime.now().isoformat()
             # Event timing (schema v2): LLM 输出相对时间 (offset+unit)，系统
@@ -5251,9 +5300,11 @@ class FactStore:
             # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
             # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
             # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
-            # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
+            # 重抽；批次共享全局并发槽并行抽取，避免单日日记逐批等待撞上 240s
+            # 转发窗口；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
             day_extracted: list[tuple[dict, bool]] = []
-            for batch_text, forge_eligible in batches:
+
+            async def _extract_batch(batch_text: str) -> list[dict] | None:
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
@@ -5262,9 +5313,16 @@ class FactStore:
                 # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
                 # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
                 async with llm_slots:
-                    extracted = await self._allm_extract_facts(
+                    return await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
                     )
+
+            extracted_batches = await asyncio.gather(
+                *(_extract_batch(batch_text) for batch_text, _ in batches),
+            )
+            for (batch_text, forge_eligible), extracted in zip(
+                batches, extracted_batches, strict=True,
+            ):
                 if extracted is None:
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"

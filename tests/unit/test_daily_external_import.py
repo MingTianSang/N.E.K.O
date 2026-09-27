@@ -370,6 +370,37 @@ async def test_same_text_same_day_retry_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_same_import_keeps_protected_policy_on_cross_section_collision():
+    harness = _PersistHarness()
+    event_date = "2026-07-12"
+    text = "主人喜欢茉莉花茶"
+    base = {
+        "text": text, "importance": 6, "entity": "master",
+    }
+    protected = {
+        **base,
+        "_external_import": {
+            "format": "hermes", "file": f"memories/{event_date}.md",
+            "section": "daily", "event_date": event_date,
+            "day_fingerprint": "fp-protected", "forge_eligible": False,
+        },
+    }
+    normal = {
+        **base,
+        "_external_import": {
+            **protected["_external_import"],
+            "day_fingerprint": "fp-normal", "forge_eligible": True,
+        },
+    }
+
+    await harness._apersist_new_facts("Neko", [protected, normal], semantic_dedup=False)
+
+    assert len(harness._mem) == 1
+    assert harness._mem[0]["forge_eligible"] is False
+    assert harness._mem[0]["external_import"]["day_fingerprint"] == "fp-protected"
+
+
+@pytest.mark.asyncio
 async def test_fts_dedup_exempts_cross_date_daily_hits():
     # FTS5 近似命中的既存 fact 若是「不同日期的 daily」→ 豁免（跨日期重复事件
     # 各自落盘）；同日期近似命中仍挡（兜 LLM 重抽输出不稳定的重试幂等）。
@@ -395,6 +426,66 @@ async def test_fts_dedup_exempts_cross_date_daily_hits():
         semantic_dedup=True,
     )
     assert len(same_date) == 0  # 同日期近似：仍判重复
+
+
+@pytest.mark.asyncio
+async def test_semantic_daily_rewrite_refreshes_existing_policy():
+    existing = _daily_fact("morning workout at the gym", "2026-07-12")
+    existing["hash"] = "legacy-hash"
+    existing["id"] = "fact-existing"
+    existing["forge_eligible"] = True
+    existing["external_import"] = existing.pop("_external_import")
+    existing["external_import"]["forge_eligible"] = True
+    harness = _PersistHarness(_FakeTimeIndexed([("fact-existing", 0.9)]))
+    harness._mem.append(existing)
+    incoming = {
+        "text": "worked out at the gym this morning",
+        "importance": 6, "entity": "master",
+        "_external_import": {
+            **existing["external_import"],
+            "day_fingerprint": "fp-rewritten",
+            "forge_eligible": False,
+        },
+    }
+
+    created = await harness._apersist_new_facts("Neko", [incoming])
+
+    assert len(created) == 1
+    assert existing["forge_eligible"] is False
+    assert existing["external_import"]["day_fingerprint"] == "fp-rewritten"
+
+
+@pytest.mark.asyncio
+async def test_archived_daily_policy_change_creates_active_carrier(tmp_path):
+    import json
+
+    archived = _daily_fact("went to the gym", "2026-07-12")
+    archived.update({"id": "fact-archived", "hash": "archived-hash"})
+    archived["forge_eligible"] = True
+    archived["external_import"] = archived.pop("_external_import")
+    archived["external_import"]["forge_eligible"] = True
+
+    class _ArchivedHarness(_PersistHarness):
+        def _facts_archive_path(self, name):
+            return str(tmp_path / "facts_archive.json")
+
+    archive_path = tmp_path / "facts_archive.json"
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+    harness = _ArchivedHarness(_FakeTimeIndexed([("fact-archived", 1.0)]))
+    incoming = {
+        "text": "went to the gym", "importance": 6, "entity": "master",
+        "_external_import": {
+            **archived["external_import"],
+            "day_fingerprint": "fp-reimported", "forge_eligible": False,
+        },
+    }
+
+    created = await harness._apersist_new_facts("Neko", [incoming])
+
+    assert len(created) == 1
+    assert created[0]["forge_eligible"] is False
+    assert created[0]["external_import"]["day_fingerprint"] == "fp-reimported"
+    assert archived["forge_eligible"] is True
 
 
 @pytest.mark.asyncio
