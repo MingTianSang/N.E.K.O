@@ -334,6 +334,9 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
     assert new_facts[0]['signal_processed'] is True, (
         "ai_disclosure fact 必须写盘时 signal_processed=True 防卡 Stage-2 池"
     )
+    assert new_facts[0]['forge_eligible'] is False, (
+        "ai_disclosure fact 不应进入锻造候选"
+    )
 
 
 @pytest.mark.unit
@@ -382,6 +385,7 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     existing_fact = {
         'id': 'fact_old', 'text': text, 'hash': content_hash,
         'source': 'ai_disclosure', 'signal_processed': True,
+        'forge_eligible': False,
         'importance': 6, 'entity': 'master',
     }
     existing_facts_list = [existing_fact]
@@ -402,6 +406,9 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     assert existing_fact['source'] == 'user_observation', "user 印证后应升级"
     assert existing_fact['signal_processed'] is False, (
         "升级后必须重置 signal_processed=False 让 Stage-2 重新评估"
+    )
+    assert 'forge_eligible' not in existing_fact, (
+        "用户确认后应清除 ai_disclosure 的锻造限制"
     )
     fs.asave_facts.assert_awaited_once_with('悠怡')
 

@@ -40,6 +40,11 @@ MAX_ENTRY_CHARS = 8000
 # under the fusion budget.
 MAX_SECTION_CHARS = 500
 
+# Producer-owned section labels. Entries from this explicitly identified
+# interaction log remain available for recall/audit but do not become
+# forge-card material. The marker is written only for new imports.
+_FORGE_INELIGIBLE_SECTIONS = frozenset({"猫粮互动记录", "猫娘互动记录"})
+
 _SUPPORTED_ROOT_NAMES = frozenset({"USER.MD", "SOUL.MD", "MEMORY.MD"})
 _DAILY_RE = re.compile(r"^memor(?:y|ies)/(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
 _DAILY_BASENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
@@ -365,6 +370,23 @@ def _normalised_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
+def is_forge_eligible_section(section: str) -> bool:
+    """Return the producer-owned forge policy for a Markdown section.
+
+    This uses the parsed heading metadata, never the candidate body, so normal
+    memory text cannot be misclassified because it contains an interaction word.
+    """
+    normalized_sections = {
+        part.strip()
+        for part in _normalised_text(section or "").split("/")
+        if part.strip()
+    }
+    blocked_sections = {
+        _normalised_text(value) for value in _FORGE_INELIGIBLE_SECTIONS
+    }
+    return not normalized_sections.intersection(blocked_sections)
+
+
 def _suspicious_patterns(text: str) -> list[str]:
     return [pattern_id for pattern_id, pattern in _INJECTION_PATTERNS if pattern.search(text)]
 
@@ -422,6 +444,7 @@ def build_import_candidates(
                 "kind": kind,
                 "source_file": source.path,
                 "source_section": fragment["section"][:MAX_SECTION_CHARS],
+                "forge_eligible": is_forge_eligible_section(fragment["section"]),
                 "event_date": event_date,
                 "warning_patterns": hits,
             })

@@ -55,7 +55,11 @@ from utils.language_utils import (
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.external_markdown_import import (
+    MAX_ENTRIES,
+    MAX_ENTRY_CHARS,
+    is_forge_eligible_section,
+)
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
 from utils.natural_expression_candidates import (
@@ -505,6 +509,9 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         ):
             raise HTTPException(status_code=400, detail="Invalid candidate fields")
         source_section = str(candidate.get("source_section") or "")
+        # Recompute the policy from importer-owned section metadata instead of
+        # trusting a browser-supplied boolean.
+        forge_eligible = is_forge_eligible_section(source_section)
         event_date = candidate.get("event_date")
         if target == "persona":
             # 带齐 provenance（source_file / source_section / event_date）传给融合层：
@@ -524,6 +531,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
                 "text": text,
                 "source_file": source_file,
                 "source_section": source_section,
+                "forge_eligible": forge_eligible,
                 "event_date": event_date,
             })
         else:
@@ -539,6 +547,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
                     "section": source_section,
                     "event_date": event_date,
                     "imported_at": imported_at,
+                    "forge_eligible": forge_eligible,
                 },
             })
 

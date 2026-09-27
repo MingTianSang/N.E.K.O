@@ -116,6 +116,11 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         "source_kind": "music",
         "source_name": "music_player",
         "delivery_mode": "passive",
+        # Playback state is context for the current reply only. Keep the
+        # policy on the structured event so a future memory bridge cannot turn
+        # it into a forge candidate by inspecting the rendered sentence.
+        "memory_persist": False,
+        "forge_eligible": False,
         "priority": 10,
         "coalesce_key": f"music-playback-state:{getattr(manager, 'lanlan_name', '')}",
         "metadata": {
@@ -125,6 +130,8 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
             "playback_window_id": playback_window_id,
             "playback_started_at": playback_started_at,
             "failure_reason": failure_reason,
+            "memory_persist": False,
+            "forge_eligible": False,
         },
         "context_type": "music_playback",
     }

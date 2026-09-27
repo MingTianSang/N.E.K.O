@@ -448,6 +448,26 @@ def test_facts_selector_normalizes_malformed_importance():
     assert facts[0]["importance"] == 0
 
 
+def test_facts_selector_honors_explicit_forge_policy_metadata():
+    facts, stats = F._select_forge_facts_with_stats(
+        [
+            {"id": "music", "text": "player confirmed a song", "importance": 9, "forge_eligible": False},
+            {
+                "id": "interaction",
+                "text": "cat interaction log",
+                "importance": 9,
+                "external_import": {"forge_eligible": False},
+            },
+            {"id": "keep", "text": "user likes tea", "importance": 9},
+        ],
+        min_importance=0,
+        limit=5,
+    )
+
+    assert [fact["id"] for fact in facts] == ["keep"]
+    assert stats["excludedCount"] == 2
+
+
 @pytest.mark.asyncio
 async def test_facts_url_failure_log_does_not_expose_credentials(monkeypatch, caplog):
     class FakeResponse:

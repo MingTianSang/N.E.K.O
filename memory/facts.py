@@ -3361,6 +3361,9 @@ class FactStore:
         event_start_at derived from event_date, and signal_processed=True
         (external_import facts skip the Stage-2 evidence loop)."""
         entry['external_import'] = dict(external_import)
+        forge_eligible = external_import.get('forge_eligible')
+        if isinstance(forge_eligible, bool):
+            entry['forge_eligible'] = forge_eligible
         entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
         entry['signal_processed'] = True
         event_date = external_import.get('event_date')
@@ -3720,6 +3723,7 @@ class FactStore:
                         existing.get('signal_processed'),
                     ))
                     existing['source'] = 'user_observation'
+                    existing.pop('forge_eligible', None)
                     existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
@@ -3956,6 +3960,12 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            if source == 'ai_disclosure':
+                # Path-B facts originate from assistant/context content. Keep
+                # them available for recall, but make the producer policy
+                # explicit so card forging never needs a text keyword guess.
+                # A later user-observation upgrade clears this marker.
+                fact_entry['forge_eligible'] = False
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
             if request_provenance and source == 'user_observation':
@@ -5120,6 +5130,18 @@ class FactStore:
             )
             for source_file, group in by_file.items()
         }
+        # A daily file can contain more than one heading. Keep the safe
+        # producer decision for the whole extracted day: if any source fragment
+        # is explicitly non-forgeable, facts extracted from that mixed batch do
+        # not become forge candidates. Missing metadata remains eligible for
+        # compatibility with callers that predate this marker.
+        day_forge_eligibility = {
+            source_file: all(
+                candidate.get("forge_eligible", True) is not False
+                for candidate in group
+            )
+            for source_file, group in by_file.items()
+        }
         # 指纹掺 event_date：不同日期的重复例行日记（文本逐字相同）各自是新的
         # 一天，不能被对方的指纹 skip（Codex P2）——与 fact 去重键含日期同理。
         day_fps = {
@@ -5231,6 +5253,7 @@ class FactStore:
                     "event_date": event_date,
                     "imported_at": imported_at,
                     "day_fingerprint": day_fps[source_file],
+                    "forge_eligible": day_forge_eligibility[source_file],
                 }
             try:
                 new_facts = await self._apersist_new_facts(

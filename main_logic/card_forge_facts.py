@@ -393,6 +393,16 @@ def _select_forge_facts_with_stats(
         if wire_id in exclude_ids or fact_key in exclude_keys or hash_aliases.intersection(exclude_hashes):
             excluded_count += 1
             continue
+        external_import = item.get("external_import")
+        if (
+            item.get("forge_eligible") is False
+            or (
+                isinstance(external_import, dict)
+                and external_import.get("forge_eligible") is False
+            )
+        ):
+            excluded_count += 1
+            continue
         if item.get("private") is True or item.get("redacted") is True:
             excluded_count += 1
             continue

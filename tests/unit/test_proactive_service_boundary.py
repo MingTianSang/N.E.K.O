@@ -344,6 +344,10 @@ def test_confirmed_music_playback_stays_passive() -> None:
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
     assert callback["channel"] == "music_playback"
+    assert callback["memory_persist"] is False
+    assert callback["forge_eligible"] is False
+    assert callback["metadata"]["memory_persist"] is False
+    assert callback["metadata"]["forge_eligible"] is False
     assert "播放器已确认开始播放《大喜》（泠鸢yousa）" in callback["detail"]
     assert "不要再次调用音乐播放工具" not in callback["detail"]
     manager.submit_proactive_callback.assert_not_called()

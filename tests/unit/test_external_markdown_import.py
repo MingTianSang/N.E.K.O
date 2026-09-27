@@ -25,6 +25,7 @@ MarkdownSourceFile = _MODULE.MarkdownSourceFile
 build_import_candidates = _MODULE.build_import_candidates
 collect_markdown_files = _MODULE.collect_markdown_files
 detect_source_format = _MODULE.detect_source_format
+is_forge_eligible_section = _MODULE.is_forge_eligible_section
 
 
 def test_openclaw_workspace_maps_files_to_neko_layers():
@@ -61,6 +62,23 @@ def test_openclaw_workspace_maps_files_to_neko_layers():
         "workspace/MEMORY.md",
         "workspace/memory/2026-07-11-release.md",
     }
+
+
+def test_interaction_section_carries_explicit_forge_policy():
+    sources = collect_markdown_files([{
+        "path": "workspace/MEMORY.md",
+        "content": (
+            "# 猫粮互动记录\n- 用户给猫娘播放了歌曲\n"
+            "# Preferences\n- 用户喜欢简洁回答\n"
+        ),
+    }])
+
+    facts = [c for c in build_import_candidates(sources)["candidates"] if c["target"] == "facts"]
+    by_section = {fact["source_section"]: fact for fact in facts}
+
+    assert by_section["猫粮互动记录"]["forge_eligible"] is False
+    assert by_section["Preferences"]["forge_eligible"] is True
+    assert is_forge_eligible_section("猫粮互动记录 / 播放记录") is False
 
 
 def test_hermes_section_delimiter_and_security_warning():
