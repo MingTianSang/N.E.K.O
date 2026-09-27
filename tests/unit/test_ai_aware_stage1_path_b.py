@@ -436,6 +436,60 @@ async def test_rollback_restores_forge_policy_from_source_upgrade_snapshot():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_daily_exact_hash_refreshes_forge_policy_and_rolls_back():
+    import hashlib
+
+    event_date = '2026-07-16'
+    text = '主人喜欢茉莉花茶'
+    content_hash = hashlib.sha256(f'{event_date}\n{text}'.encode()).hexdigest()[:16]
+    old_meta = {
+        'format': 'hermes', 'file': 'memories/2026-07-16.md',
+        'section': 'daily', 'event_date': event_date,
+        'day_fingerprint': 'old-fingerprint', 'forge_eligible': True,
+    }
+    existing = {
+        'id': 'fact_daily', 'text': text, 'hash': content_hash,
+        'source': 'user_observation', 'signal_processed': True,
+        'forge_eligible': True, 'external_import': old_meta,
+        'tags': ['external_import', 'hermes'],
+        'event_start_at': f'{event_date}T00:00:00',
+        'importance': 6, 'entity': 'master',
+    }
+    fs = _make_fact_store(facts={'悠怡': [existing]})
+    incoming = [{
+        'text': text, 'importance': 6, 'entity': 'master',
+        '_external_import': {
+            **old_meta, 'day_fingerprint': 'new-fingerprint',
+            'forge_eligible': False,
+        },
+    }]
+
+    fs.asave_facts = AsyncMock(return_value=None)
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[existing])):
+        assert await fs._apersist_new_facts('悠怡', incoming) == []
+
+    assert existing['forge_eligible'] is False
+    assert existing['external_import']['day_fingerprint'] == 'new-fingerprint'
+    fs.asave_facts.assert_awaited_once_with('悠怡')
+
+    fs.asave_facts = AsyncMock(side_effect=RuntimeError('disk full'))
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[existing])):
+        with pytest.raises(RuntimeError, match='disk full'):
+            await fs._apersist_new_facts('悠怡', [{
+                **incoming[0],
+                '_external_import': {
+                    **incoming[0]['_external_import'],
+                    'day_fingerprint': 'rollback-fingerprint',
+                    'forge_eligible': True,
+                },
+            }])
+
+    assert existing['forge_eligible'] is False
+    assert existing['external_import']['day_fingerprint'] == 'new-fingerprint'
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_apersist_monotonic_source_upgrade_within_same_batch():
     """Regression (Codex P2 round-10 on PR #1408)：同一次 Stage-1 extracted
     payload 里若同 text 出现两次（先 ai_disclosure 后 user_observation），

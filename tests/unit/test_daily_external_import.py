@@ -141,6 +141,73 @@ async def test_daily_mixed_sections_keep_forge_policy_per_extracted_batch():
 
 
 @pytest.mark.asyncio
+async def test_daily_mixed_sections_keep_consecutive_order():
+    harness = _DailyHarness(
+        lambda journal: [{"text": f"fact from: {journal}", "importance": 6}],
+    )
+    source_file = "memories/2026-07-14.md"
+    candidates = [
+        {"text": "interaction one", "source_file": source_file,
+         "event_date": "2026-07-14", "forge_eligible": False},
+        {"text": "normal preference", "source_file": source_file,
+         "event_date": "2026-07-14", "forge_eligible": True},
+        {"text": "interaction two", "source_file": source_file,
+         "event_date": "2026-07-14", "forge_eligible": False},
+    ]
+
+    result = await harness.aimport_external_daily(
+        "Neko", candidates, "hermes", "t",
+    )
+
+    assert result["added"] == 3
+    assert harness.extract_inputs == [
+        "interaction one", "normal preference", "interaction two",
+    ]
+    persisted = [f for batch in harness.persisted for f in batch]
+    assert [f["_external_import"]["forge_eligible"] for f in persisted] == [
+        False, True, False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_daily_policy_change_invalidates_fingerprint():
+    harness = _DailyHarness(lambda journal: [{"text": "known fact", "importance": 6}])
+    source_file = "memories/2026-07-15.md"
+    normal = [{"text": "same text", "source_file": source_file,
+               "event_date": "2026-07-15", "forge_eligible": True}]
+    interaction = [{**normal[0], "forge_eligible": False}]
+
+    first = await harness.aimport_external_daily("Neko", normal, "hermes", "t1")
+    second = await harness.aimport_external_daily("Neko", interaction, "hermes", "t2")
+
+    assert first["skipped_days"] == 0
+    assert second["skipped_days"] == 0
+    assert len(harness.extract_inputs) == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_policy_split_overhead_does_not_reject_mixed_days(monkeypatch):
+    # Policy boundaries are mandatory extra calls. They get a small separate
+    # budget, so a two-day mixed import is not rejected by a three-call base cap.
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 3)
+    harness = _DailyHarness(lambda journal: [{"text": journal, "importance": 6}])
+    candidates = []
+    for day in ("2026-07-16", "2026-07-17"):
+        source_file = f"memories/{day}.md"
+        candidates.extend([
+            {"text": "interaction", "source_file": source_file,
+             "event_date": day, "forge_eligible": False},
+            {"text": "normal", "source_file": source_file,
+             "event_date": day, "forge_eligible": True},
+        ])
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+
+    assert result["failed_days"] == 0
+    assert len(harness.extract_inputs) == 4
+
+
+@pytest.mark.asyncio
 async def test_daily_extraction_failure_is_best_effort_skipped():
     def stub(journal):
         return None if "boom" in journal else [{"text": "ok fact", "importance": 5}]

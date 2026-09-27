@@ -3502,11 +3502,13 @@ class FactStore:
         )
         upgraded_count = 0
         provenance_updated_count = 0
+        external_import_updated_count = 0
         # (entry, 原 source, 原 signal_processed, forge 标记是否存在, 原值)：
         # 落盘/索引失败时还原 in-place 升级的全部字段。
         # in-place 升级，否则重试撞守卫直接跳过保存。
         upgraded_snapshots: list[tuple[dict, Any, Any, bool, Any]] = []
         provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
+        external_import_snapshots: list[tuple[dict, dict[str, Any]]] = []
         request_provenance: dict[str, Any] = {}
         if isinstance(speaker_provenance, dict):
             from memory.speaker_trust import stable_speaker_id
@@ -3629,6 +3631,42 @@ class FactStore:
                 f"existing_speaker={existing_speaker_id or '-'} "
                 f"incoming_speaker={request_provenance['speaker_id']}"
             )
+
+        def _reconcile_daily_external_import(
+            existing: dict | None, incoming: dict | None, *, force: bool = False,
+        ) -> None:
+            """Refresh daily policy metadata when an exact fact is re-imported."""
+            nonlocal external_import_updated_count
+            if (
+                existing is None
+                or not isinstance(incoming, dict)
+                or incoming.get('section') != 'daily'
+            ):
+                return
+            current = existing.get('external_import')
+            incoming_policy = incoming.get('forge_eligible')
+            policy_changed = (
+                isinstance(incoming_policy, bool)
+                and existing.get('forge_eligible') != incoming_policy
+            )
+            fingerprint_changed = (
+                not isinstance(current, dict)
+                or current.get('section') != 'daily'
+                or current.get('day_fingerprint') != incoming.get('day_fingerprint')
+            )
+            if not (force or policy_changed or fingerprint_changed):
+                return
+            keys = ('external_import', 'forge_eligible', 'tags', 'signal_processed',
+                    'event_start_at')
+            previous = {
+                key: (dict(existing[key]) if isinstance(existing[key], dict)
+                      else list(existing[key]) if isinstance(existing[key], list)
+                      else existing[key])
+                for key in keys if key in existing
+            }
+            external_import_snapshots.append((existing, previous))
+            self._apply_external_import_provenance(existing, incoming)
+            external_import_updated_count += 1
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -3709,11 +3747,15 @@ class FactStore:
             content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
-                if (
+                source_upgrade = (
                     existing is not None
                     and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
                     and source == 'user_observation'
-                ):
+                )
+                _reconcile_daily_external_import(
+                    existing, external_import, force=source_upgrade,
+                )
+                if source_upgrade:
                     # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
                     # → 升级 source + 重新进 Stage-2 evidence loop。
                     # scoped fact 例外：简化管线不进 Stage-2，升级 source 但
@@ -4007,6 +4049,7 @@ class FactStore:
                     await self._rollback_uncommitted_facts(
                         lanlan_name, new_facts, existing_hashes,
                         upgraded_snapshots, provenance_snapshots,
+                        external_import_snapshots,
                     )
                     raise
 
@@ -4014,7 +4057,10 @@ class FactStore:
         # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
         # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
         # 把升级 wipe 了。
-        if new_facts or upgraded_count or provenance_updated_count:
+        if (
+            new_facts or upgraded_count or provenance_updated_count
+            or external_import_updated_count
+        ):
             try:
                 await self.asave_facts(lanlan_name)
             except BaseException:
@@ -4026,6 +4072,7 @@ class FactStore:
                 await self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
                     upgraded_snapshots, provenance_snapshots,
+                    external_import_snapshots,
                 )
                 raise
         if new_facts:
@@ -4062,6 +4109,11 @@ class FactStore:
                     if (identity := _fact_scoped_identity(entry)) is not None
                 }
                 reconciled_facts.extend(reconciled_by_identity.values())
+        if external_import_updated_count:
+            logger.info(
+                f"[FactStore] {lanlan_name}: refreshed external-import provenance for "
+                f"{external_import_updated_count} exact facts"
+            )
 
         return new_facts
 
@@ -5097,15 +5149,16 @@ class FactStore:
         re-extraction output is absorbed by the same-date FTS5 dedup in
         ``_apersist_new_facts``.
 
-        After fingerprint filtering, more than ``EXTERNAL_IMPORT_DAILY_MAX_FILES``
-        genuinely-new days raises ``ExternalMemoryImportTooLargeError`` — an
-        unbounded workspace would mean hundreds of LLM calls and blow the 240s
-        window even under bounded concurrency; the frontend guides splitting
-        the import, and already-imported days keep skipping for free (Codex P2).
+        After fingerprint filtering, extraction calls use the base
+        ``EXTERNAL_IMPORT_DAILY_MAX_FILES`` budget plus mandatory policy-split
+        overhead, capped at 2x the base budget. An unbounded workspace would
+        mean hundreds of LLM calls and blow the 240s window even under bounded
+        concurrency; the frontend guides splitting the import, and already-
+        imported days keep skipping for free (Codex P2).
 
         Returns ``{'added': int, 'days': int, 'failed_days': int, 'skipped_days': int}``.
         """
-        from memory.external_markdown_import import batch_daily_fragments
+        from memory.external_markdown_import import batch_daily_candidates
         from memory.persona.fusion import ExternalMemoryImportTooLargeError
         from utils.llm_client import convert_to_messages
 
@@ -5140,6 +5193,7 @@ class FactStore:
             source_file: self._daily_fingerprint(
                 [str(g.get("text") or "") for g in group],
                 event_date=day_dates[source_file],
+                forge_eligible=[g.get("forge_eligible", True) is not False for g in group],
             )
             for source_file, group in by_file.items()
         }
@@ -5153,37 +5207,38 @@ class FactStore:
         # 分批预计算 + cap 按「总抽取调用数」而非天数：单个超大日记文件能拆出
         # 几十批串行调用，len(pending) 拦不住它撞 240s 墙（Codex P2）。tiktoken
         # 编码是同步 CPU，offload 线程池。
-        def _daily_policy_groups(group: list[dict]) -> list[tuple[bool, list[dict]]]:
-            """Keep forge policy attached when one journal mixes sections."""
-            grouped: dict[bool, list[dict]] = {}
-            for candidate in group:
-                forge_eligible = candidate.get("forge_eligible", True) is not False
-                grouped.setdefault(forge_eligible, []).append(candidate)
-            return list(grouped.items())
-
         batches_by_file: dict[str, list[tuple[str, bool]]] = await asyncio.to_thread(
             lambda: {
-                source_file: [
-                    (batch, forge_eligible)
-                    for forge_eligible, policy_group in _daily_policy_groups(group)
-                    for batch in batch_daily_fragments(
-                        [
-                            text for text in (
-                                str(g.get("text") or "").strip()
-                                for g in policy_group
-                            ) if text
-                        ],
-                        EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
-                    )
-                ]
+                source_file: batch_daily_candidates(group, EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS)
                 for source_file, group in pending.items()
             }
         )
         total_batches = sum(len(b) for b in batches_by_file.values())
-        if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+        policy_group_count = sum(
+            sum(
+                1
+                for index, candidate in enumerate(group)
+                if index == 0
+                or (
+                    (candidate.get("forge_eligible", True) is not False)
+                    != (group[index - 1].get("forge_eligible", True) is not False)
+                )
+            )
+            for group in pending.values()
+            if group
+        )
+        policy_split_overhead = max(0, policy_group_count - len(pending))
+        # A policy boundary is a mandatory extra call: merging it would lose the
+        # producer-owned forge marker. Budget those calls separately while keeping
+        # the normal 45-call guard and a hard 2x ceiling for pathological journals.
+        allowed_batches = min(
+            EXTERNAL_IMPORT_DAILY_MAX_FILES * 2,
+            EXTERNAL_IMPORT_DAILY_MAX_FILES + policy_split_overhead,
+        )
+        if total_batches > allowed_batches:
             raise ExternalMemoryImportTooLargeError(
                 f"daily import needs {total_batches} extraction calls across "
-                f"{len(pending)} new journal days (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); "
+                f"{len(pending)} new journal days (cap {allowed_batches}); "
                 "split the workspace"
             )
 
@@ -5317,9 +5372,14 @@ class FactStore:
         }
 
     @staticmethod
-    def _daily_fingerprint(texts: list[str], *, event_date: str | None = None) -> str:
+    def _daily_fingerprint(
+        texts: list[str], *, event_date: str | None = None,
+        forge_eligible: list[bool] | None = None,
+    ) -> str:
         """Whitespace/case-normalized, **order-preserving** fingerprint over one
-        day's fragment texts, salted with the day's ``event_date``. Journals are
+        day's fragment texts, salted with its date and each fragment's policy.
+        Policy changes must re-extract even when text and date are unchanged.
+        Journals are
         narrative — reordering entries (e.g. "stopped medication" vs "started
         medication" swapped) changes meaning, so an edited order must re-extract
         instead of fingerprint-skipping (Greptile P1); and a routine journal
@@ -5327,7 +5387,11 @@ class FactStore:
         (Codex P2). persona's ``_fusion_fingerprint`` stays sorted and unsalted
         by design: its candidates are an unordered, date-less set."""
         norm = [" ".join((t or "").casefold().split()) for t in texts]
-        payload = f"{event_date or ''}\n" + "\n".join(norm)
+        policies = [True] * len(norm) if forge_eligible is None else forge_eligible
+        payload = json.dumps(
+            ["daily-v2", event_date or "", list(zip(norm, policies, strict=True))],
+            ensure_ascii=False, separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def aextract_facts_with_known_pool(
@@ -5458,6 +5522,7 @@ class FactStore:
         self, lanlan_name: str, new_facts: list, existing_hashes: set,
         upgraded_snapshots: list | None = None,
         provenance_snapshots: list | None = None,
+        external_import_snapshots: list | None = None,
     ) -> None:
         """Undo in-memory effects of a batch that never reached disk.
 
@@ -5490,6 +5555,13 @@ class FactStore:
             for key in (
                 'speaker_id', 'speaker_label', 'speaker_trust',
                 'speaker_entity_id', 'speaker_provenance_mixed',
+            ):
+                entry.pop(key, None)
+            entry.update(previous)
+        for entry, previous in reversed(external_import_snapshots or []):
+            for key in (
+                'external_import', 'forge_eligible', 'tags',
+                'signal_processed', 'event_start_at',
             ):
                 entry.pop(key, None)
             entry.update(previous)

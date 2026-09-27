@@ -266,6 +266,23 @@ def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
     return batches
 
 
+def batch_daily_candidates(candidates: list[dict], max_tokens: int) -> list[tuple[str, bool]]:
+    """Batch consecutive policy runs without reordering a day's fragments.
+
+    Shared by extraction and preview so policy boundaries count toward the
+    same LLM-call budget and ETA in both paths.
+    """
+    from itertools import groupby
+
+    batches: list[tuple[str, bool]] = []
+    for eligible, group in groupby(
+        candidates, key=lambda item: item.get("forge_eligible", True) is not False,
+    ):
+        texts = [str(item.get("text") or "") for item in group]
+        batches.extend((text, eligible) for text in batch_daily_fragments(texts, max_tokens))
+    return batches
+
+
 def _is_fence_line(line: str) -> bool:
     stripped = line.lstrip()
     return stripped.startswith("```") or stripped.startswith("~~~")

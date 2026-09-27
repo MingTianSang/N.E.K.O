@@ -3606,7 +3606,7 @@
             }
             payload.acknowledge_warnings = true;
             // 预估融合耗时：persona 融合按 entity(neko/master)分组每组一次 LLM 往返，
-            // daily 日记按天和锻造策略分组抽取；MEMORY.md facts 不调 LLM。
+            // daily 日记按连续锻造策略段和 token 上限分批抽取；MEMORY.md facts 不调 LLM。
             // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
             // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
             // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
