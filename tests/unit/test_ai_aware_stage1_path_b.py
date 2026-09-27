@@ -415,6 +415,27 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rollback_restores_forge_policy_from_source_upgrade_snapshot():
+    fs = _make_fact_store(facts={'悠怡': []})
+    entry = {
+        'id': 'fact_old',
+        'source': 'user_observation',
+        'signal_processed': False,
+    }
+    await fs._rollback_uncommitted_facts(
+        '悠怡', [], set(),
+        upgraded_snapshots=[
+            (entry, 'ai_disclosure', True, True, False),
+        ],
+    )
+
+    assert entry['source'] == 'ai_disclosure'
+    assert entry['signal_processed'] is True
+    assert entry['forge_eligible'] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_apersist_monotonic_source_upgrade_within_same_batch():
     """Regression (Codex P2 round-10 on PR #1408)：同一次 Stage-1 extracted
     payload 里若同 text 出现两次（先 ai_disclosure 后 user_observation），

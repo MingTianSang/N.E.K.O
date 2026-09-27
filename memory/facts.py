@@ -3502,9 +3502,10 @@ class FactStore:
         )
         upgraded_count = 0
         provenance_updated_count = 0
-        # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
+        # (entry, 原 source, 原 signal_processed, forge 标记是否存在, 原值)：
+        # 落盘/索引失败时还原 in-place 升级的全部字段。
         # in-place 升级，否则重试撞守卫直接跳过保存。
-        upgraded_snapshots: list[tuple[dict, Any, Any]] = []
+        upgraded_snapshots: list[tuple[dict, Any, Any, bool, Any]] = []
         provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
         request_provenance: dict[str, Any] = {}
         if isinstance(speaker_provenance, dict):
@@ -3721,6 +3722,8 @@ class FactStore:
                         existing,
                         existing.get('source', self._SOURCE_DEFAULT),
                         existing.get('signal_processed'),
+                        'forge_eligible' in existing,
+                        existing.get('forge_eligible'),
                     ))
                     existing['source'] = 'user_observation'
                     existing.pop('forge_eligible', None)
@@ -5463,7 +5466,10 @@ class FactStore:
         success and the caller advances a volatile cursor over facts that
         facts.json never received. In-place source and provenance changes are
         restored so a retry cannot hit the dedup guard and skip persistence."""
-        for entry, prev_source, prev_signal in (upgraded_snapshots or []):
+        for (
+            entry, prev_source, prev_signal,
+            had_forge_eligible, prev_forge_eligible,
+        ) in (upgraded_snapshots or []):
             # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
             # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
             # 调用方拿到"成功"推游标，磁盘上的 fact 却仍未被印证。
@@ -5472,6 +5478,10 @@ class FactStore:
                 entry.pop('signal_processed', None)
             else:
                 entry['signal_processed'] = prev_signal
+            if had_forge_eligible:
+                entry['forge_eligible'] = prev_forge_eligible
+            else:
+                entry.pop('forge_eligible', None)
         for entry, previous in reversed(provenance_snapshots or []):
             # Must be the SAME key set `_reconcile_existing_provenance` pops
             # and rewrites — a key it wrote but this loop does not clear would
