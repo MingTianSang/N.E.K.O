@@ -3366,6 +3366,12 @@ class FactStore:
             entry['forge_eligible'] = forge_eligible
         entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
         entry['signal_processed'] = True
+        if entry.get('source') == 'ai_disclosure':
+            # External-import policy must not turn an AI disclosure into a
+            # forge candidate. Only the monotonic user-observation upgrade
+            # path is allowed to clear this restriction.
+            entry['forge_eligible'] = False
+            entry['external_import']['forge_eligible'] = False
         event_date = external_import.get('event_date')
         if isinstance(event_date, str) and event_date:
             entry['event_start_at'] = f"{event_date}T00:00:00"
@@ -3658,6 +3664,25 @@ class FactStore:
                     and existing.get('forge_eligible') != incoming_policy
                 )
             )
+
+        def _daily_external_import_policy_changed(
+            existing: dict | None, incoming: dict | None,
+        ) -> bool:
+            if (
+                existing is None
+                or not isinstance(incoming, dict)
+                or incoming.get('section') != 'daily'
+            ):
+                return False
+            incoming_policy = incoming.get('forge_eligible')
+            if not isinstance(incoming_policy, bool):
+                return False
+            current_policy = existing.get('forge_eligible')
+            if not isinstance(current_policy, bool):
+                existing_meta = existing.get('external_import')
+                if isinstance(existing_meta, dict):
+                    current_policy = existing_meta.get('forge_eligible')
+            return current_policy != incoming_policy
 
         def _reconcile_daily_external_import(
             existing: dict | None, incoming: dict | None, *, force: bool = False,
@@ -4035,7 +4060,7 @@ class FactStore:
                         # save path. If the daily policy/fingerprint changed,
                         # keep an active carrier with the new provenance below;
                         # otherwise preserve the existing archive dedup guard.
-                        if not _daily_external_import_needs_refresh(
+                        if not _daily_external_import_policy_changed(
                             duplicate_hit, external_import,
                         ):
                             if incoming_daily_policy is False:
@@ -4043,44 +4068,16 @@ class FactStore:
                                     duplicate_hit, daily_event_date,
                                 )
                             continue
-                        semantic_protected = (
-                            incoming_daily_policy is True
-                            and _is_daily_protected_fact(
-                                duplicate_hit, daily_event_date,
-                            )
-                        )
                         if incoming_daily_policy is False:
                             _mark_daily_protected_fact(
                                 duplicate_hit, daily_event_date,
                             )
-                        if semantic_protected:
-                            external_import = _preserve_daily_policy(
-                                external_import,
-                            )
                         arbitration_hit = None
                     else:
                         continue
-                if arbitration_hit is not None:
-                    semantic_protected = (
-                        incoming_daily_policy is True
-                        and _is_daily_protected_fact(
-                            arbitration_hit[0], daily_event_date,
-                        )
-                    )
-                    if incoming_daily_policy is False:
-                        _mark_daily_protected_fact(
-                            arbitration_hit[0], daily_event_date,
-                        )
-                    if semantic_protected:
-                        external_import = _preserve_daily_policy(
-                            external_import,
-                        )
-                    _reconcile_daily_external_import(
-                        arbitration_hit[0], external_import,
-                        preserve_protected=(
-                            preserve_protected or semantic_protected
-                        ),
-                    )
+                # A near match is a candidate for LLM arbitration, not an
+                # exact duplicate. Keep its provenance untouched while
+                # persisting the newly extracted fact below.
 
             created_at_iso = datetime.now().isoformat()
             # Event timing (schema v2): LLM 输出相对时间 (offset+unit)，系统

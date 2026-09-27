@@ -341,6 +341,29 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_external_import_cannot_override_ai_disclosure_forge_policy():
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    extracted = [{
+        'text': '悠怡播放了一首歌', 'importance': 6, 'entity': 'neko',
+        'source': 'ai_disclosure',
+        '_external_import': {
+            'format': 'hermes', 'file': 'memories/2026-07-12.md',
+            'section': 'daily', 'event_date': '2026-07-12',
+            'day_fingerprint': 'fp', 'forge_eligible': True,
+        },
+    }]
+
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])):
+        new_facts = await fs._apersist_new_facts('悠怡', extracted)
+
+    assert new_facts[0]['source'] == 'ai_disclosure'
+    assert new_facts[0]['forge_eligible'] is False
+    assert new_facts[0]['external_import']['forge_eligible'] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_apersist_llm_source_field_overrides_default():
     """LLM 显式输出的 source 字段优先于 default_source（trust LLM 的
     per-fact 判断）。"""
