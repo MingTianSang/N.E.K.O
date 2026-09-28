@@ -263,6 +263,10 @@ function captureSettingsSnapshot() {
         // VRM 打光
         ambient: document.getElementById('ambient-light-slider')?.value ?? '',
         mainLight: document.getElementById('main-light-slider')?.value ?? '',
+        fillLight: document.getElementById('fill-light-slider')?.value ?? '',
+        rimLight: document.getElementById('rim-light-slider')?.value ?? '',
+        topLight: document.getElementById('top-light-slider')?.value ?? '',
+        bottomLight: document.getElementById('bottom-light-slider')?.value ?? '',
         exposure: document.getElementById('exposure-slider')?.value ?? '',
         toneMapping: document.getElementById('tonemapping-select')?.value ?? '',
         outlineWidth: document.getElementById('vrm-outline-width-slider')?.value ?? '',
@@ -287,7 +291,8 @@ function captureSettingsSnapshot() {
 // 比较两个快照是否一致
 function snapshotsEqual(a, b) {
     if (!a || !b) return false;
-    return Object.keys(a).every(k => String(a[k]) === String(b[k]));
+    return Object.keys(a).length === Object.keys(b).length
+        && Object.keys(a).every(k => Object.prototype.hasOwnProperty.call(b, k) && String(a[k]) === String(b[k]));
 }
 
 function modelSelectionChanged(before, after) {
@@ -304,6 +309,9 @@ function captureModelManagerSaveContext(currentState = {}) {
     const info = hasModelInfoOverride
         ? currentState.modelInfo
         : (typeof currentModelInfo !== 'undefined' ? currentModelInfo : null);
+    const settingsSnapshot = Object.prototype.hasOwnProperty.call(currentState, 'settingsSnapshot')
+        ? currentState.settingsSnapshot
+        : captureSettingsSnapshot();
     return {
         modelType: currentState.modelType
             ?? (typeof currentModelType !== 'undefined' ? currentModelType : window._modelManagerCurrentAvatarType || ''),
@@ -313,7 +321,9 @@ function captureModelManagerSaveContext(currentState = {}) {
                 : window._modelManagerCurrentLive3dSubType || ''),
         modelKey: info
             ? String(info.path || info.url || info.name || '')
-            : ''
+            : '',
+        // 快照字段均为基本类型，复制后不会随控件继续编辑而改变。
+        settingsSnapshot: settingsSnapshot == null ? null : { ...settingsSnapshot }
     };
 }
 
@@ -321,9 +331,6 @@ function isModelManagerSaveContextCurrent(context, currentState = {}) {
     if (!context) return false;
     const hasModelInfoOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelInfo');
     const hasModelKeyOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelKey');
-    const hasCurrentModelInfo = hasModelInfoOverride
-        || hasModelKeyOverride
-        || typeof currentModelInfo !== 'undefined';
     const info = hasModelInfoOverride
         ? currentState.modelInfo
         : (typeof currentModelInfo !== 'undefined' ? currentModelInfo : null);
@@ -336,13 +343,17 @@ function isModelManagerSaveContextCurrent(context, currentState = {}) {
         ?? (typeof currentLive3dSubType !== 'undefined'
             ? currentLive3dSubType
             : window._modelManagerCurrentLive3dSubType || '');
+    const currentSnapshot = Object.prototype.hasOwnProperty.call(currentState, 'settingsSnapshot')
+        ? currentState.settingsSnapshot
+        : captureSettingsSnapshot();
     return String(currentType)
             === String(context.modelType || '')
         && String(currentSubType)
             === String(context.live3dSubType || '')
-        && (!context.modelKey
-            || !hasCurrentModelInfo
-            || currentKey === String(context.modelKey));
+        && currentKey === String(context.modelKey || '')
+        && context.settingsSnapshot != null
+        && currentSnapshot != null
+        && snapshotsEqual(context.settingsSnapshot, currentSnapshot);
 }
 
 // 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）

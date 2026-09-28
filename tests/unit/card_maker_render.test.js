@@ -28,6 +28,7 @@ function loadDrawModelWithComposition({ layered = true } = {}) {
     };
     const source = `(() => {
         let currentModelType = 'pngtuber';
+        let pngtuberCardFrame = null;
         const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
         ${sourceHelpers}
         ${drawFunction}
@@ -117,6 +118,13 @@ test('does not clear a newer model context when an older save completes', async 
         let currentModelType = 'live2d';
         let currentLive3dSubType = '';
         let currentModelInfo = { path: '/models/a.model3.json' };
+        function captureSettingsSnapshot() {
+            return { modelType: currentModelType, stableSetting: 'unchanged' };
+        }
+        function snapshotsEqual(a, b) {
+            return !!a && !!b && Object.keys(a).length === Object.keys(b).length
+                && Object.keys(a).every(key => String(a[key]) === String(b[key]));
+        }
         ${helpers}
         return {
             capture: captureModelManagerSaveContext,

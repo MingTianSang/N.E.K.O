@@ -14,6 +14,7 @@
     // ====== 状态 ======
     let currentCharaName = '';
     let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
+    let pngtuberCardFrame = null; // 制卡预览与导出共用的分层待机帧及可见边界
     let isModelLoaded = false;
     let isModelLoading = false;
     let primaryActionBusy = false;
@@ -575,6 +576,7 @@
     async function loadCharacterModel(type, cfg) {
         isModelLoaded = false;
         stopPreviewLoop();
+        pngtuberCardFrame = null;
         prepareHiddenModelViewport();
 
         // 先隐藏所有渲染容器
@@ -827,6 +829,7 @@
         resizeModelRendererForCard('pngtuber');
         await waitForPNGTuberDrawable(mgr);
         if (isEmbedMode) framePNGTuberForEmbed(mgr);
+        else preparePNGTuberCardFrame(mgr);
     }
 
     function frameLive2DModelForEmbed(mgr) {
@@ -1156,19 +1159,36 @@
     }
 
     function getPNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
+        if (currentModelType !== 'pngtuber' || !source) return fullBounds;
+        if (currentModelType === 'pngtuber' && source === pngtuberCardFrame?.canvas) {
+            return pngtuberCardFrame.bounds;
+        }
+        if (!window.cardMakerPNGTuberManager?.isLayeredActive?.()) return fullBounds;
+        return measurePNGTuberSourceBounds(source, sourceSize);
+    }
+
+    function preparePNGTuberCardFrame(mgr) {
+        pngtuberCardFrame = null;
+        if (!mgr?.isLayeredActive?.()) return;
+        // 卡面是静态图片：保留独立的全分辨率待机帧，避免预览和导出取到
+        // 不同动画时刻。边界只在加载时测量一次，缩放/拖动不再读取像素。
+        const canvas = mgr.renderLayeredSnapshotCanvas('idle');
+        if (!canvas) throw new Error('PNGTuber snapshot is missing');
+        const size = getDrawableSourceSize(canvas);
+        if (size.width <= 0 || size.height <= 0) throw new Error('PNGTuber snapshot is empty');
+        pngtuberCardFrame = { canvas, bounds: measurePNGTuberSourceBounds(canvas, size) };
+    }
+
+    function measurePNGTuberSourceBounds(source, sourceSize) {
         const fullBounds = {
             x: 0,
             y: 0,
             width: sourceSize.width,
             height: sourceSize.height
         };
-        if (currentModelType !== 'pngtuber' || !source) return fullBounds;
-
-        const mgr = window.cardMakerPNGTuberManager;
-        if (!mgr?.isLayeredActive?.()) return fullBounds;
-
         // 分层画布的 padding 同时容纳动态偏移和物理运动，不能按固定值裁掉。
-        // 读取当前帧的 alpha 边界，只去除这一帧真正透明的区域，避免截断运动中的像素。
+        // 只测量已固定快照的 alpha 边界，保留进入 padding 的像素。
         try {
             const ctx = source.getContext?.('2d');
             const imageData = ctx?.getImageData?.(0, 0, sourceSize.width, sourceSize.height);
@@ -1181,10 +1201,10 @@
             for (let y = 0; y < sourceSize.height; y += 1) {
                 for (let x = 0; x < sourceSize.width; x += 1) {
                     if (pixels[(y * sourceSize.width + x) * 4 + 3] <= 0) continue;
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
                 }
             }
             if (maxX < minX || maxY < minY) return fullBounds;
@@ -1286,7 +1306,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas(options = {}) {
+    function getModelCanvas() {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -1303,11 +1323,7 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
-            const mgr = window.cardMakerPNGTuberManager;
-            if (options.fullResolution && mgr?.isLayeredActive?.()) {
-                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
-                if (snapshot) return snapshot;
-            }
+            if (pngtuberCardFrame) return pngtuberCardFrame.canvas;
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1334,6 +1350,7 @@
                 else mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'pngtuber') {
+            if (pngtuberCardFrame) return;
             const mgr = window.cardMakerPNGTuberManager;
             mgr?.setSpeaking?.(false);
             if (typeof mgr?.setLayeredStateIndex === 'function' && mgr.layeredStateIndex !== 0) {
@@ -1737,7 +1754,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
+        const srcCanvas = getModelCanvas();
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {

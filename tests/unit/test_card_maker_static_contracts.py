@@ -389,7 +389,7 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
 def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_export():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
     get_canvas_block = script[
-        script.index("    function getModelCanvas(options = {})"):
+        script.index("    function getModelCanvas()"):
         script.index("    /**\n     * 在截图前确保渲染器输出最新帧")
     ]
     export_block = script[
@@ -397,10 +397,9 @@ def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_exp
         script.index("    async function renderFullCard(options = {})")
     ]
 
-    assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
-    assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
-    assert "if (snapshot) return snapshot;" in get_canvas_block
-    assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
+    assert "if (pngtuberCardFrame) return pngtuberCardFrame.canvas;" in get_canvas_block
+    assert "preparePNGTuberCardFrame(mgr);" in script
+    assert "const srcCanvas = getModelCanvas();" in export_block
 
 
 def test_card_maker_preserves_full_pngtuber_bounds_when_composing_card_face():
@@ -423,12 +422,23 @@ def test_model_manager_save_completion_is_scoped_to_the_original_model_context()
 
     assert "function captureModelManagerSaveContext(currentState = {})" in script
     assert "function isModelManagerSaveContextCurrent(context, currentState = {})" in script
+    assert "settingsSnapshot: settingsSnapshot == null ? null : { ...settingsSnapshot }" in script
+    assert "&& snapshotsEqual(context.settingsSnapshot, currentSnapshot);" in script
     assert "const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {" in script
     assert "&& saveContextStillCurrent" in script
     assert "saveContext" in script[script.index("offerCardFaceAfterModelSave({"):script.index("offerCardFaceAfterModelSave({") + 300]
     card_face = (MODEL_MANAGER_JS_DIR / "card-face.js").read_text(encoding="utf-8")
     assert "getCurrentSaveContext" in card_face
     assert "isModelManagerSaveContextCurrent(state.saveContext, currentContext || {})" in card_face
+
+
+def test_card_maker_freezes_layered_pngtuber_frame_for_preview_and_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+
+    assert "let pngtuberCardFrame = null;" in script
+    assert "preparePNGTuberCardFrame(mgr);" in script
+    assert "if (pngtuberCardFrame) return pngtuberCardFrame.canvas;" in script
+    assert "if (pngtuberCardFrame) return;" in script
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():

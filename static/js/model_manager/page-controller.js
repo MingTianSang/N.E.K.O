@@ -7242,7 +7242,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const saveContext = captureModelManagerSaveContext({
                 modelType: currentModelType,
                 live3dSubType: currentLive3dSubType,
-                modelInfo: currentModelInfo
+                modelInfo: currentModelInfo,
+                settingsSnapshot: captureSettingsSnapshot()
             });
             const savingModelType = saveContext.modelType;
             const savingLive3dSubType = saveContext.live3dSubType;
@@ -7298,7 +7299,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {
                 modelType: currentModelType,
                 live3dSubType: currentLive3dSubType,
-                modelInfo: currentModelInfo
+                modelInfo: currentModelInfo,
+                settingsSnapshot: captureSettingsSnapshot()
             });
             if (savingModelType === 'pngtuber') {
                 // PNGTuber stores its lightweight model config and transform together.
@@ -7410,7 +7412,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     getCurrentSaveContext: () => captureModelManagerSaveContext({
                         modelType: currentModelType,
                         live3dSubType: currentLive3dSubType,
-                        modelInfo: currentModelInfo
+                        modelInfo: currentModelInfo,
+                        settingsSnapshot: captureSettingsSnapshot()
                     })
                 }).catch(error => {
                     console.error('[模型管理] 保存后的卡面处理失败:', error);

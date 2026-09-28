@@ -514,9 +514,9 @@ async function offerCardFaceAfterModelSave(state = {}) {
 
         if (saveContextIsCurrent()) {
             window.hasUnsavedChanges = false;
-            await notifyMainPageModelReload();
             window._modelManagerModelChangedSinceSave = false;
             window._modelManagerLoadedFallbackModel = false;
+            await notifyMainPageModelReload();
         }
     } finally {
         window._modelManagerCardFacePromptActive = false;
