@@ -444,9 +444,18 @@ async function offerCardFaceAfterModelSave(state = {}) {
     if (window._modelManagerCardFacePromptActive) return;
     cleanupCardMakerCloseFallbackWatcher();
     window._modelManagerCardFacePromptActive = true;
+    const saveContextIsCurrent = () => {
+        if (!state.saveContext) return true;
+        if (typeof isModelManagerSaveContextCurrent !== 'function') return true;
+        const currentContext = typeof state.getCurrentSaveContext === 'function'
+            ? state.getCurrentSaveContext()
+            : undefined;
+        return isModelManagerSaveContextCurrent(state.saveContext, currentContext || {});
+    };
     try {
         const lanlanName = await resolveModelManagerLanlanName();
         if (!lanlanName) return;
+        if (!saveContextIsCurrent()) return;
 
         const cardFaceChoice = await showDecisionPrompt({
             title: modelManagerText('modelManager.editCardFaceAfterModelSaveTitle', '编辑卡面'),
@@ -464,6 +473,7 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 }
             ]
         });
+        if (!saveContextIsCurrent()) return;
 
         if (cardFaceChoice === 'edit') {
             const fallbackToken = createCardMakerFallbackToken();
@@ -502,10 +512,12 @@ async function offerCardFaceAfterModelSave(state = {}) {
         // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
         // 都要走下面的统一收尾，否则主界面不会刷新、未保存标记残留，会反复弹同一个提示喵。
 
-        window.hasUnsavedChanges = false;
-        await notifyMainPageModelReload();
-        window._modelManagerModelChangedSinceSave = false;
-        window._modelManagerLoadedFallbackModel = false;
+        if (saveContextIsCurrent()) {
+            window.hasUnsavedChanges = false;
+            await notifyMainPageModelReload();
+            window._modelManagerModelChangedSinceSave = false;
+            window._modelManagerLoadedFallbackModel = false;
+        }
     } finally {
         window._modelManagerCardFacePromptActive = false;
     }

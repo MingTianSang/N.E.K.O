@@ -413,8 +413,19 @@ def test_card_maker_preserves_full_pngtuber_bounds_when_composing_card_face():
     assert "const preservePNGTuberBounds = currentModelType === 'pngtuber';" in draw_block
     assert "if (!preservePNGTuberBounds && srcAspect > dstAspect)" in draw_block
     assert "const fitScale = preservePNGTuberBounds" in draw_block
-    assert "sourceSize.width * fitScale" in draw_block
-    assert "sourceSize.height * fitScale" in draw_block
+    assert "const sourceBounds = getPNGTuberSourceBounds(srcCanvas, sourceSize);" in draw_block
+    assert "sourceBounds.width * fitScale" in draw_block
+    assert "sourceBounds.height * fitScale" in draw_block
+
+
+def test_model_manager_save_completion_is_scoped_to_the_original_model_context():
+    script = read_model_manager_source()
+
+    assert "function captureModelManagerSaveContext(currentState = {})" in script
+    assert "function isModelManagerSaveContextCurrent(context, currentState = {})" in script
+    assert "const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {" in script
+    assert "&& saveContextStillCurrent" in script
+    assert "saveContext" in script[script.index("offerCardFaceAfterModelSave({"):script.index("offerCardFaceAfterModelSave({") + 300]
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():

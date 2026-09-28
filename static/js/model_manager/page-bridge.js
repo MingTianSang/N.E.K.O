@@ -297,6 +297,48 @@ function modelSelectionChanged(before, after) {
         || String(before.live3d) !== String(after.live3d);
 }
 
+// 保存请求可能跨越一次模型类型切换。记录请求发起时的模型上下文，
+// 这样旧请求完成后不会把新模型误标记为“已保存”。
+function captureModelManagerSaveContext(currentState = {}) {
+    const hasModelInfoOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelInfo');
+    const info = hasModelInfoOverride
+        ? currentState.modelInfo
+        : (typeof currentModelInfo !== 'undefined' ? currentModelInfo : null);
+    return {
+        modelType: currentState.modelType
+            ?? (typeof currentModelType !== 'undefined' ? currentModelType : window._modelManagerCurrentAvatarType || ''),
+        live3dSubType: currentState.live3dSubType
+            ?? (typeof currentLive3dSubType !== 'undefined'
+                ? currentLive3dSubType
+                : window._modelManagerCurrentLive3dSubType || ''),
+        modelKey: info
+            ? String(info.path || info.url || info.name || '')
+            : ''
+    };
+}
+
+function isModelManagerSaveContextCurrent(context, currentState = {}) {
+    if (!context) return false;
+    const hasModelInfoOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelInfo');
+    const info = hasModelInfoOverride
+        ? currentState.modelInfo
+        : (typeof currentModelInfo !== 'undefined' ? currentModelInfo : null);
+    const currentKey = info
+        ? String(info.path || info.url || info.name || '')
+        : '';
+    const currentType = currentState.modelType
+        ?? (typeof currentModelType !== 'undefined' ? currentModelType : window._modelManagerCurrentAvatarType || '');
+    const currentSubType = currentState.live3dSubType
+        ?? (typeof currentLive3dSubType !== 'undefined'
+            ? currentLive3dSubType
+            : window._modelManagerCurrentLive3dSubType || '');
+    return String(currentType)
+            === String(context.modelType || '')
+        && String(currentSubType)
+            === String(context.live3dSubType || '')
+        && (!context.modelKey || !hasModelInfoOverride || currentKey === String(context.modelKey));
+}
+
 // 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）
 Object.assign(window, {
     _modelManagerHasSaved: false,

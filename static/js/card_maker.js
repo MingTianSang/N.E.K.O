@@ -1155,6 +1155,32 @@
         };
     }
 
+    function getPNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = {
+            x: 0,
+            y: 0,
+            width: sourceSize.width,
+            height: sourceSize.height
+        };
+        if (currentModelType !== 'pngtuber' || !source) return fullBounds;
+
+        // 分层 PNGTuber 的逻辑画布会在四周加入 padding，用来容纳拖拽和
+        // 动态偏移。卡面导出应裁掉这层布局留白，否则模型会被额外缩小。
+        const mgr = window.cardMakerPNGTuberManager;
+        if (!mgr?.isLayeredActive?.()) return fullBounds;
+        const logicalWidth = Number(mgr.layeredCanvasLogicalWidth) || 0;
+        const logicalHeight = Number(mgr.layeredCanvasLogicalHeight) || 0;
+        const padding = Math.max(0, Number(mgr.layeredCanvasPadding) || 0);
+        if (logicalWidth <= 0 || logicalHeight <= 0 || padding <= 0) return fullBounds;
+
+        const paddingX = Math.min(sourceSize.width / 2, (padding / logicalWidth) * sourceSize.width);
+        const paddingY = Math.min(sourceSize.height / 2, (padding / logicalHeight) * sourceSize.height);
+        const width = sourceSize.width - paddingX * 2;
+        const height = sourceSize.height - paddingY * 2;
+        if (width <= 0 || height <= 0) return fullBounds;
+        return { x: paddingX, y: paddingY, width, height };
+    }
+
     function isCrossOriginHttpUrl(value) {
         if (!value || typeof value !== 'string') return false;
         try {
@@ -1317,8 +1343,12 @@
         const dstAspect = outW / outH;           // ≈ 0.75 (3:4)
         const sourceSize = getDrawableSourceSize(srcCanvas);
         if (sourceSize.width <= 0 || sourceSize.height <= 0) return;
-        const srcAspect = sourceSize.width / sourceSize.height;
-        let sx = 0, sy = 0, sw = sourceSize.width, sh = sourceSize.height;
+        const sourceBounds = getPNGTuberSourceBounds(srcCanvas, sourceSize);
+        const srcAspect = sourceBounds.width / sourceBounds.height;
+        let sx = sourceBounds.x;
+        let sy = sourceBounds.y;
+        let sw = sourceBounds.width;
+        let sh = sourceBounds.height;
 
         const preservePNGTuberBounds = currentModelType === 'pngtuber';
         if (!preservePNGTuberBounds && srcAspect > dstAspect) {
@@ -1334,10 +1364,10 @@
         const activeComposition = compositionOverride;
         const scale = activeComposition.scale / 100;
         const fitScale = preservePNGTuberBounds
-            ? Math.min(outW / sourceSize.width, outH / sourceSize.height)
+            ? Math.min(outW / sourceBounds.width, outH / sourceBounds.height)
             : 1;
-        const drawW = (preservePNGTuberBounds ? sourceSize.width * fitScale : outW) * scale;
-        const drawH = (preservePNGTuberBounds ? sourceSize.height * fitScale : outH) * scale;
+        const drawW = (preservePNGTuberBounds ? sourceBounds.width * fitScale : outW) * scale;
+        const drawH = (preservePNGTuberBounds ? sourceBounds.height * fitScale : outH) * scale;
 
         // 偏移量在 450×600 坐标系下定义，按实际尺寸等比缩放
         const ratio = outW / 450;
