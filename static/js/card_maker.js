@@ -1174,9 +1174,10 @@
         // 卡面是静态图片：保留独立的全分辨率待机帧，避免预览和导出取到
         // 不同动画时刻。边界只在加载时测量一次，缩放/拖动不再读取像素。
         const canvas = mgr.renderLayeredSnapshotCanvas('idle');
-        if (!canvas) throw new Error('PNGTuber snapshot is missing');
+        // 快照不可用时保留运行时画布回退，不阻止已加载模型保存卡面。
+        if (!canvas) return;
         const size = getDrawableSourceSize(canvas);
-        if (size.width <= 0 || size.height <= 0) throw new Error('PNGTuber snapshot is empty');
+        if (size.width <= 0 || size.height <= 0) return;
         pngtuberCardFrame = { canvas, bounds: measurePNGTuberSourceBounds(canvas, size) };
     }
 

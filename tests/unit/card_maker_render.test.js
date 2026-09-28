@@ -8,7 +8,7 @@ const cardMakerSource = fs.readFileSync(
     'utf8'
 );
 
-function loadDrawModelWithComposition({ layered = true } = {}) {
+function loadCardMakerRendering({ layered = true, manager = {} } = {}) {
     const sourceHelpers = cardMakerSource.slice(
         cardMakerSource.indexOf('    function getDrawableSourceSize(source) {'),
         cardMakerSource.indexOf('    function isCrossOriginHttpUrl(value) {')
@@ -16,13 +16,22 @@ function loadDrawModelWithComposition({ layered = true } = {}) {
     const drawStart = cardMakerSource.indexOf('    function drawModelWithComposition(');
     const drawEnd = cardMakerSource.indexOf('    // ====== 预览循环 ======', drawStart);
     const drawFunction = cardMakerSource.slice(drawStart, drawEnd);
+    const drawableGetter = cardMakerSource.slice(
+        cardMakerSource.indexOf('    function getPNGTuberDrawableSource('),
+        cardMakerSource.indexOf('    async function waitForImageReady(')
+    );
+    const canvasGetter = cardMakerSource.slice(
+        cardMakerSource.indexOf('    function getModelCanvas()'),
+        cardMakerSource.indexOf('    /**\n     * 在截图前确保渲染器输出最新帧')
+    );
     const context = {
         window: {
             cardMakerPNGTuberManager: {
                 isLayeredActive: () => layered,
                 layeredCanvasLogicalWidth: 1200,
                 layeredCanvasLogicalHeight: 1600,
-                layeredCanvasPadding: 100
+                layeredCanvasPadding: 100,
+                ...manager
             }
         }
     };
@@ -31,8 +40,14 @@ function loadDrawModelWithComposition({ layered = true } = {}) {
         let pngtuberCardFrame = null;
         const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
         ${sourceHelpers}
+        ${drawableGetter}
+        ${canvasGetter}
         ${drawFunction}
-        return drawModelWithComposition;
+        return {
+            draw: drawModelWithComposition,
+            prepare: () => preparePNGTuberCardFrame(window.cardMakerPNGTuberManager),
+            getCanvas: getModelCanvas
+        };
     })()`;
     return vm.runInNewContext(source, context);
 }
@@ -70,7 +85,7 @@ function createCanvasWithAlphaBounds(width, height, bounds) {
 }
 
 test('contains a wide layered PNGTuber after removing logical canvas padding', () => {
-    const draw = loadDrawModelWithComposition();
+    const { draw } = loadCardMakerRendering();
     const { ctx, calls } = createContext();
     draw(ctx, createCanvasWithAlphaBounds(600, 800, { x: 50, y: 50, width: 500, height: 700 }), 600, 800);
 
@@ -84,7 +99,7 @@ test('contains a wide layered PNGTuber after removing logical canvas padding', (
 });
 
 test('keeps layered pixels that move into the logical padding area', () => {
-    const draw = loadDrawModelWithComposition();
+    const { draw } = loadCardMakerRendering();
     const { ctx, calls } = createContext();
     draw(ctx, createCanvasWithAlphaBounds(600, 800, { x: 0, y: 30, width: 600, height: 740 }), 600, 800);
 
@@ -97,7 +112,7 @@ test('keeps layered pixels that move into the logical padding area', () => {
 });
 
 test('contains a tall ordinary PNGTuber without cropping its source', () => {
-    const draw = loadDrawModelWithComposition({ layered: false });
+    const { draw } = loadCardMakerRendering({ layered: false });
     const { ctx, calls } = createContext();
     draw(ctx, { width: 600, height: 1200 }, 600, 800);
 
@@ -107,6 +122,53 @@ test('contains a tall ordinary PNGTuber without cropping its source', () => {
     assert.equal(dy, 0);
     assert.equal(dw, 400);
     assert.equal(dh, 800);
+});
+
+test('keeps the runtime canvas drawable when a layered snapshot is unavailable or empty', () => {
+    const runtimeCanvas = createCanvasWithAlphaBounds(600, 800, { x: 0, y: 30, width: 600, height: 740 });
+    let snapshot = createCanvasWithAlphaBounds(60, 80, { x: 0, y: 0, width: 60, height: 80 });
+    const api = loadCardMakerRendering({ manager: {
+        canvasElement: runtimeCanvas,
+        renderLayeredSnapshotCanvas: () => snapshot
+    } });
+    api.prepare();
+    assert.equal(api.getCanvas(), snapshot);
+
+    for (const unavailable of [null, { width: 0, height: 800 }, { width: 600, height: 0 }]) {
+        snapshot = unavailable;
+        assert.doesNotThrow(() => api.prepare());
+        assert.equal(api.getCanvas(), runtimeCanvas);
+        const { ctx, calls } = createContext();
+        api.draw(ctx, api.getCanvas(), 600, 800);
+        assert.equal(calls[0][0], runtimeCanvas);
+        assert.deepEqual(calls[0].slice(1, 5), [0, 30, 600, 740]);
+    }
+});
+
+test('reuses a valid layered snapshot and its measured bounds for every render', () => {
+    const snapshot = createCanvasWithAlphaBounds(60, 80, { x: 5, y: 5, width: 50, height: 70 });
+    const originalGetContext = snapshot.getContext;
+    let reads = 0;
+    snapshot.getContext = () => {
+        reads += 1;
+        return originalGetContext();
+    };
+    const api = loadCardMakerRendering({ manager: {
+        canvasElement: { width: 30, height: 40 },
+        renderLayeredSnapshotCanvas: (state) => {
+            assert.equal(state, 'idle');
+            return snapshot;
+        }
+    } });
+    api.prepare();
+    const { ctx, calls } = createContext();
+    for (let frame = 0; frame < 3; frame += 1) {
+        assert.equal(api.getCanvas(), snapshot);
+        api.draw(ctx, api.getCanvas(), 600, 800);
+    }
+    assert.equal(reads, 1);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls[0].slice(1, 5), [5, 5, 50, 70]);
 });
 
 test('does not clear a newer model context when an older save completes', async () => {
