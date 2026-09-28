@@ -52,10 +52,26 @@ function createContext() {
     };
 }
 
+function createCanvasWithAlphaBounds(width, height, bounds) {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let y = bounds.y; y < bounds.y + bounds.height; y += 1) {
+        for (let x = bounds.x; x < bounds.x + bounds.width; x += 1) {
+            data[(y * width + x) * 4 + 3] = 255;
+        }
+    }
+    return {
+        width,
+        height,
+        getContext() {
+            return { getImageData: () => ({ data }) };
+        }
+    };
+}
+
 test('contains a wide layered PNGTuber after removing logical canvas padding', () => {
     const draw = loadDrawModelWithComposition();
     const { ctx, calls } = createContext();
-    draw(ctx, { width: 600, height: 800 }, 600, 800);
+    draw(ctx, createCanvasWithAlphaBounds(600, 800, { x: 50, y: 50, width: 500, height: 700 }), 600, 800);
 
     assert.equal(calls.length, 1);
     const [, sx, sy, sw, sh, dx, dy, dw, dh] = calls[0];
@@ -64,6 +80,19 @@ test('contains a wide layered PNGTuber after removing logical canvas padding', (
     assert.equal(dy, 0);
     assert.ok(Math.abs(dw - 500 * (800 / 700)) < 1e-9);
     assert.equal(dh, 800);
+});
+
+test('keeps layered pixels that move into the logical padding area', () => {
+    const draw = loadDrawModelWithComposition();
+    const { ctx, calls } = createContext();
+    draw(ctx, createCanvasWithAlphaBounds(600, 800, { x: 0, y: 30, width: 600, height: 740 }), 600, 800);
+
+    const [, sx, sy, sw, sh, dx, dy, dw, dh] = calls[0];
+    assert.deepEqual({ sx, sy, sw, sh }, { sx: 0, sy: 30, sw: 600, sh: 740 });
+    assert.equal(dx, 0);
+    assert.equal(dy, 30);
+    assert.equal(dw, 600);
+    assert.equal(dh, 740);
 });
 
 test('contains a tall ordinary PNGTuber without cropping its source', () => {
@@ -109,6 +138,9 @@ test('does not clear a newer model context when an older save completes', async 
     api.setState('pngtuber', '', '/models/b.png');
     await oldSaveCompletion;
     assert.equal(unsaved, true);
+
+    api.setState('live2d', '', '/models/b.model3.json');
+    assert.equal(api.isCurrent(oldSave), false);
 
     api.setState('live2d', '', '/models/a.model3.json');
     assert.equal(api.isCurrent(oldSave), true);

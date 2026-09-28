@@ -26,5 +26,5 @@ def test_card_maker_render_and_model_save_context_behaviour():
         encoding="utf-8",
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "# tests 3" in result.stdout
-    assert "# pass 3" in result.stdout
+    assert "# tests 4" in result.stdout
+    assert "# pass 4" in result.stdout

@@ -1164,21 +1164,41 @@
         };
         if (currentModelType !== 'pngtuber' || !source) return fullBounds;
 
-        // 分层 PNGTuber 的逻辑画布会在四周加入 padding，用来容纳拖拽和
-        // 动态偏移。卡面导出应裁掉这层布局留白，否则模型会被额外缩小。
         const mgr = window.cardMakerPNGTuberManager;
         if (!mgr?.isLayeredActive?.()) return fullBounds;
-        const logicalWidth = Number(mgr.layeredCanvasLogicalWidth) || 0;
-        const logicalHeight = Number(mgr.layeredCanvasLogicalHeight) || 0;
-        const padding = Math.max(0, Number(mgr.layeredCanvasPadding) || 0);
-        if (logicalWidth <= 0 || logicalHeight <= 0 || padding <= 0) return fullBounds;
 
-        const paddingX = Math.min(sourceSize.width / 2, (padding / logicalWidth) * sourceSize.width);
-        const paddingY = Math.min(sourceSize.height / 2, (padding / logicalHeight) * sourceSize.height);
-        const width = sourceSize.width - paddingX * 2;
-        const height = sourceSize.height - paddingY * 2;
-        if (width <= 0 || height <= 0) return fullBounds;
-        return { x: paddingX, y: paddingY, width, height };
+        // 分层画布的 padding 同时容纳动态偏移和物理运动，不能按固定值裁掉。
+        // 读取当前帧的 alpha 边界，只去除这一帧真正透明的区域，避免截断运动中的像素。
+        try {
+            const ctx = source.getContext?.('2d');
+            const imageData = ctx?.getImageData?.(0, 0, sourceSize.width, sourceSize.height);
+            const pixels = imageData?.data;
+            if (!pixels) return fullBounds;
+            let minX = sourceSize.width;
+            let minY = sourceSize.height;
+            let maxX = -1;
+            let maxY = -1;
+            for (let y = 0; y < sourceSize.height; y += 1) {
+                for (let x = 0; x < sourceSize.width; x += 1) {
+                    if (pixels[(y * sourceSize.width + x) * 4 + 3] <= 0) continue;
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+            if (maxX < minX || maxY < minY) return fullBounds;
+            return {
+                x: minX,
+                y: minY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1
+            };
+        } catch (_) {
+            // A tainted or unsupported canvas cannot be inspected safely; retain
+            // the complete source so export never loses part of the model.
+            return fullBounds;
+        }
     }
 
     function isCrossOriginHttpUrl(value) {

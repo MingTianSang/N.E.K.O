@@ -320,12 +320,16 @@ function captureModelManagerSaveContext(currentState = {}) {
 function isModelManagerSaveContextCurrent(context, currentState = {}) {
     if (!context) return false;
     const hasModelInfoOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelInfo');
+    const hasModelKeyOverride = Object.prototype.hasOwnProperty.call(currentState, 'modelKey');
+    const hasCurrentModelInfo = hasModelInfoOverride
+        || hasModelKeyOverride
+        || typeof currentModelInfo !== 'undefined';
     const info = hasModelInfoOverride
         ? currentState.modelInfo
         : (typeof currentModelInfo !== 'undefined' ? currentModelInfo : null);
-    const currentKey = info
-        ? String(info.path || info.url || info.name || '')
-        : '';
+    const currentKey = hasModelKeyOverride
+        ? String(currentState.modelKey || '')
+        : (info ? String(info.path || info.url || info.name || '') : '');
     const currentType = currentState.modelType
         ?? (typeof currentModelType !== 'undefined' ? currentModelType : window._modelManagerCurrentAvatarType || '');
     const currentSubType = currentState.live3dSubType
@@ -336,7 +340,9 @@ function isModelManagerSaveContextCurrent(context, currentState = {}) {
             === String(context.modelType || '')
         && String(currentSubType)
             === String(context.live3dSubType || '')
-        && (!context.modelKey || !hasModelInfoOverride || currentKey === String(context.modelKey));
+        && (!context.modelKey
+            || !hasCurrentModelInfo
+            || currentKey === String(context.modelKey));
 }
 
 // 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置”复位”）

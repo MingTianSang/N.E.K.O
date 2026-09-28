@@ -426,6 +426,9 @@ def test_model_manager_save_completion_is_scoped_to_the_original_model_context()
     assert "const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {" in script
     assert "&& saveContextStillCurrent" in script
     assert "saveContext" in script[script.index("offerCardFaceAfterModelSave({"):script.index("offerCardFaceAfterModelSave({") + 300]
+    card_face = (MODEL_MANAGER_JS_DIR / "card-face.js").read_text(encoding="utf-8")
+    assert "getCurrentSaveContext" in card_face
+    assert "isModelManagerSaveContextCurrent(state.saveContext, currentContext || {})" in card_face
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
