@@ -121,6 +121,34 @@ async def test_large_total_does_not_fabricate_five_usable_memories(query_pool):
 
 
 @pytest.mark.asyncio
+async def test_total_skips_forge_ineligible_memories(query_pool):
+    # Interaction logs and AI disclosures must not lift the community's
+    # 15-memory threshold; private memories still count as accumulated.
+    payload = await query_pool(
+        [memory(f"usable-{i}") for i in range(5)]
+        + [memory(f"log-{i}", external_import={"forge_eligible": False}) for i in range(8)],
+        [memory(f"disclosure-{i}", forge_eligible=False) for i in range(4)]
+        + [memory("private", private=True)],
+    )
+    assert payload["totalMemoryCount"] == 6
+    assert payload["returnedCount"] == 5
+    assert {f["id"] for f in payload["facts"]} == {f"usable-{i}" for i in range(5)}
+
+
+@pytest.mark.asyncio
+async def test_total_follows_winning_copy_forge_policy(query_pool):
+    # An ineligible active carrier shadows its eligible archive copy, while an
+    # eligible duplicate in the same file still counts once.
+    carrier = memory("carrier", forge_eligible=False)
+    payload = await query_pool(
+        [carrier, memory("dup-log", hash="hash-dup", forge_eligible=False), memory("dup", hash="hash-dup")],
+        [memory("carrier", hash="archive-hash", text=carrier["text"])],
+    )
+    assert payload["totalMemoryCount"] == payload["returnedCount"] == 1
+    assert [f["id"] for f in payload["facts"]] == ["dup"]
+
+
+@pytest.mark.asyncio
 async def test_undated_archive_memories_can_fill_empty_slots(query_pool):
     payload = await query_pool([], [memory(f"a-{i}", created_at=None) for i in range(15)])
     assert payload["returnedCount"] == 5

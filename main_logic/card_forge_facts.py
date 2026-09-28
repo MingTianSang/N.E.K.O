@@ -331,19 +331,37 @@ def _legacy_excluded_fact_keys(
     return {next(iter(keys)) for keys in matches.values() if len(keys) == 1}
 
 
+def _is_forge_ineligible(item: dict[str, Any]) -> bool:
+    """Producer-marked non-memory rows (interaction logs, AI disclosures)."""
+    external_import = item.get("external_import")
+    return item.get("forge_eligible") is False or (
+        isinstance(external_import, dict)
+        and external_import.get("forge_eligible") is False
+    )
+
+
 def _memory_identity_stats(
     raw: list[dict[str, Any]], raw_archive: list[dict[str, Any]],
 ) -> tuple[int, set[_FactKey], set[str]]:
-    """Count accumulated memories before eligibility filters; active rows win overlaps."""
+    """Count accumulated memories before candidate filters; active rows win overlaps.
+
+    Forge-ineligible rows are not memory material, so they never count toward
+    the community's accumulated-memory threshold. They still register their
+    identities, so an archive copy stays shadowed by its ineligible active row.
+    """
     ids: set[_FactKey] = set()
     hashes: set[str] = set()
     active_ids: set[_FactKey] = set()
     active_hashes: set[str] = set()
     count = 0
     for collection, is_active in ((raw, True), (raw_archive, False)):
-        for item in collection:
-            if not isinstance(item, dict):
-                continue
+        # Stable sort: an eligible copy claims a shared identity before an
+        # ineligible duplicate in the same file, matching candidate selection.
+        ordered = sorted(
+            (item for item in collection if isinstance(item, dict)),
+            key=_is_forge_ineligible,
+        )
+        for item in ordered:
             # Keep identity-only legacy records, but never count malformed text
             # as content or let it hide a valid archive copy.
             if "text" in item and not isinstance(item["text"], str):
@@ -351,7 +369,11 @@ def _memory_identity_stats(
             fact_id, _, fact_hashes = _fact_identity(item)
             if fact_id is None:
                 continue
-            if fact_id not in ids and not fact_hashes.intersection(hashes):
+            if (
+                fact_id not in ids
+                and not fact_hashes.intersection(hashes)
+                and not _is_forge_ineligible(item)
+            ):
                 count += 1
             ids.add(fact_id)
             hashes.update(fact_hashes)
@@ -393,14 +415,7 @@ def _select_forge_facts_with_stats(
         if wire_id in exclude_ids or fact_key in exclude_keys or hash_aliases.intersection(exclude_hashes):
             excluded_count += 1
             continue
-        external_import = item.get("external_import")
-        if (
-            item.get("forge_eligible") is False
-            or (
-                isinstance(external_import, dict)
-                and external_import.get("forge_eligible") is False
-            )
-        ):
+        if _is_forge_ineligible(item):
             excluded_count += 1
             continue
         if item.get("private") is True or item.get("redacted") is True:
