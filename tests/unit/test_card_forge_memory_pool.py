@@ -135,6 +135,36 @@ async def test_total_skips_forge_ineligible_memories(query_pool):
     assert {f["id"] for f in payload["facts"]} == {f"usable-{i}" for i in range(5)}
 
 
+def _legacy_import(key, section, text):
+    # Imported before the explicit forge marker existed.
+    return memory(key, text=text, external_import={
+        "format": "openclaw", "file": "workspace/MEMORY.md",
+        "section": section, "event_date": None,
+    })
+
+
+@pytest.mark.asyncio
+async def test_legacy_imported_interaction_logs_are_not_forgeable(query_pool):
+    log = (
+        "755df5ae-4fa0-4e25-bcad-832e8a80caae：用户与 YUI 在 2026-09-25T20:06:09+08:00 "
+        "至 2026-09-25T20:06:35+08:00 的记录模式期间，点击人物摸头 0 次，"
+        "点击气泡询问余额或空闲状态 0 次。"
+    )
+    payload = await query_pool(
+        [
+            _legacy_import("heading", "猫粮互动记录", f"猫粮互动记录: {log}"),
+            _legacy_import("nested", "记忆 / 猫娘互动记录", f"记忆 / 猫娘互动记录: {log}"),
+            _legacy_import("inline", "", f"猫粮互动记录 {log}"),
+            _legacy_import("normal", "Preferences", "Preferences: 用户喜欢简洁回答"),
+            # The text fallback is scoped to imports; chat memories keep their text.
+            memory("chat", text="猫粮互动记录是用户想做的小工具"),
+        ],
+        [],
+    )
+    assert {f["id"] for f in payload["facts"]} == {"normal", "chat"}
+    assert payload["totalMemoryCount"] == 2
+
+
 @pytest.mark.asyncio
 async def test_total_follows_winning_copy_forge_policy(query_pool):
     # An ineligible active carrier shadows its eligible archive copy, while an

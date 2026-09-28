@@ -3366,13 +3366,6 @@ class FactStore:
             entry['forge_eligible'] = forge_eligible
         entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
         entry['signal_processed'] = True
-        if entry.get('source') == 'ai_disclosure':
-            # External-import policy must not turn an AI disclosure into a
-            # forge candidate. Only the monotonic user-observation upgrade
-            # path is allowed to clear this restriction. Keep the section
-            # policy in external_import: the upgrade pops only the top-level
-            # marker, so the imported section decides eligibility afterwards.
-            entry['forge_eligible'] = False
         event_date = external_import.get('event_date')
         if isinstance(event_date, str) and event_date:
             entry['event_start_at'] = f"{event_date}T00:00:00"
@@ -3686,7 +3679,7 @@ class FactStore:
             if not isinstance(current_policy, bool):
                 # Legacy facts predate the explicit marker and were eligible
                 # by default; retain that behavior during archive dedup.
-                current_policy = existing.get('source') != 'ai_disclosure'
+                current_policy = True
             return current_policy != incoming_policy
 
         def _reconcile_daily_external_import(
@@ -3867,7 +3860,6 @@ class FactStore:
                         existing.get('forge_eligible'),
                     ))
                     existing['source'] = 'user_observation'
-                    existing.pop('forge_eligible', None)
                     existing['signal_processed'] = memory_subject is not None
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
@@ -3877,8 +3869,6 @@ class FactStore:
                         or daily_external_updated
                     ):
                         self._apply_external_import_provenance(existing, external_import)
-                    elif preserve_protected:
-                        existing['forge_eligible'] = False
                     # 给 save_facts 的单调 read-merge 留纸条：这次的 False 是故意
                     # 翻回来的，别按"只能 False→True"把它顶回 True。放在 provenance
                     # 之后并复查一次实际值——外部导入会把它重新封回 True，那种情况
@@ -4147,12 +4137,6 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
-            if source == 'ai_disclosure':
-                # Path-B facts originate from assistant/context content. Keep
-                # them available for recall, but make the producer policy
-                # explicit so card forging never needs a text keyword guess.
-                # A later user-observation upgrade clears this marker.
-                fact_entry['forge_eligible'] = False
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
             if request_provenance and source == 'user_observation':

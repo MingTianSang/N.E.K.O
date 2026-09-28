@@ -15,6 +15,11 @@ from typing import Any
 
 import httpx
 
+from memory.external_markdown_import import (
+    has_forge_ineligible_prefix,
+    is_forge_eligible_section,
+)
+
 logger = logging.getLogger("neko.card_forge_facts")
 
 
@@ -332,12 +337,21 @@ def _legacy_excluded_fact_keys(
 
 
 def _is_forge_ineligible(item: dict[str, Any]) -> bool:
-    """Producer-marked non-memory rows (interaction logs, AI disclosures)."""
+    """Non-memory rows: producer-marked, or legacy imported interaction logs."""
     external_import = item.get("external_import")
-    return item.get("forge_eligible") is False or (
-        isinstance(external_import, dict)
-        and external_import.get("forge_eligible") is False
-    )
+    if item.get("forge_eligible") is False:
+        return True
+    if not isinstance(external_import, dict):
+        return False
+    if external_import.get("forge_eligible") is False:
+        return True
+    # Imports predating the marker: MEMORY.md rows keep their heading path in
+    # ``section`` and carry it as a text prefix; daily rows only store "daily".
+    section = external_import.get("section")
+    text = item.get("text")
+    return (
+        isinstance(section, str) and not is_forge_eligible_section(section)
+    ) or (isinstance(text, str) and has_forge_ineligible_prefix(text))
 
 
 def _memory_identity_stats(

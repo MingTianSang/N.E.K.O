@@ -334,14 +334,15 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
     assert new_facts[0]['signal_processed'] is True, (
         "ai_disclosure fact 必须写盘时 signal_processed=True 防卡 Stage-2 池"
     )
-    assert new_facts[0]['forge_eligible'] is False, (
-        "ai_disclosure fact 不应进入锻造候选"
+    assert 'forge_eligible' not in new_facts[0], (
+        "ai_disclosure fact 仍可锻造，锻造资格只由导入章节决定"
     )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_external_import_cannot_override_ai_disclosure_forge_policy():
+@pytest.mark.parametrize('section_policy', [True, False])
+async def test_ai_disclosure_import_follows_section_forge_policy(section_policy):
     fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
     extracted = [{
@@ -350,7 +351,7 @@ async def test_external_import_cannot_override_ai_disclosure_forge_policy():
         '_external_import': {
             'format': 'hermes', 'file': 'memories/2026-07-12.md',
             'section': 'daily', 'event_date': '2026-07-12',
-            'day_fingerprint': 'fp', 'forge_eligible': True,
+            'day_fingerprint': 'fp', 'forge_eligible': section_policy,
         },
     }]
 
@@ -358,10 +359,8 @@ async def test_external_import_cannot_override_ai_disclosure_forge_policy():
         new_facts = await fs._apersist_new_facts('悠怡', extracted)
 
     assert new_facts[0]['source'] == 'ai_disclosure'
-    assert new_facts[0]['forge_eligible'] is False
-    # The section policy stays intact so a later user confirmation can
-    # restore it by clearing only the top-level source restriction.
-    assert new_facts[0]['external_import']['forge_eligible'] is True
+    assert new_facts[0]['forge_eligible'] is section_policy
+    assert new_facts[0]['external_import']['forge_eligible'] is section_policy
 
 
 @pytest.mark.unit
@@ -410,7 +409,6 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     existing_fact = {
         'id': 'fact_old', 'text': text, 'hash': content_hash,
         'source': 'ai_disclosure', 'signal_processed': True,
-        'forge_eligible': False,
         'importance': 6, 'entity': 'master',
     }
     existing_facts_list = [existing_fact]
@@ -432,19 +430,16 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
     assert existing_fact['signal_processed'] is False, (
         "升级后必须重置 signal_processed=False 让 Stage-2 重新评估"
     )
-    assert 'forge_eligible' not in existing_fact, (
-        "用户确认后应清除 ai_disclosure 的锻造限制"
-    )
     fs.asave_facts.assert_awaited_once_with('悠怡')
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize('section_policy', [True, False])
-async def test_source_upgrade_restores_imported_section_forge_policy(section_policy):
+async def test_source_upgrade_keeps_imported_section_forge_policy(section_policy):
     """A chat ai_disclosure fact can gain daily provenance through a verbatim
-    semantic hit, then be confirmed by a Path A user_observation. The upgrade
-    must fall back to the imported section policy instead of a stale deny."""
+    semantic hit, then be confirmed by a Path A user_observation. The source
+    upgrade must not touch the imported section's forge policy."""
     import hashlib
 
     from main_logic.card_forge_facts import _select_forge_facts_with_stats
@@ -455,14 +450,14 @@ async def test_source_upgrade_restores_imported_section_forge_policy(section_pol
         'id': 'fact_old', 'text': text,
         'hash': hashlib.sha256(text.encode()).hexdigest()[:16],
         'source': 'ai_disclosure', 'signal_processed': True,
-        'forge_eligible': False, 'importance': 8, 'entity': 'master',
+        'importance': 8, 'entity': 'master',
     }
     FactStore._apply_external_import_provenance(existing, {
         'format': 'hermes', 'file': 'memories/2026-07-16.md',
         'section': 'daily', 'event_date': '2026-07-16',
         'day_fingerprint': 'fp', 'forge_eligible': section_policy,
     })
-    assert existing['forge_eligible'] is False
+    assert existing['forge_eligible'] is section_policy
 
     fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
@@ -473,7 +468,7 @@ async def test_source_upgrade_restores_imported_section_forge_policy(section_pol
         }])
 
     assert existing['source'] == 'user_observation'
-    assert 'forge_eligible' not in existing
+    assert existing['forge_eligible'] is section_policy
     facts, _ = _select_forge_facts_with_stats([existing], min_importance=0)
     assert [fact['id'] for fact in facts] == (['fact_old'] if section_policy else [])
 

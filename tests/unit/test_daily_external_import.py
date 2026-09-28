@@ -557,11 +557,12 @@ async def test_archived_daily_same_policy_does_not_reactivate(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_legacy_archived_daily_without_policy_does_not_reactivate(tmp_path):
+@pytest.mark.parametrize("source", ["user_observation", "ai_disclosure"])
+async def test_legacy_archived_daily_without_policy_does_not_reactivate(tmp_path, source):
     import json
 
     archived = _daily_fact("went to the gym", "2026-07-12")
-    archived.update({"id": "fact-archived", "hash": "archived-hash"})
+    archived.update({"id": "fact-archived", "hash": "archived-hash", "source": source})
     archived["external_import"] = archived.pop("_external_import")
     archived.pop("forge_eligible", None)
     archived["external_import"].pop("forge_eligible", None)

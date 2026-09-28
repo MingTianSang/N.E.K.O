@@ -404,6 +404,21 @@ def is_forge_eligible_section(section: str) -> bool:
     return not normalized_sections.intersection(blocked_sections)
 
 
+def has_forge_ineligible_prefix(text: str) -> bool:
+    """Whether imported fact text starts with a producer-owned deny label.
+
+    Read-side fallback for rows imported before the explicit marker existed:
+    the importer prepends the heading breadcrumb to each candidate, and some
+    producers write the label inline instead of as a heading. Callers must
+    apply it to externally imported rows only.
+    """
+    normalized = _normalised_text(text or "")
+    return any(
+        normalized.startswith(_normalised_text(label))
+        for label in _FORGE_INELIGIBLE_SECTIONS
+    )
+
+
 def _bounded_source_section(section: str) -> str:
     """Bound a breadcrumb while retaining every producer-owned deny label.
 
