@@ -37,7 +37,7 @@ function loadCardMakerRendering({ layered = true, manager = {} } = {}) {
         document: {
             createElement(tagName) {
                 return tagName === 'canvas'
-                    ? createCanvasWithAlphaBounds(1, 1, { x: 0, y: 0, width: 1, height: 1 })
+                    ? createCanvasWithAlphaBounds(1, 1)
                     : null;
             }
         }
@@ -75,21 +75,40 @@ function createContext() {
     };
 }
 
-function createCanvasWithAlphaBounds(width, height, bounds) {
-    const data = new Uint8ClampedArray(width * height * 4);
+function createCanvasWithAlphaBounds(width, height, bounds = { x: 0, y: 0, width: 0, height: 0 }) {
+    let data = new Uint8ClampedArray(width * height * 4);
     for (let y = bounds.y; y < bounds.y + bounds.height; y += 1) {
         for (let x = bounds.x; x < bounds.x + bounds.width; x += 1) {
-            data[(y * width + x) * 4 + 3] = 255;
+            data.set([x % 256, y % 256, 127, 255], (y * width + x) * 4);
         }
     }
+    // Only full-canvas, same-size copies are needed here. Reject unsupported
+    // operations rather than silently returning unrealistic pixel data.
+    const context = {
+        getImageData(x, y, readWidth, readHeight) {
+            assert.deepEqual([x, y, readWidth, readHeight], [0, 0, width, height]);
+            return { data: data.slice(), width, height };
+        },
+        drawImage(source, x, y, drawWidth, drawHeight) {
+            assert.deepEqual([x, y, drawWidth, drawHeight], [0, 0, width, height]);
+            assert.equal(source.width, width);
+            assert.equal(source.height, height);
+            data.set(source.getContext('2d').getImageData(0, 0, width, height).data);
+        }
+    };
     return {
-        width,
-        height,
+        get width() { return width; },
+        set width(value) {
+            width = value;
+            data = new Uint8ClampedArray(width * height * 4);
+        },
+        get height() { return height; },
+        set height(value) {
+            height = value;
+            data = new Uint8ClampedArray(width * height * 4);
+        },
         getContext() {
-            return {
-                getImageData: () => ({ data }),
-                drawImage() {}
-            };
+            return context;
         }
     };
 }
@@ -134,28 +153,51 @@ test('contains a tall ordinary PNGTuber without cropping its source', () => {
     assert.equal(dh, 800);
 });
 
-test('keeps the runtime canvas drawable when a layered snapshot is unavailable or empty', () => {
-    const runtimeCanvas = createCanvasWithAlphaBounds(600, 800, { x: 0, y: 30, width: 600, height: 740 });
-    let snapshot = createCanvasWithAlphaBounds(60, 80, { x: 0, y: 0, width: 60, height: 80 });
-    const api = loadCardMakerRendering({ manager: {
-        canvasElement: runtimeCanvas,
-        renderLayeredSnapshotCanvas: () => snapshot
-    } });
-    api.prepare();
-    assert.equal(api.getCanvas(), snapshot);
-
+test('freezes copied pixels and alpha bounds when a layered snapshot is unavailable or empty', () => {
     for (const unavailable of [null, { width: 0, height: 800 }, { width: 600, height: 0 }]) {
+        const runtimeCanvas = createCanvasWithAlphaBounds(600, 800, { x: 0, y: 30, width: 600, height: 740 });
+        const expectedPixels = runtimeCanvas.getContext('2d').getImageData(0, 0, 600, 800).data;
+        let snapshot = createCanvasWithAlphaBounds(60, 80, { x: 0, y: 0, width: 60, height: 80 });
+        const api = loadCardMakerRendering({ manager: {
+            canvasElement: runtimeCanvas,
+            renderLayeredSnapshotCanvas: () => snapshot
+        } });
+        api.prepare();
+        assert.equal(api.getCanvas(), snapshot);
+
         snapshot = unavailable;
         assert.doesNotThrow(() => api.prepare());
-        assert.notEqual(api.getCanvas(), runtimeCanvas);
+        const frozenCanvas = api.getCanvas();
+        assert.notEqual(frozenCanvas, runtimeCanvas);
         assert.deepEqual(
-            { width: api.getCanvas().width, height: api.getCanvas().height },
+            { width: frozenCanvas.width, height: frozenCanvas.height },
             { width: 600, height: 800 }
         );
+        const frozenContext = frozenCanvas.getContext('2d');
+        const frozenPixels = frozenContext.getImageData(0, 0, 600, 800).data;
+        assert.equal(frozenPixels.length, expectedPixels.length);
+        assert.ok(frozenPixels.every((value, index) => value === expectedPixels[index]), 'fallback must copy every RGBA pixel');
+
+        // Resizing clears the runtime bitmap, even when the width is unchanged.
+        // Neither the frozen pixels nor the preview/export crop may follow it.
+        runtimeCanvas.width = 600;
+        assert.ok(runtimeCanvas.getContext('2d').getImageData(0, 0, 600, 800).data.every(value => value === 0));
+        assert.deepEqual(frozenContext.getImageData(0, 0, 600, 800).data, expectedPixels);
+        const originalGetImageData = frozenContext.getImageData;
+        let repeatedReads = 0;
+        frozenContext.getImageData = (...args) => {
+            repeatedReads += 1;
+            return originalGetImageData(...args);
+        };
         const { ctx, calls } = createContext();
         api.draw(ctx, api.getCanvas(), 600, 800);
-        assert.notEqual(calls[0][0], runtimeCanvas);
-        assert.deepEqual(calls[0].slice(1, 5), [0, 0, 600, 800]);
+        api.draw(ctx, api.getCanvas(), 1200, 1600);
+        assert.equal(calls.length, 2);
+        for (const call of calls) {
+            assert.equal(call[0], frozenCanvas);
+            assert.deepEqual(call.slice(1, 5), [0, 30, 600, 740]);
+        }
+        assert.equal(repeatedReads, 0);
     }
 });
 
