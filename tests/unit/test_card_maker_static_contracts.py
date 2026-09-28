@@ -403,6 +403,20 @@ def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_exp
     assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
 
 
+def test_card_maker_preserves_full_pngtuber_bounds_when_composing_card_face():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    draw_block = script[
+        script.index("    function drawModelWithComposition("):
+        script.index("    // ====== 预览循环 =====", script.index("    function drawModelWithComposition("))
+    ]
+
+    assert "const preservePNGTuberBounds = currentModelType === 'pngtuber';" in draw_block
+    assert "if (!preservePNGTuberBounds && srcAspect > dstAspect)" in draw_block
+    assert "const fitScale = preservePNGTuberBounds" in draw_block
+    assert "sourceSize.width * fitScale" in draw_block
+    assert "sourceSize.height * fitScale" in draw_block
+
+
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     script = read_model_manager_source()
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")
@@ -414,6 +428,21 @@ def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     assert "|| await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo })" in script
     assert "parameterEditedSinceSave ||" in script
     assert "offerCardFaceAfterModelSave" in script
+
+
+def test_model_manager_model_type_switch_marks_unsaved_for_card_face_prompt():
+    script = read_model_manager_source()
+    start = script.index("// 模型类型选择事件")
+    end = script.index("// 加载 VRM 模型列表", start)
+    block = script[start:end]
+    switch_block = block[
+        block.index("await switchModelDisplay(type, restoredSubType);"):
+        block.index("// 从 VRM 切回 Live2D", block.index("await switchModelDisplay(type, restoredSubType);"))
+    ]
+
+    assert "window.hasUnsavedChanges = true;" in switch_block
+    assert "if (savePositionBtn) savePositionBtn.disabled = false;" in switch_block
+    assert "markModelChangedForCardFacePrompt();" in switch_block
 
 
 def test_card_maker_supports_closeup_model_scale():

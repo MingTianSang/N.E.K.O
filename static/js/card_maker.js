@@ -1311,18 +1311,21 @@
      * @param {number} outH  目标绘制区域高度（CSS 像素）
      */
     function drawModelWithComposition(ctx, srcCanvas, outW, outH, compositionOverride = composition) {
-        // 从源画布中裁剪出 3:4 比例的区域（cover 语义）
+        // Live2D/VRM/MMD 的渲染器本身就是 3:4 画布，保持原有 cover 语义。
+        // PNGTuber 的图片比例由用户资源决定，不能先裁成 3:4，否则宽图会被裁掉
+        // 两侧，高图会被裁掉上下；先完整保留源图，再按 contain 方式放入卡面。
         const dstAspect = outW / outH;           // ≈ 0.75 (3:4)
         const sourceSize = getDrawableSourceSize(srcCanvas);
         if (sourceSize.width <= 0 || sourceSize.height <= 0) return;
         const srcAspect = sourceSize.width / sourceSize.height;
         let sx = 0, sy = 0, sw = sourceSize.width, sh = sourceSize.height;
 
-        if (srcAspect > dstAspect) {
+        const preservePNGTuberBounds = currentModelType === 'pngtuber';
+        if (!preservePNGTuberBounds && srcAspect > dstAspect) {
             // 源更宽 → 裁两侧
             sw = sourceSize.height * dstAspect;
             sx = (sourceSize.width - sw) / 2;
-        } else {
+        } else if (!preservePNGTuberBounds) {
             // 源更高 → 裁上下
             sh = sourceSize.width / dstAspect;
             sy = (sourceSize.height - sh) / 2;
@@ -1330,8 +1333,11 @@
 
         const activeComposition = compositionOverride;
         const scale = activeComposition.scale / 100;
-        const drawW = outW * scale;
-        const drawH = outH * scale;
+        const fitScale = preservePNGTuberBounds
+            ? Math.min(outW / sourceSize.width, outH / sourceSize.height)
+            : 1;
+        const drawW = (preservePNGTuberBounds ? sourceSize.width * fitScale : outW) * scale;
+        const drawH = (preservePNGTuberBounds ? sourceSize.height * fitScale : outH) * scale;
 
         // 偏移量在 450×600 坐标系下定义，按实际尺寸等比缩放
         const ratio = outW / 450;

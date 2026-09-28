@@ -2805,6 +2805,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const restoredSubType = (type === 'live3d') ? (localStorage.getItem('live3dSubType') || '') : '';
             await switchModelDisplay(type, restoredSubType);
 
+            // 模型类型本身也是角色模型配置的一部分。切换到 PNGTuber（或从
+            // PNGTuber 切走）后，即使自动选中的模型与下拉框当前值相同，仍需
+            // 允许用户保存，并让保存成功后的卡面处理流程感知这次变更。
+            window.hasUnsavedChanges = true;
+            if (savePositionBtn) savePositionBtn.disabled = false;
+            markModelChangedForCardFacePrompt();
+
             // 从 VRM 切回 Live2D 时，确保当前 Live2D 模型会被加载出来
             //（switchModelDisplay 会重建 PIXI，但不会自动触发 model-select 的 change）
             if (type === 'live2d') {
