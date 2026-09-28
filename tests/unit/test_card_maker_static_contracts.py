@@ -430,6 +430,11 @@ def test_model_manager_save_completion_is_scoped_to_the_original_model_context()
     card_face = (MODEL_MANAGER_JS_DIR / "card-face.js").read_text(encoding="utf-8")
     assert "getCurrentSaveContext" in card_face
     assert "isModelManagerSaveContextCurrent(state.saveContext, currentContext || {})" in card_face
+    assert "const shouldCancelCardFaceFlow = () => !saveContextIsCurrent();" in card_face
+    assert "shouldCancel: shouldCancelCardFaceFlow" in card_face
+    bridge = (MODEL_MANAGER_JS_DIR / "page-bridge.js").read_text(encoding="utf-8")
+    assert "const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;" in bridge
+    assert "shouldCancel: () => cardFaceSaved || (shouldCancel && shouldCancel())" in bridge
 
 
 def test_card_maker_freezes_layered_pngtuber_frame_for_preview_and_export():

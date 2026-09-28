@@ -452,6 +452,7 @@ async function offerCardFaceAfterModelSave(state = {}) {
             : undefined;
         return isModelManagerSaveContextCurrent(state.saveContext, currentContext || {});
     };
+    const shouldCancelCardFaceFlow = () => !saveContextIsCurrent();
     try {
         const lanlanName = await resolveModelManagerLanlanName();
         if (!lanlanName) return;
@@ -485,7 +486,9 @@ async function offerCardFaceAfterModelSave(state = {}) {
                 const message = modelManagerText('cardExport.popupBlocked', '弹窗被阻止，请允许弹窗后重试');
                 setModelManagerStatusText(message);
                 try {
-                    await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                    await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                        shouldCancel: shouldCancelCardFaceFlow
+                    });
                 } catch (error) {
                     console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
                     setModelManagerStatusText(
@@ -495,11 +498,16 @@ async function offerCardFaceAfterModelSave(state = {}) {
                     );
                 }
             } else {
-                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, { fallbackToken });
+                watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, {
+                    fallbackToken,
+                    shouldCancel: shouldCancelCardFaceFlow
+                });
             }
         } else if (cardFaceChoice === 'default') {
             try {
-                await generateDefaultCardFaceFromModelManager(lanlanName, state);
+                await generateDefaultCardFaceFromModelManager(lanlanName, state, {
+                    shouldCancel: shouldCancelCardFaceFlow
+                });
             } catch (error) {
                 console.error('[模型管理] 生成默认卡面失败:', error);
                 setModelManagerStatusText(

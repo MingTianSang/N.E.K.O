@@ -639,6 +639,7 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
 
     const startedAt = Date.now();
     const fallbackToken = options.fallbackToken || '';
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
     let cardFaceSaved = false;
     let fallbackRunning = false;
     let closeTimer = 0;
@@ -734,15 +735,16 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
         fallbackRunning = true;
         fallbackAbortController = new AbortController();
         try {
+            if (shouldCancel && shouldCancel()) return;
             const signal = fallbackAbortController.signal;
             const modelImage = cachedDefaultCardFaceImage || await cachedDefaultCardFaceImagePromise;
-            if (cardFaceSaved || signal.aborted) return;
+            if (cardFaceSaved || signal.aborted || (shouldCancel && shouldCancel())) return;
             await generateDefaultCardFaceFromModelManager(lanlanName, state, {
                 modelImage,
                 signal,
-                shouldCancel: () => cardFaceSaved
+                shouldCancel: () => cardFaceSaved || (shouldCancel && shouldCancel())
             });
-            if (cardFaceSaved || signal.aborted) return;
+            if (cardFaceSaved || signal.aborted || (shouldCancel && shouldCancel())) return;
             await notifyMainPageModelReload();
         } catch (error) {
             if (error && error.name === 'AbortError') return;
