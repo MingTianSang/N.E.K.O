@@ -3369,9 +3369,10 @@ class FactStore:
         if entry.get('source') == 'ai_disclosure':
             # External-import policy must not turn an AI disclosure into a
             # forge candidate. Only the monotonic user-observation upgrade
-            # path is allowed to clear this restriction.
+            # path is allowed to clear this restriction. Keep the section
+            # policy in external_import: the upgrade pops only the top-level
+            # marker, so the imported section decides eligibility afterwards.
             entry['forge_eligible'] = False
-            entry['external_import']['forge_eligible'] = False
         event_date = external_import.get('event_date')
         if isinstance(event_date, str) and event_date:
             entry['event_start_at'] = f"{event_date}T00:00:00"

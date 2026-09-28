@@ -359,7 +359,9 @@ async def test_external_import_cannot_override_ai_disclosure_forge_policy():
 
     assert new_facts[0]['source'] == 'ai_disclosure'
     assert new_facts[0]['forge_eligible'] is False
-    assert new_facts[0]['external_import']['forge_eligible'] is False
+    # The section policy stays intact so a later user confirmation can
+    # restore it by clearing only the top-level source restriction.
+    assert new_facts[0]['external_import']['forge_eligible'] is True
 
 
 @pytest.mark.unit
@@ -434,6 +436,46 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
         "用户确认后应清除 ai_disclosure 的锻造限制"
     )
     fs.asave_facts.assert_awaited_once_with('悠怡')
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize('section_policy', [True, False])
+async def test_source_upgrade_restores_imported_section_forge_policy(section_policy):
+    """A chat ai_disclosure fact can gain daily provenance through a verbatim
+    semantic hit, then be confirmed by a Path A user_observation. The upgrade
+    must fall back to the imported section policy instead of a stale deny."""
+    import hashlib
+
+    from main_logic.card_forge_facts import _select_forge_facts_with_stats
+    from memory.facts import FactStore
+
+    text = '博士喜欢茉莉花茶'
+    existing = {
+        'id': 'fact_old', 'text': text,
+        'hash': hashlib.sha256(text.encode()).hexdigest()[:16],
+        'source': 'ai_disclosure', 'signal_processed': True,
+        'forge_eligible': False, 'importance': 8, 'entity': 'master',
+    }
+    FactStore._apply_external_import_provenance(existing, {
+        'format': 'hermes', 'file': 'memories/2026-07-16.md',
+        'section': 'daily', 'event_date': '2026-07-16',
+        'day_fingerprint': 'fp', 'forge_eligible': section_policy,
+    })
+    assert existing['forge_eligible'] is False
+
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[existing])):
+        await fs._apersist_new_facts('悠怡', [{
+            'text': text, 'importance': 8, 'entity': 'master',
+            'source': 'user_observation',
+        }])
+
+    assert existing['source'] == 'user_observation'
+    assert 'forge_eligible' not in existing
+    facts, _ = _select_forge_facts_with_stats([existing], min_importance=0)
+    assert [fact['id'] for fact in facts] == (['fact_old'] if section_policy else [])
 
 
 @pytest.mark.unit
