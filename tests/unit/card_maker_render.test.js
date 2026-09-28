@@ -33,6 +33,13 @@ function loadCardMakerRendering({ layered = true, manager = {} } = {}) {
                 layeredCanvasPadding: 100,
                 ...manager
             }
+        },
+        document: {
+            createElement(tagName) {
+                return tagName === 'canvas'
+                    ? createCanvasWithAlphaBounds(1, 1, { x: 0, y: 0, width: 1, height: 1 })
+                    : null;
+            }
         }
     };
     const source = `(() => {
@@ -79,7 +86,10 @@ function createCanvasWithAlphaBounds(width, height, bounds) {
         width,
         height,
         getContext() {
-            return { getImageData: () => ({ data }) };
+            return {
+                getImageData: () => ({ data }),
+                drawImage() {}
+            };
         }
     };
 }
@@ -137,11 +147,15 @@ test('keeps the runtime canvas drawable when a layered snapshot is unavailable o
     for (const unavailable of [null, { width: 0, height: 800 }, { width: 600, height: 0 }]) {
         snapshot = unavailable;
         assert.doesNotThrow(() => api.prepare());
-        assert.equal(api.getCanvas(), runtimeCanvas);
+        assert.notEqual(api.getCanvas(), runtimeCanvas);
+        assert.deepEqual(
+            { width: api.getCanvas().width, height: api.getCanvas().height },
+            { width: 600, height: 800 }
+        );
         const { ctx, calls } = createContext();
         api.draw(ctx, api.getCanvas(), 600, 800);
-        assert.equal(calls[0][0], runtimeCanvas);
-        assert.deepEqual(calls[0].slice(1, 5), [0, 30, 600, 740]);
+        assert.notEqual(calls[0][0], runtimeCanvas);
+        assert.deepEqual(calls[0].slice(1, 5), [0, 0, 600, 800]);
     }
 });
 

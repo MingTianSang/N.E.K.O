@@ -442,6 +442,8 @@ def test_card_maker_freezes_layered_pngtuber_frame_for_preview_and_export():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
 
     assert "let pngtuberCardFrame = null;" in script
+    assert "function clonePNGTuberDrawable(source)" in script
+    assert "canvas = clonePNGTuberDrawable(getPNGTuberDrawableSource(mgr));" in script
     assert "preparePNGTuberCardFrame(mgr);" in script
     assert "if (pngtuberCardFrame) return pngtuberCardFrame.canvas;" in script
     assert "if (pngtuberCardFrame) return;" in script

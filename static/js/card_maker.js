@@ -1158,6 +1158,22 @@
         };
     }
 
+    function clonePNGTuberDrawable(source) {
+        const size = getDrawableSourceSize(source);
+        if (size.width <= 0 || size.height <= 0) return null;
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = size.width;
+            canvas.height = size.height;
+            const ctx = canvas.getContext?.('2d');
+            if (!ctx?.drawImage) return null;
+            ctx.drawImage(source, 0, 0, size.width, size.height);
+            return canvas;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function getPNGTuberSourceBounds(source, sourceSize) {
         const fullBounds = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
         if (currentModelType !== 'pngtuber' || !source) return fullBounds;
@@ -1173,10 +1189,14 @@
         if (!mgr?.isLayeredActive?.()) return;
         // 卡面是静态图片：保留独立的全分辨率待机帧，避免预览和导出取到
         // 不同动画时刻。边界只在加载时测量一次，缩放/拖动不再读取像素。
-        const canvas = mgr.renderLayeredSnapshotCanvas('idle');
-        // 快照不可用时保留运行时画布回退，不阻止已加载模型保存卡面。
-        if (!canvas) return;
-        const size = getDrawableSourceSize(canvas);
+        let canvas = mgr.renderLayeredSnapshotCanvas('idle');
+        let size = getDrawableSourceSize(canvas);
+        if (size.width <= 0 || size.height <= 0) {
+            // 快照不可用时复制当前运行时画布并冻结它，避免回退路径继续逐帧
+            // 测量动态边界，同时不阻止已加载模型保存卡面。
+            canvas = clonePNGTuberDrawable(getPNGTuberDrawableSource(mgr));
+            size = getDrawableSourceSize(canvas);
+        }
         if (size.width <= 0 || size.height <= 0) return;
         pngtuberCardFrame = { canvas, bounds: measurePNGTuberSourceBounds(canvas, size) };
     }
