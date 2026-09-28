@@ -432,6 +432,7 @@ def test_model_manager_save_completion_is_scoped_to_the_original_model_context()
     assert "isModelManagerSaveContextCurrent(state.saveContext, currentContext || {})" in card_face
     assert "const shouldCancelCardFaceFlow = () => !saveContextIsCurrent();" in card_face
     assert "shouldCancel: shouldCancelCardFaceFlow" in card_face
+    assert card_face.count("if (!error || error.name !== 'AbortError')") >= 2
     bridge = (MODEL_MANAGER_JS_DIR / "page-bridge.js").read_text(encoding="utf-8")
     assert "const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;" in bridge
     assert "shouldCancel: () => cardFaceSaved || (shouldCancel && shouldCancel())" in bridge

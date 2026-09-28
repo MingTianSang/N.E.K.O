@@ -490,12 +490,14 @@ async function offerCardFaceAfterModelSave(state = {}) {
                         shouldCancel: shouldCancelCardFaceFlow
                     });
                 } catch (error) {
-                    console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
-                    setModelManagerStatusText(
-                        error && error.message
-                            ? error.message
-                            : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
-                    );
+                    if (!error || error.name !== 'AbortError') {
+                        console.error('[模型管理] 弹窗被阻止后的默认卡面兜底生成失败:', error);
+                        setModelManagerStatusText(
+                            error && error.message
+                                ? error.message
+                                : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                        );
+                    }
                 }
             } else {
                 watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state, {
@@ -509,12 +511,14 @@ async function offerCardFaceAfterModelSave(state = {}) {
                     shouldCancel: shouldCancelCardFaceFlow
                 });
             } catch (error) {
-                console.error('[模型管理] 生成默认卡面失败:', error);
-                setModelManagerStatusText(
-                    error && error.message
-                        ? error.message
-                        : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
-                );
+                if (!error || error.name !== 'AbortError') {
+                    console.error('[模型管理] 生成默认卡面失败:', error);
+                    setModelManagerStatusText(
+                        error && error.message
+                            ? error.message
+                            : modelManagerText('cardExport.autoSaveDefaultCardFaceFailed', '默认卡面生成失败')
+                    );
+                }
             }
         }
         // 不管走哪条分支（用户取消、卡面生成失败也好），模型本身已经保存成功，
