@@ -6,7 +6,7 @@
  *   AvatarButtonMixin.apply(XXXManager.prototype, 'xxx', { options });
  */
 
-// 浮动按钮入场动画（错位级联滑入；从上往下）。
+// 浮动按钮入场动画（错位级联滑入 + 淡入；从上往下）。
 // 退场不做动画 —— 直接 display:none，因为浏览器在 microtask 拦截前已 commit
 // display:none 到下一帧渲染流程，可靠的退场需要改大量调用点，权衡之下放弃。
 function isNekoYuiGuideFloatingToolbarSuppressed() {
@@ -205,12 +205,12 @@ function _ensureFloatingButtonsAnimationStyles() {
 
     style.textContent = `
         @keyframes nekoFloatingBtnIn {
-            0%   { transform: translate3d(0, -16px, 0) scale(0.82); }
-            60%  { transform: translate3d(0, 2px, 0)  scale(1.04); }
-            100% { transform: translate3d(0, 0, 0)    scale(1);    }
+            0%   { opacity: 0; transform: translate3d(0, -16px, 0) scale(0.82); }
+            60%  { opacity: 1; transform: translate3d(0, 2px, 0)  scale(1.04); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0)    scale(1);    }
         }
         .neko-floating-buttons-animating > * {
-            will-change: transform;
+            will-change: opacity, transform;
         }
         .neko-floating-buttons-animating[data-anim-state="entering"] > * {
             animation: nekoFloatingBtnIn 0.42s cubic-bezier(0.22, 1.0, 0.36, 1) both;
