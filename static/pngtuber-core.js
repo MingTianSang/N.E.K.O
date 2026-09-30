@@ -2584,6 +2584,9 @@
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
             this._appliedAnimCenterAnchored = centerAnchored;
+            // 镜像时 finalScaleX 为负:right bottom 原点固定的是可见矩形的左边界,
+            // getStableAnchorRect 需要据此选择保持不动的水平边
+            this._appliedAnimMirrored = finalScaleX < 0;
             if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -3515,13 +3518,15 @@
             const stableWidth = rect.width / animScaleX;
             const stableHeight = rect.height / animScaleY;
             if (this._appliedAnimCenterAnchored === false) {
-                // transform-origin: right bottom —— 缩放围绕右下角不动，只需剥离 Y 向平移
-                const right = rectRight;
+                // transform-origin: right bottom —— Y 向缩放围绕底边不动,剥离 Y 向平移即可。
+                // 水平方向:非镜像(finalScaleX>0)时右边界固定;镜像时 scale 为负,
+                // 变换后矩形从原点向右展开,固定的是左边界 rect.left。
                 const bottom = rectBottom - animY;
+                const left = this._appliedAnimMirrored ? rect.left : rectRight - stableWidth;
                 return {
-                    left: right - stableWidth,
+                    left,
                     top: bottom - stableHeight,
-                    right,
+                    right: left + stableWidth,
                     bottom,
                     width: stableWidth,
                     height: stableHeight
