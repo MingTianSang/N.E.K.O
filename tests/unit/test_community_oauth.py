@@ -202,6 +202,31 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_oauth_status_reports_session_path_when_signed_out(monkeypatch, tmp_path):
+    # 宿主只有亲自拉起后端时才下发得到 NEKO_USER_DATA_DIR；attach 复用的后端会把凭证落到
+    # 自己推导的根目录。未登录时也必须回报它实际使用的文件，那正是宿主需要知道去哪等写入的时刻。
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_path", lambda: session_file)
+
+    async def resolve_not_logged_in():
+        return {"logged_in": False, "snapshot": {}, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
+
+    result = await O.oauth_status_endpoint(object())
+
+    assert result["logged_in"] is False
+    assert result["session_path"] == str(session_file)
+
+
+@pytest.mark.unit
+def test_desktop_session_path_str_empty_when_unresolvable(monkeypatch):
+    monkeypatch.setattr(C, "_social_session_path", lambda: None)
+    assert O._desktop_session_path_str() == ""
+
+
+@pytest.mark.unit
 def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
     # 回调落盘的 community_auth.json 是明文、本机还有其它读取方，只存脱敏手机号，
     # 桌面端设置页用它在没有邮箱时显示账号；经本机路由返回的 public 版本永远不带手机号。
