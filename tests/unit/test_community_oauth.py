@@ -25,6 +25,11 @@ import main_routers.community_oauth as O
 USER_ID = "11111111-1111-4111-8111-111111111111"
 
 
+def _local_source_request(host: str = "127.0.0.1") -> SimpleNamespace:
+    """最小 Request 替身：/oauth/status 只需要 request.client.host 判断是否同机。"""
+    return SimpleNamespace(client=SimpleNamespace(host=host))
+
+
 @pytest.fixture
 def oauth_app(tmp_path, monkeypatch):
     auth = tmp_path / "community_auth.json"
@@ -164,7 +169,7 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
     monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
 
     event_loop_thread = threading.get_ident()
-    result = await O.oauth_status_endpoint(object())
+    result = await O.oauth_status_endpoint(_local_source_request())
 
     assert result["logged_in"] is True
     assert worker_threads
@@ -197,7 +202,7 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
     monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
 
-    result = await O.oauth_status_endpoint(object())
+    result = await O.oauth_status_endpoint(_local_source_request())
 
     assert result["logged_in"] is True
     assert result["user"] == {"display_name": "User", "email": "user@example.com"}
@@ -216,7 +221,7 @@ async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, t
 
     monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
 
-    result = await O.oauth_status_endpoint(object())
+    result = await O.oauth_status_endpoint(_local_source_request())
 
     assert result["logged_in"] is False
     assert result["session_path"] == str(session_file)
@@ -241,11 +246,36 @@ async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypa
 
     monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_logged_in)
 
-    result = await O.oauth_status_endpoint(object())
+    result = await O.oauth_status_endpoint(_local_source_request())
 
     assert result["logged_in"] is True
     assert result["session_path"] == str(override)
     assert result["session_paths"] == [str(override), str(legacy)]
+
+
+@pytest.mark.unit
+async def test_oauth_status_withholds_session_paths_from_remote_peer(monkeypatch, tmp_path):
+    # _local_request_source_allowed() 放行「不带 Origin 也不带 Sec-Fetch-Site 的原生客户端」，
+    # Docker 部署里经 nginx 转发的远程请求正好如此；那种场合不能把容器文件系统发出去。
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
+
+    async def resolve_not_logged_in():
+        return {"logged_in": False, "snapshot": {}, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
+
+    remote = await O.oauth_status_endpoint(_local_source_request("172.19.0.4"))
+    assert remote["logged_in"] is False
+    assert remote["session_path"] == ""
+    assert remote["session_paths"] == []
+
+    # ::ffff: 前缀（v4-mapped）和 localhost 仍算同机
+    assert O._loopback_request_source(_local_source_request("::ffff:127.0.0.1")) is True
+    assert O._loopback_request_source(_local_source_request("localhost")) is True
+    assert O._loopback_request_source(_local_source_request("10.0.0.5")) is False
+    assert O._loopback_request_source(SimpleNamespace(client=None)) is False
 
 
 @pytest.mark.unit

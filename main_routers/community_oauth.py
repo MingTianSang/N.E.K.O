@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -491,6 +492,18 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     return path, C._read_json_dict(path) if path else None
 
 
+def _loopback_request_source(request: Request) -> bool:
+    """True only when the TCP peer is this machine — nginx-forwarded requests are not."""
+    client_host = request.client.host if request.client else ""
+    if client_host == "localhost":
+        return True
+    normalized = str(client_host or "").removeprefix("::ffff:")
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def _desktop_session_paths_for_host() -> tuple[str, list[str]]:
     """(写入目标, 后端自己会按序读取的全部候选)，都是绝对路径。
 
@@ -741,7 +754,14 @@ async def oauth_status_endpoint(request: Request):
     # 那正是宿主需要知道去哪个目录等写入的时刻。
     # session_paths 一起报，因为后端读取带回落（override → legacy），有效凭证可能只在
     # 旧目录；只报写入目标会让宿主去盯一份空文件。
-    session_path, session_paths = await asyncio.to_thread(_desktop_session_paths_for_host)
+    #
+    # 只对回环对端回报：_local_request_source_allowed() 放行了「不带 Origin 也不带
+    # Sec-Fetch-Site 的原生客户端」，Docker 部署里经 nginx 转发过来的远程请求正好如此，
+    # 那种场合不能把容器的文件系统布局发出去。
+    if _loopback_request_source(request):
+        session_path, session_paths = await asyncio.to_thread(_desktop_session_paths_for_host)
+    else:
+        session_path, session_paths = "", []
     status = await resolve_saved_oauth_status()
     snapshot = status["snapshot"]
     auth = status["auth"]
