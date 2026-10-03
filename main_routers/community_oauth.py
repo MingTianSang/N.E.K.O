@@ -491,10 +491,23 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     return path, C._read_json_dict(path) if path else None
 
 
-def _desktop_session_path_str() -> str:
-    """Absolute path of the session file this backend reads and writes ("" if none)."""
-    path = C._social_session_path()
-    return str(path) if path is not None else ""
+def _desktop_session_paths_for_host() -> tuple[str, list[str]]:
+    """(写入目标, 后端自己会按序读取的全部候选)，都是绝对路径。
+
+    读取带回落（``NEKO_USER_DATA_DIR`` 指定目录 → memory_dir 推导目录），有效凭证可能
+    只在旧目录里。只报写入目标的话，宿主会去监听/读取一份空文件，正好重现它要修的
+    那个「登录成功但显示未登录」。所以有序候选一起给，写入目标仍是第一个。
+    """
+    resolved: list[str] = []
+    for path in C._social_session_paths():
+        if path is None:
+            continue
+        # memory_dir 万一取到相对路径，按后端自己 open() 的口径绝对化：宿主会直接忽略
+        # 非绝对路径，不能让它因为一个相对串放弃跟随。
+        candidate = str(Path(os.path.abspath(path)))
+        if candidate not in resolved:
+            resolved.append(candidate)
+    return (resolved[0] if resolved else ""), resolved
 
 
 def _persist_oauth_credentials(
@@ -726,7 +739,9 @@ async def oauth_status_endpoint(request: Request):
     # 后端时那个环境变量不存在，后端会退回按 memory_dir 推导的路径，两边就不是同一份
     # 文件了。所以这里回报后端实际读写的会话文件，让宿主跟着它走。未登录时同样要报：
     # 那正是宿主需要知道去哪个目录等写入的时刻。
-    session_path = await asyncio.to_thread(_desktop_session_path_str)
+    # session_paths 一起报，因为后端读取带回落（override → legacy），有效凭证可能只在
+    # 旧目录；只报写入目标会让宿主去盯一份空文件。
+    session_path, session_paths = await asyncio.to_thread(_desktop_session_paths_for_host)
     status = await resolve_saved_oauth_status()
     snapshot = status["snapshot"]
     auth = status["auth"]
@@ -737,6 +752,7 @@ async def oauth_status_endpoint(request: Request):
             "local_user_id": None,
             "user": None,
             "session_path": session_path,
+            "session_paths": session_paths,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
     # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
@@ -747,6 +763,7 @@ async def oauth_status_endpoint(request: Request):
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
         "session_path": session_path,
+        "session_paths": session_paths,
     }
 
 

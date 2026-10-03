@@ -6,9 +6,11 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -202,12 +204,12 @@ async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
 
 
 @pytest.mark.unit
-async def test_oauth_status_reports_session_path_when_signed_out(monkeypatch, tmp_path):
+async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, tmp_path):
     # 宿主只有亲自拉起后端时才下发得到 NEKO_USER_DATA_DIR；attach 复用的后端会把凭证落到
     # 自己推导的根目录。未登录时也必须回报它实际使用的文件，那正是宿主需要知道去哪等写入的时刻。
     session_file = tmp_path / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
-    monkeypatch.setattr(C, "_social_session_path", lambda: session_file)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
 
     async def resolve_not_logged_in():
         return {"logged_in": False, "snapshot": {}, "auth": {}}
@@ -218,12 +220,48 @@ async def test_oauth_status_reports_session_path_when_signed_out(monkeypatch, tm
 
     assert result["logged_in"] is False
     assert result["session_path"] == str(session_file)
+    assert result["session_paths"] == [str(session_file)]
 
 
 @pytest.mark.unit
-def test_desktop_session_path_str_empty_when_unresolvable(monkeypatch):
-    monkeypatch.setattr(C, "_social_session_path", lambda: None)
-    assert O._desktop_session_path_str() == ""
+async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypatch, tmp_path):
+    # 后端读取带回落：override 是写入目标，有效凭证可能只在旧目录。只报 override 会让
+    # 宿主去盯一份空文件，正好重现「后端说已登录、界面仍未登录」。
+    override = tmp_path / "roaming" / "social_session.json"
+    legacy = tmp_path / "local" / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [override, legacy])
+
+    async def resolve_logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "user@example.com"}},
+        }
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_logged_in)
+
+    result = await O.oauth_status_endpoint(object())
+
+    assert result["logged_in"] is True
+    assert result["session_path"] == str(override)
+    assert result["session_paths"] == [str(override), str(legacy)]
+
+
+@pytest.mark.unit
+def test_desktop_session_paths_absolutize_and_empty_when_unresolvable(monkeypatch, tmp_path):
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [])
+    assert O._desktop_session_paths_for_host() == ("", [])
+
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [None])
+    assert O._desktop_session_paths_for_host() == ("", [])
+
+    # memory_dir 万一给出相对路径，也要按后端自己 open() 的口径绝对化：宿主会忽略非绝对路径。
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [Path("relative/social_session.json")])
+    primary, paths = O._desktop_session_paths_for_host()
+    assert os.path.isabs(primary)
+    assert paths == [primary]
+    assert primary.endswith(os.path.join("relative", "social_session.json"))
 
 
 @pytest.mark.unit
