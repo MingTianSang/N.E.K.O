@@ -25,9 +25,9 @@ import main_routers.community_oauth as O
 USER_ID = "11111111-1111-4111-8111-111111111111"
 
 
-def _local_source_request(host: str = "127.0.0.1") -> SimpleNamespace:
-    """最小 Request 替身：/oauth/status 只需要 request.client.host 判断是否同机。"""
-    return SimpleNamespace(client=SimpleNamespace(host=host))
+def _local_source_request(host: str = "127.0.0.1", headers: dict | None = None) -> SimpleNamespace:
+    """最小 Request 替身：/oauth/status 只需要 request.client.host 与转发头判断是否同机。"""
+    return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
 
 
 @pytest.fixture
@@ -275,7 +275,38 @@ async def test_oauth_status_withholds_session_paths_from_remote_peer(monkeypatch
     assert O._loopback_request_source(_local_source_request("::ffff:127.0.0.1")) is True
     assert O._loopback_request_source(_local_source_request("localhost")) is True
     assert O._loopback_request_source(_local_source_request("10.0.0.5")) is False
-    assert O._loopback_request_source(SimpleNamespace(client=None)) is False
+    assert O._loopback_request_source(SimpleNamespace(client=None, headers={})) is False
+
+
+@pytest.mark.unit
+async def test_oauth_status_not_fooled_by_forged_forwarded_headers(monkeypatch, tmp_path):
+    # Docker 部署强制 proxy_headers + forwarded_allow_ips="*"，nginx 又是追加式
+    # $proxy_add_x_forwarded_for：客户端自带 X-Forwarded-For: 127.0.0.1 就能把 uvicorn
+    # 眼里的对端伪造成回环。桌面宿主直连、不带这些头，所以有转发头就不是它。
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
+
+    async def resolve_not_logged_in():
+        return {"logged_in": False, "snapshot": {}, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
+
+    for spoofed in (
+        {"x-forwarded-for": "127.0.0.1"},
+        {"x-forwarded-for": "127.0.0.1, 203.0.113.9"},
+        {"x-real-ip": "127.0.0.1"},
+        {"forwarded": "for=127.0.0.1"},
+    ):
+        request = _local_source_request("127.0.0.1", spoofed)
+        assert O._loopback_request_source(request) is False, spoofed
+        result = await O.oauth_status_endpoint(request)
+        assert result["session_path"] == "", spoofed
+        assert result["session_paths"] == [], spoofed
+
+    # 宿主直连（无任何转发头）仍照常回报
+    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1"))
+    assert direct["session_path"] == str(session_file)
 
 
 @pytest.mark.unit

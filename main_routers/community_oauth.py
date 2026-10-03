@@ -493,7 +493,17 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
 
 
 def _loopback_request_source(request: Request) -> bool:
-    """True only when the TCP peer is this machine — nginx-forwarded requests are not."""
+    """True only when the TCP peer is this machine — nginx-forwarded requests are not.
+
+    不能只看 ``request.client.host``：Docker 部署强制 ``proxy_headers=True`` 且
+    ``forwarded_allow_ips="*"``（docker/entrypoint.sh），nginx 又是
+    ``$proxy_add_x_forwarded_for`` 追加式写法，所以客户端自带
+    ``X-Forwarded-For: 127.0.0.1`` 就能把对端地址伪造成回环。桌面宿主直连
+    127.0.0.1、不经过任何代理，也就不会带这些头 —— 有就等于不是它。
+    """
+    headers = request.headers
+    if any(name in headers for name in ("x-forwarded-for", "x-forwarded", "forwarded", "x-real-ip")):
+        return False
     client_host = request.client.host if request.client else ""
     if client_host == "localhost":
         return True
