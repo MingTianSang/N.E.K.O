@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import html
-import ipaddress
 import json
 import logging
 import os
@@ -24,6 +23,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from main_routers.local_access import is_loopback_request as _loopback_request_source
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
@@ -492,44 +492,16 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     return path, C._read_json_dict(path) if path else None
 
 
-def _loopback_request_source(request: Request) -> bool:
-    """True only when the TCP peer is this machine — nginx-forwarded requests are not.
-
-    不能只看 ``request.client.host``：Docker 部署强制 ``proxy_headers=True`` 且
-    ``forwarded_allow_ips="*"``（docker/entrypoint.sh），nginx 又是
-    ``$proxy_add_x_forwarded_for`` 追加式写法，所以客户端自带
-    ``X-Forwarded-For: 127.0.0.1`` 就能把对端地址伪造成回环。桌面宿主直连
-    127.0.0.1、不经过任何代理，也就不会带这些头 —— 有就等于不是它。
-    """
-    headers = request.headers
-    if any(name in headers for name in ("x-forwarded-for", "x-forwarded", "forwarded", "x-real-ip")):
-        return False
-    client_host = request.client.host if request.client else ""
-    if client_host == "localhost":
-        return True
-    normalized = str(client_host or "").removeprefix("::ffff:")
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
-
-
 def _desktop_session_paths_for_host() -> tuple[str, list[str]]:
-    """(写入目标, 后端自己会按序读取的全部候选)，都是绝对路径。
+    """Return the absolute write target and ordered fallback read paths.
 
-    读取带回落（``NEKO_USER_DATA_DIR`` 指定目录 → memory_dir 推导目录），有效凭证可能
-    只在旧目录里。只报写入目标的话，宿主会去监听/读取一份空文件，正好重现它要修的
-    那个「登录成功但显示未登录」。所以有序候选一起给，写入目标仍是第一个。
+    Path discovery is optional metadata and must not interrupt status polling.
+    Deduplicate after absolutizing, since different relative paths can alias.
     """
-    resolved: list[str] = []
-    for path in C._social_session_paths():
-        if path is None:
-            continue
-        # memory_dir 万一取到相对路径，按后端自己 open() 的口径绝对化：宿主会直接忽略
-        # 非绝对路径，不能让它因为一个相对串放弃跟随。
-        candidate = str(Path(os.path.abspath(path)))
-        if candidate not in resolved:
-            resolved.append(candidate)
+    try:
+        resolved = list(dict.fromkeys(os.path.abspath(p) for p in C._social_session_paths()))
+    except (OSError, RuntimeError, ValueError):
+        return "", []
     return (resolved[0] if resolved else ""), resolved
 
 
@@ -758,21 +730,15 @@ async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    # 宿主只有在自己拉起后端时才能下发 NEKO_USER_DATA_DIR；以 attach 方式复用已有
-    # 后端时那个环境变量不存在，后端会退回按 memory_dir 推导的路径，两边就不是同一份
-    # 文件了。所以这里回报后端实际读写的会话文件，让宿主跟着它走。未登录时同样要报：
-    # 那正是宿主需要知道去哪个目录等写入的时刻。
-    # session_paths 一起报，因为后端读取带回落（override → legacy），有效凭证可能只在
-    # 旧目录；只报写入目标会让宿主去盯一份空文件。
-    #
-    # 只对回环对端回报：_local_request_source_allowed() 放行了「不带 Origin 也不带
-    # Sec-Fetch-Site 的原生客户端」，Docker 部署里经 nginx 转发过来的远程请求正好如此，
-    # 那种场合不能把容器的文件系统布局发出去。
-    if _loopback_request_source(request):
-        session_path, session_paths = await asyncio.to_thread(_desktop_session_paths_for_host)
-    else:
-        session_path, session_paths = "", []
-    status = await resolve_saved_oauth_status()
+    # Protect the entire response, including account identity and local paths.
+    if not _loopback_request_source(request):
+        return JSONResponse({"detail": "loopback_only"}, status_code=403)
+
+    (session_path, session_paths), status = await asyncio.gather(
+        asyncio.to_thread(_desktop_session_paths_for_host),
+        resolve_saved_oauth_status(),
+    )
+    session_fields = {"session_path": session_path, "session_paths": session_paths}
     snapshot = status["snapshot"]
     auth = status["auth"]
     if not status["logged_in"] or not snapshot:
@@ -781,8 +747,7 @@ async def oauth_status_endpoint(request: Request):
             "auth_source": None,
             "local_user_id": None,
             "user": None,
-            "session_path": session_path,
-            "session_paths": session_paths,
+            **session_fields,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
     # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
@@ -792,8 +757,7 @@ async def oauth_status_endpoint(request: Request):
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
-        "session_path": session_path,
-        "session_paths": session_paths,
+        **session_fields,
     }
 
 

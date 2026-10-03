@@ -530,7 +530,11 @@ def _social_session_path() -> Path | None:
     """Return the Electron-visible session path when the desktop host supplies it."""
     override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
     if override:
-        candidate = Path(override).expanduser()
+        try:
+            candidate = Path(override).expanduser()
+        except (OSError, RuntimeError, ValueError):
+            # All readers must share the fallback, including status resolution.
+            return _legacy_social_session_path()
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME
         logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")

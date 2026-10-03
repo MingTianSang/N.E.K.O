@@ -26,7 +26,7 @@ USER_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def _local_source_request(host: str = "127.0.0.1", headers: dict | None = None) -> SimpleNamespace:
-    """最小 Request 替身：/oauth/status 只需要 request.client.host 与转发头判断是否同机。"""
+    """Minimal request double for local access checks."""
     return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
 
 
@@ -49,7 +49,7 @@ def oauth_app(tmp_path, monkeypatch):
     app.include_router(C.router)
     app.include_router(O.router)
     app.include_router(O.callback_router)
-    return TestClient(app), auth, social, pending
+    return TestClient(app, client=("127.0.0.1", 50000)), auth, social, pending
 
 
 @pytest.mark.unit
@@ -254,22 +254,20 @@ async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypa
 
 
 @pytest.mark.unit
-async def test_oauth_status_withholds_session_paths_from_remote_peer(monkeypatch, tmp_path):
+async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypatch, tmp_path):
     # _local_request_source_allowed() 放行「不带 Origin 也不带 Sec-Fetch-Site 的原生客户端」，
     # Docker 部署里经 nginx 转发的远程请求正好如此；那种场合不能把容器文件系统发出去。
     session_file = tmp_path / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
 
-    async def resolve_not_logged_in():
-        return {"logged_in": False, "snapshot": {}, "auth": {}}
+    async def unexpected_resolution():
+        pytest.fail("Remote requests must not read account identity")
 
-    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
-
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", unexpected_resolution)
     remote = await O.oauth_status_endpoint(_local_source_request("172.19.0.4"))
-    assert remote["logged_in"] is False
-    assert remote["session_path"] == ""
-    assert remote["session_paths"] == []
+    assert remote.status_code == 403
+    assert json.loads(remote.body) == {"detail": "loopback_only"}
 
     # ::ffff: 前缀（v4-mapped）和 localhost 仍算同机
     assert O._loopback_request_source(_local_source_request("::ffff:127.0.0.1")) is True
@@ -279,10 +277,8 @@ async def test_oauth_status_withholds_session_paths_from_remote_peer(monkeypatch
 
 
 @pytest.mark.unit
-async def test_oauth_status_not_fooled_by_forged_forwarded_headers(monkeypatch, tmp_path):
-    # Docker 部署强制 proxy_headers + forwarded_allow_ips="*"，nginx 又是追加式
-    # $proxy_add_x_forwarded_for：客户端自带 X-Forwarded-For: 127.0.0.1 就能把 uvicorn
-    # 眼里的对端伪造成回环。桌面宿主直连、不带这些头，所以有转发头就不是它。
+async def test_oauth_status_proxy_deployment_rejects_even_headerless_loopback(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     session_file = tmp_path / "social_session.json"
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
@@ -293,6 +289,8 @@ async def test_oauth_status_not_fooled_by_forged_forwarded_headers(monkeypatch, 
     monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
 
     for spoofed in (
+        {},
+        {"cf-connecting-ip": "203.0.113.9"},
         {"x-forwarded-for": "127.0.0.1"},
         {"x-forwarded-for": "127.0.0.1, 203.0.113.9"},
         {"x-real-ip": "127.0.0.1"},
@@ -301,11 +299,11 @@ async def test_oauth_status_not_fooled_by_forged_forwarded_headers(monkeypatch, 
         request = _local_source_request("127.0.0.1", spoofed)
         assert O._loopback_request_source(request) is False, spoofed
         result = await O.oauth_status_endpoint(request)
-        assert result["session_path"] == "", spoofed
-        assert result["session_paths"] == [], spoofed
+        assert result.status_code == 403, spoofed
 
-    # 宿主直连（无任何转发头）仍照常回报
-    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1"))
+    # Desktop mode trusts the peer even when a local proxy adds headers.
+    monkeypatch.delenv("NEKO_BEHIND_PROXY")
+    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1", {"x-forwarded-for": "203.0.113.9"}))
     assert direct["session_path"] == str(session_file)
 
 
@@ -314,7 +312,10 @@ def test_desktop_session_paths_absolutize_and_empty_when_unresolvable(monkeypatc
     monkeypatch.setattr(C, "_social_session_paths", lambda: [])
     assert O._desktop_session_paths_for_host() == ("", [])
 
-    monkeypatch.setattr(C, "_social_session_paths", lambda: [None])
+    def unresolvable_paths():
+        raise RuntimeError("Cannot resolve home directory")
+
+    monkeypatch.setattr(C, "_social_session_paths", unresolvable_paths)
     assert O._desktop_session_paths_for_host() == ("", [])
 
     # memory_dir 万一给出相对路径，也要按后端自己 open() 的口径绝对化：宿主会忽略非绝对路径。
@@ -323,6 +324,52 @@ def test_desktop_session_paths_absolutize_and_empty_when_unresolvable(monkeypatc
     assert os.path.isabs(primary)
     assert paths == [primary]
     assert primary.endswith(os.path.join("relative", "social_session.json"))
+
+
+@pytest.mark.unit
+async def test_oauth_status_survives_path_discovery_failure(monkeypatch):
+    def unresolvable_paths():
+        raise RuntimeError("Cannot resolve home directory")
+
+    async def resolve_logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "user@example.com"}},
+        }
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", unresolvable_paths)
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_logged_in)
+    result = await O.oauth_status_endpoint(_local_source_request())
+    assert result["logged_in"] is True
+    assert result["user"]["email"] == "user@example.com"
+    assert result["session_path"] == ""
+    assert result["session_paths"] == []
+
+
+@pytest.mark.unit
+async def test_oauth_status_invalid_override_uses_legacy_for_reads_and_paths(monkeypatch, tmp_path):
+    legacy = tmp_path / "social_session.json"
+    original_expanduser = Path.expanduser
+
+    def expanduser(path):
+        if str(path).startswith("~neko_nonexistent_user_3289"):
+            raise RuntimeError("Cannot resolve home directory")
+        return original_expanduser(path)
+
+    # Windows expands nonexistent users lexically; reproduce the POSIX failure.
+    monkeypatch.setattr(Path, "expanduser", expanduser)
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", "~neko_nonexistent_user_3289/session")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    assert C._social_session_path() == legacy
+    assert C._social_session_paths() == [legacy]
+    result = await O.oauth_status_endpoint(_local_source_request())
+    assert result["logged_in"] is False
+    assert result["session_path"] == str(legacy)
+    assert result["session_paths"] == [str(legacy)]
 
 
 @pytest.mark.unit
