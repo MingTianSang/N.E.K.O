@@ -26,7 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from main_routers import capture_router as capture_router_module
-from main_routers.local_access import is_loopback_request
+from main_routers.local_access import is_direct_loopback_request
 from utils import capture_bridge
 
 
@@ -56,6 +56,32 @@ def _build_client(client_host="testclient") -> TestClient:
     app = FastAPI()
     app.include_router(capture_router_module.router)
     return TestClient(app, client=(client_host, 50000))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("endpoint", [CAPTURE_SHOT, COMPUTER_USE_SHOT])
+def test_proxy_forwarded_loopback_cannot_capture_renderer(endpoint, monkeypatch):
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setattr(capture_router_module, "_is_loopback_request", is_direct_loopback_request)
+    calls = []
+
+    async def fail_capture(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("forwarded requests must not reach renderer capture")
+
+    monkeypatch.setattr(capture_bridge, "request_capture_screenshot", fail_capture)
+    monkeypatch.setattr(capture_bridge, "request_computer_use_screenshot", fail_capture)
+    app = FastAPI()
+    app.include_router(capture_router_module.router)
+    # Reproduce nginx appending the remote peer and Uvicorn trusting the first IP.
+    with TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"), client=("127.0.0.1", 50000)) as client:
+        response = client.post(endpoint, headers={"X-Forwarded-For": "127.0.0.1, 203.0.113.9"},
+                               json={"target_id": "123", "pid": 1})
+    assert response.status_code == 403
+    assert response.json()["error"] == "loopback_only"
+    assert calls == []
 
 
 def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_match():
@@ -286,7 +312,7 @@ def test_screenshot_503_without_renderer():
 @pytest.mark.unit
 @pytest.mark.parametrize("deployment", [None, "NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE"])
 def test_screenshot_success(monkeypatch, deployment):
-    monkeypatch.setattr(capture_router_module, "_is_loopback_request", is_loopback_request)
+    monkeypatch.setattr(capture_router_module, "_is_loopback_request", is_direct_loopback_request)
     if deployment:
         monkeypatch.setenv(deployment, "true")
     _register_dummy_renderer()

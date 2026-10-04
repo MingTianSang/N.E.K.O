@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlparse, urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from main_routers.local_access import is_loopback_request as _is_loopback_request
+from main_routers.local_access import is_direct_loopback_request as _is_loopback_request
 from ..shared_state import get_config_manager
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from config import (

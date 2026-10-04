@@ -40,7 +40,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from main_routers.local_access import is_loopback_request as _is_loopback_request
+from main_routers.local_access import is_direct_loopback_request as _is_loopback_request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from utils.logger_config import get_module_logger

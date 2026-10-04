@@ -31,8 +31,8 @@ def test_oauth_status_rejects_remote_deployments(check, deployment, monkeypatch)
 @pytest.mark.parametrize("deployment", ["NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"])
 def test_other_consumers_preserve_loopback_access_in_remote_deployments(check, deployment, monkeypatch):
     monkeypatch.setenv(deployment, "true")
-    assert check(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))) is True
-    assert check(SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))) is False
+    assert check(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})) is True
+    assert check(SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"), headers={})) is False
 
 
 @pytest.mark.unit
@@ -52,6 +52,17 @@ def test_avatar_upload_preflight_and_route_share_peer_policy(deployment, monkeyp
     assert _avatar_tool_multipart_preflight(scope).status_code == 403
     with pytest.raises(HTTPException):
         verify_local_access(Request(scope))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("header", ["x-forwarded-for", "x-real-ip", "forwarded"])
+@pytest.mark.parametrize("check", [capture_router._is_loopback_request, _shared._is_loopback_request])
+def test_proxy_rewritten_peers_cannot_authorize_local_resources(header, check, monkeypatch):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={header: "127.0.0.1"})
+    assert check(request) is False
+    monkeypatch.delenv("NEKO_BEHIND_PROXY")
+    assert check(request) is True
 
 
 @pytest.mark.unit

@@ -48,7 +48,7 @@ from utils.cookies_login import (
 )
 from utils.logger_config import get_module_logger
 from utils.twitch_auth import TwitchAuthService
-from main_routers.local_access import is_loopback_request
+from main_routers.local_access import is_direct_loopback_request
 
 logger = get_module_logger(__name__, "Main")
 
@@ -61,7 +61,7 @@ SUSPICIOUS_PATTERN = re.compile(
 def verify_local_access(request: Request):
     """🛡️ Defense in depth: block unauthorized access attempts from non-local hosts."""
     client_host = getattr(request.client, "host", None) if request.client else None
-    allowed = is_loopback_request(request)
+    allowed = is_direct_loopback_request(request)
 
     if not allowed:
         logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，来源 IP: {client_host}")

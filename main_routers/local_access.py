@@ -32,3 +32,17 @@ def is_local_oauth_status_request(request: Request) -> bool:
     if os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return False
     return not is_remote_backend_deployment() and is_loopback_request(request)
+
+
+def is_direct_loopback_request(request: Request) -> bool:
+    """Allow direct local resource calls without trusting proxy-rewritten peers.
+
+    In proxy mode Uvicorn can replace client.host from X-Forwarded-For. Reject
+    forwarded calls to local resources, while allowing backend processes to
+    call localhost directly without forwarding metadata. Desktop mode does
+    not interpret proxy headers and continues to use the actual peer.
+    """
+    if os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        if any(name in request.headers for name in ("x-forwarded-for", "x-real-ip", "forwarded")):
+            return False
+    return is_loopback_request(request)
