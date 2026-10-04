@@ -6,6 +6,8 @@
 
 官方 nginx 的 HTTP/HTTPS 服务代理路由追加 `X-Forwarded-For` 转发链；main、memory、agent 和插件服务只信任回环代理 `127.0.0.1,::1`，Uvicorn 从右向左跳过可信代理，使用第一个不可信地址，避免客户端伪造最左回环地址。独立的 `/security/csrf-token` 引导路由仍覆盖 XFF。容器外再套 Traefik、Cloudflare 或 ingress 时，外层代理必须正确设置客户端地址链；非回环外层上游若需进一步信任，应由运维明确配置具体可信代理地址或 nginx `set_real_ip_from` / `real_ip_header`，不要使用信任所有地址的通配符。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
 
+主服务的转发请求拒绝以 `NEKO_BEHIND_PROXY=1/true/yes` 为前提。桌面模式显式关闭 Uvicorn 的代理头解析，按真实 TCP 对端授权，保留本机调试/系统代理附带 XFF 的兼容性；插件原生变更、开发接口、UI push 和 bridge-token 则始终拒绝转发元数据。如果自行用 nginx/Caddy、frp 或 cloudflared 对外暴露桌面后端，必须声明代理部署；未声明时，经本机转发的外部请求可能被视为本机调用。无法通过 HTTP 元数据识别无转发头的纯 TCP 隧道，远程部署不能仅靠回环绑定作为认证。
+
 ## 📋 目录结构
 
 ```
