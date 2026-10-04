@@ -2,6 +2,10 @@
 
 本文档说明如何将 N.E.K.O. 项目打包为 Docker 容器并部署。
 
+### 外层反向代理与客户端地址
+
+官方 nginx 的 HTTP/HTTPS 代理路由会以 `$remote_addr` 覆盖 `X-Forwarded-For`，不接受客户端自带的地址链。容器外再套 Traefik、Cloudflare 或 ingress 时，后端日志及基于客户端 IP 的逻辑看到的是外层代理地址；如需保留真实客户端 IP，应由运维在 nginx 中通过 `set_real_ip_from` 声明具体可信上游，并配合 `real_ip_header` 解析该上游提供的地址，不要恢复无条件追加 XFF，也不要将任意来源设为可信。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
+
 ## 📋 目录结构
 
 ```
