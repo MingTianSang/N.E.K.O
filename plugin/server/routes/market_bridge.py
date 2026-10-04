@@ -186,7 +186,7 @@ def _require_local_bridge_token_access(request: Request) -> None:
     them; remote pages must pair through /token-exchange instead.
     """
 
-    if has_forwarding_metadata(request.headers):
+    if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     host_header = request.headers.get("host", "")

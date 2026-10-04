@@ -357,7 +357,22 @@ def test_full_peer_rate_table_does_not_lock_out_new_owner(monkeypatch):
     assert len(gate.attempts) <= 1024
 
 
-def test_shared_gateway_failures_do_not_block_correct_owner(remote_app):
+def test_shared_gateway_failures_do_not_block_correct_owner(remote_app, monkeypatch):
+    import utils.instance_access as access
+
+    pauses = []
+    original_equal = access._equal
+
+    async def pause(seconds):
+        pauses.append(seconds)
+
+    def compare(left, right):
+        if left == KEY and right == KEY:
+            assert pauses[-1] == 2.0, "Even a correct guess is delayed before key comparison"
+        return original_equal(left, right)
+
+    monkeypatch.setattr(access, "_login_verification_pause", pause)
+    monkeypatch.setattr(access, "_equal", compare)
     page = remote_app.get("/", headers={"Accept": "text/html"})
     challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
     for index in range(11):
@@ -369,6 +384,7 @@ def test_shared_gateway_failures_do_not_block_correct_owner(remote_app):
     response = remote_app.post("/instance-access/login", data={"key": KEY, "challenge": challenge},
                                headers={"Origin": "https://neko.example"}, follow_redirects=False)
     assert response.status_code == 303
+    assert pauses and all(0 < seconds <= 2 for seconds in pauses)
 
 
 def test_external_document_navigation_keeps_api_and_write_origin_guard(remote_app):

@@ -66,7 +66,11 @@ async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_remote_market_handoff_survives_plugin_proxy_headers(monkeypatch):
+@pytest.mark.parametrize("method,path,include_origin", [
+    ("POST", "/market/oauth/start", True), ("GET", "/market/ordinary", False),
+    ("GET", "/market/bridge-token", False),
+])
+async def test_remote_market_handoff_survives_plugin_proxy_headers(monkeypatch, method, path, include_origin):
     """Exercise both Uvicorn hops with a public cookie and external XFF."""
     import time
     from utils.instance_access import COOKIE, InstanceAccessMiddleware, _signed
@@ -79,6 +83,7 @@ async def test_remote_market_handoff_survives_plugin_proxy_headers(monkeypatch):
     plugin = FastAPI()
 
     @plugin.post("/market/oauth/start")
+    @plugin.get("/market/ordinary")
     async def market(request: Request):
         from plugin.server.routes.market_bridge import _oauth_redirect_uri_for_request
 
@@ -87,6 +92,13 @@ async def test_remote_market_handoff_survives_plugin_proxy_headers(monkeypatch):
                 "xff": request.headers.get("x-forwarded-for"),
                 "identity": request.scope.get("neko.instance_identity"),
                 "redirect_uri": _oauth_redirect_uri_for_request(request)}
+
+    @plugin.get("/market/bridge-token")
+    async def bridge_token(request: Request):
+        from plugin.server.routes.market_bridge import _require_local_bridge_token_access
+
+        _require_local_bridge_token_access(request)
+        pytest.fail("Remote handoff must not read native bridge token")
 
     plugin.add_middleware(InstanceAccessMiddleware)
     plugin_hop = ProxyHeadersMiddleware(plugin, trusted_hosts="127.0.0.1,::1")
@@ -98,23 +110,31 @@ async def test_remote_market_handoff_survives_plugin_proxy_headers(monkeypatch):
     monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
     monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
     main = FastAPI()
-    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["GET", "POST"])
     main.add_middleware(InstanceAccessMiddleware)
     main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
     cookie = _signed(key, "session", "public.example", "owner-session", int(time.time()) + 600)
     async with client_class(transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 40000)),
                             base_url="https://public.example") as client:
-        response = await client.post("/market/oauth/start", headers={
+        headers = {
             "Cookie": COOKIE + "=" + cookie, "Authorization": "Bearer market-oauth-token",
-            "Origin": "https://public.example", "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Site": "same-origin",
             "X-Forwarded-For": "203.0.113.20", "X-Real-IP": "203.0.113.20",
             "Forwarded": "for=203.0.113.20", "X-Forwarded-Proto": "https",
             "X-Neko-Market-Internal": "caller-forged-proof",
             "X-Neko-Market-Public-Origin": "https://attacker.example",
-        }, content=b"{}")
+            "X-Neko-Market-Remote": "0",
+        }
+        if include_origin:
+            headers["Origin"] = "https://public.example"
+        response = await client.request(method, path, headers=headers, content=b"{}")
+    if path == "/market/bridge-token":
+        assert response.status_code == 403
+        return
     assert response.status_code == 200
     assert response.json() == {"peer": "127.0.0.1", "authorization": "Bearer market-oauth-token",
-                               "origin": "https://public.example", "xff": None, "identity": "market",
+                               "origin": "https://public.example" if include_origin else None,
+                               "xff": None, "identity": "market",
                                "redirect_uri": "https://public.example/market/oauth/callback"}
 
 

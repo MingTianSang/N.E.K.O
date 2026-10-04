@@ -168,9 +168,14 @@ def _strings(request: Request) -> dict:
     return _locale_strings(locale)
 
 
+async def _login_verification_pause(seconds: float) -> None:
+    """Apply bounded failure backoff before comparing the instance credential."""
+    await asyncio.sleep(seconds)
+
+
 def market_internal_proof(key: str, method: str, path: str, public_origin: str = "") -> str:
     """Bind a service handoff to its Market route and public origin for 60 seconds."""
-    return _signed(key, "market-internal", method + ":" + path + ":" + public_origin,
+    return _signed(key, "market-internal-remote", method + ":" + path + ":" + public_origin,
                    "market", int(time.time()) + 60)
 
 
@@ -190,7 +195,7 @@ def _market_internal_identity(request: Request, key: str) -> str | None:
         if (origin.scheme != "https" or not origin.netloc or origin.username or origin.password
                 or origin.path or origin.query or origin.fragment):
             return None
-    return _verified(key, "market-internal", request.method + ":" + path + ":" + public_origin,
+    return _verified(key, "market-internal-remote", request.method + ":" + path + ":" + public_origin,
                      request.headers.get("x-neko-market-internal", ""))
 
 
@@ -236,6 +241,9 @@ class InstanceAccessMiddleware:
         scope["neko.instance_identity"] = identity
         if internal_identity:
             scope["neko.market_public_origin"] = request.headers.get("x-neko-market-public-origin", "")
+            # The signed purpose includes remote; changing the network hop to
+            # loopback must never grant native-only Market token privileges.
+            scope["neko.market_remote_authorized"] = True
         revoked = False
         started = False
         active_key = key
@@ -358,6 +366,13 @@ class InstanceAccessMiddleware:
         now = time.time()
         self.attempts = {ip: item for ip, item in self.attempts.items() if item[0] > now - 60}
         started, count = self.attempts.get(peer, (now, 0))
+        # Delay verification itself, including a correct guess, rather than
+        # merely returning 429 after an unlimited fast key-comparison oracle.
+        # A shared gateway can delay its owner by at most two seconds, never
+        # permanently reject a valid credential because another client failed.
+        failures = max(count, sum(item[1] for item in self.attempts.values()) // 10)
+        if failures:
+            await _login_verification_pause(min(.25 * failures, 2.0))
         data = bytearray()
         while True:
             message = await receive()
@@ -373,6 +388,9 @@ class InstanceAccessMiddleware:
         supplied = fields.get("key", [""])[0]
         valid = _verified(key, "challenge", request.url.hostname or "", challenge)
         if not valid or not _equal(challenge, request.cookies.get(CHALLENGE_COOKIE, "")) or not _equal(key, supplied):
+            # Re-read after awaits so simultaneous failures do not overwrite
+            # each other's increments with the same stale admission count.
+            started, count = self.attempts.get(peer, (time.time(), 0))
             # Gateway clients may share one peer IP. Failed attempts must never
             # prevent an owner holding both the challenge and correct key.
             if count >= 10:
