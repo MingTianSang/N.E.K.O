@@ -6,7 +6,7 @@ import pytest
 
 from main_routers import capture_router, community_oauth
 from main_routers.system_router import _shared
-from utils.deployment import is_behind_proxy
+from utils.deployment import is_behind_proxy, uvicorn_proxy_options
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +40,18 @@ def test_uvicorn_loopback_proxy_trust_preserves_external_peer(chain):
                     client=("127.0.0.1", 50000)) as client:
         response = client.get("/peer", headers={"X-Forwarded-For": chain})
     assert response.json() == {"host": "203.0.113.9"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("proxy", [False, True])
+def test_merged_uvicorn_options_override_environment_defaults(proxy, monkeypatch):
+    from uvicorn import Config
+
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true" if proxy else "false")
+    config = Config(app=lambda: None, **uvicorn_proxy_options())
+    assert config.proxy_headers is proxy
+    assert config.forwarded_allow_ips == "127.0.0.1,::1"
 
 
 @pytest.mark.unit

@@ -55,7 +55,7 @@ from multiprocessing import Process, freeze_support, Event
 _pin_project_root_first()
 
 import config as config_module
-from utils.deployment import is_behind_proxy
+from utils.deployment import is_behind_proxy, uvicorn_proxy_options
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
 from utils.port_utils import (
@@ -1185,10 +1185,7 @@ def run_merged_servers() -> int:
         except Exception:
             pass
 
-    _behind_proxy = is_behind_proxy()
-    _proxy_kw: dict = {}
-    if _behind_proxy:
-        _proxy_kw = {"proxy_headers": True, "forwarded_allow_ips": "*"}
+    _proxy_kw = uvicorn_proxy_options()
 
     # 分步 import（控制峰值内存 & 提供进度反馈），逐段计时：三段 import 串行坐在
     # 端口就绪关键路径上，回归过一次没人发现（#1496 优化后被 openai 2.x 静默吃回
