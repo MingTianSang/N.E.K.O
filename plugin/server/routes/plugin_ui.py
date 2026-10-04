@@ -466,8 +466,11 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
     伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
     """
-    # 回环校验：只接受本机回环客户端。用直连对端 request.client.host，不信任
-    # X-Forwarded-For，避免伪造转发头绕过（非回环部署应保留其他鉴权/可信代理）。
+    # Proxy middleware may rewrite client.host to a loopback upstream address.
+    # Push is a native local operation, so reject forwarding metadata before
+    # considering that address, including when an outer proxy is loopback.
+    if any(name in request.headers for name in ("x-forwarded-for", "x-real-ip", "forwarded")):
+        return JSONResponse({"ok": False, "error": "forwarded push rejected"}, status_code=403)
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host):
         return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
