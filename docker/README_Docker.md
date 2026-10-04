@@ -5,7 +5,7 @@
 ### 远程首次连接与社区账户
 
 远程网页/Windows Electron 使用 HTTPS 首次输入实例 key，之后复用连接会话。
-管理员运行 docker compose exec -w /app neko-main uv run python -m utils.instance_access
+管理员运行 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
 取得持久化凭证；服务不在日志打印。多服务共享存储或设置同一 NEKO_INSTANCE_ACCESS_KEY。
 外置 nginx/NAS 鉴权可叠加。匿名账户查询/API/WS 拒绝，授权后账户响应不含 Linux 路径或社区令牌。
 默认 Web OAuth 使用平台固定 relay，无需每个 Docker 域名注册回调。认证平台与 PC 配套版本、

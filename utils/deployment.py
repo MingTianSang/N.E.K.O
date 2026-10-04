@@ -25,4 +25,5 @@ def uvicorn_proxy_options() -> dict:
 
 def has_forwarding_metadata(headers: Mapping[str, str]) -> bool:
     """Identify forwarded requests before granting native-only local access."""
-    return any(name in headers for name in ("x-forwarded-for", "x-real-ip", "forwarded"))
+    return any(name.lower() in {"x-forwarded", "x-real-ip", "forwarded"}
+               or name.lower().startswith("x-forwarded-") for name in headers)

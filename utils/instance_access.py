@@ -18,6 +18,7 @@ import re
 import secrets
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -152,13 +153,38 @@ def _same_origin(request: Request) -> bool:
     return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
 
 
+@lru_cache(maxsize=8)
+def _locale_strings(locale: str) -> dict:
+    """Read only once per shipped locale, retaining just the pairing strings."""
+    path = Path(__file__).resolve().parents[1] / "static" / "locales" / f"{locale}.json"
+    return json.loads(path.read_text(encoding="utf-8"))["instanceAccess"]
+
+
 def _strings(request: Request) -> dict:
     locale = request.headers.get("accept-language", "en").split(",")[0].split(";")[0]
     choices = {"en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"}
     locale = locale if locale in choices else locale.split("-")[0]
     locale = locale if locale in choices else "en"
-    path = Path(__file__).resolve().parents[1] / "static" / "locales" / f"{locale}.json"
-    return json.loads(path.read_text(encoding="utf-8"))["instanceAccess"]
+    return _locale_strings(locale)
+
+
+def market_internal_proof(key: str, method: str, path: str) -> str:
+    """Bind a local service handoff to one Market method/path for 30 seconds."""
+    return _signed(key, "market-internal", method + ":" + path, "market", int(time.time()) + 30)
+
+
+def _market_internal_identity(request: Request, key: str) -> str | None:
+    path = request.url.path
+    if path != "/market" and not path.startswith("/market/"):
+        return None
+    try:
+        local_peer = request.client and ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        return None
+    if not local_peer:
+        return None
+    return _verified(key, "market-internal", request.method + ":" + path,
+                     request.headers.get("x-neko-market-internal", ""))
 
 
 class InstanceAccessMiddleware:
@@ -176,21 +202,29 @@ class InstanceAccessMiddleware:
             return await self.app(scope, receive, send)
         path = scope.get("path", "")
         login_page = scope["type"] == "http" and (path == LOGIN_PATH or (request.method == "GET" and "text/html" in request.headers.get("accept", "")))
-        if not login_page and not request.headers.get("authorization") and not request.cookies.get(COOKIE):
+        if not login_page and not request.headers.get("authorization") and not request.cookies.get(COOKIE) and not request.headers.get("x-neko-market-internal"):
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
         try:
             key = await asyncio.to_thread(instance_key)
-            identity = remote_instance_identity(request, key=key)
+            internal_identity = _market_internal_identity(request, key)
+            identity = internal_identity or remote_instance_identity(request, key=key)
         except (OSError, ValueError):
             return await self._deny(scope, receive, send, "instance_access_unavailable", 503)
         if scope["type"] == "http" and path == LOGIN_PATH:
             return await self._login(request, key, scope, receive, send)
         if not identity:
             if scope["type"] == "http" and request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-                return await self._page(request, key)(scope, receive, send)
+                return await (await self._page(request, key))(scope, receive, send)
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
         oauth_callback = request.method == "GET" and path in {"/oauth/callback", "/api/card-drop/oauth/callback"}
-        if not oauth_callback and not _same_origin(request):
+        # Only entry documents may be opened from another site. Account reads,
+        # arbitrary GET routes, frames and mutations retain the origin guard.
+        entry_navigation = (scope["type"] == "http" and request.method in {"GET", "HEAD"}
+                            and path in {"/", "/chat", "/subtitle"}
+                            and request.headers.get("sec-fetch-mode") == "navigate"
+                            and request.headers.get("sec-fetch-dest") == "document"
+                            and not request.headers.get("origin"))
+        if not internal_identity and not oauth_callback and not entry_navigation and not _same_origin(request):
             return await self._deny(scope, receive, send, "origin_not_allowed", 403)
         scope["neko.instance_identity"] = identity
         revoked = False
@@ -220,7 +254,8 @@ class InstanceAccessMiddleware:
                         return False
                 next_key_check = time.monotonic() + 1
             try:
-                return remote_instance_identity(request, key=active_key) == identity
+                return (_market_internal_identity(request, active_key) if internal_identity
+                        else remote_instance_identity(request, key=active_key)) == identity
             except ValueError:
                 return False
 
@@ -239,7 +274,10 @@ class InstanceAccessMiddleware:
                 raise OSError("instance authorization revoked")
             if message["type"] == "http.response.start":
                 started = True
-                if scope.get("path", "").startswith(("/static/", "/assets/", "/user_models/")):
+                if scope.get("path", "").startswith(("/static/", "/assets/", "/user_live2d/",
+                                                      "/user_live2d_local/", "/user_vrm/", "/user_mmd/",
+                                                      "/user_pngtuber/", "/user_avatar_tools/", "/user_mods/",
+                                                      "/workshop/")):
                     # Authenticated assets may keep browser caching, never
                     # public/shared caching that would bypass the entry guard.
                     headers = [(k, re.sub(rb"\bpublic\b", b"private", v, flags=re.I) if k.lower() == b"cache-control" else v)
@@ -278,8 +316,8 @@ class InstanceAccessMiddleware:
         else:
             await JSONResponse({"detail": detail}, status_code=status, headers={"Cache-Control": "no-store"})(scope, receive, send)
 
-    def _page(self, request: Request, key: str, *, failed=False):
-        strings = _strings(request)
+    async def _page(self, request: Request, key: str, *, failed=False):
+        strings = await asyncio.to_thread(_strings, request)
         challenge = _signed(key, "challenge", request.url.hostname or "", secrets.token_hex(16), int(time.time()) + 600)
         secure = _secure_transport(request)
         message = strings["failed"] if failed else strings["description"]
@@ -304,18 +342,13 @@ class InstanceAccessMiddleware:
 
     async def _login(self, request, key, scope, receive, send):
         if request.method != "POST":
-            return await self._page(request, key)(scope, receive, send)
+            return await (await self._page(request, key))(scope, receive, send)
         if not _secure_transport(request) or not _same_origin(request):
             return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
         peer = request.client.host if request.client else "unknown"
         now = time.time()
         self.attempts = {ip: item for ip, item in self.attempts.items() if item[0] > now - 60}
         started, count = self.attempts.get(peer, (now, 0))
-        if count >= 10:
-            return await self._deny(scope, receive, send, "instance_login_rate_limited", 429)
-        if peer not in self.attempts and len(self.attempts) >= 1024:
-            self.attempts.pop(min(self.attempts, key=lambda ip: self.attempts[ip][0]))
-        self.attempts[peer] = (started, count + 1)
         data = bytearray()
         while True:
             message = await receive()
@@ -331,7 +364,14 @@ class InstanceAccessMiddleware:
         supplied = fields.get("key", [""])[0]
         valid = _verified(key, "challenge", request.url.hostname or "", challenge)
         if not valid or not _equal(challenge, request.cookies.get(CHALLENGE_COOKIE, "")) or not _equal(key, supplied):
-            return await self._page(request, key, failed=True)(scope, receive, send)
+            # Gateway clients may share one peer IP. Failed attempts must never
+            # prevent an owner holding both the challenge and correct key.
+            if count >= 10:
+                return await self._deny(scope, receive, send, "instance_login_rate_limited", 429)
+            if peer not in self.attempts and len(self.attempts) >= 1024:
+                self.attempts.pop(min(self.attempts, key=lambda ip: self.attempts[ip][0]))
+            self.attempts[peer] = (started, count + 1)
+            return await (await self._page(request, key, failed=True))(scope, receive, send)
         self.attempts.pop(peer, None)
         target = fields.get("return_path", ["/"])[0]
         if not target.startswith("/") or target.startswith("//") or "\\" in target or "\r" in target or "\n" in target:

@@ -686,6 +686,15 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         for key, value in request.headers.items()
         if key.lower() not in hop_by_hop_request
     }
+    # Browser cookies are signed for the public host, not this private HTTP
+    # hop. Replace any caller-supplied proof after the main entry guard passed;
+    # retain Market's independent Authorization credential unchanged.
+    from utils.instance_access import _local_native, instance_key, market_internal_proof
+
+    headers.pop("x-neko-market-internal", None)
+    if request.scope.get("neko.instance_identity") or _local_native(request):
+        signing_key = await asyncio.to_thread(instance_key)
+        headers["x-neko-market-internal"] = market_internal_proof(signing_key, request.method, "/market" + ("/" + path if path else ""))
 
     try:
         async with httpx.AsyncClient(

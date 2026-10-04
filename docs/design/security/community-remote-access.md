@@ -29,7 +29,7 @@ X-Real-IP/Forwarded-only与纯TCP隧道不能自动识别，须正确声明远�
 
 key默认在持久化根创建instance_access.key（POSIX0600），服务不输出秘密。
 管理员显式执行 uv run python -m utils.instance_access 取得key。
-Compose执行 docker compose exec -w /app neko-main uv run python -m utils.instance_access
+Compose执行 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
 （服务名按实际Compose）。多服务共享目录，或设置同一至少32字符的NEKO_INSTANCE_ACCESS_KEY。
 
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
@@ -88,6 +88,17 @@ IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机�
 原Greptile线程保持open，#3289不宣称全部完成。
 
 ## 依据
+
+已授权浏览器从站外链接打开 /、/chat、/subtitle 的顶层文档可复用会话；
+账户 API、iframe、异源写操作仍拒绝。实际模型静态挂载采用 private 缓存，保留 ETag/max-age。
+配对页只缓存八种语言的少量文案。共享代理 IP 的错误尝试仍限速，
+正确密钥和有效 challenge 不受其他客户端错误次数影响。
+回环调试代理 XFF 兼容仅适用于非代理桌面部署；代理部署的 capture 等本机资源
+只允许无转发元数据的本机请求，不能通过配对获得服务器截图权限。
+
+固定 relay 当前依赖 opener，整个 IdP 跳转链也会保留该引用。
+尚未证明所有第三方认证页面隔离 opener；不得将 fixture 通过视为此风险已消除。
+发布前需完成该跳转链审计或改为不依赖 opener 的完成传递。
 
 - [nginx Basic Authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)：location覆盖与后端隔离由部署者配置。
 - [RFC8252 loopback回调](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)：loopback位于客户端，不能当远程Linux后端。

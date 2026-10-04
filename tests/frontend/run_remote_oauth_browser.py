@@ -181,7 +181,8 @@ def run(args):
             env = {**os.environ, "NEKO_TEST_PLAYWRIGHT_MODULE": args.playwright_module,
                    "NEKO_TEST_CHROME": args.chrome, "NEKO_TEST_BACKEND_ORIGIN": backend_origin,
                    "NEKO_TEST_AUTH_ORIGIN": auth_origin, "NEKO_TEST_INSTANCE_KEY": key}
-            subprocess.run(["node", str(ROOT / "tests/frontend/remote_oauth_browser.mjs")], env=env, check=True, timeout=60)
+            from tests.node_harness import run_node_script
+            run_node_script("node", "import(" + json.dumps((ROOT / "tests/frontend/remote_oauth_browser.mjs").as_uri()) + ");", env=env, check=True, timeout=60)
             assert challenge.get("redeemed")
             assert C._read_json_dict(C._auth_path())["refresh_token"] == "fixture-cloud-refresh"
         finally:

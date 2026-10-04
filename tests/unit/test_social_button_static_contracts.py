@@ -726,12 +726,12 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "currentPopup.opener = null;" in listener
     assert "currentPopup.location.replace(navigationTarget);" in listener
     assert "if (navigated && !options.keepReference)" in listener
-    assert "const waitForOAuthCompletion = async (timeoutMs) => {" in listener
+    assert "const waitForOAuthCompletion = async (timeoutMs, state) => {" in listener
     assert "requirePopup" not in listener
     assert "let pollDelayMs = 1000;" in listener
     assert "Math.min(Math.ceil(pollDelayMs * 1.5), 5000)" in listener
-    assert "fetch('/api/card-drop/oauth/status', { cache: 'no-store' })" in listener
-    assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
+    assert "fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(state)}`, { cache: 'no-store' })" in listener
+    assert "navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })" in listener
     assert "await waitForOAuthCompletion(" in listener
     assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
     assert "const refreshedDelegatePromise = fetchNativeDelegate();" in listener
@@ -746,20 +746,20 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "openElectronSocialWindow(refreshedTargetUrl.toString())" not in listener
     assert "oauthLaunched" not in listener
     assert re.search(
-        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs\s*\)",
+        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*browserOAuthState\s*\)",
         listener,
     )
-    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
+    assert listener.index("const navigateBrowserPopup =") < listener.index(
         "const initialNativeHandoff = await initialNativeHandoffReadiness;"
     )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
-        "navigateBrowserPopup(authUrl, { keepReference: true })"
+        "navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })"
     )
-    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true })") < listener.index(
+    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })") < listener.index(
         "await waitForOAuthCompletion("
     )
     assert re.search(
-        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
+        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true, keepOpener: !!oauthJson\.relay_origin \}\)\) \{\s*"
         r"closePopup\(\);",
         listener,
     )

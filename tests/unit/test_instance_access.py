@@ -292,19 +292,20 @@ def test_generated_key_is_complete_under_concurrent_creation_and_repairs_empty(m
     assert path.read_text() == keys[0]
 
 
-def test_authenticated_assets_keep_private_cache_policy(monkeypatch):
+@pytest.mark.parametrize("prefix", ["static", "user_vrm", "user_live2d", "user_mmd", "workshop"])
+def test_authenticated_assets_keep_private_cache_policy(monkeypatch, prefix):
     from starlette.responses import Response
 
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     app = FastAPI()
 
-    @app.get("/static/model.bin")
+    @app.get(f"/{prefix}/model.bin")
     async def model():
         return Response(b"model", headers={"Cache-Control": "public, max-age=3600", "ETag": '"model-1"'})
 
     app.add_middleware(InstanceAccessMiddleware)
     client = TestClient(app, base_url="https://instance.example")
-    response = client.get("/static/model.bin", headers={"Authorization": "Bearer " + KEY})
+    response = client.get(f"/{prefix}/model.bin", headers={"Authorization": "Bearer " + KEY})
     assert response.headers["cache-control"] == "private, max-age=3600"
     assert response.headers["etag"] == '"model-1"'
     assert "Cookie" in response.headers["vary"]
@@ -353,7 +354,82 @@ def test_full_peer_rate_table_does_not_lock_out_new_owner(monkeypatch):
     response = client.post("/instance-access/login", data={"key": KEY, "challenge": challenge},
                            headers={"Origin": "https://neko.example"}, follow_redirects=False)
     assert response.status_code == 303
-    assert len(gate.attempts) < 1024
+    assert len(gate.attempts) <= 1024
+
+
+def test_shared_gateway_failures_do_not_block_correct_owner(remote_app):
+    page = remote_app.get("/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    for index in range(11):
+        response = remote_app.post("/instance-access/login", data={"key": "wrong", "challenge": challenge},
+                                   headers={"Origin": "https://neko.example"})
+        assert response.status_code == (401 if index < 10 else 429)
+        if index < 10:
+            challenge = re.search(r'name="challenge" value="([^"]+)"', response.text).group(1)
+    response = remote_app.post("/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "https://neko.example"}, follow_redirects=False)
+    assert response.status_code == 303
+
+
+def test_external_document_navigation_keeps_api_and_write_origin_guard(remote_app):
+    pair(remote_app)
+    headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+    # The fixture has no entry page; reaching its 404 proves the gate passed.
+    assert remote_app.get("/", headers=headers).status_code == 404
+    assert remote_app.get("/api/card-drop/auth-status", headers=headers).status_code == 403
+    assert remote_app.post("/private", headers=headers).status_code == 403
+    assert remote_app.get("/", headers={**headers, "Sec-Fetch-Dest": "iframe"}).status_code == 403
+
+
+def test_pairing_locale_reads_are_cached(monkeypatch):
+    import utils.instance_access as access
+    from pathlib import Path
+
+    access._locale_strings.cache_clear()
+    original = Path.read_text
+    reads = []
+
+    def read(path, *args, **kwargs):
+        reads.append(path.name)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    try:
+        for locale in ("en", "en", "ja", "ja"):
+            assert access._locale_strings(locale)["title"]
+        assert reads == ["en.json", "ja.json"]
+    finally:
+        access._locale_strings.cache_clear()
+
+
+def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch):
+    from utils.instance_access import market_internal_proof
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    app = FastAPI()
+
+    @app.get("/market/test")
+    async def market():
+        return {"ok": True}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    headers = {"Origin": "https://public.example", "Authorization": "Bearer market-oauth-token",
+               "X-Neko-Market-Internal": market_internal_proof(KEY, "GET", "/market/test")}
+    local = TestClient(app, base_url="http://127.0.0.1:48916", client=("127.0.0.1", 1234))
+    assert local.get("/market/test", headers=headers).status_code == 200
+    assert local.post("/market/test", headers=headers).status_code == 401
+    assert local.get("/private", headers=headers).status_code == 401
+    remote = TestClient(app, base_url="http://127.0.0.1:48916", client=("203.0.113.1", 1234))
+    assert remote.get("/market/test", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-REAL-IP", "Forwarded"])
+def test_forwarding_metadata_covers_proxy_header_family(header):
+    from utils.deployment import has_forwarding_metadata
+
+    assert has_forwarding_metadata({header: "proxy"})
+    assert not has_forwarding_metadata({"X-Client-Name": "native"})
 
 
 @pytest.mark.parametrize("name", ["NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"])

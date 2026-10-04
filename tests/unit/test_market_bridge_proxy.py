@@ -9,6 +9,13 @@ from app.main_server import web_app
 
 @pytest.mark.asyncio
 async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch):
+    from utils.instance_access import _verified
+
+    key = "market-test-instance-key-" + "x" * 40
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", key)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
     seen: dict[str, object] = {}
     asgi_client = httpx.AsyncClient
 
@@ -50,3 +57,5 @@ async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch)
     assert isinstance(forwarded_headers, dict)
     assert forwarded_headers["authorization"] == "Bearer header-token"
     assert forwarded_headers["origin"] == "http://localhost:48911"
+    assert _verified(key, "market-internal", "POST:/market/oauth/start",
+                     forwarded_headers["x-neko-market-internal"]) == "market"
