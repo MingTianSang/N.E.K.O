@@ -534,6 +534,7 @@ def _social_session_path() -> Path | None:
             candidate = Path(override).expanduser()
         except (OSError, RuntimeError, ValueError):
             # All readers must share the fallback, including status resolution.
+            logger.warning("card_drop: cannot expand NEKO_USER_DATA_DIR; using legacy session path")
             return _legacy_social_session_path()
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME

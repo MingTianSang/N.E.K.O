@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from main_routers.local_access import is_loopback_request as _loopback_request_source
+from main_routers.local_access import is_local_oauth_status_request as _loopback_request_source
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
