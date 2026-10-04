@@ -888,6 +888,42 @@ async def oauth_remote_callback_endpoint(request: Request, payload: RemoteOAuthC
                         headers={"Cache-Control": "no-store"})
 
 
+@callback_router.get("/oauth/relay", response_class=HTMLResponse)
+async def oauth_remote_relay_landing(request: Request):
+    """Redeem a fragment-only result in the initiating instance's own origin.
+
+    The popup never receives an opener. Only an authorized host cookie may
+    load this landing page, and the normal callback enforces PKCE/session/state.
+    The same-origin channel coordinates completion/navigation, never tokens.
+    """
+    if not request.scope.get("neko.instance_identity"):
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=401)
+    community_origin = str(httpx.URL(C._social_base_url()).copy_with(path="", query=None, fragment=None)).rstrip("/")
+    script = """(async()=>{
+      const raw=location.hash.slice(1);history.replaceState(null,'',location.pathname);
+      let data;try{data=JSON.parse(decodeURIComponent(raw));}catch(_){return;}
+      if(!data||typeof data.state!=='string'||!data.state||data.state.length>2048)return;
+      const channel=new BroadcastChannel('neko-oauth:'+data.state);
+      channel.onmessage=(event)=>{
+        const message=event.data;if(!message||message.type!=='navigate'||message.state!==data.state)return;
+        try{const target=new URL(message.url);if(target.origin!==COMMUNITY_ORIGIN)return;
+          channel.close();location.replace(target.href);}catch(_){}
+      };
+      channel.postMessage({type:'redeeming',state:data.state});
+      try{const response=await fetch('/api/card-drop/oauth/remote-callback',{
+        method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({state:data.state,code:data.code||null,error:data.error||null})});
+        channel.postMessage({type:'complete',state:data.state,ok:response.ok});
+        if(!response.ok)window.close();
+      }catch(_){channel.postMessage({type:'complete',state:data.state,ok:false});}
+      setTimeout(()=>channel.close(),60000);
+    })();""".replace("COMMUNITY_ORIGIN", json.dumps(community_origin))
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    return HTMLResponse("<!doctype html><html><meta charset=utf-8><title>NEKO</title><script>" + script + "</script></html>",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                 "Content-Security-Policy": "default-src 'none'; connect-src 'self'; script-src 'sha256-" + digest + "'; frame-ancestors 'none'; base-uri 'none'"})
+
+
 async def _handle_oauth_callback(
     code: str | None,
     state: str | None,

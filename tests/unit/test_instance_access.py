@@ -445,6 +445,19 @@ def test_existing_instance_key_does_not_acquire_creation_lock(monkeypatch, tmp_p
     assert access.instance_key() == "rotated-key-" + "r" * 40
 
 
+def test_remote_relay_landing_requires_cookie_and_has_no_opener(remote_app):
+    assert remote_app.get("/oauth/relay").status_code == 401
+    pair(remote_app)
+    response = remote_app.get("/oauth/relay", headers={"Sec-Fetch-Site": "cross-site"})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "sha256-" in response.headers["content-security-policy"]
+    assert "window.opener" not in response.text
+    assert "history.replaceState" in response.text
+    assert "BroadcastChannel" in response.text
+
+
 def test_remote_community_preflight_ticket_and_delegate_handoff(remote_app, monkeypatch, tmp_path):
     community = "https://community.example"
     user = "11111111-1111-4111-8111-111111111111"

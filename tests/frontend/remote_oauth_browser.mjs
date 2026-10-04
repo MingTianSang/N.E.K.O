@@ -27,12 +27,22 @@ try {
   await page.click('#login-community');
   const popup = await popupPromise;
   await page.waitForFunction(() => window.oauthPendingRelays?.size === 1);
-  await popup.close();
+  assert.equal(await popup.evaluate(() => window.opener === null), true);
+  const keepPopup = process.env.NEKO_TEST_KEEP_POPUP === '1';
+  if (!keepPopup) await popup.close();
   await page.waitForFunction(() => window.completion === true);
   const state = await page.evaluate(() => window.browserOAuthState);
   const completion = await page.evaluate(async (state) =>
     (await fetch('/api/card-drop/oauth/completion?state=' + encodeURIComponent(state))).json(), state);
   assert.deepEqual(completion, { logged_in: true });
+  assert.equal(page.url(), origin + '/');
+  if (keepPopup) {
+    const destination = process.env.NEKO_TEST_AUTH_ORIGIN + '/community?neko_source_origin=' + encodeURIComponent(origin);
+    assert.equal(await page.evaluate((url) => window.navigateRemoteCommunity(url), destination), true);
+    await popup.waitForURL(destination);
+    assert.equal(await popup.evaluate(() => window.opener === null), true);
+    assert.equal(context.pages().length, 2, 'COOP return uses the original popup, never a second blocked popup');
+  }
   const account = await page.evaluate(async () => (await fetch('/api/card-drop/oauth/status')).json());
   assert.equal(account.logged_in, true);
   assert.equal(account.user.email, 'fixture@example.test');

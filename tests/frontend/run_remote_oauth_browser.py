@@ -72,8 +72,14 @@ def run(args):
             assert query["redirect_uri"] == auth_origin + "/oauth/callback"
             assert query["client_id"] == "neko-servers-web-prod"
             challenge.update(query)
-            return RedirectResponse(query["redirect_uri"] + "?" + urlencode({
-                "state": query["state"], "code": "fixture-one-time-code"}), status_code=302)
+            target = query["redirect_uri"] + "?" + urlencode({"state": query["state"], "code": "fixture-one-time-code"})
+            script = "(async()=>{const had=Boolean(window.opener);if(had)window.opener.location=" + json.dumps(backend_origin + "/phishing-probe") + ";await fetch('/fixture-opener-probe?had='+had);location.replace(" + json.dumps(target) + ");})();"
+            return HTMLResponse("<script>" + script + "</script>", headers={"Cross-Origin-Opener-Policy": "same-origin"})
+
+        @idp.get("/fixture-opener-probe")
+        async def opener_probe(had: str):
+            challenge["had_opener"] = had == "true"
+            return {"ok": True}
 
         @idp.get("/oauth/callback")
         async def relay(request: Request):
@@ -127,7 +133,7 @@ def run(args):
         start = source.index("if (oauthJson.relay_origin) {")
         end = source.index("if (!navigateBrowserPopup", start)
         production_listener = source[start:end]
-        start = source.index("const navigateBrowserPopup =")
+        start = source.index("let remoteRelayChannel = null;")
         end = source.index("const oauthCompletedStates", start)
         production_navigation = source[start:end]
         start = source.index("const waitForOAuthCompletion =")
@@ -136,6 +142,9 @@ def run(args):
         production_navigation_call = re.search(
             r"if \(!(?P<call>navigateBrowserPopup\(authUrl,[^\n]+?\))\) \{", source
         ).group("call")
+        return_navigation = re.search(
+            r"if \((?P<condition>popupRef \|\| \(remoteRelayChannel && remoteRelayChannel.completed\))\) \{\s*if \(!(?P<call>navigateBrowserPopup\(refreshedTargetUrl.toString\(\)\))\)", source)
+        production_return_navigation = "const refreshedTargetUrl=new URL(url);if(" + return_navigation.group("condition") + ")return " + return_navigation.group("call") + ";return false;"
 
         @backend.get("/")
         async def home():
@@ -150,7 +159,8 @@ def run(args):
                 window.browserOAuthState=oauthJson.state;const browserOAuthState=oauthJson.state;
                 const browserOAuthTimeoutMs=30000;
                 """ + production_navigation + production_completion + production_listener + production_navigation_call + ";" + """
-                window.completion=await waitForOAuthCompletion(30000,browserOAuthState);};"""
+                window.completion=await waitForOAuthCompletion(30000,browserOAuthState);
+                window.navigateRemoteCommunity=(url)=>{""" + production_return_navigation + "};};"
             return HTMLResponse('<button id="login-community">OAuth fixture</button><script>' + script + '</script>')
 
         backend.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=C.authorize_community_handoff)
@@ -181,9 +191,11 @@ def run(args):
             env = {**os.environ, "NEKO_TEST_PLAYWRIGHT_MODULE": args.playwright_module,
                    "NEKO_TEST_CHROME": args.chrome, "NEKO_TEST_BACKEND_ORIGIN": backend_origin,
                    "NEKO_TEST_AUTH_ORIGIN": auth_origin, "NEKO_TEST_INSTANCE_KEY": key}
+            env["NEKO_TEST_KEEP_POPUP"] = "1" if args.keep_popup else "0"
             from tests.node_harness import run_node_script
             run_node_script("node", "import(" + json.dumps((ROOT / "tests/frontend/remote_oauth_browser.mjs").as_uri()) + ");", env=env, check=True, timeout=60)
             assert challenge.get("redeemed")
+            assert challenge.get("had_opener") is False
             assert C._read_json_dict(C._auth_path())["refresh_token"] == "fixture-cloud-refresh"
         finally:
             for server in servers:
@@ -197,4 +209,5 @@ if __name__ == "__main__":
     parser.add_argument("--auth-relay-module", required=True)
     parser.add_argument("--playwright-module", required=True)
     parser.add_argument("--chrome", required=True)
+    parser.add_argument("--keep-popup", action="store_true")
     run(parser.parse_args())

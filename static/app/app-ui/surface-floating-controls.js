@@ -749,7 +749,20 @@
                 }
                 popupRef = null;
             };
+            let remoteRelayChannel = null;
             const navigateBrowserPopup = (targetUrl, options = {}) => {
+                if (remoteRelayChannel && remoteRelayChannel.completed
+                    && (!popupRef || popupRef.closed)) {
+                    const target = new URL(String(targetUrl), window.location.href);
+                    if (target.searchParams.get('neko_source_origin') === window.location.origin) {
+                        attachResolvedTheme(target);
+                    }
+                    remoteRelayChannel.channel.postMessage({ type: 'navigate',
+                        state: remoteRelayChannel.state, url: target.toString() });
+                    remoteRelayChannel.channel.close();
+                    remoteRelayChannel = null;
+                    return true;
+                }
                 if (typeof isSocialOpenRequestCurrent === 'function'
                     && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
                     return true;
@@ -770,9 +783,7 @@
                 } catch (_) { /* non-community navigation */ }
                 // The external page receives theme-only messages but never a reference
                 // that could navigate or otherwise control the local N.E.K.O page.
-                if (!options.keepOpener) {
-                    try { currentPopup.opener = null; } catch (_) { /* ignore */ }
-                }
+                try { currentPopup.opener = null; } catch (_) { /* ignore */ }
                 let navigated = true;
                 try {
                     currentPopup.location.replace(navigationTarget);
@@ -799,7 +810,8 @@
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
                     if (oauthCompletedStates.has(state)) return true;
-                    if (!popupRef && !oauthPendingRelays.has(state)) {
+                    if (remoteRelayChannel && remoteRelayChannel.failed) return false;
+                    if (!popupRef && !oauthPendingRelays.has(state) && !remoteRelayChannel) {
                         return false;
                     }
                     try {
@@ -808,7 +820,7 @@
                                 forgetSocialWindow(popupRef, socialOpenGeneration);
                             }
                             popupRef = null;
-                            if (!oauthPendingRelays.has(state)) return false;
+                            if (!oauthPendingRelays.has(state) && !remoteRelayChannel) return false;
                         }
                     } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
@@ -825,6 +837,9 @@
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             if (statusJson && statusJson.logged_in) {
+                                if (remoteRelayChannel && remoteRelayChannel.state === state) {
+                                    remoteRelayChannel.completed = true;
+                                }
                                 return true;
                             }
                         }
@@ -1143,31 +1158,33 @@
                                     );
                                 }
                                 if (oauthJson.relay_origin) {
-                                    const relayOrigin = new URL(oauthJson.relay_origin).origin;
                                     const relayState = browserOAuthState;
-                                    const relayPopup = popupRef;
-                                    let cleanupTimer;
-                                    const onRelay = async (event) => {
+                                    const channel = new BroadcastChannel('neko-oauth:' + relayState);
+                                    remoteRelayChannel = { channel, state: relayState, completed: false };
+                                    const cleanupTimer = setTimeout(() => channel.close(), browserOAuthTimeoutMs);
+                                    channel.onmessage = async (event) => {
                                         const data = event.data;
-                                        if (event.origin !== relayOrigin || event.source !== relayPopup
-                                            || !data || data.type !== 'neko-remote-oauth' || data.state !== relayState) return;
-                                        oauthPendingRelays.add(relayState);
-                                        window.removeEventListener('message', onRelay);
-                                        clearTimeout(cleanupTimer);
+                                        if (!data || data.state !== relayState) return;
+                                        if (data.type === 'redeeming') oauthPendingRelays.add(relayState);
+                                        if (data.type !== 'complete') return;
+                                        // Channel messages are hints. Only the owner/session-bound
+                                        // backend completion endpoint can confirm a successful login.
                                         try {
-                                            const response = await fetch('/api/card-drop/oauth/remote-callback', {
-                                                method: 'POST', cache: 'no-store',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ code: data.code || null, state: relayState, error: data.error || null }),
-                                            });
-                                            if (response.ok && (await response.json()).ok) oauthCompletedStates.add(relayState);
-                                        } catch (_) { /* completion polling also observes a saved successful attempt */ }
+                                            const response = await fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(relayState)}`, { cache: 'no-store' });
+                                            if (response.ok && (await response.json()).logged_in) {
+                                                oauthCompletedStates.add(relayState);
+                                                if (remoteRelayChannel) remoteRelayChannel.completed = true;
+                                                clearTimeout(cleanupTimer);
+                                            } else if (data.ok === false && remoteRelayChannel) {
+                                                remoteRelayChannel.failed = true;
+                                                clearTimeout(cleanupTimer);
+                                                channel.close();
+                                            }
+                                        } catch (_) { /* polling observes the same saved completion */ }
                                         finally { oauthPendingRelays.delete(relayState); }
                                     };
-                                    window.addEventListener('message', onRelay);
-                                    cleanupTimer = setTimeout(() => window.removeEventListener('message', onRelay), browserOAuthTimeoutMs);
                                 }
-                                if (!navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })) {
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
@@ -1212,7 +1229,7 @@
                                     refreshedTargetUrl,
                                     refreshedHandoff.nativeDelegate
                                 );
-                                if (popupRef) {
+                                if (popupRef || (remoteRelayChannel && remoteRelayChannel.completed)) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
                                         console.warn('[social] failed to navigate browser community window after OAuth');
                                         closePopup();

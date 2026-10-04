@@ -731,7 +731,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "let pollDelayMs = 1000;" in listener
     assert "Math.min(Math.ceil(pollDelayMs * 1.5), 5000)" in listener
     assert "fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(state)}`, { cache: 'no-store' })" in listener
-    assert "navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })" in listener
+    assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
     assert "await waitForOAuthCompletion(" in listener
     assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
     assert "const refreshedDelegatePromise = fetchNativeDelegate();" in listener
@@ -753,13 +753,13 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         "const initialNativeHandoff = await initialNativeHandoffReadiness;"
     )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
-        "navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })"
+        "navigateBrowserPopup(authUrl, { keepReference: true })"
     )
-    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })") < listener.index(
+    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true })") < listener.index(
         "await waitForOAuthCompletion("
     )
     assert re.search(
-        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true, keepOpener: !!oauthJson\.relay_origin \}\)\) \{\s*"
+        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
         r"closePopup\(\);",
         listener,
     )

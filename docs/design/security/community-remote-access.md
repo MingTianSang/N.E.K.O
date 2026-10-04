@@ -50,8 +50,8 @@ HTTPS网关到私有HTTP上游应保留Host/协议；必要时设置NEKO_INSTANC
 本机保持loopback Desktop client。远程默认使用neko-servers-web-prod Web PKCE
 client与认证平台自己的固定HTTPS /oauth/callback relay。项目平台注册一次；
 普通Docker用户不必注册各自域名。Linux保留verifier，state包含实例origin和随机nonce。
-relay不换令牌，只向opener精确origin发送一次性code/state；网页同时检查
-event.origin、event.source、state，再向已授权Linux的/oauth/remote-callback提交。
+relay不换令牌，只把一次性code/state/error置于fragment导航到实例固定/oauth/relay；落地页清fragment后
+向同源/api/card-drop/oauth/remote-callback提交，后端校验当前授权会话和state。
 Linux检查发起会话、state、PKCE和当前pending后保存凭证。
 /oauth/completion?state=...只确认此客户端的本次尝试，旧全局logged_in不得误报成功。
 
@@ -69,7 +69,10 @@ NEKO_COMMUNITY_WEB_REDIRECT_URI=https://后端/oauth/callback并精确注册；
 本地两个独立HTTPS测试域名、真实Chromium、生产实例授权/保存处理器、网页监听器、
 平台relay已验证首次连接、PKCE换码、完成查询、cookie隔离、路径保护和重放拒绝。
 测试调用生产navigateBrowserPopup、生产调用表达式和waitForOAuthCompletion，覆盖换码期间关闭弹窗。
-浏览器保留空白预留窗口直到判定是否需要relay，仅固定relay保留opener，其他外部页面仍断开。
+浏览器保留空白预留窗口直到判定是否需要relay，整个认证跳转链始终断开opener。
+平台仅返回固定实例落地路径和fragment；落地页先清fragment，同源POST兑换。
+同源BroadcastChannel仅协调完成和原弹窗导航，主页面仍核验受保护completion，不信任成功提示。
+认证页设置COOP造成WindowProxy断开也能复用原弹窗回到社区；原生Electron在relay文档执行前拦截回调兑换，避免与落地页竞争。
 IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机验证。
 运行 uv run python tests/frontend/run_remote_oauth_browser.py --auth-relay-module <编译后relay.js> --playwright-module <模块目录> --chrome <Chrome路径>。
 
@@ -120,9 +123,9 @@ Market OAuth 的平台 client/redirect 注册仍遵循其独立协议，此回�
 回环调试代理 XFF 兼容仅适用于非代理桌面部署；代理部署的 capture 等本机资源
 只允许无转发元数据的本机请求，不能通过配对获得服务器截图权限。
 
-固定 relay 当前依赖 opener，整个 IdP 跳转链也会保留该引用。
-尚未证明所有第三方认证页面隔离 opener；不得将 fixture 通过视为此风险已消除。
-发布前需完成该跳转链审计或改为不依赖 opener 的完成传递。
+旧opener依赖已由实例同源落地页+BroadcastChannel完成传递替代，认证页面无法通过opener控制主窗口。
+Chromium fixture包含认证页COOP隔离和尝试主窗口导航，断言opener为空；覆盖原弹窗回到社区及兑换期间关闭。
+配套平台与PC必须发布该协议才可解除发布门槛；mock测试仍不替代生产平台与实机验收。
 
 - [nginx Basic Authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)：location覆盖与后端隔离由部署者配置。
 - [RFC8252 loopback回调](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)：loopback位于客户端，不能当远程Linux后端。

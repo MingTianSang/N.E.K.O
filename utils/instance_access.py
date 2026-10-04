@@ -260,7 +260,7 @@ class InstanceAccessMiddleware:
             if scope["type"] == "http" and request.method == "GET" and "text/html" in request.headers.get("accept", ""):
                 return await (await self._page(request, key))(scope, receive, send)
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
-        oauth_callback = request.method == "GET" and path in {"/oauth/callback", "/api/card-drop/oauth/callback"}
+        oauth_callback = request.method == "GET" and path in {"/oauth/callback", "/api/card-drop/oauth/callback", "/oauth/relay"}
         # Only entry documents may be opened from another site. Account reads,
         # arbitrary GET routes, frames and mutations retain the origin guard.
         entry_navigation = (scope["type"] == "http" and request.method in {"GET", "HEAD"}
