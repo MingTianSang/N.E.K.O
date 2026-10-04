@@ -5,7 +5,7 @@
 Linux backend + Windows client のログインは end-to-end 検証未完了です。
 Origin/CSRF と nginx 転送はユーザー認証ではありません。外部 gateway と内蔵
 instance 認証の比較・merge 条件は
-[remote access design](../../design/security/community-remote-access.md) を参照してください。
+[remote access design](/design/security/community-remote-access) を参照してください。
 設計はまだ未実装で、desktop の forwarding header 互換性は維持します。
 
 保守対象 Compose は `docker/docker-compose.yml`。Nginx を前段にして host 48911=HTTP、48912=HTTPS です。
