@@ -790,10 +790,12 @@
                 }
                 return navigated;
             };
-            const waitForOAuthCompletion = async (timeoutMs) => {
+            const oauthCompletedStates = new Set();
+            const waitForOAuthCompletion = async (timeoutMs, state) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
+                    if (oauthCompletedStates.has(state)) return true;
                     if (!popupRef) {
                         return false;
                     }
@@ -816,7 +818,7 @@
                     ));
                     pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), 5000);
                     try {
-                        const statusRes = await fetch('/api/card-drop/oauth/status', { cache: 'no-store' });
+                        const statusRes = await fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(state)}`, { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             if (statusJson && statusJson.logged_in) {
@@ -1115,6 +1117,7 @@
                 }
                 if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
+                    let browserOAuthState = '';
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
@@ -1123,6 +1126,7 @@
                         });
                         if (oauthRes.ok) {
                             const oauthJson = await oauthRes.json();
+                            browserOAuthState = String(oauthJson.state || '');
                             const authUrl = oauthJson && oauthJson.auth_url
                                 ? String(oauthJson.auth_url)
                                 : '';
@@ -1133,6 +1137,29 @@
                                         browserOAuthTimeoutMs,
                                         expiresInSec * 1000
                                     );
+                                }
+                                if (oauthJson.relay_origin) {
+                                    const relayOrigin = new URL(oauthJson.relay_origin).origin;
+                                    const relayState = browserOAuthState;
+                                    const relayPopup = popupRef;
+                                    let cleanupTimer;
+                                    const onRelay = async (event) => {
+                                        const data = event.data;
+                                        if (event.origin !== relayOrigin || event.source !== relayPopup
+                                            || !data || data.type !== 'neko-remote-oauth' || data.state !== relayState) return;
+                                        window.removeEventListener('message', onRelay);
+                                        clearTimeout(cleanupTimer);
+                                        try {
+                                            const response = await fetch('/api/card-drop/oauth/remote-callback', {
+                                                method: 'POST', cache: 'no-store',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ code: data.code || null, state: relayState, error: data.error || null }),
+                                            });
+                                            if (response.ok && (await response.json()).ok) oauthCompletedStates.add(relayState);
+                                        } catch (_) { /* completion polling also observes a saved successful attempt */ }
+                                    };
+                                    window.addEventListener('message', onRelay);
+                                    cleanupTimer = setTimeout(() => window.removeEventListener('message', onRelay), browserOAuthTimeoutMs);
                                 }
                                 if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
@@ -1167,7 +1194,7 @@
                             releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
-                                browserOAuthTimeoutMs
+                                browserOAuthTimeoutMs, browserOAuthState
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();

@@ -1,12 +1,13 @@
 # Docker デプロイ
 
-リモート community OAuth は #3289 の merge 前に解決が必要です。現在 proxy mode
-の完了確認は 403 を返し、callback は browser 側の `127.0.0.1` を指します。
-Linux backend + Windows client のログインは end-to-end 検証未完了です。
-Origin/CSRF と nginx 転送はユーザー認証ではありません。外部 gateway と内蔵
-instance 認証の比較・merge 条件は
-[remote access design](/design/security/community-remote-access) を参照してください。
-設計はまだ未実装で、desktop の forwarding header 互換性は維持します。
+リモートinstanceはHTTPSページでkeyを初回入力し、通常のcommunity loginを利用します。
+外部nginx/NAS認証は併用できます。ローカルdesktopとloopbackデバッグproxyは互換です。
+リモート応答にLinuxパス/cloud tokenを含めません。platform relayはDocker domainごとの登録不要です。
+認証基盤とElectron対応版公開が#3289 merge条件で、Linux+Windows実機はcommunityが検証します。
+[契約と検証手順](/design/security/community-remote-access)。
+key取得: docker compose exec -w /app neko uv run python -m utils.instance_access
+HTTPS/WSSを使用し、外部TLS gatewayではNEKO_INSTANCE_PUBLIC_ORIGINを設定します。
+NEKO_COMMUNITY_WEB_REDIRECT_URIは既定で空にしてplatform relayを使います。
 
 保守対象 Compose は `docker/docker-compose.yml`。Nginx を前段にして host 48911=HTTP、48912=HTTPS です。
 

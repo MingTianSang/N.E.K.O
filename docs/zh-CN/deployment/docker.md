@@ -1,11 +1,13 @@
 # Docker 部署
 
-社区 OAuth 的远程访问边界正在 #3289 中处理：当前代理模式的完成查询会返回 403，
-回调还使用浏览器所在机器的 `127.0.0.1`；不能把远程 Linux + Windows 的登录描述为
-已验证可用。Origin/CSRF 和 nginx 转发本身不提供用户身份认证。外置鉴权与项目自带
-实例授权的比较、账户保护及合并验收见
-[远程访问设计](/design/security/community-remote-access)。该设计尚未实施，
-本地桌面转发头兼容保持不变。
+远程实例自带首次连接授权：在HTTPS页面输入key一次，之后正常社区登录。
+外置nginx/NAS鉴权可叠加，本机桌面与真实回环调试代理保持兼容。
+远程响应不含Linux路径/社区令牌；平台默认relay无需每个Docker域名注册。
+认证平台及Electron配套发布后才可解除#3289合并门槛，Linux+Windows实机待社区验收。
+[契约与测试步骤](/design/security/community-remote-access)。
+取得key：docker compose exec -w /app neko uv run python -m utils.instance_access
+远程使用HTTPS/WSS；外置TLS网关按需设置NEKO_INSTANCE_PUBLIC_ORIGIN。
+NEKO_COMMUNITY_WEB_REDIRECT_URI默认留空使用平台relay。
 
 维护中的 Compose 是 `docker/docker-compose.yml`。Nginx 前置，宿主 48911 为 HTTP、48912 为 HTTPS。
 

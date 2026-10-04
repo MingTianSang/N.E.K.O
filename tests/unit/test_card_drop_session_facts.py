@@ -646,7 +646,7 @@ def client(monkeypatch, tmp_path):
     C._native_delegates.clear()
     app = FastAPI()
     app.include_router(C.router)
-    with TestClient(app, base_url="http://localhost:48911") as test_client:
+    with TestClient(app, base_url="http://localhost:48911", client=("127.0.0.1", 50000)) as test_client:
         yield test_client
     C._native_sync_tickets.clear()
     C._native_delegates.clear()

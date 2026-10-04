@@ -399,6 +399,8 @@ from main_routers.community_oauth import (  # noqa
     callback_router as community_oauth_callback_router,
     router as community_oauth_router,
 )
+from main_routers.community_remote_proxy import router as community_remote_proxy_router
+app.include_router(community_remote_proxy_router)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,

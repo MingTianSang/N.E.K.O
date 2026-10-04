@@ -2,9 +2,9 @@
 
 > **文档性质：current implementation record。** 本页记录 browser-facing 本地变更端点的共享防跨站请求合同。它降低恶意网页调用 localhost 的风险，但不是用户身份认证，也不能保护已取得本机执行权限的进程。
 
-社区账户与远程实例授权正在按 [PR #3289 合并门槛](./community-remote-access.md)
-评估。下文既有“部署层负责公网鉴权”的实现记录不等于已决定未来只能使用外置 nginx
-鉴权，也不意味着当前 Docker OAuth 端到端可用。
+社区账户与远程实例采用[已批准的自带授权](/design/security/community-remote-access)，
+先检查实例身份，再执行CSRF/来源校验。外置网关可叠加，本机原生兼容保持。
+配套发布与真实环境验收按#3289合并门槛执行。
 
 ## 威胁边界
 

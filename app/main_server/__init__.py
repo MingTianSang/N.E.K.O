@@ -642,6 +642,8 @@ app.add_middleware(
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
 
 

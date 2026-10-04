@@ -1,13 +1,14 @@
 # Docker Deployment
 
-Remote community OAuth remains a merge blocker for #3289: completion polling
-currently returns 403 in proxy mode, and the callback targets `127.0.0.1` on
-the browser's machine. Linux backend + Windows client login has not passed
-end-to-end verification. Origin/CSRF checks and forwarding through nginx do
-not authenticate users. See the [remote access design](/design/security/community-remote-access)
-for the external gateway versus built-in instance authorization comparison
-and merge criteria. This design is not implemented yet; desktop forwarding
-header compatibility is preserved.
+Remote instances use built-in connection authorization: enter the instance key once over HTTPS,
+then use community login normally. External nginx/NAS auth can be layered on top. Local desktop
+and loopback debugging proxies remain compatible. Remote replies omit Linux paths/cloud tokens.
+The default platform relay needs no per-Docker-domain registration. Auth relay and Electron
+companion releases must ship before #3289 is ready; real Linux + Windows acceptance needs community testing.
+See [contract and tests](/design/security/community-remote-access).
+Get the key: docker compose exec -w /app neko uv run python -m utils.instance_access
+Use HTTPS/WSS; external TLS gateways may set NEKO_INSTANCE_PUBLIC_ORIGIN.
+Leave NEKO_COMMUNITY_WEB_REDIRECT_URI empty for the default relay.
 
 The maintained Compose file is `docker/docker-compose.yml`. It runs N.E.K.O. behind Nginx and publishes HTTP on host port 48911 and HTTPS on 48912.
 

@@ -1,94 +1,89 @@
 # 社区账户与远程实例访问边界（PR #3289 合并门槛）
 
-状态：方案评估，尚未实现远程认证；不得据此宣布远程 OAuth 已修复。
+维护者定论：项目自带首次连接授权，外置 nginx / NAS / VPN 鉴权可叠加。
+本地桌面不增加步骤，不因转发头一律拒绝。远程连接权限与社区账户登录分别检查。
+这是可信使用者共享实例的模型，不是各访客拥有隔离账户的多租户服务。
 
-## 已确定的产品约束
+## 责任与体验
 
-本地桌面不增加登录步骤，不因为存在转发头拒绝正常请求。Docker 网页与
-Linux 后端 + Windows Electron 应保留社区登录、退出、切换账户与使用功能。
-未获授权的远程调用者不能查询实例所属账户，包括登录状态、昵称、邮箱和 ID。
-Linux 会话文件路径属于 Linux 本机资源，不能当作 Windows 可读取的路径返回。
-
-桌面代理兼容指本机调试代理报告真实的回环客户端，仍可访问本机资源。启动入口
-统一解析可信回环代理的 XFF；同机隧道报告远程客户端时不授予本机权限，不是按
-“存在转发头”一律拒绝。仅 X-Real-IP/Forwarded 不会被 Uvicorn 解析为客户端身份，
-无 XFF 的代理或纯 TCP 隧道仍依赖正确部署声明与实例认证。
-
-“连接这个 NEKO 实例”与“登录社区账户”是两种权限：前者决定谁能使用服务器，
-后者决定服务器使用哪个社区账号。社区 PKCE、CSRF、Origin、Host、客户端 IP
-及转发头均不能单独证明请求者有权使用某个远程实例。
-
-## 两种责任分配
-
-| 比较项 | 部署者外置鉴权 | 项目自带实例访问授权 |
+| 场景 | 只靠外置鉴权 | 本项目定论：自带保护，兼容网关 |
 | --- | --- | --- |
-| 用户操作 | 使用已有 nginx / NAS / VPN 登录 | 首次连接输入部署凭证，后续复用连接会话 |
-| Docker 入门 | 需要部署者配置鉴权与端口隔离 | 项目负责凭证生成、持久化、首次连接和退出 |
-| Linux 直连 | 仍需 VPN、认证网关等额外组件 | 可使用相同实例认证，传输仍需 HTTPS 或可信隧道 |
-| 浏览器 | 网关登录后访问；须覆盖 API 和 WebSocket | 同源 HttpOnly 会话 cookie；写请求继续校验 CSRF |
-| Electron | 网关认证必须同时覆盖 renderer、主进程 HTTP、SSE 和 WebSocket | 主进程持有连接凭证，按后端实例隔离，适配上述所有链路 |
-| 后端防绕过 | 网关后端必须不可直接访问；不得信任客户端自报“已认证” | 后端自己校验凭证；不依赖是否经过 nginx |
-| 维护成本 | 网关、密码重置、会话与客户端兼容由部署者承担 | 项目承担撤销、轮换、失败限速、安全存储与客户端兼容 |
-| 对现有用户影响 | 已有网关的用户最小；无网关直连用户需要新增部署工作 | 无网关远程用户首次连接有一步授权，本地桌面不受影响 |
+| Docker 网页 | 部署者配置登录，覆盖全部 API/WS，禁止后端直连绕过 | 项目生成持久化 key，首次输入，刷新/重启复用会话 |
+| Linux 直连 | 另装 VPN/认证网关 | 同一实例授权，传输使用 HTTPS/WSS |
+| Windows Electron | 各窗口、主进程和 SSE 都接入网关 | 复用目的后端 Chromium session，后台请求经 Linux 固定 relay |
+| 本机桌面/调试代理 | 不应增加步骤 | loopback PKCE、路径发现、真实回环客户端 XFF 兼容 |
+| 未配置 nginx | 账户与其他接口可能直接暴露 | 匿名远程 API/WS 在读取账户、刷新或解析请求体前拒绝 |
 
-推荐项目自带实例访问授权、兼容外置网关。是否接受远程首次连接授权是剩余产品决定，
-不能默认把匿名公网访问当成“体验不变”。若选择只支持外置鉴权，应明确部署责任、
-提供可验证的配置，并完成 Electron 兼容验证；不能仅增加 `NEKO_AUTHENTICATED=true`
-或信任 `X-Authenticated-User` 就放开账户接口。
+已有网关仍需首次连接 NEKO。不信任 X-Authenticated-User、Origin、Host、CSRF 或自报
+loopback XFF 来代替实例授权。部署者负责 HTTPS、持久化、key保管，不必为每个
+Docker 域名注册 OAuth。所有启动入口仅信任127.0.0.1、::1的XFF，不受
+FORWARDED_ALLOW_IPS影响；真实回环调试代理兼容，远程XFF不授予本机权限。
+X-Real-IP/Forwarded-only与纯TCP隧道不能自动识别，须正确声明远程/代理部署并认证。
 
-外置网关保护整个实例，自带保护也应覆盖实例入口，而非只藏起两个账户接口。
-否则攻击者仍可能通过现有会话代理、写操作等使用账户或改动服务器。此项需要逐路由
-盘点，不能把社区查询上的 token 检查描述为完成全站认证。
+## 实例授权契约
 
-## 账户响应与本机文件必须拆分
+主、memory、agent、插件服务共用 InstanceAccessMiddleware，覆盖 HTTP/WS。
+只有本机 peer 与本机 Host 的正常原生调用免步骤。匿名响应不返回登录状态、昵称、
+邮箱或ID；授权后的 /oauth/status 和 /auth-status 也不返回 Linux路径、社区令牌或verifier。
+本机桌面的会话路径发现保留，Linux路径不能当Windows文件路径。
 
-当前 `/api/card-drop/oauth/status` 同时返回账户状态与 `session_path(s)`：
-本地 Electron 用路径发现共享文件，网页用 `logged_in` 判断登录完成。这两个用途
-必须拆开；认证后的远程查询仍不得返回路径、access token、refresh token 或 PKCE verifier。
+key默认在持久化根创建instance_access.key（POSIX0600），服务不输出秘密。
+管理员显式执行 uv run python -m utils.instance_access 取得key。
+Compose执行 docker compose exec -w /app neko uv run python -m utils.instance_access
+（服务名按实际Compose）。多服务共享目录，或设置同一至少32字符的NEKO_INSTANCE_ACCESS_KEY。
 
-`/api/card-drop/auth-status` 与完成查询必须使用同一个实例访问授权边界，不能一个
-403、另一个仍返回邮箱。登录开始、退出、账户切换也必须受保护，不能只保护读取。
-完成查询须绑定本次发起客户端和 OAuth 尝试，不能拿其他人的全局 `logged_in=true`
-当成本次授权完成。失败响应应统一、禁止缓存，且拒绝应发生在读取/刷新账户之前。
+首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
+HttpOnly/Secure/SameSite=Lax签名cookie。原生Bearer也仅通过HTTPS/WSS。
+key轮换使旧凭证、新请求和现存SSE/WS的下个数据消息失效。
+OAuth保存前重新检查连接授权；退出/新尝试取消旧pending，迟到回调不得复活账户。
+实例身份不替代既有CSRF/来源检查。key/cookie不得写到URL、公共日志、PR或截图。
 
-本地桌面可以保留自动授权及原路径发现兼容。对远程访问，只有明确的实例凭证才可
-授权；伪造 loopback XFF、`Origin`、`Sec-Fetch-Site` 均不得获得账户响应。
+HTTPS网关到私有HTTP上游应保留Host/协议；必要时设置NEKO_INSTANCE_PUBLIC_ORIGIN
+为外部完整HTTPS origin并启用NEKO_BEHIND_PROXY。不从自报转发头推导认证。
+同hostname不同端口共用cookie，须共享key；独立实例用不同hostname/key。
 
-## OAuth 回调是独立阻塞项
+## OAuth回跳与发布依赖
 
-当前 `_oauth_redirect_uri()` 固定 `http://127.0.0.1:<port>/oauth/callback`。
-浏览器在 Windows、后端在 Linux 时，回跳到 Windows；放开 Linux 状态轮询不会修复它。
-这是回调拓扑问题，与 nginx 是否登录无关。
+本机保持loopback Desktop client。远程默认使用neko-servers-web-prod Web PKCE
+client与认证平台自己的固定HTTPS /oauth/callback relay。项目平台注册一次；
+普通Docker用户不必注册各自域名。Linux保留verifier，state包含实例origin和随机nonce。
+relay不换令牌，只向opener精确origin发送一次性code/state；网页同时检查
+event.origin、event.source、state，再向已授权Linux的/oauth/remote-callback提交。
+Linux检查发起会话、state、PKCE和当前pending后保存凭证。
+/oauth/completion?state=...只确认此客户端的本次尝试，旧全局logged_in不得误报成功。
 
-- 同机桌面：保留 loopback PKCE 回调，不能改变已注册桌面 client 的语义。
-- 远程网页：需要认证平台允许的远程 Web client 与固定、显式配置的 HTTPS 回调；
-  callback 地址不能从不可信 Host/XFF 拼接，不允许任意 redirect_uri。
-- 远程 Electron：选择客户端本机接收授权后向已认证 Linux 后端提交一次性结果，
-  或复用已注册的远程 Web 回调。必须核验 state、PKCE、目标实例及发起客户端，
-  不传共享文件路径，不把长期社区 token 放到 URL 或日志。
+远程Electron向当前后端提交一次性结果，不复制Linux文件或社区长期令牌。
+通知/积分只代理固定已有端点，上游由服务器配置；账户切换/退出停止旧流。
+自建平台可覆盖NEKO_COMMUNITY_WEB_CLIENT_ID。特殊直接后端回跳才配置
+NEKO_COMMUNITY_WEB_REDIRECT_URI=https://后端/oauth/callback并精确注册；
+默认留空用平台relay，不能动态接受任意redirect_uri。
 
-具体实现须先核验认证平台注册能力与 PC 客户端实际网络链路。仅测试 HTTP
-handler 或 mock 云端响应不足以证明跨机器回调可用。
+发布顺序：认证平台relay及Web client注册 → Electron配套版本 → #3289。
+配套未发布不能因CI绿色解除合并门槛，也不能把原403临时守卫当永久禁用Docker OAuth。
 
-## 合并验收
+## 验收与用户测试
 
-| 场景 | 正常使用验收 | 拒绝与隔离验收 |
-| --- | --- | --- |
-| 本地桌面，无头 / 本机调试代理回环 XFF | 登录、状态、路径发现、退出与切换账户照常 | 可信代理报告远程 XFF 时不得获取本机账户/资源；恶意跨站浏览器仍拒绝 |
-| Docker 本机网页 | 登录完成可轮询，刷新页面仍能使用 | 匿名请求不能获得账户；路径不外露 |
-| nginx 外置网关 + 远程网页 | 网关登录、OAuth 回跳、完成查询与退出 | 直连绕过、伪造认证头、过期会话均拒绝 |
-| Linux 直连 + Windows Electron | 首次连接、重启复用、登录、SSE/WS、切换后端 | A 实例凭证不能用于 B；撤销后所有链路失效 |
-| 并发/异常 | 离线不误删会话，失败可重试，取消不挂起 | 他人 OAuth 尝试、state 错误/重放、账号切换旧响应不得成功 |
+本地两个独立HTTPS测试域名、真实Chromium、生产实例授权/保存处理器、网页监听器、
+平台relay已验证首次连接、PKCE换码、完成查询、cookie隔离、路径保护和重放拒绝。
+IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机验证。
+运行 uv run python tests/frontend/run_remote_oauth_browser.py --auth-relay-module <编译后relay.js> --playwright-module <模块目录> --chrome <Chrome路径>。
 
-#3289 合并前：记录责任分配定论；实施并覆盖两个账户查询、开始/退出及回调；
-在上述真实部署拓扑完成端到端验证；同步 Docker 文档、代码边界注释、回归测试
-与原 review thread。当前测试中代理状态 403 是临时防泄漏行为，不能成为最终
-Docker 产品契约。已有绿色 CI 不代表这些验收完成。
+用户无法提供后端，真实部署由用户/社区协助验收，不再要求维护者提供地址。
+发布候选记录后端、PC、平台版本与以下结果：
+
+1. 本机直接/调试代理登录、退出、切换账户、重启和路径发现。
+2. Docker HTTPS及外置nginx首次连接、刷新/重启复用、OAuth回跳、退出重登；
+   匿名窗口不能读账户/API/WS，自报认证头无效。
+3. Linux后端+Windows Electron社区窗口、通知、积分、WS；切换实例不沿用旧凭证。
+4. key轮换使旧通知/WS失效；取消、超时、退出、并发新登录不被旧回调复活。
+5. 离线/上游暂不可用不误删账户，恢复可继续使用。
+6. 回报版本、拓扑、步骤、状态码和结果，不提交key/cookie/code/verifier/token或完整账户响应。
+
+单测、CI、真实浏览器fixture、真实部署验收分别记录。配套发布及用户验收未完成，
+原Greptile线程保持open，#3289不宣称全部完成。
 
 ## 依据
 
-- [nginx Basic Authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)：
-  可保护配置的 location，须核验其他 location 没有取消继承，也须隔离后端直连。
-- [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)：
-  loopback 回调由运行在用户设备上的客户端接收，不能假设指向另一台服务器。
-- 现有项目边界见 [local-mutation-auth.md](./local-mutation-auth.md)。
+- [nginx Basic Authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)：location覆盖与后端隔离由部署者配置。
+- [RFC8252 loopback回调](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)：loopback位于客户端，不能当远程Linux后端。
+- [本地变更检查](/design/security/local-mutation-auth)：实例身份和CSRF分别校验。

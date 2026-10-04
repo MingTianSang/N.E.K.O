@@ -149,7 +149,7 @@ async def test_oauth_start_offloads_pending_write(tmp_path, monkeypatch):
 
     event_loop_thread = threading.get_ident()
     result = await O.oauth_start_endpoint(
-        SimpleNamespace(url=SimpleNamespace(port=48911))
+        SimpleNamespace(url=SimpleNamespace(port=48911), client=SimpleNamespace(host="127.0.0.1"), headers={})
     )
 
     assert result["auth_url"]
@@ -1001,7 +1001,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     monkeypatch.setattr(C, "_clear_auth", record(True))
 
     event_loop_thread = threading.get_ident()
-    result = await O.oauth_logout_endpoint(object())
+    result = await O.oauth_logout_endpoint(_local_source_request())
 
     assert result == {"ok": True}
     assert len(worker_threads) == 3
@@ -1067,7 +1067,7 @@ async def test_oauth_logout_revokes_against_saved_issuer(
     monkeypatch.setattr(O, "_unlink_pending", lambda: None)
     monkeypatch.setattr(C, "_clear_auth", lambda: True)
 
-    result = await O.oauth_logout_endpoint(object())
+    result = await O.oauth_logout_endpoint(_local_source_request())
 
     assert result == {"ok": True}
     assert revoked == [
@@ -1236,6 +1236,9 @@ def test_oauth_callback_success_persists_social_session(oauth_app, monkeypatch):
 @pytest.mark.unit
 async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     pending = tmp_path / "community_oauth_pending.json"
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
     pending.write_text(
         json.dumps(
             {
@@ -1266,7 +1269,7 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
         worker_threads.append(threading.get_ident())
         return pending, json.loads(pending.read_text(encoding="utf-8"))
 
-    def unlink_pending():
+    def unlink_pending(*_args):
         worker_threads.append(threading.get_ident())
         pending.unlink(missing_ok=True)
 

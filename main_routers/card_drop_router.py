@@ -357,7 +357,11 @@ def _exact_origin_matches(a: str, b: str) -> bool:
 
 
 def _local_mutation_origin_allowed(request: Request) -> bool:
-    """Allow native callers or browser requests from the local NEKO origin only."""
+    """Allow local native callers or an authorized instance's own browser."""
+    if request.scope.get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+
+        return _same_origin(request)
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
         return True
@@ -387,6 +391,9 @@ def _require_local_mutation_ticket(request: Request, payload: dict | None) -> No
 
 def _local_request_source_allowed(request: Request) -> bool:
     """Allow same-origin local browser calls and non-browser native clients only."""
+    if getattr(request, "scope", {}).get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+        return _same_origin(request)
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if not origin:
@@ -409,6 +416,9 @@ def _local_request_source_allowed(request: Request) -> bool:
 
 def _local_ui_request_source_allowed(request: Request) -> bool:
     """Require browser Fetch Metadata proving a request came from this local UI."""
+    if getattr(request, "scope", {}).get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+        return _same_origin(request)
     if (request.headers.get("sec-fetch-site") or "").strip().lower() != "same-origin":
         return False
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
@@ -969,6 +979,9 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 def _clear_auth() -> bool:
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    if auth_path is not None:
+        # Cancel in-flight OAuth before its credential commit under this same lock.
+        paths.append(auth_path.parent / "community_oauth_pending.json")
     paths = list(dict.fromkeys(paths))
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
@@ -1322,10 +1335,10 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint(request: Request):
-    # Source metadata blocks cross-site browsers; it is not instance identity.
-    # Remote account authorization must be shared with OAuth completion queries
-    # before PR #3289 merges; see community-remote-access.md in docs/design/security.
-    if not _local_request_source_allowed(request):
+    # Source metadata alone is not identity. Use the same verified instance
+    # boundary as OAuth queries before reading or refreshing account credentials.
+    from main_routers import community_oauth
+    if await community_oauth._account_request_identity(request) is None or not _local_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
             status_code=403,
@@ -1334,8 +1347,6 @@ async def auth_status_endpoint(request: Request):
     # Validate the bearer (and refresh OAuth sessions when necessary) before
     # telling the UI that it is logged in.  Import lazily to keep the router
     # modules' existing dependency direction intact.
-    from main_routers import community_oauth
-
     status = await community_oauth.resolve_saved_oauth_status()
     if status["logged_in"]:
         a = status["auth"]
