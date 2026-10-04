@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 
+from utils.deployment import is_behind_proxy
 from config import MAIN_SERVER_PORT
 
 from . import (
@@ -103,11 +104,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     # 1) 配置 UVicorn
-    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    _behind_proxy = is_behind_proxy()
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",

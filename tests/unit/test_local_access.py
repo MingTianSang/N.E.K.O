@@ -6,12 +6,21 @@ import pytest
 
 from main_routers import capture_router, community_oauth
 from main_routers.system_router import _shared
+from utils.deployment import is_behind_proxy
 
 
 @pytest.fixture(autouse=True)
 def local_deployment(monkeypatch):
     for key in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [("1", True), (" TRUE ", True), ("yes", True),
+                                           ("on", False), ("false", False), ("", False)])
+def test_proxy_flag_preserves_startup_semantics(value, expected, monkeypatch):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", value)
+    assert is_behind_proxy() is expected
 
 
 @pytest.mark.unit

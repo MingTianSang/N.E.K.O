@@ -1,11 +1,11 @@
 """Access checks for APIs that expose resources on the backend machine."""
 
 import ipaddress
-import os
 
 from fastapi import Request
 
 from main_logic.activity.system_signals import is_remote_backend_deployment
+from utils.deployment import is_behind_proxy
 
 
 def is_loopback_request(request: Request) -> bool:
@@ -29,7 +29,7 @@ def is_local_oauth_status_request(request: Request) -> bool:
     explicitly enable NEKO_BEHIND_PROXY or NEKO_ACTIVITY_TRACKER_REMOTE.
     In desktop mode proxy headers are disabled, so the peer address is trusted.
     """
-    if os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes"):
+    if is_behind_proxy():
         return False
     return not is_remote_backend_deployment() and is_loopback_request(request)
 
@@ -42,7 +42,7 @@ def is_direct_loopback_request(request: Request) -> bool:
     call localhost directly without forwarding metadata. Desktop mode does
     not interpret proxy headers and continues to use the actual peer.
     """
-    if os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes"):
+    if is_behind_proxy():
         if any(name in request.headers for name in ("x-forwarded-for", "x-real-ip", "forwarded")):
             return False
     return is_loopback_request(request)

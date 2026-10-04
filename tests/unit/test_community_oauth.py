@@ -365,10 +365,12 @@ async def test_oauth_status_invalid_override_uses_legacy_for_reads_and_paths(mon
     monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     warnings = []
+    monkeypatch.setattr(C, "_session_path_expand_warning_emitted", False)
     monkeypatch.setattr(C.logger, "warning", lambda message: warnings.append(message))
     assert C._social_session_path() == legacy
     assert warnings == ["card_drop: cannot expand NEKO_USER_DATA_DIR; using legacy session path"]
     assert C._social_session_paths() == [legacy]
+    assert len(warnings) == 1
     result = await O.oauth_status_endpoint(_local_source_request())
     assert result["logged_in"] is False
     assert result["session_path"] == str(legacy)

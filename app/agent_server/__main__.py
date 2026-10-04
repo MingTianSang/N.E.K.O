@@ -19,8 +19,8 @@ Replaces the former ``python app/agent_server.py`` invocation of the
 monolithic module.
 """
 
-import os
 
+from utils.deployment import is_behind_proxy
 from config import TOOL_SERVER_PORT
 
 from app.agent_server import app
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
-    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
+    _behind_proxy = is_behind_proxy()
     uvicorn.run(
         app,
         host="127.0.0.1",
