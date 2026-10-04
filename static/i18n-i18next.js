@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 空气投篮新增比赛启动失败提示、删除未使用文案，递增版本让 Electron、Docker 等
-    // 长期缓存重新拉取完整语言包，避免把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-10-03-air-basketball-review-round3';
+    // 声纹就绪与上游外部路由八语文案合并，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-10-04-voice-readiness-route-registry-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
