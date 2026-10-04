@@ -573,6 +573,7 @@
         "API_POLICY_VIOLATION": "💥 Violación de política o bloqueo de seguridad: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexión desconectada (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Conexión de voz cerrada por inactividad, reconexión automática...",
+        "TTS_NO_AUDIO_TIMEOUT": "💥 El servicio de voz no devolvió audio. Revisa la red o cambia de API de voz.",
         "FREE_API_AUTO_CLOSE_VOICE": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "API_UNKNOWN_ERROR": "💥 Error de API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 ¡El servidor de memoria no se inició! Primero ejecute Memory_server.py.",

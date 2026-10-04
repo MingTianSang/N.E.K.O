@@ -448,6 +448,89 @@ class TtsRuntimeMixin:
         logger.debug("TTS 文本空闲 %.1fs 且 done 未到，发软 flush speech_id=%s",
                      self._tts_soft_flush_idle_seconds(), speech_id)
 
+    # ── 无音频看门狗：provider 收了文本却什么都不回 ─────────────────────────
+    #
+    # worker 侧的 __error__ 只覆盖「服务端关连接」那一类。还有一类失败既不关连接、
+    # 也不出音频：上游挂住不响应、连接被中间设备静默丢弃。这种轮次没有任何终态——
+    # tts_enqueue 之后 tts_done / tts_audio_delivery 都不会出现，用户听到的是永久
+    # 静音，而日志和前端都以为一切正常。文本模式也指望不上软 flush 兜底
+    # （见 _arm_tts_soft_flush 的 input_mode 闸），所以在「本轮 commit 已入队」之后
+    # 挂一个「本轮必须出声音」的看门狗。
+
+    @staticmethod
+    def _tts_no_audio_timeout_seconds() -> float:
+        """How long to wait for any audio once this turn's commit was queued.
+
+        首字节音频正常在 1 秒内（软 flush 的空闲阈值才 1 秒）；12 秒已经盖住慢
+        上游，同时仍短到用户能在同一次对话里看到提示。
+        """
+        import os
+        raw = os.environ.get("NEKO_TTS_NO_AUDIO_TIMEOUT_SECONDS", "").strip()
+        if not raw:
+            return 12.0
+        try:
+            return max(3.0, float(raw))
+        except ValueError:
+            return 12.0
+
+    def _mark_tts_round_output(self, speech_id) -> None:
+        """Remember that this round produced something at the response queue."""
+        self._tts_output_seen_for_sid = str(speech_id or "")
+
+    def _cancel_tts_no_audio_watchdog(self) -> None:
+        task = getattr(self, "_tts_no_audio_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._tts_no_audio_task = None
+
+    def _arm_tts_no_audio_watchdog(self, speech_id) -> None:
+        """Start this round's wait for its first audio frame. Call after commit."""
+        self._cancel_tts_no_audio_watchdog()
+        sid = str(speech_id or "")
+        if not sid:
+            return
+        if str(getattr(self, "_tts_output_seen_for_sid", "")) == sid:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有运行中的事件循环（同步夹具直接调收尾路径）：这一轮不兜底。
+            # 与 _arm_tts_soft_flush 同源，且不能留下未 await 的协程。
+            self._tts_no_audio_task = None
+            return
+        self._tts_no_audio_task = self._fire_task(
+            self._tts_no_audio_watchdog_expired(sid)
+        )
+
+    async def _tts_no_audio_watchdog_expired(self, speech_id: str) -> None:
+        delay = self._tts_no_audio_timeout_seconds()
+        runtime = self._snapshot_tts_runtime()
+        await asyncio.sleep(delay)
+        # 全部重查：期间可能换了 worker、用户插话换了 sid、会话结束、或者音频其实
+        # 已经出去了（长回复后半段失败是另一种情况，不在本看门狗职责内）。
+        if not self._tts_runtime_is_current(runtime):
+            return
+        if not getattr(self, "is_active", False):
+            return
+        if str(getattr(self, "current_speech_id", "") or "") != speech_id:
+            return
+        if str(getattr(self, "_tts_output_seen_for_sid", "")) == speech_id:
+            return
+        logger.warning(
+            "TTS %.0fs 内没有任何音频输出（speech_id=%s provider=%s）：本轮以静默结束",
+            delay, speech_id, getattr(self, "core_api_type", ""),
+        )
+        # 走 response 队列的 __error__，而不是在这里复制一套上报策略：错误分类、
+        # 前端提示、按 (speech_id, code) 去重、no-retry 闸、埋点都在
+        # tts_response_handler 的 __error__ 分支里，那里才是唯一的出口。
+        target_queue = (
+            getattr(self, "_tts_handler_response_queue", None) or self.tts_response_queue
+        )
+        target_queue.put(("__error__", json.dumps({
+            "code": "TTS_NO_AUDIO_TIMEOUT",
+            "data": {"message": f"no audio within {delay:.0f}s after commit"},
+        }, ensure_ascii=False)))
+
     def _reset_tts_stream_normalizer(self) -> None:
         """Clear all TTS text stripper state. Called on interrupt / turn end / session rebuild."""
         self._tts_stream_normalizer.reset()
@@ -606,6 +689,9 @@ class TtsRuntimeMixin:
         self._tts_replay_done = True
         self._tts_done_queued_for_turn = True
         self._tts_done_pending_until_ready = False
+        # 本轮文本已全部交给 worker（含 pending 补发路径）：从这里开始，
+        # "听不到声音" 就是可判定的故障。
+        self._arm_tts_no_audio_watchdog(self._tts_norm_speech_id or self.current_speech_id)
         return "queued"
 
     async def _request_tts_done_for_turn(
@@ -1238,6 +1324,9 @@ class TtsRuntimeMixin:
         # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
         # await 之前同步取消，让它和 __interrupt__ 入队一起落地。
         self._cancel_tts_soft_flush()
+        # 被打断的这一轮不会再出声，看门狗同理必须当场摘掉，否则会误报
+        # TTS_NO_AUDIO_TIMEOUT。
+        self._cancel_tts_no_audio_watchdog()
         self._cancel_game_speech_completion_wait()
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
@@ -1529,6 +1618,8 @@ class TtsRuntimeMixin:
         # 文本空闲软 flush 只发给认这个哨兵的 worker（能力位在注册表）。
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
         self._cancel_tts_soft_flush()
+        # worker 换了：旧连接会不会补吐音频未知，旧看门狗不再有意义。
+        self._cancel_tts_no_audio_watchdog()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"
         )
@@ -1774,6 +1865,7 @@ class TtsRuntimeMixin:
             notified_error_keys.clear()
         self._tts_done_queued_for_turn = False
         self._cancel_tts_soft_flush()
+        self._cancel_tts_no_audio_watchdog()
         self._tts_fallback_uses_default_voice = False
         self._reset_tts_replay_state()
         self._tts_done_pending_until_ready = False
@@ -2363,6 +2455,12 @@ class TtsRuntimeMixin:
 
     async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
         """Send speech data to the frontend, sending the speech_id header first for precise interruption control"""
+        # 无音频看门狗的"有输出"证据：走到这里就说明 provider 回了音频，哪怕前端
+        # 通道已断、这一帧没真投递出去。看门狗判的是"合成有没有产出"，不是投递。
+        # 反过来 __audio_done__ 不算证据——零字节收束同样是用户听不到声音。
+        self._mark_tts_round_output(
+            speech_id if speech_id is not None else self.current_speech_id
+        )
         try:
             # Pinned once. The lock keeps other SENDERS out, but ``self.websocket``
             # is reassigned by reconnect/teardown, which are not senders and do not
@@ -2702,6 +2800,8 @@ class TtsRuntimeMixin:
                         error_speech_id = pending_failed_speech_id or str(
                             getattr(self, "current_speech_id", "") or ""
                         )
+                        # provider 自己报了这轮的错，看门狗就别再叠一条同义提示。
+                        self._mark_tts_round_output(error_speech_id)
                         pending_failed_speech_id = ""
                         GAME_SPEECH_AUDIO_CACHE.fail_capture(self, error_speech_id)
                         self._mark_game_speech_delivery_failed(error_speech_id)
@@ -2733,7 +2833,7 @@ class TtsRuntimeMixin:
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
                             'UPSTREAM_SERVER_BUSY', 'TTS_CONFIG_INVALID',
-                            'API_ACCESS_DENIED',
+                            'API_ACCESS_DENIED', 'TTS_NO_AUDIO_TIMEOUT',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用

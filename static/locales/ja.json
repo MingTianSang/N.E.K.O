@@ -573,6 +573,7 @@
         "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
         "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 長時間操作がなかったため音声接続が切断されました。自動再接続中...",
+        "TTS_NO_AUDIO_TIMEOUT": "💥 音声サービスが音声を返しませんでした。ネットワークを確認するか、音声APIを切り替えてください。",
         "FREE_API_AUTO_CLOSE_VOICE": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "API_UNKNOWN_ERROR": "💥 APIエラー：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 メモリサーバーが起動していません！先に memory_server.py を実行してください。",

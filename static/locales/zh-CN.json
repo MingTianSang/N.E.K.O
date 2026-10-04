@@ -573,6 +573,7 @@
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 语音连接因长时间无操作而断开，正在自动重连...",
+        "TTS_NO_AUDIO_TIMEOUT": "💥 语音服务没有返回音频。请检查网络，或更换语音 API。",
         "FREE_API_AUTO_CLOSE_VOICE": "免费 API 长时间未检测到语音，已自动关闭语音会话",
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",

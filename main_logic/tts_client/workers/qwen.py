@@ -47,6 +47,38 @@ _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/rea
 # cosyvoice-v3-plus），这些都不能送进 DashScope 的 realtime TTS 端点。
 _QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
 
+# 正常关闭：1000 干净结束、1001 对端离开，都不是拒绝，不该惊动前端。
+_QWEN_NORMAL_CLOSE_CODES = frozenset({1000, 1001})
+
+
+def _server_rejection_payload(exc):
+    """把服务端主动关闭转成结构化 error payload；不该报的关闭返回 None。
+
+    DashScope 的账号级拒绝（欠费是 1007 + "…account is in good standing"）不发
+    error 事件、只关连接，而这条连接的建立本身是成功的——所以 worker 会报「已就绪」，
+    随后静默无音频。不转成 ``__error__`` 交给 tts_response_handler 分类的话，前端
+    拿到的是「有字幕没声音」，日志里也一行错误都没有。
+
+    故意不带顶层 ``code``：让 core 既有关键词分类（欠费 / standing / quota / 429 /
+    401 …）来决定 API_ARREARS 之类的码，worker 不重复一套判定。
+    """
+    received = getattr(exc, "rcvd", None)
+    if received is None:
+        # 没有 rcvd = 我们自己关的，或网络断链；交给既有重连路径。
+        return None
+    code = getattr(received, "code", None)
+    if code in _QWEN_NORMAL_CLOSE_CODES:
+        return None
+    reason = str(getattr(received, "reason", "") or "")
+    return {
+        "type": "error",
+        "data": {
+            "close_code": code,
+            "message": reason or f"connection closed ({code})",
+        },
+    }
+
+
 def _resolve_qwen_realtime_tts_url() -> str:
     """Pick the realtime TTS WebSocket URL based on the current Qwen/Qwen Intl core config."""
     try:
@@ -249,8 +281,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             # emit(None) 静默跳过；带参保持两个 receive task 同形。
                             _emit_audio_done(bound_speech_id)
                             response_done.set()
-                except websockets.exceptions.ConnectionClosed:
-                    pass
+                except websockets.exceptions.ConnectionClosed as exc:
+                    # 服务端拒绝（欠费等）只关连接、不发 error 事件；不转成
+                    # __error__ 就是「有字幕没声音」+ 一行错误都没有。
+                    rejection = _server_rejection_payload(exc)
+                    if rejection is not None:
+                        logger.warning(
+                            "Qwen TTS 被服务端关闭: code=%s reason=%s",
+                            rejection["data"]["close_code"],
+                            rejection["data"]["message"][:160],
+                        )
+                        _enqueue_error(response_queue, rejection)
                 except asyncio.CancelledError:
                     cancelled = True
                     raise
@@ -409,8 +450,15 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
-                            except websockets.exceptions.ConnectionClosed:
-                                pass
+                            except websockets.exceptions.ConnectionClosed as exc:
+                                rejection = _server_rejection_payload(exc)
+                                if rejection is not None:
+                                    logger.warning(
+                                        "Qwen TTS 被服务端关闭: code=%s reason=%s",
+                                        rejection["data"]["close_code"],
+                                        rejection["data"]["message"][:160],
+                                    )
+                                    _enqueue_error(response_queue, rejection)
                             except asyncio.CancelledError:
                                 cancelled = True
                                 raise
