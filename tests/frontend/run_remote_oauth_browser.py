@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import subprocess
@@ -98,6 +99,7 @@ def run(args):
             return {"access_token": "fixture-cloud-access", "refresh_token": "fixture-cloud-refresh"}
 
         async def exchange_code(**fields):
+            await asyncio.sleep(1)  # The popup may close while Linux redeems.
             async with httpx.AsyncClient(verify=False, trust_env=False) as client:
                 result = await client.post(f"https://127.0.0.1:{auth_port}/oauth2/token", data={
                     "grant_type": "authorization_code", **{name: value for name, value in fields.items() if name != "auth_public_url"}})
@@ -125,15 +127,30 @@ def run(args):
         start = source.index("if (oauthJson.relay_origin) {")
         end = source.index("if (!navigateBrowserPopup", start)
         production_listener = source[start:end]
+        start = source.index("const navigateBrowserPopup =")
+        end = source.index("const oauthCompletedStates", start)
+        production_navigation = source[start:end]
+        start = source.index("const waitForOAuthCompletion =")
+        end = source.index("const openElectronSocialWindow", start)
+        production_completion = source[start:end]
+        production_navigation_call = re.search(
+            r"if \(!(?P<call>navigateBrowserPopup\(authUrl,[^\n]+?\))\) \{", source
+        ).group("call")
 
         @backend.get("/")
         async def home():
-            script = """window.oauthCompletedStates=new Set();document.querySelector('button').onclick=async()=>{
-                const popupRef=window.open('about:blank');
+            script = """window.oauthCompletedStates=new Set();window.oauthPendingRelays=new Set();document.querySelector('button').onclick=async()=>{
+                let popupRef=window.open('about:blank');
+                const socialOpenGeneration=1, isSocialOpenRequestCurrent=()=>true;
+                const attachResolvedTheme=()=>{}, registerSocialThemeTarget=()=>null, queueSocialThemeSync=()=>{};
+                const forgetSocialWindow=()=>{};
+                const oauthCompletedStates=window.oauthCompletedStates, oauthPendingRelays=window.oauthPendingRelays;
                 const oauthJson=await (await fetch('/api/card-drop/oauth/start',{method:'POST'})).json();
+                const authUrl=oauthJson.auth_url;
                 window.browserOAuthState=oauthJson.state;const browserOAuthState=oauthJson.state;
                 const browserOAuthTimeoutMs=30000;
-                """ + production_listener + "popupRef.location=oauthJson.auth_url;};"
+                """ + production_navigation + production_completion + production_listener + production_navigation_call + ";" + """
+                window.completion=await waitForOAuthCompletion(30000,browserOAuthState);};"""
             return HTMLResponse('<button id="login-community">OAuth fixture</button><script>' + script + '</script>')
 
         backend.add_middleware(InstanceAccessMiddleware)

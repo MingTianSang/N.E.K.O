@@ -14,15 +14,18 @@ import html
 import ipaddress
 import json
 import os
+import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from filelock import FileLock
 
-from utils.deployment import has_forwarding_metadata, is_behind_proxy
+from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment
 
 COOKIE = "neko_instance_access"
 CHALLENGE_COOKIE = "neko_instance_challenge"
@@ -48,16 +51,21 @@ def instance_key() -> str:
         return configured
     path = _key_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        key = path.read_text(encoding="utf-8").strip()
-    else:
-        key = secrets.token_urlsafe(32)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(key)
-            stream.flush()
-            os.fsync(stream.fileno())
+    # Publish complete bytes under a cross-process lock. A crash cannot leave
+    # a new empty credential visible; repair old zero-byte creation artifacts.
+    with FileLock(str(path) + ".lock", timeout=5):
+        key = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        if not key:
+            key = secrets.token_urlsafe(32)
+            fd, temporary = tempfile.mkstemp(prefix=".instance-key-", dir=path.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(key)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
     if len(key) < 32:
         raise ValueError("instance key file is incomplete")
     return key
@@ -65,8 +73,7 @@ def instance_key() -> str:
 
 def _local_native(request: Request) -> bool:
     """Exempt actual local calls, never forwarded or non-loopback Host traffic."""
-    remote = any(os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
-                 for name in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"))
+    remote = is_remote_backend_deployment()
     if is_behind_proxy() or remote:
         # Even a browser running on the Docker host needs the instance session.
         # Keep headerless loopback service-to-service calls compatible; do not
@@ -188,14 +195,33 @@ class InstanceAccessMiddleware:
         scope["neko.instance_identity"] = identity
         revoked = False
         started = False
+        active_key = key
+        next_key_check = time.monotonic() + 1
 
         async def still_authorized():
             # Revalidate before each socket message or HTTP stream chunk so a
             # rotated key/expired cookie cannot leave an account stream open.
+            nonlocal active_key, next_key_check
+            configured = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "").strip()
+            if configured:
+                if len(configured) < 32:
+                    return False
+                active_key = configured
+            elif time.monotonic() >= next_key_check:
+                for attempt in range(3):
+                    try:
+                        active_key = await asyncio.to_thread(instance_key)
+                        break
+                    except OSError:
+                        if attempt == 2:
+                            return False
+                        await asyncio.sleep(.05)
+                    except ValueError:
+                        return False
+                next_key_check = time.monotonic() + 1
             try:
-                current_key = await asyncio.to_thread(instance_key)
-                return remote_instance_identity(request, key=current_key) == identity
-            except (OSError, ValueError):
+                return remote_instance_identity(request, key=active_key) == identity
+            except ValueError:
                 return False
 
         async def private_send(message):
@@ -213,7 +239,17 @@ class InstanceAccessMiddleware:
                 raise OSError("instance authorization revoked")
             if message["type"] == "http.response.start":
                 started = True
-                message = {**message, "headers": [(k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"] + [(b"cache-control", b"no-store")]}
+                if scope.get("path", "").startswith(("/static/", "/assets/", "/user_models/")):
+                    # Authenticated assets may keep browser caching, never
+                    # public/shared caching that would bypass the entry guard.
+                    headers = [(k, re.sub(rb"\bpublic\b", b"private", v, flags=re.I) if k.lower() == b"cache-control" else v)
+                               for k, v in message.get("headers", [])]
+                    if not any(k.lower() == b"cache-control" for k, _v in headers):
+                        headers.append((b"cache-control", b"private"))
+                    headers.append((b"vary", b"Cookie, Authorization"))
+                    message = {**message, "headers": headers}
+                else:
+                    message = {**message, "headers": [(k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"] + [(b"cache-control", b"no-store")]}
             await send(message)
 
         async def private_receive():
@@ -275,8 +311,10 @@ class InstanceAccessMiddleware:
         now = time.time()
         self.attempts = {ip: item for ip, item in self.attempts.items() if item[0] > now - 60}
         started, count = self.attempts.get(peer, (now, 0))
-        if count >= 10 or len(self.attempts) >= 1024:
+        if count >= 10:
             return await self._deny(scope, receive, send, "instance_login_rate_limited", 429)
+        if peer not in self.attempts and len(self.attempts) >= 1024:
+            self.attempts.pop(min(self.attempts, key=lambda ip: self.attempts[ip][0]))
         self.attempts[peer] = (started, count + 1)
         data = bytearray()
         while True:

@@ -34,7 +34,9 @@ Compose执行 docker compose exec -w /app neko-main uv run python -m utils.insta
 
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
 HttpOnly/Secure/SameSite=Lax签名cookie。原生Bearer也仅通过HTTPS/WSS。
-key轮换使旧凭证、新请求和现存SSE/WS的下个数据消息失效。
+新请求即时重新验证key；现存SSE/WS按至多每秒一次检查文件key，配置key变更即时检查。
+账户流同样至多每秒一次复核，避免语音帧/通知chunk触发逐帧文件读取。撤销延迟上限一秒。
+临时IO错误做短时有限重试后仍失败则关闭，不永久使用旧key。
 OAuth保存前重新检查连接授权；退出/新尝试取消旧pending，迟到回调不得复活账户。
 实例身份不替代既有CSRF/来源检查。key/cookie不得写到URL、公共日志、PR或截图。
 
@@ -66,6 +68,8 @@ NEKO_COMMUNITY_WEB_REDIRECT_URI=https://后端/oauth/callback并精确注册；
 
 本地两个独立HTTPS测试域名、真实Chromium、生产实例授权/保存处理器、网页监听器、
 平台relay已验证首次连接、PKCE换码、完成查询、cookie隔离、路径保护和重放拒绝。
+测试调用生产navigateBrowserPopup、生产调用表达式和waitForOAuthCompletion，覆盖换码期间关闭弹窗。
+浏览器保留空白预留窗口直到判定是否需要relay，仅固定relay保留opener，其他外部页面仍断开。
 IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机验证。
 运行 uv run python tests/frontend/run_remote_oauth_browser.py --auth-relay-module <编译后relay.js> --playwright-module <模块目录> --chrome <Chrome路径>。
 

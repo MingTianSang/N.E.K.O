@@ -1,5 +1,6 @@
 """Remote desktop API relay keeps cloud credentials and account streams local."""
 
+import asyncio
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -26,6 +27,25 @@ def test_anonymous_never_opens_upstream(proxy, monkeypatch):
     monkeypatch.setattr(P.O, "resolve_saved_oauth_status", lambda: pytest.fail("Anonymous account read"))
     proxy.headers.pop("Authorization")
     assert proxy.post("/api/forge/credits/grant", content="invalid").status_code == 401
+
+
+def test_desktop_simple_cross_site_post_cannot_use_cloud_account(monkeypatch):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "false")
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    app = FastAPI()
+    app.include_router(P.router)
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+
+    async def forbidden():
+        pytest.fail("Cross-site request must not read credentials or contact cloud")
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", forbidden)
+    for path in ("grant", "drop-events/claim", "drop-events/event/ack"):
+        response = client.post("/api/forge/credits/" + path, content="{}",
+                               headers={"Origin": "https://evil.example", "Content-Type": "text/plain"})
+        assert response.status_code == 403
 
 
 def test_relay_uses_saved_cloud_token_and_fixed_origin(proxy, monkeypatch):
@@ -65,6 +85,7 @@ def test_account_switch_stops_old_notification_stream(proxy, monkeypatch):
         async def __aiter__(self):
             yield b"data: before\n\n"
             current.update(local_user_id="new-owner", access_token="new-secret")
+            await asyncio.sleep(1.05)  # Account revocation is checked at most once/second.
             yield b"data: old-owner-private\n\n"
 
     async def upstream(_request):

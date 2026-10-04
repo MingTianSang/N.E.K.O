@@ -247,3 +247,124 @@ def test_docker_host_browser_pairs_even_without_forwarding_headers(monkeypatch):
                             headers={"Origin": "https://127.0.0.1"}, follow_redirects=False)
     assert connected.status_code == 303
     assert client.get("/", headers={"Sec-Fetch-Site": "same-origin"}).json() == {"ok": True}
+
+
+@pytest.mark.parametrize("alias", ["/oauth/callback", "/api/card-drop/oauth/callback"])
+@pytest.mark.parametrize("rotate", [False, True])
+def test_direct_callback_rechecks_authorization_before_saving(remote_app, monkeypatch, tmp_path, alias, rotate):
+    pair(remote_app)
+    state = remote_app.post("/api/card-drop/oauth/start").json()["state"]
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social.json")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: tmp_path / "social.json")
+
+    async def exchange(**_kwargs):
+        if rotate:
+            monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", "revoked-key-" + "z" * 40)
+        return {"access_token": "cloud-token", "refresh_token": "cloud-refresh"}
+
+    async def bootstrap(_base, _token):
+        return {"user": {"id": "11111111-1111-4111-8111-111111111111"}}
+
+    async def bind(_base, _token):
+        return {"bound": False}
+
+    monkeypatch.setattr(O, "_exchange_oauth_code", exchange)
+    monkeypatch.setattr(O, "_bootstrap_session", bootstrap)
+    monkeypatch.setattr(O, "_oauth_guest_bind", bind)
+    response = remote_app.get(alias, params={"state": state, "code": "one-time"})
+    assert response.status_code == (401 if rotate else 200)
+    assert C._auth_path().exists() is not rotate
+    assert C._social_session_path().exists() is not rotate
+
+
+def test_generated_key_is_complete_under_concurrent_creation_and_repairs_empty(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from utils.instance_access import instance_key
+
+    monkeypatch.delenv("NEKO_INSTANCE_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
+    path = tmp_path / "instance_access.key"
+    path.write_text("")  # A legacy interrupted creation must not strand deployment.
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        keys = list(workers.map(lambda _index: instance_key(), range(16)))
+    assert len(set(keys)) == 1
+    assert len(keys[0]) >= 32
+    assert path.read_text() == keys[0]
+
+
+def test_authenticated_assets_keep_private_cache_policy(monkeypatch):
+    from starlette.responses import Response
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    app = FastAPI()
+
+    @app.get("/static/model.bin")
+    async def model():
+        return Response(b"model", headers={"Cache-Control": "public, max-age=3600", "ETag": '"model-1"'})
+
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="https://instance.example")
+    response = client.get("/static/model.bin", headers={"Authorization": "Bearer " + KEY})
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["etag"] == '"model-1"'
+    assert "Cookie" in response.headers["vary"]
+
+
+@pytest.mark.asyncio
+async def test_voice_frames_do_not_dispatch_a_key_read_per_message(monkeypatch):
+    import utils.instance_access as access
+
+    monkeypatch.delenv("NEKO_INSTANCE_ACCESS_KEY", raising=False)
+    reads = []
+    monkeypatch.setattr(access, "instance_key", lambda: reads.append(1) or KEY)
+    from tests.fake_clock import patch_module_clock
+
+    patch_module_clock(monkeypatch, access, monotonic=lambda: 100)
+    scope = {"type": "websocket", "scheme": "wss", "path": "/voice", "query_string": b"",
+             "root_path": "", "server": ("instance.example", 443), "client": ("203.0.113.1", 4000),
+             "headers": [(b"host", b"instance.example"), (b"authorization", ("Bearer " + KEY).encode())]}
+
+    async def app(_scope, receive, send):
+        await send({"type": "websocket.accept"})
+        for _index in range(100):
+            await receive()
+            await send({"type": "websocket.send", "bytes": b"audio"})
+        await send({"type": "websocket.close", "code": 1000})
+
+    async def receive():
+        return {"type": "websocket.receive", "bytes": b"audio"}
+
+    async def send(_message):
+        pass
+
+    await InstanceAccessMiddleware(app)(scope, receive, send)
+    assert len(reads) == 1
+
+
+def test_full_peer_rate_table_does_not_lock_out_new_owner(monkeypatch):
+    import time
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    gate = InstanceAccessMiddleware(FastAPI())
+    gate.attempts = {str(index): (time.time(), 1) for index in range(1024)}
+    client = TestClient(gate, base_url="https://neko.example", client=("203.0.113.1", 1234))
+    page = client.get("/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = client.post("/instance-access/login", data={"key": KEY, "challenge": challenge},
+                           headers={"Origin": "https://neko.example"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert len(gate.attempts) < 1024
+
+
+@pytest.mark.parametrize("name", ["NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"])
+def test_instance_and_os_features_share_remote_on_flag(monkeypatch, name):
+    from utils.instance_access import _local_native
+    from main_logic.activity.system_signals import is_remote_backend_deployment
+    from starlette.requests import Request
+
+    monkeypatch.setenv(name, " on ")
+    request = Request({"type": "http", "scheme": "https", "method": "GET", "path": "/",
+                       "query_string": b"", "headers": [(b"host", b"127.0.0.1"), (b"accept", b"text/html")],
+                       "server": ("127.0.0.1", 443), "client": ("127.0.0.1", 2000)})
+    assert is_remote_backend_deployment()
+    assert not _local_native(request)

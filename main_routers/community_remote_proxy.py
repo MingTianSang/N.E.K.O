@@ -6,6 +6,7 @@ refresh token. Only the existing notification and credit endpoints are relayed.
 
 import asyncio
 import re
+import time
 
 import anyio
 
@@ -19,7 +20,7 @@ router = APIRouter(tags=["community-remote-proxy"])
 
 
 async def _relay(request: Request):
-    if await O._account_request_identity(request) is None:
+    if await O._account_request_identity(request) is None or not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "instance_authorization_required"}, status_code=403)
     status = await O.resolve_saved_oauth_status()
     snapshot = status.get("snapshot") or {}
@@ -47,9 +48,13 @@ async def _relay(request: Request):
         return JSONResponse({"detail": "community_unavailable"}, status_code=502)
 
     async def chunks():
+        current = snapshot
+        next_account_check = 0
         try:
             async for chunk in response.aiter_bytes():
-                current = await asyncio.to_thread(C._desktop_session_snapshot)
+                if time.monotonic() >= next_account_check:
+                    current = await asyncio.to_thread(C._desktop_session_snapshot)
+                    next_account_check = time.monotonic() + 1
                 same_account = bool(current) and (
                     current.get("local_user_id") == snapshot.get("local_user_id")
                     if snapshot.get("local_user_id")

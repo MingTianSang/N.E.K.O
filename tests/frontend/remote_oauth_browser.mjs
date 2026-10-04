@@ -26,7 +26,9 @@ try {
   const popupPromise = page.waitForEvent('popup');
   await page.click('#login-community');
   const popup = await popupPromise;
-  await page.waitForFunction(() => window.oauthCompletedStates?.has(window.browserOAuthState));
+  await page.waitForFunction(() => window.oauthPendingRelays?.size === 1);
+  await popup.close();
+  await page.waitForFunction(() => window.completion === true);
   const state = await page.evaluate(() => window.browserOAuthState);
   const completion = await page.evaluate(async (state) =>
     (await fetch('/api/card-drop/oauth/completion?state=' + encodeURIComponent(state))).json(), state);
@@ -43,7 +45,6 @@ try {
       body: JSON.stringify({ state, code: 'fixture-one-time-code' }),
     })).status, state);
   assert.equal(replay, 400);
-  await popup.close();
   const stranger = await browser.newContext({ ignoreHTTPSErrors: true });
   const strangerPage = await stranger.newPage();
   const probe = await strangerPage.goto(origin + '/api/card-drop/auth-status');

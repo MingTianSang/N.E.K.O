@@ -19,7 +19,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-打开 `http://127.0.0.1:48911`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
+打开 `https://127.0.0.1:48912`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
 
 入口脚本只在 `/home/neko/.local/share/N.E.K.O/config/core_config.json` 不存在时生成初始配置。API 环境变量不是实时通用覆盖；设置 `NEKO_FORCE_ENV_UPDATE` 会显式重新生成并覆盖该持久化初始配置，务必先备份。启动后请在 Web UI 确认。
 

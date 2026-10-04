@@ -1059,7 +1059,8 @@ async def oauth_callback_endpoint(
     identity = request.scope.get("neko.instance_identity") or ("local" if _loopback_request_source(request) else None)
     if identity is None:
         return _callback_html("登录校验失败", "请先连接 NEKO 实例。", status_code=403)
-    return await _handle_oauth_callback(code, state, error, instance_identity=identity)
+    return await _handle_oauth_callback(code, state, error, instance_identity=identity,
+                                      authorized_request=request if identity != "local" else None)
 
 
 @callback_router.get("/api/card-drop/oauth/callback", response_class=HTMLResponse)

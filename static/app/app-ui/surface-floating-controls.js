@@ -770,7 +770,9 @@
                 } catch (_) { /* non-community navigation */ }
                 // The external page receives theme-only messages but never a reference
                 // that could navigate or otherwise control the local N.E.K.O page.
-                try { currentPopup.opener = null; } catch (_) { /* ignore */ }
+                if (!options.keepOpener) {
+                    try { currentPopup.opener = null; } catch (_) { /* ignore */ }
+                }
                 let navigated = true;
                 try {
                     currentPopup.location.replace(navigationTarget);
@@ -791,21 +793,22 @@
                 return navigated;
             };
             const oauthCompletedStates = new Set();
+            const oauthPendingRelays = new Set();
             const waitForOAuthCompletion = async (timeoutMs, state) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
                     if (oauthCompletedStates.has(state)) return true;
-                    if (!popupRef) {
+                    if (!popupRef && !oauthPendingRelays.has(state)) {
                         return false;
                     }
                     try {
-                        if (popupRef.closed) {
+                        if (popupRef && popupRef.closed) {
                             if (typeof forgetSocialWindow === 'function') {
                                 forgetSocialWindow(popupRef, socialOpenGeneration);
                             }
                             popupRef = null;
-                            return false;
+                            if (!oauthPendingRelays.has(state)) return false;
                         }
                     } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
@@ -994,8 +997,9 @@
                         navigateBrowserPopup(delegateTargetUrl.toString());
                     }
                 } else if (!isElectron) {
-                    // 只释放本地引用，不关闭已打开的 Community 页面。
-                    popupRef = null;
+                    // The browser popup stays blank until auth readiness is
+                    // known, so even guest handoff must now navigate it.
+                    if (popupRef) navigateBrowserPopup(targetUrl);
                 }
             };
             try {
@@ -1092,9 +1096,9 @@
                     if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
-                } else if (!navigateBrowserPopup(url, { keepReference: true })) {
-                    throw new Error('popup blocked');
                 }
+                // Keep the reserved browser popup same-origin with its opener
+                // until we know whether the fixed OAuth relay is needed.
                 const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
                 // 只有明确判定为未登录才提示去设置页登录；delegate 超时且 auth-status
@@ -1147,6 +1151,7 @@
                                         const data = event.data;
                                         if (event.origin !== relayOrigin || event.source !== relayPopup
                                             || !data || data.type !== 'neko-remote-oauth' || data.state !== relayState) return;
+                                        oauthPendingRelays.add(relayState);
                                         window.removeEventListener('message', onRelay);
                                         clearTimeout(cleanupTimer);
                                         try {
@@ -1157,11 +1162,12 @@
                                             });
                                             if (response.ok && (await response.json()).ok) oauthCompletedStates.add(relayState);
                                         } catch (_) { /* completion polling also observes a saved successful attempt */ }
+                                        finally { oauthPendingRelays.delete(relayState); }
                                     };
                                     window.addEventListener('message', onRelay);
                                     cleanupTimer = setTimeout(() => window.removeEventListener('message', onRelay), browserOAuthTimeoutMs);
                                 }
-                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true, keepOpener: !!oauthJson.relay_origin })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(

@@ -9,6 +9,12 @@ def is_behind_proxy() -> bool:
     return os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
 
 
+def is_remote_backend_deployment() -> bool:
+    """Share remote flag semantics between OS features and instance access."""
+    return any(os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+               for name in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"))
+
+
 def uvicorn_proxy_options() -> dict:
     """Preserve local proxy compatibility without hiding forwarded remote peers."""
     return {

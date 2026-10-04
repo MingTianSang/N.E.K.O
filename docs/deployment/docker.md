@@ -22,7 +22,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-Open `http://127.0.0.1:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
+Open `https://127.0.0.1:48912`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
 
 ::: warning Initial configuration
 The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.json` only when absent. API environment variables are initialization inputs, not a live universal override. Setting `NEKO_FORCE_ENV_UPDATE` explicitly regenerates and replaces that persisted bootstrap configuration; back it up first. Confirm effective values in the Web UI.
