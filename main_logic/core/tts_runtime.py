@@ -2791,8 +2791,11 @@ class TtsRuntimeMixin:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
                                 _close_data = _parsed.get('data')
+                                # 判定要求 close_code 非空：展示串由它拼出来，
+                                # 缺值的载荷会渲染成 "WebSocket close code None"。
                                 _from_server_close = (
-                                    isinstance(_close_data, dict) and 'close_code' in _close_data
+                                    isinstance(_close_data, dict)
+                                    and _close_data.get('close_code') is not None
                                 )
                                 if _from_server_close:
                                     _display_msg = (

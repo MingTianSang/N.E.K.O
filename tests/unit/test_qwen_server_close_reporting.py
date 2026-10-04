@@ -295,9 +295,9 @@ def test_recoverable_close_reports_nothing():
 def test_send_side_observed_refusal_is_reported_too():
     """The field case: the sender sees the 1007 first, not the receive task.
 
-    This is the branch the user's log actually hit (`发送TTS文本失败: received
-    1007 …`), so reporting only from the receive loop would have left the round
-    silent with nothing on the queue.
+    The user's log shows the refusal surfacing as a failed text send, so a
+    receive-loop-only reporter would have left that round silent with nothing on
+    the queue.
     """
     emitted, _sockets = _drive_worker(
         lambda: _RefusingSocket(fail_on_send=True)
