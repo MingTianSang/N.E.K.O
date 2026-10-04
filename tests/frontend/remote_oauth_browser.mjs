@@ -26,6 +26,7 @@ try {
   const popupPromise = page.waitForEvent('popup');
   await page.click('#login-community');
   const popup = await popupPromise;
+  if (process.env.NEKO_TEST_KEEP_POPUP === '1') await popup.clock.install();
   await page.waitForFunction(() => window.oauthPendingRelays?.size === 1);
   assert.equal(await popup.evaluate(() => window.opener === null), true);
   const keepPopup = process.env.NEKO_TEST_KEEP_POPUP === '1';
@@ -37,6 +38,8 @@ try {
   assert.deepEqual(completion, { logged_in: true });
   assert.equal(page.url(), origin + '/');
   if (keepPopup) {
+    // A slow post-login handoff exceeds the former 60-second channel lifetime.
+    await popup.clock.fastForward(121000);
     const destination = process.env.NEKO_TEST_AUTH_ORIGIN + '/community?neko_source_origin=' + encodeURIComponent(origin);
     assert.equal(await page.evaluate((url) => window.navigateRemoteCommunity(url), destination), true);
     await popup.waitForURL(destination);

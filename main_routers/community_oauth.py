@@ -916,7 +916,11 @@ async def oauth_remote_relay_landing(request: Request):
         channel.postMessage({type:'complete',state:data.state,ok:response.ok});
         if(!response.ok)window.close();
       }catch(_){channel.postMessage({type:'complete',state:data.state,ok:false});}
-      setTimeout(()=>channel.close(),60000);
+      // Both post-login handoffs can take 120 seconds; keep navigation available.
+      const relayCleanupTimer=setTimeout(()=>channel.close(),180000);
+      window.addEventListener('pagehide',()=>{
+        clearTimeout(relayCleanupTimer);channel.close();
+      },{once:true});
     })();""".replace("COMMUNITY_ORIGIN", json.dumps(community_origin))
     digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
     return HTMLResponse("<!doctype html><html><meta charset=utf-8><title>NEKO</title><script>" + script + "</script></html>",
