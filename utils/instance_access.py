@@ -269,7 +269,7 @@ class InstanceAccessMiddleware:
             if scope["type"] == "http" and request.method == "GET" and "text/html" in request.headers.get("accept", ""):
                 return await (await self._page(request, key))(scope, receive, send)
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
-        oauth_callback = request.method == "GET" and path in {"/oauth/callback", "/api/card-drop/oauth/callback", "/oauth/relay"}
+        oauth_callback = request.method == "GET" and path in {"/oauth/callback", "/api/card-drop/oauth/callback", "/oauth/relay", "/market/oauth/callback"}
         # Only entry documents may be opened from another site. Account reads,
         # arbitrary GET routes, frames and mutations retain the origin guard.
         entry_navigation = (scope["type"] == "http" and request.method in {"GET", "HEAD"}
@@ -312,8 +312,12 @@ class InstanceAccessMiddleware:
                         return False
                 next_key_check = time.monotonic() + 1
             try:
-                return (_market_internal_identity(request, active_key) if internal_identity
-                        else remote_instance_identity(request, key=active_key)) == identity
+                # The hop proof deadline limits admission of new requests. Once
+                # admitted, long downloads/installations retain that grant,
+                # while key rotation still revokes the in-flight request.
+                if internal_identity:
+                    return _equal(active_key, key)
+                return remote_instance_identity(request, key=active_key) == identity
             except ValueError:
                 return False
 

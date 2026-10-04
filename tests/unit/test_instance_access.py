@@ -589,3 +589,68 @@ def test_empty_key_windows_reader_conflict_is_bounded(monkeypatch, tmp_path, blo
         assert len(attempts) == 2
     assert len(sleeps) == min(blocked_attempts, 7)
     assert not list(tmp_path.glob(".instance-key-*"))
+
+
+@pytest.mark.parametrize("rotate", [False, True])
+async def test_market_hop_expiry_limits_admission_but_not_live_response(monkeypatch, rotate):
+    import utils.instance_access as access
+    from tests.fake_clock import patch_module_clock
+
+    now = [1000.0]
+    patch_module_clock(monkeypatch, access, time=lambda: now[0])
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    proof = access.market_internal_proof(KEY, "GET", "/market/test")
+    scope = {"type": "http", "scheme": "http", "method": "GET",
+             "path": "/market/test", "query_string": b"", "root_path": "",
+             "server": ("127.0.0.1", 48916), "client": ("127.0.0.1", 1234),
+             "headers": [(b"host", b"127.0.0.1:48916"),
+                         (b"origin", b"https://public.example"),
+                         (b"x-neko-market-internal", proof.encode())]}
+    sent = []
+
+    async def application(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"before", "more_body": True})
+        now[0] += 61
+        if rotate:
+            monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", "new-key-" + "z" * 40)
+        await send({"type": "http.response.body", "body": b"after", "more_body": False})
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    async def send(message):
+        sent.append(message)
+
+    await access.InstanceAccessMiddleware(application)(scope, receive, send)
+    assert (b"after" in [m.get("body") for m in sent]) is not rotate
+    # An expired proof must never admit a new request, even with unchanged key.
+    sent.clear()
+    await access.InstanceAccessMiddleware(application)(scope, receive, send)
+    assert sent[0]["status"] == 401
+
+
+def test_market_callback_cross_site_requires_instance_auth_and_valid_state(monkeypatch, tmp_path):
+    from plugin.server.routes import market_bridge as market
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setattr(market, "_OAUTH_PENDING_FILE", tmp_path / "pending.json")
+    monkeypatch.setattr(market, "_OAUTH_CALLBACK_FILE", tmp_path / "callback.json")
+    import time
+    market._write_private_json(market._OAUTH_PENDING_FILE,
+                               {"state": "expected", "expires_at": time.time() + 120})
+    app = FastAPI()
+    app.include_router(market.router)
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="https://neko.example", client=("203.0.113.1", 1234))
+    headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate",
+               "Sec-Fetch-Dest": "document"}
+    path = "/market/oauth/callback?code=once&state=expected"
+    assert client.get(path, headers=headers).status_code == 401
+    headers["Authorization"] = "Bearer " + KEY
+    assert client.get(path.replace("state=expected", "state=wrong"), headers=headers).status_code == 400
+    assert not market._OAUTH_CALLBACK_FILE.exists()
+    assert client.get(path, headers=headers).status_code == 200
+    assert market._read_json_file(market._OAUTH_CALLBACK_FILE)["code"] == "once"
