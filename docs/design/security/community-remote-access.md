@@ -89,6 +89,20 @@ IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机�
 
 ## 依据
 
+社区跨域调用使用独立的窄范围授权，而不依赖 SameSite=Lax 实例 Cookie：仅精确配置的
+community Origin 可预检 handoff/facts/capabilities 路由。预检和 capabilities 只返回协议元数据；
+social-session-init、sync-session、bind-client/approve 必须携带既有单次 ticket（认证 JSON 上限16KiB），
+facts 和角色读取仍需匹配当前账户的 scoped delegate/bearer。账户查询、OAuth start/logout 及其他接口不在例外中。
+既有 native_sync 协议可向受信社区 SPA 定向交付短时 access token，refresh token、PKCE verifier 和本机路径
+仍留在 Linux；普通远程账户查询不交付社区令牌。这里保留原协议，不是匿名凭 Origin 获取账户。
+
+NEKO_INSTANCE_PUBLIC_ORIGIN=https://… 是部署者对外层 TLS 网关的明确声明，Host 本身不能证明加密。
+外层80端口必须关闭或只重定向到HTTPS，绝不能把同Host明文请求转发到私有HTTP upstream；
+私有 upstream 也必须隔离，不能直接公开给未受信任客户端。尚未选择的 HTTP/SSH 兼容策略不因此自动放开。
+
+配对页复用仍有效的签名 challenge，其他标签页/预取不会覆盖首个表单；登录后保留原 return_path 的 query。
+已存在密钥无锁读取，跨进程 FileLock 仅用于缺失/空文件的原子创建修复；轮换仍在读取时生效。
+
 已授权浏览器从站外链接打开 /、/chat、/subtitle 的顶层文档可复用会话；
 账户 API、iframe、异源写操作仍拒绝。实际模型静态挂载采用 private 缓存，保留 ETag/max-age。
 Market 的已授权内部服务转发使用短时 method/path 签名，并移除上一跳的转发元数据，

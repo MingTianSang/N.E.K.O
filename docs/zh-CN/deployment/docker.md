@@ -6,6 +6,7 @@
 认证平台及Electron配套发布后才可解除#3289合并门槛，Linux+Windows实机待社区验收。
 [契约与测试步骤](/design/security/community-remote-access)。
 取得key：docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+声明 HTTPS 的 NEKO_INSTANCE_PUBLIC_ORIGIN 时，外层80端口必须关闭或仅重定向到HTTPS，不得转发同Host明文请求；私有HTTP upstream必须隔离。Host匹配本身不能证明TLS。
 远程使用HTTPS/WSS；外置TLS网关按需设置NEKO_INSTANCE_PUBLIC_ORIGIN。
 NEKO_COMMUNITY_WEB_REDIRECT_URI默认留空使用平台relay。
 

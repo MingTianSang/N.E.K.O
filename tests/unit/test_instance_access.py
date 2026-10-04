@@ -40,7 +40,7 @@ def remote_app(monkeypatch, tmp_path):
         await socket.send_json({"ok": True})
         await socket.close()
 
-    app.add_middleware(InstanceAccessMiddleware)
+    app.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=C.authorize_community_handoff)
     wrapped = ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1,::1")
     return TestClient(wrapped, base_url="https://neko.example", client=("127.0.0.1", 50000))
 
@@ -416,6 +416,82 @@ def test_pairing_locale_reads_are_cached(monkeypatch):
         assert reads == ["en.json", "ja.json"]
     finally:
         access._locale_strings.cache_clear()
+
+
+def test_pairing_other_tab_preserves_challenge_and_return_query(remote_app):
+    from urllib.parse import parse_qs, urlsplit
+
+    page = remote_app.get("/chat?character=one&mode=compact", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    second = remote_app.get("/subtitle", headers={"Accept": "text/html"})
+    assert challenge in second.text
+    response = remote_app.post("/instance-access/login", data={
+        "challenge": challenge, "key": KEY, "return_path": "/chat?character=one&mode=compact",
+    }, headers={"Origin": "https://neko.example"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert parse_qs(urlsplit(response.headers["location"]).query) == {"character": ["one"], "mode": ["compact"]}
+    assert "character=one&amp;mode=compact" in page.text
+
+
+def test_existing_instance_key_does_not_acquire_creation_lock(monkeypatch, tmp_path):
+    import utils.instance_access as access
+
+    monkeypatch.delenv("NEKO_INSTANCE_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
+    (tmp_path / "instance_access.key").write_text(KEY)
+    monkeypatch.setattr(access, "FileLock", lambda *_args, **_kwargs: pytest.fail("Existing key needs no creation lock"))
+    assert access.instance_key() == KEY
+    (tmp_path / "instance_access.key").write_text("rotated-key-" + "r" * 40)
+    assert access.instance_key() == "rotated-key-" + "r" * 40
+
+
+def test_remote_community_preflight_ticket_and_delegate_handoff(remote_app, monkeypatch, tmp_path):
+    community = "https://community.example"
+    user = "11111111-1111-4111-8111-111111111111"
+    snapshot = {"base_url": community, "access_token": "short-lived-community-access",
+                "local_user_id": user, "auth_source": "oauth", "refresh_token": "linux-only-refresh"}
+    monkeypatch.setattr(C, "_social_base_url", lambda: community)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [tmp_path / "session.json"])
+
+    async def session():
+        return snapshot, None
+
+    async def facts(**_kwargs):
+        return {"facts": []}
+
+    monkeypatch.setattr(C, "_native_delegate_session_snapshot", session)
+    monkeypatch.setattr(C, "_build_local_forge_facts", facts)
+    pair(remote_app)
+    ticket = remote_app.get("/api/card-drop/sync-ticket").json()["sync_ticket"]
+    delegate = remote_app.get("/api/card-drop/native-delegate").json()["native_delegate"]
+    remote_app.cookies.clear()  # Lax cookies are absent from cross-site fetch.
+    headers = {"Origin": community, "Sec-Fetch-Site": "cross-site"}
+    paths = ["social-session-init", "sync-session", "sync-session/status", "bind-client/approve", "capabilities", "facts/query"]
+    for path in paths:
+        response = remote_app.options("/api/card-drop/" + path, headers=headers)
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == community
+    assert remote_app.get("/api/card-drop/capabilities", headers=headers).status_code == 200
+    assert remote_app.get("/api/card-drop/oauth/status", headers=headers).status_code == 401
+    assert remote_app.post("/api/card-drop/social-session-init", headers=headers, json={"sync_ticket": "invalid"}).status_code == 401
+    handoff = remote_app.post("/api/card-drop/social-session-init", headers=headers, json={"sync_ticket": ticket})
+    assert handoff.status_code == 200
+    assert handoff.json()["access_token"] == snapshot["access_token"]
+    assert "linux-only-refresh" not in handoff.text
+    assert remote_app.post("/api/card-drop/social-session-init", headers=headers, json={"sync_ticket": ticket}).status_code == 401
+    assert remote_app.post("/api/card-drop/facts/query", headers=headers, json={}).status_code == 401
+    facts_headers = {**headers, "Authorization": "Bearer " + delegate, "X-Neko-Local-User-Id": user}
+    assert remote_app.post("/api/card-drop/facts/query", headers=facts_headers, json={}).status_code == 200
+    assert remote_app.post("/api/card-drop/facts/query", headers={**facts_headers, "Origin": "https://evil.example"}, json={}).status_code == 401
+
+    async def unavailable(_request):
+        return "unavailable"
+
+    monkeypatch.setattr(C, "_facts_request_auth_state", unavailable)
+    unavailable_response = remote_app.post("/api/card-drop/facts/query", headers=facts_headers, json={})
+    assert unavailable_response.status_code == 503
+    assert unavailable_response.headers["access-control-allow-origin"] == community
 
 
 def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch):

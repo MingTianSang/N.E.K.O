@@ -45,6 +45,27 @@ try {
       body: JSON.stringify({ state, code: 'fixture-one-time-code' }),
     })).status, state);
   assert.equal(replay, 400);
+  // Exercise actual browser CORS preflight/redemption without an instance
+  // cookie. The community's one-use ticket is the credential for this hop.
+  const ticket = await page.evaluate(async () =>
+    (await (await fetch('/api/card-drop/sync-ticket')).json()).sync_ticket);
+  const communityPage = await context.newPage();
+  await communityPage.goto(process.env.NEKO_TEST_AUTH_ORIGIN + '/');
+  const corsResult = await communityPage.evaluate(async ({ origin, ticket }) => {
+    const capabilities = await fetch(origin + '/api/card-drop/capabilities', { credentials: 'omit' });
+    const options = { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sync_ticket: ticket }) };
+    const handoff = await fetch(origin + '/api/card-drop/social-session-init', options);
+    const data = await handoff.json();
+    const replay = await fetch(origin + '/api/card-drop/social-session-init', options).catch(() => null);
+    return { capabilities: capabilities.status, handoff: handoff.status, data, replay: replay?.status ?? 0 };
+  }, { origin, ticket });
+  assert.equal(corsResult.capabilities, 200);
+  assert.equal(corsResult.handoff, 200);
+  assert.ok(corsResult.data.access_token);
+  assert.equal('refresh_token' in corsResult.data, false);
+  assert.equal(corsResult.replay, 401);
+  await communityPage.close();
   const stranger = await browser.newContext({ ignoreHTTPSErrors: true });
   const strangerPage = await stranger.newPage();
   const probe = await strangerPage.goto(origin + '/api/card-drop/auth-status');
@@ -52,7 +73,7 @@ try {
   assert.equal((await probe.text()).includes('fixture@example.test'), false);
   await stranger.close();
   await context.close();
-  console.log('PASS: two-origin TLS browser pairing, production popup relay, PKCE persistence, completion, account isolation and replay rejection');
+  console.log('PASS: two-origin TLS browser pairing, production popup relay, PKCE persistence, completion, credential-free CORS ticket handoff, account isolation and replay rejection');
 } finally {
   await browser.close();
 }

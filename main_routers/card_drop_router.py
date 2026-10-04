@@ -26,6 +26,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
+from starlette.requests import ClientDisconnect
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -2119,6 +2120,59 @@ async def _facts_request_auth_state(request: Request) -> str:
     if not supplied:
         return "mismatch"
     return await _request_matches_desktop_session(_social_base_url(), supplied)
+
+
+async def authorize_community_handoff(request: Request) -> tuple[bool, bytes | None]:
+    """Authorize exact community CORS routes without a cross-site instance cookie.
+
+    Preflight and protocol metadata disclose no account state. Mutations need
+    an existing one-use ticket; reads need a matching delegate/cloud bearer.
+    Existing routes still perform their session/scope checks and consumption.
+    """
+    paths = {
+        "/api/card-drop/social-session-init": {"POST"},
+        "/api/card-drop/sync-session": {"POST"},
+        "/api/card-drop/bind-client/approve": {"POST"},
+        "/api/card-drop/sync-session/status": {"GET"},
+        "/api/card-drop/capabilities": {"GET"},
+        "/api/card-drop/facts": {"GET"},
+        "/api/card-drop/facts/query": {"POST"},
+        "/api/card-drop/active-character": {"GET"},
+    }
+    methods = paths.get(request.url.path)
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not methods or not origin or not _exact_origin_matches(origin, _social_base_url()):
+        return False, None
+    request.scope["neko.community_cors_origin"] = origin
+    if request.method == "OPTIONS":
+        requested = request.headers.get("access-control-request-method", "").upper()
+        return not requested or requested in methods, None
+    if request.method not in methods:
+        return False, None
+    if request.url.path.endswith("/capabilities"):
+        return True, None
+    if request.url.path in {"/api/card-drop/social-session-init", "/api/card-drop/sync-session",
+                            "/api/card-drop/bind-client/approve"}:
+        body = bytearray()
+        try:
+            async with asyncio.timeout(30):
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 16384:
+                        return False, None
+            payload = json.loads(body)
+        except (ValueError, TimeoutError, ClientDisconnect):
+            return False, None
+        if not isinstance(payload, dict):
+            return False, None
+        ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+        return _sync_ticket_is_valid(ticket), bytes(body)
+    if not _request_bearer_token(request):
+        return False, None
+    state = await _facts_request_auth_state(request)
+    if state == "unavailable":
+        request.scope["neko.community_auth_unavailable"] = True
+    return state == "match", None
 
 
 async def _build_local_forge_facts(**kwargs):

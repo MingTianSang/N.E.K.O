@@ -6,6 +6,7 @@
 認証基盤とElectron対応版公開が#3289 merge条件で、Linux+Windows実機はcommunityが検証します。
 [契約と検証手順](/design/security/community-remote-access)。
 key取得: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+NEKO_INSTANCE_PUBLIC_ORIGIN に HTTPS を指定する場合、外部ゲートウェイの80番ポートは閉じるかHTTPSへのリダイレクトのみ許可し、同じHostの平文要求を転送しないでください。内部HTTP upstreamは隔離してください。Host一致だけではTLSを証明できません。
 HTTPS/WSSを使用し、外部TLS gatewayではNEKO_INSTANCE_PUBLIC_ORIGINを設定します。
 NEKO_COMMUNITY_WEB_REDIRECT_URIは既定で空にしてplatform relayを使います。
 

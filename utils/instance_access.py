@@ -51,6 +51,16 @@ def instance_key() -> str:
             raise ValueError("instance key must contain at least 32 characters")
         return configured
     path = _key_path()
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        existing = ""
+    if existing:
+        if len(existing) < 32:
+            raise ValueError("instance key file is incomplete")
+        # Published keys are atomically replaced. Normal reads need no lock;
+        # missing/empty repair still serializes creation across all services.
+        return existing
     path.parent.mkdir(parents=True, exist_ok=True)
     # Publish complete bytes under a cross-process lock. A crash cannot leave
     # a new empty credential visible; repair old zero-byte creation artifacts.
@@ -202,16 +212,38 @@ def _market_internal_identity(request: Request, key: str) -> str | None:
 class InstanceAccessMiddleware:
     """Gate all service routes before body parsing, including WebSockets."""
 
-    def __init__(self, app):
+    def __init__(self, app, community_handoff_authorizer=None):
         self.app = app
+        self.community_handoff_authorizer = community_handoff_authorizer
         self.attempts: dict[str, tuple[float, int]] = {}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
             return await self.app(scope, receive, send)
-        request = Request({**scope, "type": "http", "method": scope.get("method", "GET")})
+        request_scope = scope if scope["type"] == "http" else {**scope, "type": "http", "method": "GET"}
+        request = Request(request_scope, receive=receive)
         if _local_native(request):
             return await self.app(scope, receive, send)
+        if scope["type"] == "http" and self.community_handoff_authorizer and _secure_transport(request):
+            authorized, replay_body = await self.community_handoff_authorizer(request)
+            if scope.get("neko.community_auth_unavailable"):
+                return await self._deny(scope, receive, send, "identity_verification_unavailable", 503)
+            if authorized:
+                if replay_body is not None:
+                    original_receive = receive
+                    pending_body = True
+
+                    async def replay_receive():
+                        nonlocal pending_body
+                        if pending_body:
+                            pending_body = False
+                            return {"type": "http.request", "body": replay_body, "more_body": False}
+                        return await original_receive()
+
+                    receive = replay_receive
+                # Route-specific tickets/delegates remain an independent,
+                # narrow authorization contract; never grant instance identity.
+                return await self.app(scope, receive, send)
         path = scope.get("path", "")
         login_page = scope["type"] == "http" and (path == LOGIN_PATH or (request.method == "GET" and "text/html" in request.headers.get("accept", "")))
         if not login_page and not request.headers.get("authorization") and not request.cookies.get(COOKIE) and not request.headers.get("x-neko-market-internal"):
@@ -331,11 +363,17 @@ class InstanceAccessMiddleware:
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4401 if status == 401 else 4403})
         else:
-            await JSONResponse({"detail": detail}, status_code=status, headers={"Cache-Control": "no-store"})(scope, receive, send)
+            headers = {"Cache-Control": "no-store"}
+            community_origin = scope.get("neko.community_cors_origin")
+            if community_origin:
+                headers.update({"Access-Control-Allow-Origin": community_origin, "Vary": "Origin"})
+            await JSONResponse({"detail": detail}, status_code=status, headers=headers)(scope, receive, send)
 
     async def _page(self, request: Request, key: str, *, failed=False):
         strings = await asyncio.to_thread(_strings, request)
-        challenge = _signed(key, "challenge", request.url.hostname or "", secrets.token_hex(16), int(time.time()) + 600)
+        challenge = request.cookies.get(CHALLENGE_COOKIE, "")
+        if not _verified(key, "challenge", request.url.hostname or "", challenge):
+            challenge = _signed(key, "challenge", request.url.hostname or "", secrets.token_hex(16), int(time.time()) + 600)
         secure = _secure_transport(request)
         message = strings["failed"] if failed else strings["description"]
         if not secure:
@@ -345,7 +383,7 @@ class InstanceAccessMiddleware:
             f'<title>{html.escape(strings["title"])}</title><main><h1>{html.escape(strings["title"])}</h1>'
             f'<p>{html.escape(message)}</p><form method="post" action="{LOGIN_PATH}">'
             f'<input type="hidden" name="challenge" value="{challenge}">'
-            f'<input type="hidden" name="return_path" value="{html.escape(request.url.path if request.url.path != LOGIN_PATH else "/", quote=True)}">'
+            f'<input type="hidden" name="return_path" value="{html.escape((request.url.path + ("?" + request.url.query if request.url.query else "")) if request.url.path != LOGIN_PATH else "/", quote=True)}">'
             f'<label>{html.escape(strings["key"])} <input type="password" name="key" required autocomplete="current-password"></label>'
             f'<button {"disabled" if not secure else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
             status_code=401,

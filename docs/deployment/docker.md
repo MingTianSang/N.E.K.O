@@ -7,6 +7,7 @@ The default platform relay needs no per-Docker-domain registration. Auth relay a
 companion releases must ship before #3289 is ready; real Linux + Windows acceptance needs community testing.
 See [contract and tests](/design/security/community-remote-access).
 Get the key: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+When NEKO_INSTANCE_PUBLIC_ORIGIN uses HTTPS, the external gateway must close port 80 or redirect it to HTTPS; never forward plaintext requests with that Host. Keep the private HTTP upstream isolated. Host matching itself does not prove TLS.
 Use HTTPS/WSS; external TLS gateways may set NEKO_INSTANCE_PUBLIC_ORIGIN.
 Leave NEKO_COMMUNITY_WEB_REDIRECT_URI empty for the default relay.
 

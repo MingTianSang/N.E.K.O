@@ -50,7 +50,7 @@ def run(args):
         auth_origin = f"https://auth.neko.test:{auth_port}"
         key = "fixture-only-instance-key-" + "x" * 40
         os.environ.update(NEKO_BEHIND_PROXY="true", NEKO_INSTANCE_ACCESS_KEY=key,
-                          NEKO_STORAGE_SELECTED_ROOT=str(root), NEKO_AUTH_URL=auth_origin,
+                          NEKO_STORAGE_SELECTED_ROOT=str(root), NEKO_AUTH_URL=auth_origin, NEKO_SOCIAL_BASE_URL=auth_origin,
                           NEKO_TRUSTED_HOSTS="backend.neko.test")
         for name in ("NEKO_INSTANCE_PUBLIC_ORIGIN", "NEKO_COMMUNITY_WEB_REDIRECT_URI", "NEKO_COMMUNITY_WEB_CLIENT_ID"):
             os.environ.pop(name, None)
@@ -111,12 +111,12 @@ def run(args):
             return {"user": {"id": "aabbccdd-1111-4222-8333-123456789abc", "email": "fixture@example.test"}}
 
         async def guest_bind(_base, _token):
-            return {"bound": False}
+            return {"bound": True, "error": None}
 
         async def saved_status():
             auth = C._read_json_dict(C._auth_path()) or {}
             return {"logged_in": bool(auth.get("access_token")), "auth": auth,
-                    "snapshot": C._read_json_dict(C._social_session_path())}
+                    "snapshot": C._desktop_session_snapshot()}
 
         O._exchange_oauth_code, O._bootstrap_session = exchange_code, bootstrap
         O._oauth_guest_bind, O.resolve_saved_oauth_status = guest_bind, saved_status
@@ -153,7 +153,7 @@ def run(args):
                 window.completion=await waitForOAuthCompletion(30000,browserOAuthState);};"""
             return HTMLResponse('<button id="login-community">OAuth fixture</button><script>' + script + '</script>')
 
-        backend.add_middleware(InstanceAccessMiddleware)
+        backend.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=C.authorize_community_handoff)
         backend.add_middleware(HostOriginGuardMiddleware)
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "NEKO isolated test")])
