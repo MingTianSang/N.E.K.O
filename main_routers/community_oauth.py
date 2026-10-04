@@ -731,6 +731,9 @@ async def oauth_status_endpoint(request: Request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
     # Protect the entire response, including account identity and local paths.
+    # This legacy desktop response is not a remote login-completion API. A
+    # remote replacement needs instance authorization and must omit paths; see
+    # docs/design/security/community-remote-access.md (PR #3289 merge gate).
     if not _loopback_request_source(request):
         return JSONResponse({"detail": "loopback_only"}, status_code=403)
 

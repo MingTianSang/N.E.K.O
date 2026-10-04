@@ -288,6 +288,57 @@ async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypa
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("headers", [
+    {"X-Forwarded-For": "203.0.113.9"},
+    {"X-Real-IP": "203.0.113.9"},
+    {"Forwarded": "for=203.0.113.9;proto=https"},
+])
+def test_desktop_account_queries_keep_forwarding_header_compatibility(
+    oauth_app, monkeypatch, headers,
+):
+    """A desktop debugging proxy must not break account display or path discovery."""
+    client, _auth, social, _pending = oauth_app
+
+    async def logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "owner@example.com", "display_name": "Owner"}},
+        }
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", logged_in)
+    for route in ("/api/card-drop/oauth/status", "/api/card-drop/auth-status"):
+        response = client.get(route, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["logged_in"] is True
+        assert response.json()["user"]["email"] == "owner@example.com"
+        if route.endswith("/oauth/status"):
+            assert response.json()["session_path"] == str(social)
+
+
+@pytest.mark.unit
+def test_remote_browser_metadata_cannot_authorize_desktop_account_response(oauth_app, monkeypatch):
+    """Same-origin metadata and loopback-looking XFF are not an instance credential."""
+    client, _auth, _social, _pending = oauth_app
+    # Reuse real HTTP routing and source checks, rather than patching the guard.
+    remote_client = TestClient(client.app, client=("203.0.113.9", 50000))
+
+    async def forbidden_read():
+        pytest.fail("Rejected remote requests must not read or refresh account state")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", forbidden_read)
+    monkeypatch.setattr(O, "_desktop_session_paths_for_host", lambda: pytest.fail("No path disclosure"))
+    response = remote_client.get("/api/card-drop/oauth/status", headers={
+        "Sec-Fetch-Site": "same-origin",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
+        "Forwarded": "for=127.0.0.1",
+    })
+    assert response.status_code == 403
+    assert response.json() == {"detail": "loopback_only"}
+
+
+@pytest.mark.unit
 async def test_oauth_status_proxy_deployment_rejects_even_headerless_loopback(monkeypatch, tmp_path):
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     session_file = tmp_path / "social_session.json"

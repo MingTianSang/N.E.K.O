@@ -1322,6 +1322,9 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint(request: Request):
+    # Source metadata blocks cross-site browsers; it is not instance identity.
+    # Remote account authorization must be shared with OAuth completion queries
+    # before PR #3289 merges; see community-remote-access.md in docs/design/security.
     if not _local_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
