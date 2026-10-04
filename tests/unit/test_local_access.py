@@ -24,6 +24,25 @@ def test_proxy_flag_preserves_startup_semantics(value, expected, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("chain", ["127.0.0.1, 203.0.113.9", "203.0.113.9, 127.0.0.1"])
+def test_uvicorn_loopback_proxy_trust_preserves_external_peer(chain):
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = FastAPI()
+
+    @app.get("/peer")
+    async def peer(request: Request):
+        return {"host": request.client.host}
+
+    with TestClient(ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1,::1"),
+                    client=("127.0.0.1", 50000)) as client:
+        response = client.get("/peer", headers={"X-Forwarded-For": chain})
+    assert response.json() == {"host": "203.0.113.9"}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("check", [
     community_oauth._loopback_request_source,
 ])

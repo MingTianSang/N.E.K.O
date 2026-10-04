@@ -592,7 +592,7 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -609,7 +609,7 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -623,7 +623,7 @@ server {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -643,7 +643,7 @@ server {
         proxy_pass http://127.0.0.1:48912;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     
@@ -652,7 +652,7 @@ server {
         proxy_pass http://127.0.0.1:48915;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     
@@ -721,7 +721,7 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -738,7 +738,7 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -752,7 +752,7 @@ server {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         
@@ -772,7 +772,7 @@ server {
         proxy_pass http://127.0.0.1:48912;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     
@@ -781,7 +781,7 @@ server {
         proxy_pass http://127.0.0.1:48915;
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     

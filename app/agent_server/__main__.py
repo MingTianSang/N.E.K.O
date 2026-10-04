@@ -41,5 +41,5 @@ if __name__ == "__main__":
         host="127.0.0.1",
         port=TOOL_SERVER_PORT,
         proxy_headers=_behind_proxy,
-        forwarded_allow_ips="*" if _behind_proxy else None,
+        forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
     )

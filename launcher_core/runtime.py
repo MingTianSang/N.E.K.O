@@ -1442,7 +1442,7 @@ def run_memory_server(
             port=MEMORY_SERVER_PORT,
             log_level="error",
             proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1558,7 +1558,7 @@ def run_agent_server(
             port=TOOL_SERVER_PORT,
             log_level="error",
             proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1640,7 +1640,7 @@ def run_main_server(
             loop="asyncio",
             reload=False,
             proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的

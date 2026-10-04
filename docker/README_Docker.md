@@ -4,7 +4,7 @@
 
 ### 外层反向代理与客户端地址
 
-官方 nginx 的 HTTP/HTTPS 代理路由会以 `$remote_addr` 覆盖 `X-Forwarded-For`，不接受客户端自带的地址链。容器外再套 Traefik、Cloudflare 或 ingress 时，后端日志及基于客户端 IP 的逻辑看到的是外层代理地址；如需保留真实客户端 IP，应由运维在 nginx 中通过 `set_real_ip_from` 声明具体可信上游，并配合 `real_ip_header` 解析该上游提供的地址，不要恢复无条件追加 XFF，也不要将任意来源设为可信。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
+官方 nginx 的 HTTP/HTTPS 服务代理路由追加 `X-Forwarded-For` 转发链；main、memory、agent 和插件服务只信任回环代理 `127.0.0.1,::1`，Uvicorn 从右向左跳过可信代理，使用第一个不可信地址，避免客户端伪造最左回环地址。独立的 `/security/csrf-token` 引导路由仍覆盖 XFF。容器外再套 Traefik、Cloudflare 或 ingress 时，外层代理必须正确设置客户端地址链；非回环外层上游若需进一步信任，应由运维明确配置具体可信代理地址或 nginx `set_real_ip_from` / `real_ip_header`，不要使用信任所有地址的通配符。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
 
 ## 📋 目录结构
 

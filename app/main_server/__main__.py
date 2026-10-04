@@ -113,7 +113,7 @@ if __name__ == "__main__":
         loop="asyncio",
         reload=False,
         proxy_headers=_behind_proxy,
-        forwarded_allow_ips="*" if _behind_proxy else None,
+        forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
         # WebSocket keep-alive: send server-initiated pings every 20s, close if no pong within 60s
         ws_ping_interval=20.0,
         ws_ping_timeout=60.0,
