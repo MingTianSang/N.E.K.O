@@ -107,8 +107,8 @@ _facts_cloud_budget = {"tokens": 12.0, "updated": time.monotonic(), "active": 0}
 _facts_cloud_budget_lock = threading.Lock()
 
 
-def _admit_facts_cloud_lookup() -> bool:
-    """Bound untrusted bearer verification across all callers in this worker."""
+def _admit_facts_cloud_lookup(peer: str) -> bool:
+    """Bound each peer and total untrusted verification work in this worker."""
     now = time.monotonic()
     with _facts_cloud_budget_lock:
         budget = _facts_cloud_budget
@@ -116,6 +116,19 @@ def _admit_facts_cloud_lookup() -> bool:
         budget["updated"] = now
         if budget["active"] >= 2 or budget["tokens"] < 1:
             return False
+        peers = budget.setdefault("peers", {})
+        for expired in [key for key, entry in peers.items() if now - entry["updated"] >= 60]:
+            peers.pop(expired)
+        entry = peers.get(peer)
+        if entry is None:
+            if len(peers) >= 256:
+                return False
+            entry = peers[peer] = {"tokens": 3.0, "updated": now}
+        entry["tokens"] = min(3.0, entry["tokens"] + max(0, now - entry["updated"]) / 15)
+        entry["updated"] = now
+        if entry["tokens"] < 1:
+            return False
+        entry["tokens"] -= 1
         budget["tokens"] -= 1
         budget["active"] += 1
         return True
@@ -2144,7 +2157,10 @@ async def _facts_request_auth_state(request: Request) -> str:
         # Middleware and route share only this request's proof. Logout, refresh,
         # or account switching invalidates it before protected data is read.
         return cached[1] if cached[0] == fingerprint else "mismatch"
-    if not _admit_facts_cloud_lookup():
+    # Use the ASGI peer after the server's trusted-proxy handling, never a
+    # caller-supplied token, Origin, or raw forwarding header as the bucket key.
+    peer = request.client.host if request.client else "unknown"
+    if not _admit_facts_cloud_lookup(peer):
         return "rate_limited"
     try:
         state = await _request_matches_desktop_session(_social_base_url(), supplied)

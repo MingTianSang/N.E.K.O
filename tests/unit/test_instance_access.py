@@ -525,7 +525,7 @@ def test_community_cloud_bearer_budget_cannot_be_bypassed_by_rotating_tokens(rem
 
     monkeypatch.setattr(C, "_lookup_cloud_identity", reject)
     for index in range(12):
-        response = remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": f"Bearer fake-{index}"})
+        response = remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": f"Bearer fake-{index}", "X-Forwarded-For": f"203.0.113.{index // 3 + 1}"})
         assert response.status_code == 401
     limited = remote_app.get("/api/card-drop/active-character", headers={"Origin": community, "Authorization": "Bearer another-fake"})
     assert limited.status_code == 429
@@ -534,6 +534,37 @@ def test_community_cloud_bearer_budget_cannot_be_bypassed_by_rotating_tokens(rem
     now[0] += 5
     assert remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": "Bearer retry"}).status_code == 401
     assert len(calls) == 13
+
+
+def test_one_peer_cannot_monopolize_cloud_budget_or_block_scoped_delegates(remote_app, monkeypatch):
+    community = "https://community.example"
+    user = "11111111-1111-4111-8111-111111111111"
+    snapshot = {"base_url": community, "access_token": "desktop-token", "local_user_id": user, "auth_source": "oauth"}
+    monkeypatch.setattr(C, "_social_base_url", lambda: community)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    calls = []
+
+    async def lookup(base, token):
+        calls.append(token)
+        if token == "valid-other-peer":
+            return C._CloudIdentityLookup(C._CloudIdentity(user, "oauth", {}), 200)
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    async def facts(**kwargs):
+        return {"facts": []}
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup)
+    monkeypatch.setattr(C, "_build_local_forge_facts", facts)
+    for index in range(5):
+        response = remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": f"Bearer random-{index}"})
+        assert response.status_code == (401 if index < 3 else 429)
+    headers = {"Origin": community, "Authorization": "Bearer valid-other-peer", "X-Forwarded-For": "203.0.113.20"}
+    assert remote_app.get("/api/card-drop/facts", headers=headers).status_code == 200
+    delegate = C._issue_native_delegate(local_user_id=user, audience=community, session_fingerprint=C._desktop_session_fingerprint(snapshot), scopes=frozenset({"facts:read"}))
+    C._facts_cloud_budget["tokens"] = 0
+    C._facts_cloud_budget["updated"] = C.time.monotonic()
+    assert remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": "Bearer " + delegate, "X-Neko-Local-User-Id": user}).status_code == 200
+    assert len(calls) == 4
 
 
 @pytest.mark.parametrize("switch_account", [False, True])
