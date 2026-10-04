@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from utils.deployment import has_forwarding_metadata
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -469,7 +470,7 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     # Proxy middleware may rewrite client.host to a loopback upstream address.
     # Push is a native local operation, so reject forwarding metadata before
     # considering that address, including when an outer proxy is loopback.
-    if any(name in request.headers for name in ("x-forwarded-for", "x-real-ip", "forwarded")):
+    if has_forwarding_metadata(request.headers):
         return JSONResponse({"ok": False, "error": "forwarded push rejected"}, status_code=403)
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host):

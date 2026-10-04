@@ -5,7 +5,7 @@ import ipaddress
 from fastapi import Request
 
 from main_logic.activity.system_signals import is_remote_backend_deployment
-from utils.deployment import is_behind_proxy
+from utils.deployment import has_forwarding_metadata, is_behind_proxy
 
 
 def is_loopback_request(request: Request) -> bool:
@@ -43,6 +43,6 @@ def is_direct_loopback_request(request: Request) -> bool:
     not interpret proxy headers and continues to use the actual peer.
     """
     if is_behind_proxy():
-        if any(name in request.headers for name in ("x-forwarded-for", "x-real-ip", "forwarded")):
+        if has_forwarding_metadata(request.headers):
             return False
     return is_loopback_request(request)
