@@ -29,7 +29,7 @@ X-Real-IP/Forwarded-only与纯TCP隧道不能自动识别，须正确声明远�
 
 key默认在持久化根创建instance_access.key（POSIX0600），服务不输出秘密。
 管理员显式执行 uv run python -m utils.instance_access 取得key。
-Compose执行 docker compose exec -w /app neko uv run python -m utils.instance_access
+Compose执行 docker compose exec -w /app neko-main uv run python -m utils.instance_access
 （服务名按实际Compose）。多服务共享目录，或设置同一至少32字符的NEKO_INSTANCE_ACCESS_KEY。
 
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
@@ -38,6 +38,7 @@ key轮换使旧凭证、新请求和现存SSE/WS的下个数据消息失效。
 OAuth保存前重新检查连接授权；退出/新尝试取消旧pending，迟到回调不得复活账户。
 实例身份不替代既有CSRF/来源检查。key/cookie不得写到URL、公共日志、PR或截图。
 
+DNS域名使用既有NEKO_TRUSTED_HOSTS白名单；外置TLS网关必要时用NEKO_TRUSTED_ORIGINS声明该HTTPS origin。
 HTTPS网关到私有HTTP上游应保留Host/协议；必要时设置NEKO_INSTANCE_PUBLIC_ORIGIN
 为外部完整HTTPS origin并启用NEKO_BEHIND_PROXY。不从自报转发头推导认证。
 同hostname不同端口共用cookie，须共享key；独立实例用不同hostname/key。

@@ -5,7 +5,7 @@
 リモート応答にLinuxパス/cloud tokenを含めません。platform relayはDocker domainごとの登録不要です。
 認証基盤とElectron対応版公開が#3289 merge条件で、Linux+Windows実機はcommunityが検証します。
 [契約と検証手順](/design/security/community-remote-access)。
-key取得: docker compose exec -w /app neko uv run python -m utils.instance_access
+key取得: docker compose exec -w /app neko-main uv run python -m utils.instance_access
 HTTPS/WSSを使用し、外部TLS gatewayではNEKO_INSTANCE_PUBLIC_ORIGINを設定します。
 NEKO_COMMUNITY_WEB_REDIRECT_URIは既定で空にしてplatform relayを使います。
 

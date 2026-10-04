@@ -6,7 +6,7 @@ and loopback debugging proxies remain compatible. Remote replies omit Linux path
 The default platform relay needs no per-Docker-domain registration. Auth relay and Electron
 companion releases must ship before #3289 is ready; real Linux + Windows acceptance needs community testing.
 See [contract and tests](/design/security/community-remote-access).
-Get the key: docker compose exec -w /app neko uv run python -m utils.instance_access
+Get the key: docker compose exec -w /app neko-main uv run python -m utils.instance_access
 Use HTTPS/WSS; external TLS gateways may set NEKO_INSTANCE_PUBLIC_ORIGIN.
 Leave NEKO_COMMUNITY_WEB_REDIRECT_URI empty for the default relay.
 

@@ -2,6 +2,16 @@
 
 本文档说明如何将 N.E.K.O. 项目打包为 Docker 容器并部署。
 
+### 远程首次连接与社区账户
+
+远程网页/Windows Electron 使用 HTTPS 首次输入实例 key，之后复用连接会话。
+管理员运行 docker compose exec -w /app neko-main uv run python -m utils.instance_access
+取得持久化凭证；服务不在日志打印。多服务共享存储或设置同一 NEKO_INSTANCE_ACCESS_KEY。
+外置 nginx/NAS 鉴权可叠加。匿名账户查询/API/WS 拒绝，授权后账户响应不含 Linux 路径或社区令牌。
+默认 Web OAuth 使用平台固定 relay，无需每个 Docker 域名注册回调。认证平台与 PC 配套版本、
+用户真实环境验收是 #3289 合并门槛；本机桌面与真实回环调试代理保持兼容。
+详见[访问边界与测试步骤](/design/security/community-remote-access)。
+
 ### 外层反向代理与客户端地址
 
 官方 nginx 的 HTTP/HTTPS 服务代理路由追加 `X-Forwarded-For` 转发链；main、memory、agent 和插件服务只信任回环代理 `127.0.0.1,::1`，Uvicorn 从右向左跳过可信代理，使用第一个不可信地址，避免客户端伪造最左回环地址。独立的 `/security/csrf-token` 引导路由仍覆盖 XFF。容器外再套 Traefik、Cloudflare 或 ingress 时，外层代理必须正确设置客户端地址链；非回环外层上游若需进一步信任，应由运维明确配置具体可信代理地址或 nginx `set_real_ip_from` / `real_ip_header`，不要使用信任所有地址的通配符。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
