@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment
 
@@ -168,9 +168,10 @@ def _strings(request: Request) -> dict:
     return _locale_strings(locale)
 
 
-def market_internal_proof(key: str, method: str, path: str) -> str:
-    """Bind a local service handoff to one Market method/path for 30 seconds."""
-    return _signed(key, "market-internal", method + ":" + path, "market", int(time.time()) + 30)
+def market_internal_proof(key: str, method: str, path: str, public_origin: str = "") -> str:
+    """Bind a service handoff to its Market route and public origin for 60 seconds."""
+    return _signed(key, "market-internal", method + ":" + path + ":" + public_origin,
+                   "market", int(time.time()) + 60)
 
 
 def _market_internal_identity(request: Request, key: str) -> str | None:
@@ -183,7 +184,13 @@ def _market_internal_identity(request: Request, key: str) -> str | None:
         return None
     if not local_peer:
         return None
-    return _verified(key, "market-internal", request.method + ":" + path,
+    public_origin = request.headers.get("x-neko-market-public-origin", "")
+    if public_origin:
+        origin = urlsplit(public_origin)
+        if (origin.scheme != "https" or not origin.netloc or origin.username or origin.password
+                or origin.path or origin.query or origin.fragment):
+            return None
+    return _verified(key, "market-internal", request.method + ":" + path + ":" + public_origin,
                      request.headers.get("x-neko-market-internal", ""))
 
 
@@ -208,7 +215,7 @@ class InstanceAccessMiddleware:
             key = await asyncio.to_thread(instance_key)
             internal_identity = _market_internal_identity(request, key)
             identity = internal_identity or remote_instance_identity(request, key=key)
-        except (OSError, ValueError):
+        except (OSError, ValueError, FileLockTimeout):
             return await self._deny(scope, receive, send, "instance_access_unavailable", 503)
         if scope["type"] == "http" and path == LOGIN_PATH:
             return await self._login(request, key, scope, receive, send)
@@ -227,6 +234,8 @@ class InstanceAccessMiddleware:
         if not internal_identity and not oauth_callback and not entry_navigation and not _same_origin(request):
             return await self._deny(scope, receive, send, "origin_not_allowed", 403)
         scope["neko.instance_identity"] = identity
+        if internal_identity:
+            scope["neko.market_public_origin"] = request.headers.get("x-neko-market-public-origin", "")
         revoked = False
         started = False
         active_key = key
@@ -246,7 +255,7 @@ class InstanceAccessMiddleware:
                     try:
                         active_key = await asyncio.to_thread(instance_key)
                         break
-                    except OSError:
+                    except (OSError, FileLockTimeout):
                         if attempt == 2:
                             return False
                         await asyncio.sleep(.05)

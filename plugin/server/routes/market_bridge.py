@@ -2220,6 +2220,11 @@ def _oauth_default_redirect_uri() -> str:
 
 
 def _oauth_redirect_uri_for_request(request: Request) -> str:
+    # The main service signs this public origin; the instance middleware sets
+    # the scope only after verifying a loopback method/path/origin proof.
+    public_origin = request.scope.get("neko.market_public_origin")
+    if public_origin:
+        return public_origin + _OAUTH_REDIRECT_PATH
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port
     # OAuth loopback callbacks should stay on loopback even if the Host header

@@ -689,18 +689,29 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import _local_native, instance_key, market_internal_proof
+    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity
     from utils.deployment import has_forwarding_metadata
+    from filelock import Timeout as FileLockTimeout
 
     headers.pop("x-neko-market-internal", None)
-    if request.scope.get("neko.instance_identity") or _local_native(request):
+    headers.pop("x-neko-market-public-origin", None)
+    body = await request.body()
+    if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        signing_key = await asyncio.to_thread(instance_key)
-        headers["x-neko-market-internal"] = market_internal_proof(signing_key, request.method, "/market" + ("/" + path if path else ""))
+        public_origin = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+        try:
+            signing_key = await asyncio.to_thread(instance_key)
+        except (OSError, ValueError, FileLockTimeout):
+            return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
+        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+            return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
+        headers["x-neko-market-public-origin"] = public_origin
+        headers["x-neko-market-internal"] = market_internal_proof(
+            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     try:
         async with httpx.AsyncClient(
@@ -709,7 +720,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             upstream = await client.request(
                 request.method,
                 target,
-                content=await request.body(),
+                content=body,
                 headers=headers,
             )
     except httpx.HTTPError as exc:

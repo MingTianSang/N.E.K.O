@@ -422,6 +422,7 @@ def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch
     assert local.get("/private", headers=headers).status_code == 401
     remote = TestClient(app, base_url="http://127.0.0.1:48916", client=("203.0.113.1", 1234))
     assert remote.get("/market/test", headers=headers).status_code == 401
+    assert local.get("/market/test", headers={**headers, "X-Neko-Market-Public-Origin": "https://attacker.example"}).status_code == 401
 
 
 @pytest.mark.parametrize("header", ["X-Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-REAL-IP", "Forwarded"])
