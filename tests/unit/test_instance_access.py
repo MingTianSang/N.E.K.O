@@ -550,3 +550,42 @@ def test_instance_and_os_features_share_remote_on_flag(monkeypatch, name):
                        "server": ("127.0.0.1", 443), "client": ("127.0.0.1", 2000)})
     assert is_remote_backend_deployment()
     assert not _local_native(request)
+
+
+@pytest.mark.parametrize("blocked_attempts", [1, 8])
+def test_empty_key_windows_reader_conflict_is_bounded(monkeypatch, tmp_path, blocked_attempts):
+    """Retry transient Windows readers without publishing partial key content."""
+    import utils.instance_access as access
+
+    monkeypatch.delenv("NEKO_INSTANCE_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
+    path = tmp_path / "instance_access.key"
+    path.write_text("")
+    replace = access.os.replace
+    attempts = []
+    sleeps = []
+
+    def reader_conflict(source, target):
+        attempts.append(1)
+        assert path.read_text() == ""
+        if len(attempts) <= blocked_attempts:
+            error = PermissionError("Windows reader sharing conflict")
+            error.winerror = 5
+            raise error
+        replace(source, target)
+
+    monkeypatch.setattr(access.os, "replace", reader_conflict)
+    from tests.fake_clock import patch_module_clock
+
+    patch_module_clock(monkeypatch, access, sleep=sleeps.append)
+    if blocked_attempts == 8:
+        with pytest.raises(PermissionError):
+            access.instance_key()
+        assert path.read_text() == ""
+        assert len(attempts) == 8
+    else:
+        key = access.instance_key()
+        assert len(key) >= 32 and path.read_text() == key
+        assert len(attempts) == 2
+    assert len(sleeps) == min(blocked_attempts, 7)
+    assert not list(tmp_path.glob(".instance-key-*"))

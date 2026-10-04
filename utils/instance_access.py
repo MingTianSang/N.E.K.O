@@ -74,7 +74,16 @@ def instance_key() -> str:
                     stream.write(key)
                     stream.flush()
                     os.fsync(stream.fileno())
-                os.replace(temporary, path)
+                # Windows readers may briefly deny replacement of a legacy empty file.
+                # Retain atomic publication and retry only sharing/access conflicts.
+                for attempt in range(8):
+                    try:
+                        os.replace(temporary, path)
+                        break
+                    except PermissionError as exc:
+                        if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 7:
+                            raise
+                        time.sleep(0.025)
             finally:
                 Path(temporary).unlink(missing_ok=True)
     if len(key) < 32:
