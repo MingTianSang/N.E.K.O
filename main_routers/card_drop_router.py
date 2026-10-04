@@ -2170,6 +2170,13 @@ async def _facts_request_auth_state(request: Request) -> str:
     current = await asyncio.to_thread(_desktop_session_snapshot)
     if _desktop_session_fingerprint(current) != fingerprint:
         return "mismatch"
+    if state == "match":
+        # The peer bucket penalizes unverified/failed attempts, not successful
+        # users sharing a NAT. Keep charging the total cloud-work budget.
+        with _facts_cloud_budget_lock:
+            entry = _facts_cloud_budget.get("peers", {}).get(peer)
+            if entry is not None:
+                entry["tokens"] = min(3.0, entry["tokens"] + 1)
     request.scope["neko.facts_cloud_auth"] = (fingerprint, state)
     return state
 

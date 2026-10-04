@@ -599,6 +599,33 @@ def test_community_cloud_read_reuses_proof_and_rechecks_local_session(remote_app
     assert calls == ["valid-cloud"]
 
 
+def test_successful_cloud_reads_under_same_nat_preserve_peer_allowance(remote_app, monkeypatch):
+    community = "https://community.example"
+    user = "11111111-1111-4111-8111-111111111111"
+    snapshot = {"base_url": community, "access_token": "desktop-token", "local_user_id": user, "auth_source": "oauth"}
+    monkeypatch.setattr(C, "_social_base_url", lambda: community)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    calls = []
+
+    async def lookup(base, token):
+        calls.append(token)
+        return C._CloudIdentityLookup(C._CloudIdentity(user, "oauth", {}), 200)
+
+    async def facts(**kwargs):
+        return {"facts": []}
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup)
+    monkeypatch.setattr(C, "_build_local_forge_facts", facts)
+    # Different valid cloud credentials behind the same trusted-proxy peer
+    # must not exhaust its three-failure allowance, but still cost cloud work.
+    for index in range(12):
+        headers = {"Origin": community, "Authorization": f"Bearer valid-client-{index}"}
+        assert remote_app.get("/api/card-drop/facts", headers=headers).status_code == 200
+    assert len(calls) == 12
+    assert remote_app.get("/api/card-drop/facts", headers=headers).status_code == 429
+    assert len(calls) == 12
+
+
 def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch):
     from utils.instance_access import market_internal_proof
 
