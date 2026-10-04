@@ -690,9 +690,15 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
     from utils.instance_access import _local_native, instance_key, market_internal_proof
+    from utils.deployment import has_forwarding_metadata
 
     headers.pop("x-neko-market-internal", None)
     if request.scope.get("neko.instance_identity") or _local_native(request):
+        # This is a new authenticated service-to-service hop. The plugin's
+        # proxy middleware must observe its real loopback caller, not rewrite
+        # it using browser-supplied metadata from the preceding public hop.
+        headers = {name: value for name, value in headers.items()
+                   if not has_forwarding_metadata({name: value})}
         signing_key = await asyncio.to_thread(instance_key)
         headers["x-neko-market-internal"] = market_internal_proof(signing_key, request.method, "/market" + ("/" + path if path else ""))
 

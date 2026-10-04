@@ -91,6 +91,8 @@ IdP/社区账号为隔离fixture；不等于生产平台或Linux/Windows实机�
 
 已授权浏览器从站外链接打开 /、/chat、/subtitle 的顶层文档可复用会话；
 账户 API、iframe、异源写操作仍拒绝。实际模型静态挂载采用 private 缓存，保留 ETag/max-age。
+Market 的已授权内部服务转发使用短时 method/path 签名，并移除上一跳的转发元数据，
+避免插件 Uvicorn 将真实回环服务调用误解析为公网客户端；Market Authorization 和来源头仍保留。
 配对页只缓存八种语言的少量文案。共享代理 IP 的错误尝试仍限速，
 正确密钥和有效 challenge 不受其他客户端错误次数影响。
 回环调试代理 XFF 兼容仅适用于非代理桌面部署；代理部署的 capture 等本机资源
