@@ -235,6 +235,8 @@ class InstanceAccessMiddleware:
             return await self.app(scope, receive, send)
         if scope["type"] == "http" and self.community_handoff_authorizer and _secure_transport(request):
             authorized, replay_body = await self.community_handoff_authorizer(request)
+            if scope.get("neko.community_auth_rate_limited"):
+                return await self._deny(scope, receive, send, "identity_verification_rate_limited", 429)
             if scope.get("neko.community_auth_unavailable"):
                 return await self._deny(scope, receive, send, "identity_verification_unavailable", 503)
             if authorized:

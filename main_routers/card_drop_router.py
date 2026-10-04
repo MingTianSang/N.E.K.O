@@ -103,6 +103,24 @@ class _BrowserAuth:
     local_user_id: str = ""
 
 
+_facts_cloud_budget = {"tokens": 12.0, "updated": time.monotonic(), "active": 0}
+_facts_cloud_budget_lock = threading.Lock()
+
+
+def _admit_facts_cloud_lookup() -> bool:
+    """Bound untrusted bearer verification across all callers in this worker."""
+    now = time.monotonic()
+    with _facts_cloud_budget_lock:
+        budget = _facts_cloud_budget
+        budget["tokens"] = min(12.0, budget["tokens"] + max(0, now - budget["updated"]) / 5)
+        budget["updated"] = now
+        if budget["active"] >= 2 or budget["tokens"] < 1:
+            return False
+        budget["tokens"] -= 1
+        budget["active"] += 1
+        return True
+
+
 def _sync_ticket_digest(ticket: str) -> str:
     return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
 
@@ -2119,7 +2137,25 @@ async def _facts_request_auth_state(request: Request) -> str:
     supplied = _request_bearer_token(request)
     if not supplied:
         return "mismatch"
-    return await _request_matches_desktop_session(_social_base_url(), supplied)
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    fingerprint = _desktop_session_fingerprint(snapshot)
+    cached = request.scope.get("neko.facts_cloud_auth")
+    if cached is not None:
+        # Middleware and route share only this request's proof. Logout, refresh,
+        # or account switching invalidates it before protected data is read.
+        return cached[1] if cached[0] == fingerprint else "mismatch"
+    if not _admit_facts_cloud_lookup():
+        return "rate_limited"
+    try:
+        state = await _request_matches_desktop_session(_social_base_url(), supplied)
+    finally:
+        with _facts_cloud_budget_lock:
+            _facts_cloud_budget["active"] -= 1
+    current = await asyncio.to_thread(_desktop_session_snapshot)
+    if _desktop_session_fingerprint(current) != fingerprint:
+        return "mismatch"
+    request.scope["neko.facts_cloud_auth"] = (fingerprint, state)
+    return state
 
 
 async def authorize_community_handoff(request: Request) -> tuple[bool, bytes | None]:
@@ -2172,6 +2208,8 @@ async def authorize_community_handoff(request: Request) -> tuple[bool, bytes | N
     state = await _facts_request_auth_state(request)
     if state == "unavailable":
         request.scope["neko.community_auth_unavailable"] = True
+    if state == "rate_limited":
+        request.scope["neko.community_auth_rate_limited"] = True
     return state == "match", None
 
 
@@ -2252,6 +2290,12 @@ async def _forge_facts_response(request: Request, *, query: dict):
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     auth_state = await _facts_request_auth_state(request)
+    if auth_state == "rate_limited":
+        return JSONResponse(
+            {"detail": "identity_verification_rate_limited"},
+            status_code=429,
+            headers={**cors, "Retry-After": "5"},
+        )
     if auth_state == "unavailable":
         return JSONResponse(
             {"detail": "identity_verification_unavailable"},

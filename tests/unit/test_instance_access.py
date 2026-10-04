@@ -17,6 +17,7 @@ KEY = "test-only-instance-key-" + "x" * 40
 
 @pytest.fixture
 def remote_app(monkeypatch, tmp_path):
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": C.time.monotonic(), "active": 0})
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
@@ -505,6 +506,66 @@ def test_remote_community_preflight_ticket_and_delegate_handoff(remote_app, monk
     unavailable_response = remote_app.post("/api/card-drop/facts/query", headers=facts_headers, json={})
     assert unavailable_response.status_code == 503
     assert unavailable_response.headers["access-control-allow-origin"] == community
+
+
+def test_community_cloud_bearer_budget_cannot_be_bypassed_by_rotating_tokens(remote_app, monkeypatch):
+    from tests.fake_clock import patch_module_clock
+
+    community = "https://community.example"
+    now = [1000.0]
+    patch_module_clock(monkeypatch, C, monotonic=lambda: now[0])
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": now[0], "active": 0})
+    monkeypatch.setattr(C, "_social_base_url", lambda: community)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
+    calls = []
+
+    async def reject(base, token):
+        calls.append(token)
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", reject)
+    for index in range(12):
+        response = remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": f"Bearer fake-{index}"})
+        assert response.status_code == 401
+    limited = remote_app.get("/api/card-drop/active-character", headers={"Origin": community, "Authorization": "Bearer another-fake"})
+    assert limited.status_code == 429
+    assert limited.headers["access-control-allow-origin"] == community
+    assert len(calls) == 12
+    now[0] += 5
+    assert remote_app.get("/api/card-drop/facts", headers={"Origin": community, "Authorization": "Bearer retry"}).status_code == 401
+    assert len(calls) == 13
+
+
+@pytest.mark.parametrize("switch_account", [False, True])
+def test_community_cloud_read_reuses_proof_and_rechecks_local_session(remote_app, monkeypatch, switch_account):
+    community = "https://community.example"
+    user = "11111111-1111-4111-8111-111111111111"
+    snapshot = {"base_url": community, "access_token": "desktop-token", "local_user_id": user, "auth_source": "oauth"}
+    monkeypatch.setattr(C, "_social_base_url", lambda: community)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot.copy())
+    calls = []
+
+    async def lookup(base, token):
+        calls.append(token)
+        return C._CloudIdentityLookup(C._CloudIdentity(user, "oauth", {}), 200)
+
+    async def facts(**kwargs):
+        return {"facts": []}
+
+    original_authorizer = C.authorize_community_handoff
+
+    async def authorizer(request):
+        result = await original_authorizer(request)
+        if switch_account:
+            snapshot["access_token"] = "new-session"
+        return result
+
+    remote_app.app.app.user_middleware[0].kwargs["community_handoff_authorizer"] = authorizer
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup)
+    monkeypatch.setattr(C, "_build_local_forge_facts", facts)
+    response = remote_app.post("/api/card-drop/facts/query", headers={"Origin": community, "Authorization": "Bearer valid-cloud"}, json={})
+    assert response.status_code == (401 if switch_account else 200)
+    assert calls == ["valid-cloud"]
 
 
 def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch):
