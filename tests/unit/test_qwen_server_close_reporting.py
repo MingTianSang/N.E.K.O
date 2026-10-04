@@ -14,6 +14,7 @@ closes the worker recovers from by itself, and must actually reach the user.
 import asyncio
 import json
 import queue
+import threading
 import time
 from unittest.mock import AsyncMock
 
@@ -37,9 +38,6 @@ from tests.unit.test_free_tts_connection_lifetime import (  # noqa: F401 - share
 _ARREARS_REASON = "Access denied, please make sure your account is in good standing."
 _TEXT = "你好呀，今天过得怎么样？"
 _SID = "speech-1"
-_TTS_URL = (
-    "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime"
-)
 
 
 class _Frame:
@@ -184,23 +182,35 @@ async def test_handler_reports_arrears_at_once_and_blames_the_rejected_round(
 
 
 class _RefusingSocket(_Socket):
-    """Socket double whose server refuses right after the buffer commit."""
+    """Socket double whose server refuses; ``observed`` says who saw it first.
 
-    def __init__(self, code=1007, reason=_ARREARS_REASON):
-        super().__init__(on_send={"session.update": [{"type": "session.updated"}]})
+    ``observed`` is set at the exact moment the close reaches the worker — either
+    raised out of ``__anext__`` or carried by a failed send — so the test waits on
+    the real event instead of guessing a sleep duration.
+    """
+
+    def __init__(self, code=1007, reason=_ARREARS_REASON, fail_on_send=None):
+        refusal = websockets.exceptions.ConnectionClosedError(Close(code, reason), None)
+        super().__init__(
+            on_send={"session.update": [{"type": "session.updated"}]},
+            fail_on=(
+                {"input_text_buffer.append": refusal} if fail_on_send else ()
+            ),
+        )
         self._refusal = Close(code, reason)
+        self.observed = threading.Event()
 
     async def __anext__(self):
         """Same contract as the shared double, but poll with a real sleep.
 
         ``_Socket.__anext__`` busy-waits with ``asyncio.sleep(0)`` while no event
-        is queued. In a worker thread that hoggs the GIL, and it has been observed
-        pushing an unrelated wall-clock assertion (``test_recovery_capacity_
-        deadline_ignores_loop_clock_origin`` requires elapsed < 0.3s) over its
-        limit. A 20ms poll keeps the same behaviour at ~1/1000 the cost.
+        is queued; inside the worker that hoggs the GIL, which has been observed
+        tipping a wall-clock bound in ``test_qwen_provider_fallback.py``. A 20 ms
+        poll keeps the behaviour at ~1/1000 the cost.
         """
         while self._events.empty():
             if self._server_close is not None:
+                self.observed.set()
                 raise websockets.exceptions.ConnectionClosedError(
                     self._server_close, None
                 )
@@ -210,8 +220,12 @@ class _RefusingSocket(_Socket):
         return self._events.get()
 
     async def send(self, payload):
+        event_type = json.loads(payload)["type"]
+        if event_type in self._fail_on:
+            # 发送侧先看见关闭：正是现场日志里那条 1007 走的路径。
+            self.observed.set()
         await super().send(payload)
-        if json.loads(payload)["type"] == "input_text_buffer.commit":
+        if event_type == "input_text_buffer.commit":
             self._server_close = self._refusal
 
 
@@ -220,16 +234,18 @@ def _drive_worker(socket_factory):
 
     Deliberately thread-free: ``qwen_realtime_tts_worker`` calls ``asyncio.run``
     itself, so a synchronous caller gets a deterministic, self-contained loop.
-    Extra threads here have been observed tipping a wall-clock bound in
-    ``test_qwen_provider_fallback.py`` once pytest-randomly interleaves them.
     """
     # The callable is a barrier: _Requests runs it in the blocking get() thread,
-    # so the worker stops pulling while its receive task gets the loop and
-    # observes the close the server sent after the commit.
-    def _let_receive_task_run():
-        time.sleep(0.05)
+    # so the worker stops pulling until the close has actually been observed.
+    def _wait_until_observed():
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if any(socket.observed.is_set() for socket in sockets):
+                return
+            time.sleep(0.01)
+        raise AssertionError("worker never observed the close")
 
-    req_q = _Requests((_SID, _TEXT), (None, None), _let_receive_task_run)
+    req_q = _Requests((_SID, _TEXT), (None, None), _wait_until_observed)
     resp_q = queue.Queue()
     sockets = []
 
@@ -239,14 +255,11 @@ def _drive_worker(socket_factory):
         return socket
 
     original_connect = qwen_mod.websockets.connect
-    original_url = qwen_mod._resolve_qwen_realtime_tts_url
     qwen_mod.websockets.connect = _connect
-    qwen_mod._resolve_qwen_realtime_tts_url = lambda: _TTS_URL
     try:
         qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
     finally:
         qwen_mod.websockets.connect = original_connect
-        qwen_mod._resolve_qwen_realtime_tts_url = original_url
     emitted = []
     while True:
         try:
@@ -277,3 +290,71 @@ def test_recoverable_close_reports_nothing():
     emitted, _sockets = _drive_worker(lambda: _RefusingSocket(code=1011, reason=""))
     heads = [item[0] for item in emitted if isinstance(item, tuple)]
     assert "__error__" not in heads, f"1011 是可恢复断链，不该惊动用户：{heads}"
+
+
+def test_send_side_observed_refusal_is_reported_too():
+    """The field case: the sender sees the 1007 first, not the receive task.
+
+    This is the branch the user's log actually hit (`发送TTS文本失败: received
+    1007 …`), so reporting only from the receive loop would have left the round
+    silent with nothing on the queue.
+    """
+    emitted, _sockets = _drive_worker(
+        lambda: _RefusingSocket(fail_on_send=True)
+    )
+    heads = [item[0] for item in emitted if isinstance(item, tuple)]
+    assert "__tts_sentence_failed__" in heads and "__error__" in heads, (
+        f"发送侧观察到的拒绝也必须上报：{heads}"
+    )
+    errors = [item for item in emitted if item[0] == "__error__"]
+    assert len(errors) == 1, f"同一次拒绝只报一次：{heads}"
+    assert json.loads(errors[0][1])["data"]["close_code"] == 1007
+    assert heads.index("__error__") == heads.index("__tts_sentence_failed__") + 1
+
+
+@pytest.mark.asyncio
+async def test_handler_shows_close_code_not_provider_text(monkeypatch):
+    """Unclassified refusals must not put peer-controlled text on screen."""
+    monkeypatch.setattr(
+        tts_runtime_mod.GAME_SPEECH_AUDIO_CACHE, "fail_capture", lambda *_a: None
+    )
+    response_queue = queue.Queue()
+    payload = json.dumps(
+        {"type": "error", "data": {"close_code": 4004, "message": "Not Found"}}
+    )
+    response_queue.put(("__error__", payload))
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.current_speech_id = _SID
+    mgr.tts_response_queue = response_queue
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_ready = True
+    mgr._tts_replay_speech_id = None
+    mgr._tts_replay_sentence_audio_emitted = False
+    mgr._last_tts_error_code = ""
+    mgr._tts_retry_notify_count = 2  # 跳过「前两次静默」门槛，只看展示内容
+    mgr._tts_runtime_is_current = lambda _runtime: True
+    mgr._activate_configured_tts_fallback_after_capacity = AsyncMock(return_value=False)
+    mgr._confirm_pending_ai_voice_echo = lambda *_a: None
+    mgr._discard_pending_ai_voice_echo = lambda: None
+    mgr._mark_game_speech_delivery_failed = lambda sid=None: None
+    notices = []
+
+    async def send_status(message):
+        notices.append(json.loads(message))
+
+    mgr.send_status = send_status
+
+    task = asyncio.create_task(LLMSessionManager.tts_response_handler(mgr))
+    deadline = time.time() + 2.0
+    while not response_queue.empty() and time.time() < deadline:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert len(notices) == 1, notices
+    detail = notices[0]["details"]["msg"]
+    assert detail == "WebSocket close code 4004", detail
+    assert "Not Found" not in json.dumps(notices[0])
+

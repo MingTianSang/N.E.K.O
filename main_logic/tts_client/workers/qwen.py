@@ -180,6 +180,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 await ws.send(json.dumps(build_config_message(lang_hint)))
             except Exception as e:
                 logger.error(f"发送延迟 session.update 失败: {e}")
+                _report_server_rejection(e, current_speech_id)
                 return False
             session_configured = True
             try:
@@ -198,6 +199,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # append 发失败时连接多半已断，调用方不能继续发 commit；
                     # 返回 False 让 sid=None/文本路径走 continue 触发重连。
                     logger.error(f"发送缓冲文本失败: {e}")
+                    _report_server_rejection(e, current_speech_id)
                     return False
             pending_text_buffer = ""
             return True
@@ -375,6 +377,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 buffer_committed = True
                             except Exception as e:
                                 logger.warning(f"提交缓冲区失败: {e}")
+                                _report_server_rejection(e, current_speech_id)
                     continue
                 
                 # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
@@ -508,6 +511,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     _record_tts_telemetry("qwen", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
+                    # 必须在下面清空 ws/current_speech_id 之前报：这是现场日志里
+                    # 那条 1007 实际走到的分支（发送侧先看见关闭）。
+                    _report_server_rejection(e, sid)
                     # 连接已关闭，标记为无效以便下次重连
                     ws = None
                     current_speech_id = None  # 清空ID以强制下次重连

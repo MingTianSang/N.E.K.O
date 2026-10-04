@@ -274,8 +274,8 @@ def classify_server_close(exc, *, extra_refusal_codes=()):
     frame the peer actually sent, naming a refusal code, becomes an error.
 
     The payload deliberately carries no top-level ``code``: the message text is
-    classified in ``tts_response_handler`` (欠费 / standing / quota / 429 / 401
-    …), so workers do not duplicate that table.
+    classified in ``tts_response_handler`` (arrears / quota / rate-limit / bad
+    key …), so workers do not duplicate that keyword table.
 
     ``exc`` is a ``websockets`` ``ConnectionClosed``; duck-typed on ``rcvd`` so
     this helper stays importable without the websocket dependency.
