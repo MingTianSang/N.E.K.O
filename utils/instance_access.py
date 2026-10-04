@@ -67,8 +67,15 @@ def _local_native(request: Request) -> bool:
     """Exempt actual local calls, never forwarded or non-loopback Host traffic."""
     remote = any(os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
                  for name in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"))
-    if (is_behind_proxy() or remote) and has_forwarding_metadata(request.headers):
-        return False
+    if is_behind_proxy() or remote:
+        # Even a browser running on the Docker host needs the instance session.
+        # Keep headerless loopback service-to-service calls compatible; do not
+        # accidentally exempt the login page or an explicitly supplied session.
+        browser_or_session = (request.headers.get("origin") or request.headers.get("sec-fetch-site")
+                              or "text/html" in request.headers.get("accept", "")
+                              or request.headers.get("authorization") or request.cookies.get(COOKIE))
+        if has_forwarding_metadata(request.headers) or browser_or_session:
+            return False
     try:
         peer = ipaddress.ip_address(request.client.host if request.client else "")
         host = request.url.hostname or ""

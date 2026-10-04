@@ -227,3 +227,23 @@ def test_real_streaming_response_closes_on_key_rotation(monkeypatch):
     client = TestClient(app, base_url="https://instance.example")
     response = client.get("/stream", headers={"Authorization": "Bearer " + KEY})
     assert response.text == "before"
+
+
+def test_docker_host_browser_pairs_even_without_forwarding_headers(monkeypatch):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    app = FastAPI()
+
+    @app.get("/")
+    async def home():
+        return {"ok": True}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="https://127.0.0.1", client=("127.0.0.1", 50000))
+    page = client.get("/", headers={"Accept": "text/html"})
+    assert page.status_code == 401
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    connected = client.post("/instance-access/login", data={"key": KEY, "challenge": challenge},
+                            headers={"Origin": "https://127.0.0.1"}, follow_redirects=False)
+    assert connected.status_code == 303
+    assert client.get("/", headers={"Sec-Fetch-Site": "same-origin"}).json() == {"ok": True}
