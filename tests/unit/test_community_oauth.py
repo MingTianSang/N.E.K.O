@@ -289,15 +289,22 @@ async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.parametrize("headers", [
-    {"X-Forwarded-For": "203.0.113.9"},
-    {"X-Real-IP": "203.0.113.9"},
-    {"Forwarded": "for=203.0.113.9;proto=https"},
+    {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Real-IP": "127.0.0.1"},
+    {"Forwarded": "for=127.0.0.1;proto=http"},
 ])
 def test_desktop_account_queries_keep_forwarding_header_compatibility(
     oauth_app, monkeypatch, headers,
 ):
     """A desktop debugging proxy must not break account display or path discovery."""
     client, _auth, social, _pending = oauth_app
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from utils.deployment import uvicorn_proxy_options
+
+    client = TestClient(
+        ProxyHeadersMiddleware(client.app, trusted_hosts=uvicorn_proxy_options()["forwarded_allow_ips"]),
+        client=("127.0.0.1", 50000),
+    )
 
     async def logged_in():
         return {
@@ -339,6 +346,29 @@ def test_remote_browser_metadata_cannot_authorize_desktop_account_response(oauth
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("chain", ["203.0.113.9", "203.0.113.9, 127.0.0.1"])
+def test_desktop_http_tunnel_cannot_read_account_or_session_paths(oauth_app, monkeypatch, chain):
+    """A trusted local proxy must preserve its external client's access boundary."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from utils.deployment import uvicorn_proxy_options
+
+    client, _auth, _social, _pending = oauth_app
+    tunnel_client = TestClient(
+        ProxyHeadersMiddleware(client.app, trusted_hosts=uvicorn_proxy_options()["forwarded_allow_ips"]),
+        client=("127.0.0.1", 50000),
+    )
+
+    async def forbidden_read():
+        pytest.fail("Tunnel must not read or refresh the desktop account")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", forbidden_read)
+    monkeypatch.setattr(O, "_desktop_session_paths_for_host", lambda: pytest.fail("No path disclosure"))
+    response = tunnel_client.get("/api/card-drop/oauth/status", headers={"X-Forwarded-For": chain})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "loopback_only"}
+
+
+@pytest.mark.unit
 async def test_oauth_status_proxy_deployment_rejects_even_headerless_loopback(monkeypatch, tmp_path):
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     session_file = tmp_path / "social_session.json"
@@ -365,7 +395,7 @@ async def test_oauth_status_proxy_deployment_rejects_even_headerless_loopback(mo
 
     # Desktop mode trusts the peer even when a local proxy adds headers.
     monkeypatch.delenv("NEKO_BEHIND_PROXY")
-    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1", {"x-forwarded-for": "203.0.113.9"}))
+    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1", {"x-forwarded-for": "127.0.0.1"}))
     assert direct["session_path"] == str(session_file)
 
 

@@ -27,7 +27,8 @@ def is_local_oauth_status_request(request: Request) -> bool:
     Proxy mode can replace the peer address with an untrusted forwarded value.
     TCP tunnels cannot be detected from HTTP metadata; remote deployments must
     explicitly enable NEKO_BEHIND_PROXY or NEKO_ACTIVITY_TRACKER_REMOTE.
-    In desktop mode proxy headers are disabled, so the peer address is trusted.
+    In desktop mode loopback proxies may forward a client address; Uvicorn
+    preserves external peers so a local HTTP tunnel cannot acquire this grant.
     """
     if is_behind_proxy():
         return False
@@ -39,8 +40,9 @@ def is_direct_loopback_request(request: Request) -> bool:
 
     In proxy mode Uvicorn can replace client.host from X-Forwarded-For. Reject
     forwarded calls to local resources, while allowing backend processes to
-    call localhost directly without forwarding metadata. Desktop mode does
-    not interpret proxy headers and continues to use the actual peer.
+    call localhost directly without forwarding metadata. Desktop mode accepts
+    local debugging proxies when their processed client address is loopback,
+    while external addresses forwarded by a loopback proxy remain remote.
     """
     if is_behind_proxy():
         if has_forwarding_metadata(request.headers):

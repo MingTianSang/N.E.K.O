@@ -50,7 +50,7 @@ def test_merged_uvicorn_options_override_environment_defaults(proxy, monkeypatch
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true" if proxy else "false")
     config = Config(app=lambda: None, **uvicorn_proxy_options())
-    assert config.proxy_headers is proxy
+    assert config.proxy_headers is True
     assert config.forwarded_allow_ips == "127.0.0.1,::1"
 
 
@@ -107,8 +107,8 @@ def test_proxy_rewritten_peers_cannot_authorize_local_resources(header, check, m
 
 @pytest.mark.unit
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1", "::ffff:7f00:1"])
-def test_desktop_mode_uses_peer_address_even_with_local_proxy_headers(host):
-    request = SimpleNamespace(client=SimpleNamespace(host=host), headers={"x-forwarded-for": "203.0.113.9"})
+def test_desktop_mode_uses_processed_loopback_peer_with_local_proxy_headers(host):
+    request = SimpleNamespace(client=SimpleNamespace(host=host), headers={"x-forwarded-for": "127.0.0.1"})
     assert community_oauth._loopback_request_source(request) is True
 
 
@@ -117,3 +117,29 @@ def test_desktop_mode_uses_peer_address_even_with_local_proxy_headers(host):
 def test_nonlocal_peers_cannot_spoof_local_access(host):
     request = SimpleNamespace(client=SimpleNamespace(host=host), headers={"x-forwarded-for": "127.0.0.1"})
     assert community_oauth._loopback_request_source(request) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("forwarded,expected", [("127.0.0.1", True), ("203.0.113.9", False)])
+def test_desktop_proxy_middleware_preserves_local_resource_boundary(forwarded, expected):
+    """Local debugging proxies work; HTTP tunnels cannot become local consumers."""
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = FastAPI()
+
+    @app.get("/access")
+    async def access(request: Request):
+        return {
+            "capture": capture_router._is_loopback_request(request),
+            "system": _shared._is_loopback_request(request),
+        }
+
+    client = TestClient(
+        ProxyHeadersMiddleware(app, trusted_hosts=uvicorn_proxy_options()["forwarded_allow_ips"]),
+        client=("127.0.0.1", 50000),
+    )
+    assert client.get("/access", headers={"X-Forwarded-For": forwarded}).json() == {
+        "capture": expected, "system": expected,
+    }

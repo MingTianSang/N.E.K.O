@@ -20,7 +20,7 @@ monolithic module.
 """
 
 
-from utils.deployment import is_behind_proxy
+from utils.deployment import uvicorn_proxy_options
 from config import TOOL_SERVER_PORT
 
 from app.agent_server import app
@@ -35,11 +35,9 @@ if __name__ == "__main__":
     # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
-    _behind_proxy = is_behind_proxy()
     uvicorn.run(
         app,
         host="127.0.0.1",
         port=TOOL_SERVER_PORT,
-        proxy_headers=_behind_proxy,
-        forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
+        **uvicorn_proxy_options(),
     )

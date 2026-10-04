@@ -55,7 +55,7 @@ from multiprocessing import Process, freeze_support, Event
 _pin_project_root_first()
 
 import config as config_module
-from utils.deployment import is_behind_proxy, uvicorn_proxy_options
+from utils.deployment import uvicorn_proxy_options
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
 from utils.port_utils import (
@@ -1431,15 +1431,13 @@ def run_memory_server(
 
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
 
-        _behind_proxy = is_behind_proxy()
         # 使用 Server 对象，在启动后通知父进程
         config = uvicorn.Config(
             app=memory_server.app,
             host="127.0.0.1",
             port=MEMORY_SERVER_PORT,
             log_level="error",
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1548,14 +1546,12 @@ def run_agent_server(
         # Agent Server 不需要等待，立即通知就绪
         ready_event.set()
 
-        _behind_proxy = is_behind_proxy()
         config = uvicorn.Config(
             app=agent_server.app,
             host="127.0.0.1",
             port=TOOL_SERVER_PORT,
             log_level="error",
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1627,7 +1623,6 @@ def run_main_server(
 
         print(f"[Main Server] Starting on port {MAIN_SERVER_PORT}")
 
-        _behind_proxy = is_behind_proxy()
         # 直接运行 FastAPI app，不依赖 main_server 的 __main__ 块
         config = uvicorn.Config(
             app=main_server.app,
@@ -1636,8 +1631,7 @@ def run_main_server(
             log_level="error",
             loop="asyncio",
             reload=False,
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="127.0.0.1,::1" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的

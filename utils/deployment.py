@@ -10,9 +10,9 @@ def is_behind_proxy() -> bool:
 
 
 def uvicorn_proxy_options() -> dict:
-    """Disable forwarded peers on desktop and trust loopback proxies explicitly."""
+    """Preserve local proxy compatibility without hiding forwarded remote peers."""
     return {
-        "proxy_headers": is_behind_proxy(),
+        "proxy_headers": True,
         "forwarded_allow_ips": "127.0.0.1,::1",
     }
 
