@@ -25,6 +25,17 @@ import main_routers.community_oauth as O
 USER_ID = "11111111-1111-4111-8111-111111111111"
 
 
+@pytest.fixture(autouse=True)
+def isolate_deployment_environment(monkeypatch):
+    """Keep deployment policy independent of the invoking shell environment."""
+    for name in (
+        "NEKO_BEHIND_PROXY",
+        "NEKO_ACTIVITY_TRACKER_REMOTE",
+        "ACTIVITY_TRACKER_REMOTE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _local_source_request(host: str = "127.0.0.1", headers: dict | None = None) -> SimpleNamespace:
     """Minimal request double for local access checks."""
     return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
