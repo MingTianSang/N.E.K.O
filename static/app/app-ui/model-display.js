@@ -704,6 +704,9 @@
         if (window.mmdManager) {
             window.mmdManager._goodbyeClicked = false;
         }
+        if (window.pngtuberManager) {
+            window.pngtuberManager._goodbyeClicked = false;
+        }
 
         try {
             // 运行时检测当前已加载且可见的模型，用于 API 失败时的回退
