@@ -2870,7 +2870,15 @@
                 }
             };
             const onKeyDown = (event) => {
-                if (event.ctrlKey || event.metaKey) isCtrlPressed = true;
+                if (!(event.ctrlKey || event.metaKey)) return;
+                const wasPressed = isCtrlPressed;
+                isCtrlPressed = true;
+                // 指针静止时按下 Ctrl 也要立即重算淡化,否则 ctrlFadeActive
+                // 要等下一次 pointermove 或 1s 静止定时器才生效,与 onKeyUp
+                // 的即时 applyFade 不对称(wasPressed 挡掉按住时的自动重复)
+                if (!wasPressed && pendingFrame === null) {
+                    pendingFrame = requestAnimationFrame(evaluate);
+                }
             };
             const onKeyUp = (event) => {
                 if (!event.ctrlKey && !event.metaKey) {
