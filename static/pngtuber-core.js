@@ -2857,6 +2857,13 @@
             };
 
             const onPointerMove = (event) => {
+                // 触摸没有悬停语义：手指抬起后既没有后续 move 也没有 pointerup 监听来撤销,
+                // 1s 静止定时器会让模型一直停在淡化态。跳过真实触摸的 pointermove 及其派生的
+                // 兼容 mousemove(Electron 合成事件 pointerType 为 mouse、sourceCapabilities 为 null,不受影响)
+                if (event.pointerType === 'touch'
+                    || (event.sourceCapabilities && event.sourceCapabilities.firesTouchEvents)) {
+                    return;
+                }
                 if (event.isTrusted) {
                     isCtrlPressed = event.ctrlKey || event.metaKey;
                 } else if (event.ctrlKey || event.metaKey) {

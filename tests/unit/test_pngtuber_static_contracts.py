@@ -1835,6 +1835,26 @@ console.log('stable anchor rect OK');
     run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
+def test_pngtuber_locked_hover_fade_ignores_touch_input():
+    # Touch has no hover: a tap would start the 1s stationary timer and leave the
+    # avatar faded with nothing to undo it. Both the touch pointermove and the
+    # compat mousemove derived from it must bail out before touching fade state.
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    setup_block = source[
+        source.index("setupLockedHoverFade() {"):
+        source.index("setModelDraggingState(active, moved = false) {")
+    ]
+    handler = setup_block[
+        setup_block.index("const onPointerMove = (event) => {"):
+        setup_block.index("const onKeyDown = (event) => {")
+    ]
+
+    touch_guard = handler.index("event.pointerType === 'touch'")
+    assert touch_guard < handler.index("event.sourceCapabilities.firesTouchEvents")
+    assert touch_guard < handler.index("this._fadePointerX = event.clientX;")
+    assert touch_guard < handler.index("requestAnimationFrame(evaluate)")
+
+
 def test_apply_emotion_prefers_pngtuber_runtime_when_active():
     source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
     apply_block = source[
