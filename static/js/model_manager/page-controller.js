@@ -1395,6 +1395,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
+        // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
+        // 此时不能再启动过期预览，否则会同步把 currentModelInfo 覆盖成 pngtuber 条目。
+        if (currentModelType !== 'pngtuber') return false;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
@@ -1421,6 +1424,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.error('[PNGTuber] preview failed:', error);
             const message = error && error.message ? error.message : String(error || 'Unknown error');
             showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            return false;
+        }
+        // 上面的异步加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d）。
+        // switchModelDisplay 的新类型分支已隐藏 pngtuber 容器并接管显示；pngtuber-core 的
+        // loadPNGTuberAvatar 只保证自己不再 show()，容器可见性的回写发生在这里——
+        // 迟到的续体必须直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型。
+        if (currentModelType !== 'pngtuber') {
             return false;
         }
         if (live2dContainer) live2dContainer.style.display = 'none';
@@ -9118,6 +9128,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (modelType === 'pngtuber' && hasValidPNGTuber) {
                 await switchModelDisplay('pngtuber', '', { preferredPNGTuberConfig: pngtuberConfig });
+                // await 期间用户可能已手动切到其他模型类型，此时放弃继续加载 pngtuber 预览，
+                // 避免过期链路的提示语/选择状态覆盖用户当前所在的类型。
+                if (currentModelType !== 'pngtuber') return;
                 const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
                 if (matchedOption) {
                     modelSelect.value = matchedOption.value;
