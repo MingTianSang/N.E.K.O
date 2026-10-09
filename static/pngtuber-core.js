@@ -2841,7 +2841,12 @@
                             stationaryFadeTimer = setTimeout(() => {
                                 stationaryFadeTimer = null;
                                 stationaryFadeActive = true;
-                                applyFade();
+                                // 定时期间视口可能已变(窗口最大化挪走模型、平板转到移动宽度),
+                                // 按最后指针位置重判一次;不再满足条件时 evaluate 会撤掉刚置上的静止淡化
+                                if (pendingFrame !== null) {
+                                    cancelAnimationFrame(pendingFrame);
+                                }
+                                evaluate();
                             }, STATIONARY_FADE_DELAY);
                         }
                     }
@@ -2912,10 +2917,33 @@
                     clearFadeActiveState();
                 }
             };
+            const onResize = () => {
+                // 视口变化会挪动模型,指针不动也要按最后位置重判(含已经淡化的情况)
+                if (pendingFrame === null) {
+                    pendingFrame = requestAnimationFrame(evaluate);
+                }
+            };
+            const onPointerOut = (event) => {
+                // relatedTarget 为空 = 指针离开窗口,或不支持悬停的笔抬起:之后不会再有 move
+                // 来撤销淡化,这里清掉状态并作废最后坐标(防止挂起帧/resize 用旧坐标重新淡化)。
+                // Electron Pet 窗口不处理:锁定时窗口点击穿透、指针由 preload 轮询驱动,真实
+                // 进出事件和穿透切换的关系没有保证(onBlur 同样保留淡化);Pet 窗口通常铺满
+                // 屏幕,离开视口的情况也少
+                if (event.relatedTarget || window.__LANLAN_IS_ELECTRON_PET__) return;
+                this._fadePointerX = NaN;
+                this._fadePointerY = NaN;
+                if (pendingFrame !== null) {
+                    cancelAnimationFrame(pendingFrame);
+                    pendingFrame = null;
+                }
+                clearFadeActiveState();
+            };
 
             this._pngtuberFadeListeners = [
                 { target: window, event: 'pointermove', handler: onPointerMove },
                 { target: window, event: 'mousemove', handler: onPointerMove },
+                { target: window, event: 'pointerout', handler: onPointerOut },
+                { target: window, event: 'resize', handler: onResize },
                 { target: window, event: 'keydown', handler: onKeyDown },
                 { target: window, event: 'keyup', handler: onKeyUp },
                 { target: window, event: 'blur', handler: onBlur },

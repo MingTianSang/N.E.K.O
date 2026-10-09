@@ -1858,6 +1858,36 @@ def test_pngtuber_locked_hover_fade_ignores_touch_input():
     assert touch_guard < handler.index("requestAnimationFrame(evaluate)")
 
 
+def test_pngtuber_locked_hover_fade_revalidates_and_clears_on_leave():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    setup_block = source[
+        source.index("setupLockedHoverFade() {"):
+        source.index("setModelDraggingState(active, moved = false) {")
+    ]
+
+    # The 1s timer re-runs evaluate() instead of fading blindly: the viewport may
+    # have moved the model away or crossed the mobile cutoff in the meantime.
+    timer_body = setup_block[
+        setup_block.index("stationaryFadeTimer = setTimeout(() => {"):
+        setup_block.index("}, STATIONARY_FADE_DELAY);")
+    ]
+    assert "evaluate();" in timer_body
+    assert "applyFade();" not in timer_body
+    assert "{ target: window, event: 'resize', handler: onResize }" in setup_block
+
+    # Leaving the window (or a non-hover pen lifting) emits no further move, so the
+    # fade must be cleared there and the stale coordinates dropped before any
+    # pending frame / resize can re-fade from them. Electron Pet is excluded.
+    leave = setup_block[
+        setup_block.index("const onPointerOut = (event) => {"):
+        setup_block.index("this._pngtuberFadeListeners = [")
+    ]
+    assert "if (event.relatedTarget || window.__LANLAN_IS_ELECTRON_PET__) return;" in leave
+    assert leave.index("this._fadePointerX = NaN;") < leave.index("clearFadeActiveState();")
+    assert leave.index("cancelAnimationFrame(pendingFrame);") < leave.index("clearFadeActiveState();")
+    assert "{ target: window, event: 'pointerout', handler: onPointerOut }" in setup_block
+
+
 def test_apply_emotion_prefers_pngtuber_runtime_when_active():
     source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
     apply_block = source[
