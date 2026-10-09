@@ -87,6 +87,10 @@ test('对照组：全程停留在 pngtuber 时正常显示 PNG 容器', async ()
     assert.equal(sandbox.window.hasUnsavedChanges, true);
     assert.equal(sandbox.statusMessages.length, 1);
     assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型/);
+    // 提交成功后 currentModelInfo 才落上 pngtuber 条目
+    assert.equal(sandbox.currentModelInfo.type, 'pngtuber');
+    assert.equal(sandbox.currentModelInfo.name, 'demo');
+    assert.equal(sandbox.currentModelInfo.pngtuber.idle_image, '/user_pngtuber/demo/idle.png');
 });
 
 test('加载中途切到 live2d：迟到的续体不得重新显示 PNG 容器/隐藏 live2d 容器', async () => {
@@ -105,6 +109,9 @@ test('加载中途切到 live2d：迟到的续体不得重新显示 PNG 容器/�
     // 不应误报“已加载PNGTuber模型”，也不应把页面标记为有未保存更改
     assert.deepEqual(sandbox.statusMessages, []);
     assert.equal(sandbox.window.hasUnsavedChanges, false);
+    // 取消的预览不得把 pngtuber 条目留在 currentModelInfo 上：
+    // showStatus 定时器 / reloadCurrentLive2DModelInModelManager / 保存流程都会读它
+    assert.equal(sandbox.currentModelInfo, null);
 });
 
 test('加载中途切到 live3d：迟到的续体同样不得接管显示', async () => {
@@ -117,6 +124,7 @@ test('加载中途切到 live3d：迟到的续体同样不得接管显示', asyn
     assert.equal(sandbox.vrmContainer.style.display, undefined);
     assert.equal(sandbox.mmdContainer.style.display, undefined);
     assert.deepEqual(sandbox.statusMessages, []);
+    assert.equal(sandbox.currentModelInfo, null);
 });
 
 test('入口即已切走（角色配置加载链被打断）：不启动过期预览、不覆盖 currentModelInfo', async () => {

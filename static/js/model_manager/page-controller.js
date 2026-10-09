@@ -1396,22 +1396,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
-        // 此时不能再启动过期预览，否则会同步把 currentModelInfo 覆盖成 pngtuber 条目。
+        // 此时不再启动过期预览，省掉一次无谓的 PNG/元数据加载。
         if (currentModelType !== 'pngtuber') return false;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
         // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
         // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
-        currentLive3dSubType = '';
-        currentModelInfo = {
-            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
-            folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
-            path: modelInfo.path || pngtuberConfig.idle_image || '',
-            url: modelInfo.url || pngtuberConfig.idle_image || '',
-            type: 'pngtuber',
-            pngtuber: pngtuberConfig,
-        };
+        // currentModelInfo 也不在入口写入，推迟到加载成功且类型复查通过后再提交（见下方注释）。
 
         try {
             if (window.loadPNGTuberAvatar) {
@@ -1433,6 +1425,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentModelType !== 'pngtuber') {
             return false;
         }
+        // currentModelInfo / currentLive3dSubType 推迟到这里才提交：加载期间用户可能已切到
+        // live2d/live3d，若在入口就写入，取消后会留下一个 pngtuber 条目挂在新类型下——
+        // showStatus 的定时器、reloadCurrentLive2DModelInModelManager 与保存流程都会读它，
+        // 轻则状态栏显示 PNG 模型名，重则把 idle_image 当 live2d 路径重载/保存。
+        // 取消时也不回填旧值：新类型流程可能已写入更新的模型信息，盲目恢复会把它盖掉。
+        currentLive3dSubType = '';
+        currentModelInfo = {
+            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
+            folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
+            path: modelInfo.path || pngtuberConfig.idle_image || '',
+            url: modelInfo.url || pngtuberConfig.idle_image || '',
+            type: 'pngtuber',
+            pngtuber: pngtuberConfig,
+        };
         if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.classList.add('hidden');
@@ -9132,18 +9138,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 避免过期链路的提示语/选择状态覆盖用户当前所在的类型。
                 if (currentModelType !== 'pngtuber') return;
                 const matchedOption = findPNGTuberOptionByConfig(pngtuberConfig);
+                let previewed = false;
                 if (matchedOption) {
                     modelSelect.value = matchedOption.value;
-                    await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
+                    previewed = await loadSelectedPNGTuberOption(matchedOption, { markDirty: false });
                 } else {
-                    await previewPNGTuberConfig(pngtuberConfig, {
+                    previewed = await previewPNGTuberConfig(pngtuberConfig, {
                         name: lanlanName,
                         folder: pngtuberConfig.folder || pngtuberConfig.model_folder || '',
                         path: pngtuberConfig.idle_image,
                         url: pngtuberConfig.idle_image,
                     }, { markDirty: false });
                 }
-                showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                // 预览失败或加载期间用户又切走时不再误报成功
+                //（加载失败已有 previewPNGTuberConfig catch 分支的报错提示）。
+                if (previewed && currentModelType === 'pngtuber') {
+                    showStatus(`已加载角色 ${lanlanName} 的 PNGTuber 模型`, 2000);
+                }
                 return;
             }
 
