@@ -2928,8 +2928,11 @@
                 // 来撤销淡化,这里清掉状态并作废最后坐标(防止挂起帧/resize 用旧坐标重新淡化)。
                 // Electron Pet 窗口不处理:锁定时窗口点击穿透、指针由 preload 轮询驱动,真实
                 // 进出事件和穿透切换的关系没有保证(onBlur 同样保留淡化);Pet 窗口通常铺满
-                // 屏幕,离开视口的情况也少
-                if (event.relatedTarget || window.__LANLAN_IS_ELECTRON_PET__) return;
+                // 屏幕,离开视口的情况也少。触摸与 onPointerMove 对称地忽略:混合输入设备上
+                // 手指抬起同样产生 relatedTarget 为空的 pointerout,不能清掉鼠标造成的淡化
+                if (event.pointerType === 'touch'
+                    || event.relatedTarget
+                    || window.__LANLAN_IS_ELECTRON_PET__) return;
                 this._fadePointerX = NaN;
                 this._fadePointerY = NaN;
                 if (pendingFrame !== null) {

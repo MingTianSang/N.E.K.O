@@ -1883,7 +1883,9 @@ def test_pngtuber_locked_hover_fade_revalidates_and_clears_on_leave():
         setup_block.index("const onPointerOut = (event) => {"):
         setup_block.index("this._pngtuberFadeListeners = [")
     ]
-    assert "if (event.relatedTarget || window.__LANLAN_IS_ELECTRON_PET__) return;" in leave
+    guard = leave[leave.index("if (event.pointerType === 'touch'"):leave.index("return;")]
+    assert "|| event.relatedTarget" in guard
+    assert "|| window.__LANLAN_IS_ELECTRON_PET__)" in guard
     assert leave.index("this._fadePointerX = NaN;") < leave.index("clearFadeActiveState();")
     assert leave.index("cancelAnimationFrame(pendingFrame);") < leave.index("clearFadeActiveState();")
     assert "{ target: window, event: 'pointerout', handler: onPointerOut }" in setup_block
