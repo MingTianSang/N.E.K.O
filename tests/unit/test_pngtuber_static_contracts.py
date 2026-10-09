@@ -1853,6 +1853,7 @@ def test_pngtuber_locked_hover_fade_ignores_touch_input():
     ]
 
     touch_guard = handler.index("event.pointerType === 'touch'")
+    assert "return;" in handler[touch_guard:handler.index("}", touch_guard)]
     assert touch_guard < handler.index("(event.type === 'mousemove' && event.isTrusted)")
     assert touch_guard < handler.index("this._fadePointerX = event.clientX;")
     assert touch_guard < handler.index("requestAnimationFrame(evaluate)")
