@@ -2858,10 +2858,11 @@
 
             const onPointerMove = (event) => {
                 // 触摸没有悬停语义：手指抬起后既没有后续 move 也没有 pointerup 监听来撤销,
-                // 1s 静止定时器会让模型一直停在淡化态。跳过真实触摸的 pointermove 及其派生的
-                // 兼容 mousemove(Electron 合成事件 pointerType 为 mouse、sourceCapabilities 为 null,不受影响)
-                if (event.pointerType === 'touch'
-                    || (event.sourceCapabilities && event.sourceCapabilities.firesTouchEvents)) {
+                // 1s 静止定时器会让模型一直停在淡化态。跳过触摸 pointermove;可信 mousemove
+                // 也一律跳过——真实鼠标移动已由 pointermove 处理,而轻点后浏览器补发的兼容
+                // mousemove 同样可信,只能这样跨浏览器挡住。Electron 合成的 mousemove 不可信,
+                // 合成 pointermove 的 pointerType 为 mouse,都不受影响
+                if (event.pointerType === 'touch' || (event.type === 'mousemove' && event.isTrusted)) {
                     return;
                 }
                 if (event.isTrusted) {

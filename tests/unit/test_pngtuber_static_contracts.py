@@ -1839,6 +1839,9 @@ def test_pngtuber_locked_hover_fade_ignores_touch_input():
     # Touch has no hover: a tap would start the 1s stationary timer and leave the
     # avatar faded with nothing to undo it. Both the touch pointermove and the
     # compat mousemove derived from it must bail out before touching fade state.
+    # The compat mousemove is trusted in every browser, so all trusted mousemoves
+    # are skipped (pointermove already covers real mouse movement); Electron's
+    # synthetic mousemove is untrusted and still gets through.
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     setup_block = source[
         source.index("setupLockedHoverFade() {"):
@@ -1850,7 +1853,7 @@ def test_pngtuber_locked_hover_fade_ignores_touch_input():
     ]
 
     touch_guard = handler.index("event.pointerType === 'touch'")
-    assert touch_guard < handler.index("event.sourceCapabilities.firesTouchEvents")
+    assert touch_guard < handler.index("(event.type === 'mousemove' && event.isTrusted)")
     assert touch_guard < handler.index("this._fadePointerX = event.clientX;")
     assert touch_guard < handler.index("requestAnimationFrame(evaluate)")
 
