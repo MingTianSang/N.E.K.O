@@ -9,12 +9,23 @@ const PAGE_CONTROLLER_JS = path.join(
     PROJECT_ROOT, 'static', 'js', 'model_manager', 'page-controller.js');
 const source = fs.readFileSync(PAGE_CONTROLLER_JS, 'utf8');
 
-function extractPreviewFunction() {
-    const start = source.indexOf('async function previewPNGTuberConfig(');
-    const end = source.indexOf('async function loadSelectedPNGTuberOption(', start);
-    assert.ok(start >= 0 && end > start, 'previewPNGTuberConfig 区块不存在');
+function extractSlice(startMarker, endMarker) {
+    const start = source.indexOf(startMarker);
+    assert.ok(start >= 0, `找不到区块起点: ${startMarker}`);
+    const end = source.indexOf(endMarker, start);
+    assert.ok(end > start, `找不到区块终点: ${endMarker}`);
     return source.slice(start, end);
 }
+
+const previewSlice = extractSlice(
+    'async function previewPNGTuberConfig(',
+    'async function loadSelectedPNGTuberOption(');
+const previewControlsSlice = extractSlice(
+    'async function loadPNGTuberPreviewControls(',
+    // 注意：函数体内也有 `if (pngtuberTalkPreviewBtn) {`，endMarker 必须锚定到
+    // 函数结束后紧跟的 listener 注册，否则会把函数拦腰截断
+    `if (pngtuberTalkPreviewBtn) {
+        pngtuberTalkPreviewBtn.addEventListener(`);
 
 function makeContainerStub() {
     const classCalls = [];
@@ -32,12 +43,14 @@ function makeContainerStub() {
 // typeDuringLoad：PNG 异步加载完成前用户切到的类型（模拟加载中途切换模型类型）。
 function makeSandbox({ initialType = 'pngtuber', typeDuringLoad = 'pngtuber' } = {}) {
     const statusMessages = [];
+    const records = { clearCalls: 0, renderCalls: [], talkButtonTextCalls: 0 };
     const sandbox = {
         console: { ...console, error() {}, warn() {}, log() {} },
         currentModelType: initialType,
         currentLive3dSubType: '',
         currentModelInfo: null,
         savePositionBtn: null,
+        pngtuberPreviewGeneration: 0,
         t: (key, fallback) => fallback,
         showStatus: (message) => statusMessages.push(message),
         markModelChangedForCardFacePrompt: () => {},
@@ -45,8 +58,16 @@ function makeSandbox({ initialType = 'pngtuber', typeDuringLoad = 'pngtuber' } =
         vrmContainer: makeContainerStub(),
         mmdContainer: makeContainerStub(),
         pngtuberContainer: makeContainerStub(),
-        loadPNGTuberPreviewControls: async () => {},
+        // 状态预览控件的真实函数会被提取执行，这里桩掉它的外部依赖
+        clearPNGTuberPreviewControls: () => { records.clearCalls += 1; },
+        renderPNGTuberStatePreviewDropdown: (metadata) => { records.renderCalls.push(metadata); },
+        updatePNGTuberTalkPreviewButtonText: () => { records.talkButtonTextCalls += 1; },
+        fetchPNGTuberLayeredMetadata: async () => null,
+        pngtuberPreviewGroup: { style: {} },
+        pngtuberBasicPreviewSection: { style: {} },
+        pngtuberTalkPreviewBtn: { disabled: true },
         statusMessages,
+        records,
         avatarLoadCalls: 0,
         window: {
             hasUnsavedChanges: false,
@@ -59,16 +80,18 @@ function makeSandbox({ initialType = 'pngtuber', typeDuringLoad = 'pngtuber' } =
         },
     };
     vm.createContext(sandbox);
-    vm.runInContext(extractPreviewFunction(), sandbox, { filename: 'previewPNGTuberConfig' });
+    vm.runInContext(previewControlsSlice, sandbox, { filename: 'loadPNGTuberPreviewControls' });
+    vm.runInContext(previewSlice, sandbox, { filename: 'previewPNGTuberConfig' });
     return sandbox;
 }
 
-function runPreview(sandbox) {
+function runPreview(sandbox, { name = 'demo', idle = '/user_pngtuber/demo/idle.png', markDirty = true } = {}) {
+    const talking = idle.replace('idle.png', 'talking.png');
     return vm.runInContext(
         `previewPNGTuberConfig(
-            { idle_image: '/user_pngtuber/demo/idle.png', talking_image: '/user_pngtuber/demo/talking.png' },
-            { name: 'demo', label: 'demo', folder: 'demo' },
-            { markDirty: true }
+            { idle_image: ${JSON.stringify(idle)}, talking_image: ${JSON.stringify(talking)} },
+            { name: ${JSON.stringify(name)}, label: ${JSON.stringify(name)}, folder: ${JSON.stringify(name)} },
+            { markDirty: ${JSON.stringify(markDirty)} }
         )`,
         sandbox);
 }
@@ -112,6 +135,8 @@ test('加载中途切到 live2d：迟到的续体不得重新显示 PNG 容器/�
     // 取消的预览不得把 pngtuber 条目留在 currentModelInfo 上：
     // showStatus 定时器 / reloadCurrentLive2DModelInModelManager / 保存流程都会读它
     assert.equal(sandbox.currentModelInfo, null);
+    // 切走后连状态预览控件都不应再加载
+    assert.deepEqual(sandbox.records.renderCalls, []);
 });
 
 test('加载中途切到 live3d：迟到的续体同样不得接管显示', async () => {
@@ -136,4 +161,68 @@ test('入口即已切走（角色配置加载链被打断）：不启动过期�
     assert.equal(sandbox.currentModelInfo, null);
     assert.equal(sandbox.pngtuberContainer.style.display, undefined);
     assert.deepEqual(sandbox.statusMessages, []);
+    // 过期入口调用不得自增世代号（否则会作废仍在进行的合法预览）
+    assert.equal(sandbox.pngtuberPreviewGeneration, 0);
+});
+
+test('同类型重叠预览：慢的旧预览 A 不得覆盖先完成的新预览 B', async () => {
+    const sandbox = makeSandbox();
+    // 受控双闸门：A 先进入加载但最后完成，B 后发起先完成
+    let resolveA;
+    let resolveB;
+    const gateA = new Promise((resolve) => { resolveA = resolve; });
+    const gateB = new Promise((resolve) => { resolveB = resolve; });
+    sandbox.window.loadPNGTuberAvatar = async () => {
+        sandbox.avatarLoadCalls += 1;
+        await (sandbox.avatarLoadCalls === 1 ? gateA : gateB);
+    };
+
+    const previewA = runPreview(sandbox, { name: 'A', idle: '/user_pngtuber/a/idle.png' });
+    const previewB = runPreview(sandbox, { name: 'B', idle: '/user_pngtuber/b/idle.png' });
+    resolveB();
+    const resultB = await previewB;
+    resolveA();
+    const resultA = await previewA;
+
+    assert.equal(resultB, true);
+    assert.equal(resultA, false);
+    // 最终提交的是最新选择 B，不是更晚完成的 A
+    assert.equal(sandbox.currentModelInfo.name, 'B');
+    assert.equal(sandbox.currentModelInfo.pngtuber.idle_image, '/user_pngtuber/b/idle.png');
+    // 只有 B 报成功提示；A 迟到后不得再发「已加载PNGTuber模型: A」
+    assert.equal(sandbox.statusMessages.length, 1);
+    assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型: B/);
+    // A 在中间守卫处被拦下，未加载自己的状态预览控件
+    assert.deepEqual(sandbox.records.renderCalls, [null]);
+});
+
+test('旧预览的状态下拉不得在被取代后渲染（metadata fetch 竞态）', async () => {
+    const sandbox = makeSandbox();
+    sandbox.window.loadPNGTuberAvatar = async () => { sandbox.avatarLoadCalls += 1; };
+    // A 的 metadata fetch 挂起；B 全程快速完成
+    let resolveFetchA;
+    const gateFetchA = new Promise((resolve) => { resolveFetchA = resolve; });
+    const metadataA = { state_count: 2, states: [{ name: 'A1' }, { name: 'A2' }] };
+    const metadataB = { state_count: 2, states: [{ name: 'B1' }, { name: 'B2' }] };
+    sandbox.fetchPNGTuberLayeredMetadata = async (config) => {
+        if (String(config.idle_image).includes('/a/')) {
+            await gateFetchA;
+            return metadataA;
+        }
+        return metadataB;
+    };
+
+    const previewA = runPreview(sandbox, { name: 'A', idle: '/user_pngtuber/a/idle.png' });
+    // 让 A 走到 fetch 挂起点（loadPNGTuberAvatar 与中间守卫均为微任务）
+    await new Promise((resolve) => setImmediate(resolve));
+    const previewB = runPreview(sandbox, { name: 'B', idle: '/user_pngtuber/b/idle.png' });
+    const resultB = await previewB;
+    resolveFetchA();
+    const resultA = await previewA;
+
+    assert.equal(resultB, true);
+    assert.equal(resultA, false);
+    assert.equal(sandbox.currentModelInfo.name, 'B');
+    // 只渲染了 B 的状态列表；A 的迟到 metadata 被世代号拦下
+    assert.deepEqual(sandbox.records.renderCalls, [metadataB]);
 });

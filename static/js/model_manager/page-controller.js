@@ -1393,17 +1393,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         dispatchModelManagerChange(modelSelect, { suppress: true });
     }
 
+    // PNGTuber 预览世代号：每次 previewPNGTuberConfig 通过入口检查后自增。两个预览重叠时
+    // （A 仍在加载又选了 B，或切走再切回触发新预览），完成顺序没有保证，而 currentModelType
+    // 无法区分同类型的两次预览——旧完成若只查类型，会把 currentModelInfo/成功提示/状态下拉
+    // 覆盖回旧模型，保存时还会混入旧元数据。与 pngtuber-core 的 loadToken 同一模式：
+    // 运行时层丢弃旧加载，页面层用世代号丢弃旧提交。
+    let pngtuberPreviewGeneration = 0;
+
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
         // 此时不再启动过期预览，省掉一次无谓的 PNG/元数据加载。
+        // 注意自增放在入口检查之后：过期调用不得作废仍在进行的合法预览。
         if (currentModelType !== 'pngtuber') return false;
+        const previewGeneration = ++pngtuberPreviewGeneration;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
         // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
         // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
-        // currentModelInfo 也不在入口写入，推迟到加载成功且类型复查通过后再提交（见下方注释）。
+        // currentModelInfo 也不在入口写入，推迟到加载成功且类型/世代复查通过后再提交（见下方注释）。
 
         try {
             if (window.loadPNGTuberAvatar) {
@@ -1411,18 +1420,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 throw new Error('PNGTuber runtime not loaded');
             }
-            await loadPNGTuberPreviewControls(pngtuberConfig);
+            // 加载期间可能已有更新的预览发起（同类型重叠），或用户切走了类型：
+            // 被取代的旧预览到此为止，不再加载状态预览控件，也不再提交任何状态。
+            if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
+                return false;
+            }
+            await loadPNGTuberPreviewControls(pngtuberConfig, previewGeneration);
         } catch (error) {
             console.error('[PNGTuber] preview failed:', error);
             const message = error && error.message ? error.message : String(error || 'Unknown error');
             showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
             return false;
         }
-        // 上面的异步加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d）。
-        // switchModelDisplay 的新类型分支已隐藏 pngtuber 容器并接管显示；pngtuber-core 的
-        // loadPNGTuberAvatar 只保证自己不再 show()，容器可见性的回写发生在这里——
-        // 迟到的续体必须直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型。
-        if (currentModelType !== 'pngtuber') {
+        // 上面的异步加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d），
+        // 或同类型下已发起更新的预览（A 加载中选了 B）。switchModelDisplay 的新类型分支
+        // 已隐藏 pngtuber 容器并接管显示；pngtuber-core 的 loadPNGTuberAvatar 只保证被
+        // 取代的加载不再 show()，容器可见性与模型信息的回写发生在这里——迟到的续体必须
+        // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 提交为当前模型。
+        if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
             return false;
         }
         // currentModelInfo / currentLive3dSubType 推迟到这里才提交：加载期间用户可能已切到
@@ -3205,7 +3220,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function loadPNGTuberPreviewControls(pngtuberConfig) {
+    async function loadPNGTuberPreviewControls(pngtuberConfig, generation = pngtuberPreviewGeneration) {
         clearPNGTuberPreviewControls();
         if (currentModelType !== 'pngtuber' || !pngtuberPreviewGroup) return;
         pngtuberPreviewGroup.style.display = 'flex';
@@ -3217,6 +3232,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const metadata = await fetchPNGTuberLayeredMetadata(pngtuberConfig || {});
         if (currentModelType !== 'pngtuber') return;
+        // fetch 期间也可能被更新的预览取代：旧 metadata 不再渲染状态下拉，
+        // 避免画面上是新模型、状态预览却是旧模型的状态列表。
+        if (generation !== pngtuberPreviewGeneration) return;
         renderPNGTuberStatePreviewDropdown(metadata);
     }
 
