@@ -351,7 +351,7 @@ test('离开 pngtuber：先作废在途预览（世代号+运行时 loadToken）
     assert.ok(loadStart >= 0 && guardIdx > loadStart && setStateIdx > guardIdx);
 });
 
-test('cancelInFlightLoad：内部 isCurrentLoad 作废且 config 重置（内部加载挂起竞态）', () => {
+test('cancelInFlightLoad：在途加载作废且丢 config；已完成加载的 config 必须保留', () => {
     // 提取真实的 cancelInFlightLoad 方法执行
     const slice = extractSlice(
         'cancelInFlightLoad() {',
@@ -363,9 +363,10 @@ test('cancelInFlightLoad：内部 isCurrentLoad 作废且 config 重置（内部
     vm.runInContext(`globalThis.manager = {\n${slice}\n};`, sandbox, { filename: 'cancelInFlightLoad' });
     const manager = sandbox.manager;
 
-    // 在途 load()（loadToken=8）已捕获 gen=6，字段为 load 进行中的状态
+    // —— 场景一：在途 load()（loadToken=8 已捕获 gen=6，正挂在 setupLayeredAdapter）——
     manager._loadGeneration = 6;
     manager._latestLifecycleLoadToken = 8;
+    manager._inFlightLoadGeneration = 6;
     manager.config = { idle_image: '/user_pngtuber/deleted/idle.png' };
     const captured = { gen: 6, token: 8 };
     // load() 内部 isCurrentLoad 的语义复刻
@@ -388,8 +389,20 @@ test('cancelInFlightLoad：内部 isCurrentLoad 作废且 config 重置（内部
     // （vm 跨 realm 对象原型不同一，用键集断言代替 deepEqual）
     assert.equal(Object.keys(manager.config).length, 0);
     assert.equal(manager.config.idle_image, undefined);
+    assert.equal(manager._inFlightLoadGeneration, 0, '取消后在途标记必须清零');
     // 下一次新加载（token=10 > 序列号）不受入口检查影响
     assert.equal(10 < manager._latestLifecycleLoadToken, false);
+
+    // —— 场景二：已完成加载（无在途标记）——config 是切回 pngtuber 后
+    // 拖拽/状态/保存的数据来源，取消不得清空（Codex P2：切走再切回 +
+    // 列表接口慢/失败时，容器先被重新显示，空 config 会让头像退回默认
+    // 摆放、状态回退占位图、编辑落到空配置）
+    const completedConfig = { idle_image: '/user_pngtuber/m/idle.png', scale: 1.4 };
+    manager.config = completedConfig;
+    manager._inFlightLoadGeneration = 0;
+    manager.cancelInFlightLoad();
+    assert.equal(manager.config, completedConfig, '已完成加载的 config 必须原样保留');
+    assert.equal(manager._loadGeneration, 8, '世代号仍应推进（作废潜在悬挂闭包）');
 });
 
 test('预览失败且仍在 pngtuber 类型：照常报错提示', async () => {
@@ -509,18 +522,22 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     const deleteLoopBlock = source.slice(confirmIdx, loopEndIdx);
     assert.ok(deleteLoopBlock.includes('if (isDeleteBoundModel(type, key)) {'));
     assert.ok(deleteLoopBlock.includes('skippedBoundCount'));
-    // 删除循环必须遍历「活的」Set 而非副本：删除期间弹窗仍可交互，
-    // 用户点取消（hideDeleteModelModal 会 clear()）或取消勾选时未访问项必须跳过
-    // （wehos 第 3 轮 🔴：遍历副本会让中途取消失效、剩余模型照删）
-    assert.ok(deleteLoopBlock.includes('for (const modelId of selectedDeleteModels) {'));
-    assert.ok(!deleteLoopBlock.includes('[...selectedDeleteModels]'));
+    // 删除循环必须「遍历快照 + 逐项 has()」：删除期间弹窗仍可交互——
+    // 中途取消/取消勾选（hideDeleteModelModal 会 clear()）要跳过未访问项（wehos 第 3 轮 🔴），
+    // 中途新勾选的项没经过确认框、不得被访问并删除（wehos 第 4 轮更正）。
+    // 纯活遍历会删掉新勾选项，纯副本会无视取消，两者都不合格。
+    assert.ok(deleteLoopBlock.includes('for (const modelId of [...selectedDeleteModels]) {'));
+    assert.ok(deleteLoopBlock.includes('if (!selectedDeleteModels.has(modelId)) continue;'));
 
-    // 全部被复查拦下时不得弹「失败 0 个」误报；有跳过时结果弹窗必须带跳过数量
+    // 结果弹窗：有跳过时成功/失败弹窗附数量；全部被拦时弹跳过说明而非「失败 0 个」误报
     const fnEndIdx = source.indexOf('if (deleteModelBtn) {', loopEndIdx);
     const tailBlock = source.slice(loopEndIdx, fnEndIdx);
     assert.ok(tailBlock.includes('} else if (failCount > 0) {'));
+    assert.ok(tailBlock.includes('} else if (skippedBoundCount > 0) {'));
     assert.ok(tailBlock.includes("t('live2d.deleteSkippedBound'"));
     assert.ok(tailBlock.includes('count: skippedBoundCount'));
+    // skippedPart 只计算一次（if/else 之前），不在两个分支里重复
+    assert.equal(tailBlock.split('const skippedPart =').length - 1, 1);
 
     // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的。
     // 截取起点取 UI 函数的槽位声明之前（wehos 第 2 轮：起点过晚会漏掉

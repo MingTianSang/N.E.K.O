@@ -239,6 +239,7 @@
             this._renderingPaused = false;
             this._loadGeneration = 0;
             this._latestLifecycleLoadToken = 0;
+            this._inFlightLoadGeneration = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -3936,16 +3937,23 @@
 
         // 取消在途 load()：推进内部世代号与生命周期 token，让 isCurrentLoad 不再通过——
         // 挂起的 setupLayeredAdapter 解析后不会再 setState('idle') 把旧图片写进已可见的
-        // 容器，也不会挂拖拽监听/悬浮按钮/锁标。config 一并重置为空对象：保存流程读
-        // pngtuberManager.config 作 runtime 配置，被取消模型的路径不能再被合并进 Save；
-        // 空对象走 stateToSrc / getActivePlacement 等既有兜底链，不会抛错。
+        // 容器，也不会挂拖拽监听/悬浮按钮/锁标。
+        // config 只在确有在途加载（含抛错未清标记的）时才丢弃：保存流程读
+        // pngtuberManager.config 作最高优先级 runtime 配置，被取消模型的路径不能再被
+        // 合并进 Save；空对象走 stateToSrc / getActivePlacement 等既有兜底链，不会抛错。
+        // 已完成加载写入的 config 则是切回 pngtuber 后拖拽/状态/保存的数据来源——
+        // 无条件清空会让「切回 + 列表接口慢/失败」的窗口（PNG 分支先显示容器再
+        // await 列表与重新预览）退回默认摆放与占位图。
         cancelInFlightLoad() {
             this._loadGeneration = (Number(this._loadGeneration) || 0) + 1;
             this._latestLifecycleLoadToken = Math.max(
                 Number(this._latestLifecycleLoadToken) || 0,
                 pngtuberLoadSequence
             );
-            this.config = {};
+            if (this._inFlightLoadGeneration) {
+                this.config = {};
+                this._inFlightLoadGeneration = 0;
+            }
         }
 
         async load(config, options = {}) {
@@ -3953,6 +3961,7 @@
             if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
             if (loadToken) this._latestLifecycleLoadToken = loadToken;
             const loadGeneration = ++this._loadGeneration;
+            this._inFlightLoadGeneration = loadGeneration;
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
@@ -3966,6 +3975,9 @@
                 detail: { loadToken }
             }));
             await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            // 唯一挂起点已过，本次加载不再「在途」。抛错的加载保留标记：其半写状态
+            // 的 config 应随下一次取消一并丢弃。
+            if (this._inFlightLoadGeneration === loadGeneration) this._inFlightLoadGeneration = 0;
             if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
