@@ -8687,20 +8687,30 @@ document.addEventListener('DOMContentLoaded', async () => {
             return { type: id.substring(0, idx), key: id.substring(idx + 1) };
         }
 
-        // 安全防护：移除当前绑定的模型，不允许删除
-        const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
-        const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+        // 安全防护：移除当前绑定的模型，不允许删除。
         // 加载进行中的 PNGTuber 预览（currentModelInfo 尚未提交）同样视为绑定中，
         // 否则「预览加载期间删除该模型」会绕过防护，删完预览又把模型显示回来。
         // 已提交与 pending 是两个槽位（A 正在显示时选了 B 加载），分别比对，
         // 不能用 || 折叠成单槽——否则加载中的那个会失去防护。
-        const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
+        //
+        // 绑定状态不是一次性快照：确认框 await showConfirm 等待期间（以及删除循环
+        // 里每个 DELETE 的 await 之间），角色配置重载/跨窗口切换等异步流程可能登记
+        // 新的 pending 预览或提交新的 currentModelInfo，live2d/live3d 的绑定同样会
+        // 变化。因此封装成「每次调用都读取最新状态」的判定，确认前过滤与删除循环
+        // 内的逐项复查共用。
+        const isDeleteBoundModel = (type, key) => {
+            const live2DName = currentModelInfo ? currentModelInfo.name : '';
+            const live3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+            const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
+            return (type === 'live2d' && key === live2DName) ||
+                   (type === 'pngtuber' && isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)) ||
+                   ((type === 'vrm' || type === 'mmd') && key === live3DUrl);
+        };
+        // 确认前快照，仅供下方 Live2D 刷新块的既有引用使用
+        const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
         for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
-            const isBound = (type === 'live2d' && key === currentLive2DName) ||
-                            (type === 'pngtuber' && isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)) ||
-                            ((type === 'vrm' || type === 'mmd') && key === currentLive3DUrl);
-            if (isBound) {
+            if (isDeleteBoundModel(type, key)) {
                 selectedDeleteModels.delete(modelId);
                 showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
                 updateConfirmDeleteButton();
@@ -8718,13 +8728,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         let successCount = 0;
         let failCount = 0;
+        let skippedBoundCount = 0;
         let lastErrorMessage = '';
         let deletedLive2D = false;
         let deletedLive3D = false;
         let deletedPNGTuber = false;
 
-        for (const modelId of selectedDeleteModels) {
+        for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
+            // DELETE 发出前用最新绑定状态逐项复查：确认框等待期间异步流程可能已把
+            // 该模型变成「使用中」（新登记的 pending 预览 / 新提交的 currentModelInfo），
+            // 前一个 DELETE 的 await 也给后续项留出了同样的时间窗
+            if (isDeleteBoundModel(type, key)) {
+                skippedBoundCount++;
+                continue;
+            }
             try {
                 let result;
                 if (type === 'live2d') {
@@ -8764,6 +8782,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 lastErrorMessage = error && error.message ? String(error.message) : String(error);
                 failCount++;
             }
+        }
+
+        if (skippedBoundCount > 0) {
+            showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
         }
 
         await loadUserModels();
@@ -8812,11 +8834,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (successCount > 0) {
             const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '');
             await showAlert(successMessage);
-        } else {
+        } else if (failCount > 0) {
             const failedPart = t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount, reason: lastErrorMessage });
             const reasonPart = lastErrorMessage ? `：${lastErrorMessage}` : '';
             await showAlert(`✗ ${failedPart}${reasonPart}`);
         }
+        // successCount === 0 && failCount === 0 只可能是全部被删除循环内的绑定复查
+        // 拦下，已有「无法删除当前正在使用的模型」状态提示，不再弹「失败 0 个」误报
     }
 
     if (deleteModelBtn) {

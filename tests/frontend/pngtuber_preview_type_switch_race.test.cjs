@@ -490,19 +490,38 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     assert.equal(keys.committed, 'a-name');
     assert.equal(keys.pending, 'B');
 
-    // 接线断言：deleteSelectedModels 安全检查必须经共享槽位函数取双槽并调用 helper，
-    // 不得回到 || 单槽折叠（那会让「A 已提交 + B 加载中」时 B 失去防护）
+    // 接线断言：deleteSelectedModels 的绑定判定必须封装为逐项实时读取的
+    // isDeleteBoundModel（内部经共享槽位函数取双槽），不得回到 || 单槽折叠
     const start = source.indexOf('async function deleteSelectedModels(');
-    const end = source.indexOf('const message = t(', start);
-    assert.ok(start >= 0 && end > start, 'deleteSelectedModels 区块不存在');
-    const block = source.slice(start, end);
-    assert.ok(block.includes('const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();'));
-    assert.ok(block.includes('isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)'));
+    const confirmIdx = source.indexOf('const confirmDelete = await showConfirm(', start);
+    assert.ok(start >= 0 && confirmIdx > start, 'deleteSelectedModels 区块不存在');
+    const preCheckBlock = source.slice(start, confirmIdx);
+    assert.ok(preCheckBlock.includes('const isDeleteBoundModel = (type, key) => {'));
+    assert.ok(preCheckBlock.includes('const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();'));
+    assert.ok(preCheckBlock.includes('isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)'));
+    assert.ok(preCheckBlock.includes('if (isDeleteBoundModel(type, key)) {'));
 
-    // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的
-    const uiStart = source.indexOf('// 检查是否正在使用');
-    assert.ok(uiStart > 0, '删除弹窗 isBound 区块不存在');
+    // TOCTOU 复查：确认框 await 期间异步流程（角色配置重载/跨窗口切换）可能登记新
+    // pending 或提交新模型，删除循环必须在每个 DELETE 前用最新状态复查，
+    // 不得沿用确认前的旧快照
+    const loopEndIdx = source.indexOf('await loadUserModels();', confirmIdx);
+    assert.ok(loopEndIdx > confirmIdx, '删除循环区块不存在');
+    const deleteLoopBlock = source.slice(confirmIdx, loopEndIdx);
+    assert.ok(deleteLoopBlock.includes('if (isDeleteBoundModel(type, key)) {'));
+    assert.ok(deleteLoopBlock.includes('skippedBoundCount'));
+
+    // 全部被复查拦下时不得弹「失败 0 个」误报
+    const fnEndIdx = source.indexOf('if (deleteModelBtn) {', loopEndIdx);
+    const tailBlock = source.slice(loopEndIdx, fnEndIdx);
+    assert.ok(tailBlock.includes('} else if (failCount > 0) {'));
+
+    // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的。
+    // 截取起点取 UI 函数的槽位声明之前（wehos 第 2 轮：起点过晚会漏掉
+    // 「弹窗槽位来自共享函数」这一接线）
+    const uiStart = source.indexOf("userModelList.innerHTML = '';");
+    assert.ok(uiStart > 0, '删除弹窗渲染区块不存在');
     const uiBlock = source.slice(uiStart, source.indexOf('const checkbox = document.createElement', uiStart));
+    assert.ok(uiBlock.includes('const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();'));
     assert.ok(uiBlock.includes('isBound = isBoundPNGTuberDeleteKey('));
     assert.ok(uiBlock.includes('boundPNGTuberKeys.committed'));
     assert.ok(uiBlock.includes('boundPNGTuberKeys.pending'));
