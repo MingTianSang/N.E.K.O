@@ -334,3 +334,38 @@ test('控件加载期间切走类型：撤销本预览已提交的条目，不�
     assert.equal(sandbox.pngtuberContainer.style.display, undefined);
     assert.equal(sandbox.pendingPNGTuberPreview, null);
 });
+
+test('删除防护：已提交模型与加载中预览必须同时护住（Codex P1 单槽 || 回归）', () => {
+    // 提取纯函数 helper 验证行为
+    const slice = extractSlice(
+        'function isBoundPNGTuberDeleteKey(',
+        'async function deleteSelectedModels(');
+    const sandbox = {};
+    vm.createContext(sandbox);
+    vm.runInContext(slice + '\n;globalThis.api = { isBoundPNGTuberDeleteKey };', sandbox, {
+        filename: 'isBoundPNGTuberDeleteKey',
+    });
+    const { isBoundPNGTuberDeleteKey } = sandbox.api;
+
+    // A 已提交显示、B 加载中：两个都必须拦，第三者放行
+    assert.equal(isBoundPNGTuberDeleteKey('A', 'A', 'B'), true);
+    assert.equal(isBoundPNGTuberDeleteKey('B', 'A', 'B'), true);
+    assert.equal(isBoundPNGTuberDeleteKey('C', 'A', 'B'), false);
+    // 只有已提交 / 只有 pending
+    assert.equal(isBoundPNGTuberDeleteKey('A', 'A', ''), true);
+    assert.equal(isBoundPNGTuberDeleteKey('B', '', 'B'), true);
+    // 空 key / 空 folder 不参与匹配，避免误拦
+    assert.equal(isBoundPNGTuberDeleteKey('', '', ''), false);
+    assert.equal(isBoundPNGTuberDeleteKey('', 'A', 'B'), false);
+    assert.equal(isBoundPNGTuberDeleteKey('A', '', ''), false);
+
+    // 接线断言：deleteSelectedModels 的安全检查必须分别取两个 folder 并调用 helper，
+    // 不得回到 || 单槽折叠（那会让「A 已提交 + B 加载中」时 B 失去防护）
+    const start = source.indexOf('async function deleteSelectedModels(');
+    const end = source.indexOf('const message = t(', start);
+    assert.ok(start >= 0 && end > start, 'deleteSelectedModels 区块不存在');
+    const block = source.slice(start, end);
+    assert.match(block, /const currentPNGTuberFolder = currentModelInfo && currentModelInfo\.type === 'pngtuber' \? currentModelInfo\.folder : '';/);
+    assert.match(block, /const pendingPNGTuberFolder = pendingPNGTuberPreview \? pendingPNGTuberPreview\.folder : '';/);
+    assert.ok(block.includes('isBoundPNGTuberDeleteKey(key, currentPNGTuberFolder, pendingPNGTuberFolder)'));
+});
