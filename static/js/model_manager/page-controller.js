@@ -6738,14 +6738,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selectedOption = e.target[e.target.selectedIndex];
 
         if (currentModelType === 'pngtuber') {
-            // 选项确为 pngtuber 模型、且非程序化 dispatch，才计为「用户手动选择」：
-            // 类型切换的过渡窗口（角色链还挂在列表请求上）里，共享下拉可能仍是
-            // 旧 live2d 选项且可用，选中它会被 loadSelectedPNGTuberOption 按
-            // dataset 拒绝——被拒绝的选择不得作废角色自动加载链，否则 pngtuber
-            // 模式会停在旧选项上且没有头像（列表 DOM 提交与角色预览都被误取消）。
+            // 选择确实会被接受才计为「用户手动选择」。拒绝路径共三条，均不得自增：
+            // ①程序化 dispatch（suppress，链内动作）；②类型切换过渡窗口里下拉残留
+            // 旧 live2d 选项，被 dataset 拒绝；③选项确为 pngtuber 但配置无效——
+            // 后端按 model_type 标记列目录、不做包校验，手工拷贝/遗留的坏包会进
+            // 下拉，previewPNGTuberConfig 会因 idle_image 为空在入口拒绝。
+            // 被拒绝的选择作废角色自动加载链属于误伤。
             if (!isSuppressedModelManagerChangeEvent(e)
                 && selectedOption && selectedOption.dataset.modelType === 'pngtuber') {
-                userModelSelectionGeneration += 1;
+                let optionHasIdleImage = false;
+                try {
+                    const optionConfig = JSON.parse(selectedOption.getAttribute('data-pngtuber') || '{}');
+                    optionHasIdleImage = !!(optionConfig && optionConfig.idle_image);
+                } catch (_) { /* 解析失败视为无效 */ }
+                if (optionHasIdleImage) {
+                    userModelSelectionGeneration += 1;
+                }
             }
             await loadSelectedPNGTuberOption(selectedOption, {
                 markDirty: !isSuppressedModelManagerChangeEvent(e)
@@ -9350,12 +9358,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 获取角色配置（使用 RequestHelper 确保统一的错误处理和超时）
             const charactersData = await RequestHelper.fetchJson('/api/characters');
-            if (selectionGenerationAtStart !== userModelSelectionGeneration) {
-                return;
-            }
             const catgirlConfig = charactersData['猫娘']?.[lanlanName];
 
             if (!catgirlConfig) {
+                return;
+            }
+
+            // 手动选择世代号复查（在 catgirlConfig 提取之后）：用户已手动选过模型，
+            // 自动加载链整体让位——但休眠 Live2D 绑定仍须记录。当前类型不是 live2d
+            // 时，本链是唯一记录角色 _reserved.avatar.live2d 的路径，漏记会让之后
+            // 切到 live2d 时 reloadSelectedLive2DModelAfterModeSwitch 读到全局单槽里
+            // 跨角色的旧选择，用户再保存就把错误的 Live2D 绑定写进当前角色。
+            // live2d 模式下不补记：让本链失效的那次手选已通过 rememberLive2DSelection
+            // 写入同一全局槽，覆盖会造成「界面显示 B、记忆是 A」的错位。
+            if (selectionGenerationAtStart !== userModelSelectionGeneration) {
+                if (currentModelType !== 'live2d') {
+                    rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, lanlanName);
+                }
                 return;
             }
 

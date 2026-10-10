@@ -766,6 +766,14 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     // 被拒绝的选择不得作废角色自动加载链（Codex P2@6724）
     assert.ok(pngBranchBlock.includes("selectedOption.dataset.modelType === 'pngtuber'"),
         'pngtuber 分支自增必须先验证选项类型');
+    // 配置有效性门槛：后端按 model_type 标记列目录、不做包校验，坏包（idle_image
+    // 为空）会进下拉并被 previewPNGTuberConfig 入口拒绝，同样不得计数（Codex P2@6748）
+    assert.ok(pngBranchBlock.includes("JSON.parse(selectedOption.getAttribute('data-pngtuber')"),
+        'pngtuber 分支自增前必须解析选项配置');
+    const idleGateIdx = pngBranchBlock.indexOf('if (optionHasIdleImage) {');
+    const bumpIdxInBranch = pngBranchBlock.indexOf('userModelSelectionGeneration += 1;');
+    assert.ok(idleGateIdx > 0 && bumpIdxInBranch > idleGateIdx,
+        '自增必须位于 idle_image 有效性门槛之内');
     // live2d 路径：自增必须在语音检查之后、且选择成功匹配到有效 Live2D 模型之后
     // （Codex P2@6770 / wehos 第 12 轮可选1：过渡期下拉残留的其他类型旧选项
     // 会被 findLive2DModelBySelection 匹配为 null，这类被拒绝的点选不得计数）
@@ -795,8 +803,19 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     const firstAwaitIdx = source.indexOf('await getLanlanName();', fnStart);
     const fetchIdx = source.indexOf("await RequestHelper.fetchJson('/api/characters');", fnStart);
     assert.ok(captureIdx > fnStart && captureIdx < firstAwaitIdx, '捕获必须先于链内第一个 await');
-    const postFetchCheck = source.indexOf('if (selectionGenerationAtStart !== userModelSelectionGeneration) {', fetchIdx);
-    assert.ok(postFetchCheck > fetchIdx && postFetchCheck - fetchIdx < 200, '/api/characters 返回后必须复查');
+    // 世代复查必须在 catgirlConfig 提取之后，且让位 return 前补记休眠 Live2D 绑定
+    // （wehos 🔴 / Codex P2@9354：提前 return 吞掉 rememberDormant 会让之后切
+    // live2d 读到跨角色的旧选择；live2d 模式下不补记，避免覆盖手选刚写入的同一全局槽）
+    const configExtractIdx = source.indexOf("const catgirlConfig = charactersData['猫娘']?.[lanlanName];", fetchIdx);
+    const postFetchCheck = source.indexOf('if (selectionGenerationAtStart !== userModelSelectionGeneration) {', configExtractIdx);
+    assert.ok(configExtractIdx > fetchIdx, 'catgirlConfig 提取必须在 fetch 之后');
+    assert.ok(postFetchCheck > configExtractIdx, '世代复查必须在 catgirlConfig 提取之后');
+    const staleReturnIdx = source.indexOf('return;', postFetchCheck);
+    const staleBlock = source.slice(postFetchCheck, staleReturnIdx);
+    assert.ok(staleBlock.includes("if (currentModelType !== 'live2d') {"),
+        '让位分支的休眠绑定补记必须带 live2d 模式门槛');
+    assert.ok(staleBlock.includes('rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, lanlanName);'),
+        '让位分支必须补记休眠 Live2D 绑定');
     const pngGuardIdx = source.indexOf('|| selectionGenerationAtStart !== userModelSelectionGeneration) return;', fetchIdx);
     assert.ok(pngGuardIdx > postFetchCheck, 'pngtuber 路径守卫必须并入手动选择世代号复查');
 
