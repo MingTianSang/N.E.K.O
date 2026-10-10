@@ -5134,10 +5134,20 @@
 
     installPNGTuberFloatingButtons();
 
-    async function hideOtherAvatarRuntimesForPNGTuber() {
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+    async function hideOtherAvatarRuntimesForPNGTuber(options = {}) {
+        const loadToken = Number(options.loadToken) || 0;
+        // 过期判定：本次加载已被更新的序列号/取消作废，或模型管理页已切走类型。
+        // removeModel 的 await 之后必须复查——挂起期间用户可能已切到 live2d
+        // （离开块作废了本次 token、live2d 分支已显示容器并加载模型），过期调用
+        // 若继续写 DOM 会把刚显示的 Live2D 容器与画布隐藏掉。主 app 调用方不传
+        // loadToken，行为与既往一致。
+        const isStaleCall = () => {
+            if (loadToken && loadToken !== pngtuberLoadSequence) return true;
+            return !!(document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber');
+        };
+        if (isStaleCall()) {
             return;
         }
 
@@ -5153,6 +5163,11 @@
             } catch (error) {
                 console.warn('[PNGTuber] 清理 Live2D runtime 失败:', error);
             }
+        }
+
+        // await 归来复查（下方全部是同步 DOM 写入，复查一次即可覆盖）
+        if (isStaleCall()) {
+            return;
         }
 
         const live2dContainer = document.getElementById('live2d-container');
@@ -5191,7 +5206,7 @@
             detail: { loadToken }
         }));
         try {
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
@@ -5204,10 +5219,10 @@
                 window.pngtuberManager.hide();
                 return window.pngtuberManager;
             }
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.pngtuberManager.show();
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }

@@ -390,7 +390,9 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     // 复查必须落在「列表 await 之后、发起预览之前」，且过期时返回 false（链无效）
     const recheckIdx = source.indexOf('if (chainStale()) {', pngBranchStart);
     assert.ok(recheckIdx > pngBranchStart && recheckIdx < previewCallIdx, '链过期复查缺失或位置错误');
-    assert.ok(source.indexOf('return false;', recheckIdx) < previewCallIdx, '过期链必须返回 false');
+    // indexOf 找不到时返回 -1 同样满足 <，必须先断言存在（wehos 第 7 轮指出的恒真断言）
+    const staleReturnIdx = source.indexOf('return false;', recheckIdx);
+    assert.ok(staleReturnIdx !== -1 && staleReturnIdx < previewCallIdx, '过期链必须返回 false');
 
     // 函数末尾把链有效性作为返回值传出
     const fnEndIdx = source.indexOf('_dispatchTutorialEvent();', previewCallIdx);
@@ -403,7 +405,8 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     const charPathIdx = source.indexOf("const switchChainValid = await switchModelDisplay('pngtuber'");
     assert.ok(charPathIdx > 0, '角色配置路径未消费链有效性');
     const charBlock = source.slice(charPathIdx, source.indexOf('const matchedOption = findPNGTuberOptionByConfig(', charPathIdx));
-    assert.ok(charBlock.includes('if (!switchChainValid || currentModelType !== \'pngtuber\') return;'));
+    // 守卫现含三条件（链有效性 / 类型 / 手动选择世代号——后者由专门用例钉住）
+    assert.ok(charBlock.includes("if (!switchChainValid || currentModelType !== 'pngtuber'"));
 
     // 列表加载器必须在 DOM 写入前复查过期（Codex P2@2251）：过期链的列表返回
     // 不得把共享 modelSelect 换成 PNGTuber 选项（用户可能已切到 live2d）
@@ -417,6 +420,9 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     // catch 路径同样不得写 DOM
     const catchIdx = loaderBlock.indexOf('} catch (error) {');
     assert.ok(loaderBlock.indexOf('if (isStale()) return false;', catchIdx) > catchIdx, 'catch 路径缺少过期复查');
+    // 类型复查内置于加载器：上传后/删除后刷新等不传 isStale 的调用方也受保护
+    // （wehos 第 7 轮可选项 2）
+    assert.ok(loaderBlock.includes("currentModelType !== 'pngtuber'"), '加载器缺少内置类型复查');
 });
 
 test('控件加载抛异常且预览已被作废：finally 兜底撤销已提交条目', async () => {
@@ -657,4 +663,113 @@ test('live2d.deleteSkippedBound 在全部 8 个语言文件中就位', () => {
         assert.equal(typeof value, 'string', `${lang}: 缺少 live2d.deleteSkippedBound`);
         assert.ok(value.includes('{{count}}'), `${lang}: deleteSkippedBound 缺少 {{count}} 插值`);
     }
+});
+
+test('hideOther：removeModel 挂起期间被取消/切走后，不得隐藏刚显示的 live2d（CodeRabbit Minor）', async () => {
+    const slice = extractSlice(
+        'async function hideOtherAvatarRuntimesForPNGTuber(options = {}) {',
+        'async function loadPNGTuberAvatar(config) {',
+        coreSource);
+
+    function makeHelperSandbox() {
+        const containers = {};
+        const containerStub = () => ({ style: {}, classList: { add() {}, remove() {} } });
+        let resolveRemove;
+        const removeGate = new Promise((resolve) => { resolveRemove = resolve; });
+        const sandbox = {
+            console: { warn() {}, error() {}, log() {} },
+            pngtuberLoadSequence: 5,
+            document: {
+                body: { classList: { contains: (name) => name === 'model-manager-page' } },
+                getElementById: (id) => (containers[id] = containers[id] || containerStub()),
+                querySelectorAll: () => [],
+            },
+            window: {
+                _modelManagerCurrentAvatarType: 'pngtuber',
+                live2dManager: {
+                    _activeLoadToken: 0,
+                    removeModel: async () => { await removeGate; },
+                },
+            },
+            containers,
+            resolveRemove,
+        };
+        vm.createContext(sandbox);
+        vm.runInContext(slice + '\n;globalThis.api = { hideOtherAvatarRuntimesForPNGTuber };', sandbox, {
+            filename: 'hideOtherAvatarRuntimesForPNGTuber',
+        });
+        return sandbox;
+    }
+
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+    // 场景一：removeModel 挂起期间用户切到 live2d（离开块已作废本次 token、
+    // live2d 分支已显示容器与画布）——过期调用归来不得再写隐藏
+    const sb = makeHelperSandbox();
+    const staleCall = sb.api.hideOtherAvatarRuntimesForPNGTuber({ loadToken: 5 });
+    await tick(); // 进入 removeModel 挂起点
+    sb.pngtuberLoadSequence = 6; // cancelPNGTuberAvatarLoads 已自增序列号
+    sb.window._modelManagerCurrentAvatarType = 'live2d';
+    const liveShown = sb.document.getElementById('live2d-container');
+    liveShown.style.display = 'block';
+    const canvasShown = sb.document.getElementById('live2d-canvas');
+    canvasShown.style.visibility = 'visible';
+    sb.resolveRemove();
+    await staleCall;
+    assert.equal(liveShown.style.display, 'block', '过期调用不得隐藏 live2d 容器');
+    assert.equal(canvasShown.style.visibility, 'visible', '过期调用不得隐藏 live2d 画布');
+
+    // 场景二：新鲜调用（token 最新、类型仍为 pngtuber）照常执行隐藏
+    const sb2 = makeHelperSandbox();
+    const freshCall = sb2.api.hideOtherAvatarRuntimesForPNGTuber({ loadToken: 5 });
+    await tick();
+    sb2.resolveRemove();
+    await freshCall;
+    assert.equal(sb2.document.getElementById('live2d-container').style.display, 'none');
+    assert.equal(sb2.document.getElementById('vrm-container').style.display, 'none');
+
+    // 场景三：主 app 语义不变——不传 loadToken 时不做 token 复查
+    const sb3 = makeHelperSandbox();
+    sb3.pngtuberLoadSequence = 99; // 即便序列号前进也不影响无 token 调用
+    const mainAppCall = sb3.api.hideOtherAvatarRuntimesForPNGTuber();
+    await tick();
+    sb3.resolveRemove();
+    await mainAppCall;
+    assert.equal(sb3.document.getElementById('live2d-container').style.display, 'none');
+});
+
+test('角色自动加载链携带手动选择世代号：同模式手选使自动加载让位（Codex P1）', () => {
+    // 场景：记忆模式已是 pngtuber、初始化已填充并启用下拉，loadCurrentCharacterModel
+    // 挂在 /api/characters；用户此时选了 B（只推进预览世代号，不触发 switchModelDisplay，
+    // 链世代号无感知）；请求返回后角色链若继续预览角色模型 A，会给 A 领到更新的
+    // 预览世代号、反向顶掉 B。
+    assert.ok(source.includes('let userModelSelectionGeneration = 0;'), '缺少手动选择世代号声明');
+
+    // 自增点：真实用户（非 suppress）的模型下拉选择
+    const modelSelHandler = source.indexOf("modelSelect.addEventListener('change', async (e) => {");
+    assert.ok(modelSelHandler > 0);
+    const bumpInModelSel = source.indexOf('userModelSelectionGeneration += 1;', modelSelHandler);
+    assert.ok(bumpInModelSel > modelSelHandler && bumpInModelSel - modelSelHandler < 600,
+        'modelSelect handler 须在入口附近自增手动选择世代号');
+    assert.ok(source.slice(modelSelHandler, bumpInModelSel).includes('!isSuppressedModelManagerChangeEvent(e)'),
+        '自增必须以「非 suppress（真实用户）」为门槛');
+    const vrmHandler = source.indexOf("vrmModelSelect.addEventListener('change', async (e) => {");
+    assert.ok(vrmHandler > 0);
+    const bumpInVrm = source.indexOf('userModelSelectionGeneration += 1;', vrmHandler);
+    assert.ok(bumpInVrm > vrmHandler && bumpInVrm - vrmHandler < 700,
+        'vrmModelSelect handler 须自增手动选择世代号');
+    assert.ok(source.slice(vrmHandler, bumpInVrm).includes('!isSuppressedModelManagerChangeEvent(e)'));
+
+    // 角色加载链：捕获先于链内第一个 await；/api/characters 返回后复查；
+    // pngtuber 路径守卫并入同一复查（覆盖 switchModelDisplay 期间的手选）
+    const fnStart = source.indexOf('async function loadCurrentCharacterModel() {');
+    assert.ok(fnStart > 0, 'loadCurrentCharacterModel 不存在');
+    const captureIdx = source.indexOf('const selectionGenerationAtStart = userModelSelectionGeneration;', fnStart);
+    const firstAwaitIdx = source.indexOf('await getLanlanName();', fnStart);
+    const fetchIdx = source.indexOf("await RequestHelper.fetchJson('/api/characters');", fnStart);
+    assert.ok(captureIdx > fnStart && captureIdx < firstAwaitIdx, '捕获必须先于链内第一个 await');
+    const postFetchCheck = source.indexOf('if (selectionGenerationAtStart !== userModelSelectionGeneration) {', fetchIdx);
+    assert.ok(postFetchCheck > fetchIdx && postFetchCheck - fetchIdx < 200, '/api/characters 返回后必须复查');
+    const pngGuardIdx = source.indexOf('|| selectionGenerationAtStart !== userModelSelectionGeneration) return;', fetchIdx);
+    assert.ok(pngGuardIdx > postFetchCheck, 'pngtuber 路径守卫必须并入手动选择世代号复查');
 });
