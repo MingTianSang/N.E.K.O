@@ -133,6 +133,17 @@
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
             }
+            // 头像重载层的运行时抑制：覆盖它单独抑制的窗口（feature controller
+            // begin 之前）以及 teardown 时持久化护栏已提前放行、但模型恢复
+            // 尚未完成的窗口——期间经其他入口重排的定时器触发时也要被拦下，
+            // 不能对着仍在展示的临时教程模型开口。仅本窗口的触发闸门，
+            // 不进 leader 心跳广播、不影响剧场语音守卫。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            if (reloadController && typeof reloadController.isProactiveRuntimeHeld === 'function'
+                && reloadController.isProactiveRuntimeHeld()) {
+                return true;
+            }
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
                 && window.isNekoHomeTutorialInteractionLocked() === true;
         } catch (_) {
@@ -2242,6 +2253,13 @@
             return;
         }
 
+        // 首页教程/头像重载运行时抑制期间禁止启动（含 teardown 的模型恢复
+        // 窗口：该窗口持久化护栏已放行、内存标志已恢复，但临时教程模型仍在
+        // 展示，此时开始的语音会话不应触发屏幕帧推送）。
+        if (isHomeTutorialFeatureSuppressed()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -2249,7 +2267,8 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+                || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -2609,6 +2628,20 @@
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
 
+    function rearmProactiveVisionAfterSuppression() {
+        // 抑制期间开始的录音被视觉闸门拒建定时器，且此后没有周期性重试：
+        // 释放时若录音仍在进行必须补挂，否则该会话在用户重开麦克风之前
+        // 永远不推视觉帧。启动函数内部会自查 leader/视觉开关/goodbye/
+        // 手动共享等全部条件，这里只负责补一次机会。
+        try {
+            if (S.isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('[Proactive] 教程抑制解除后补挂主动视觉失败:', e);
+        }
+    }
+
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
@@ -2618,9 +2651,21 @@
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
             _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+            rearmProactiveVisionAfterSuppression();
         } else if (detail.active === false) {
             _homeTutorialFeatureSuppressedByEvent = false;
+            rearmProactiveVisionAfterSuppression();
         }
+    });
+
+    // click-guide 的抑制源是 isNekoClickGuideActive（不走 home-tutorial 事件面），
+    // 视觉 tick 闸门会在导览期间停表：它自己的释放事件必须同样补挂，
+    // 否则导览期间进行中的录音在其余下会话里永远不再推帧。
+    // 聊天定时器不需要补：导览期间它从未被停，触发时闸门放行即恢复。
+    window.addEventListener('neko:click-guide-active', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active !== false) return;
+        rearmProactiveVisionAfterSuppression();
     });
 
     // ======================== backward-compat window exports ========================
