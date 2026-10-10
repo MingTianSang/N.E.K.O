@@ -766,13 +766,17 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     // 被拒绝的选择不得作废角色自动加载链（Codex P2@6724）
     assert.ok(pngBranchBlock.includes("selectedOption.dataset.modelType === 'pngtuber'"),
         'pngtuber 分支自增必须先验证选项类型');
-    // live2d 路径：自增必须在语音检查之后
+    // live2d 路径：自增必须在语音检查之后、且选择成功匹配到有效 Live2D 模型之后
+    // （Codex P2@6770 / wehos 第 12 轮可选1：过渡期下拉残留的其他类型旧选项
+    // 会被 findLive2DModelBySelection 匹配为 null，这类被拒绝的点选不得计数）
     const voiceIdx = source.indexOf('const voiceStatus = await checkVoiceModeStatus();', pngLoadIdx);
     const live2dCommitIdx = source.indexOf('currentModelInfo = findLive2DModelBySelection(', voiceIdx);
-    const live2dBumpIdx = source.indexOf('userModelSelectionGeneration += 1;', voiceIdx);
+    const live2dNullCheckIdx = source.indexOf('if (!currentModelInfo) return;', live2dCommitIdx);
+    const live2dBumpIdx = source.indexOf('userModelSelectionGeneration += 1;', live2dCommitIdx);
     assert.ok(voiceIdx > pngLoadIdx && live2dCommitIdx > voiceIdx, 'live2d 路径结构变化');
-    assert.ok(live2dBumpIdx > voiceIdx && live2dBumpIdx < live2dCommitIdx,
-        'live2d 自增必须落在语音检查之后、提交流程之前');
+    assert.ok(live2dNullCheckIdx > live2dCommitIdx, 'live2d 空匹配检查不存在');
+    assert.ok(live2dBumpIdx > live2dNullCheckIdx,
+        'live2d 自增必须落在语音检查与空匹配拒绝之后');
     // vrmModelSelect 同理：自增在语音检查之后，且以非 suppress 为门槛
     const vrmHandler = source.indexOf("vrmModelSelect.addEventListener('change', async (e) => {");
     assert.ok(vrmHandler > 0);
@@ -893,4 +897,22 @@ test('上传流程：列表刷新过期时不得继续选中/兜底直载（Code
     // 否则会后台替换运行时 config，切回时凭空出现导入头像甚至被保存
     assert.ok(uploadBlock.includes('const refreshed = await loadPNGTuberModels();'));
     assert.ok(uploadBlock.includes('if (refreshed !== false && result.folder && modelSelect) {'));
+});
+
+test('previewPNGTuberConfig 的时效判定收敛为单一 isCurrentPreview 闭包（wehos 第 12 轮可选3）', () => {
+    const start = source.indexOf('async function previewPNGTuberConfig(');
+    const end = source.indexOf('async function loadSelectedPNGTuberOption(', start);
+    assert.ok(start >= 0 && end > start, 'previewPNGTuberConfig 区块不存在');
+    const block = source.slice(start, end);
+    // 单一闭包定义（语义为「未被取消/未过期」，四处检查点共用）
+    assert.ok(block.includes('const isCurrentPreview = () => previewGeneration === pngtuberPreviewGeneration'));
+    // 散落谓词只允许存在于闭包内部：gen 比对（=== 形态，闭包 1 处、无 !== 变体）；
+    // 类型比对在入口守卫与闭包各 1 次
+    assert.equal(block.split('previewGeneration === pngtuberPreviewGeneration').length - 1, 1);
+    assert.equal(block.split('previewGeneration !== pngtuberPreviewGeneration').length - 1, 0);
+    assert.equal(block.split("currentModelType !== 'pngtuber'").length - 1, 2);
+    // 三处消费点都在
+    assert.ok(block.includes('if (!isCurrentPreview()) {'));
+    assert.ok(block.includes('if (isCurrentPreview()) {'));
+    assert.ok(block.includes('if (isCurrentPreview() || currentModelInfo !== committedInfo) {'));
 });

@@ -1440,6 +1440,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 注意自增放在入口检查之后：过期调用不得作废仍在进行的合法预览。
         if (currentModelType !== 'pngtuber') return false;
         const previewGeneration = ++pngtuberPreviewGeneration;
+        // 本预览仍是最新一代且类型未切走。中间检查点、catch 静默判定、finally
+        // 登记清理、尾部守卫四处共用同一判定。语义是「未被取消/未过期」而非
+        // 「已成功」——新鲜的加载失败同样满足它（此时照常报错）。
+        const isCurrentPreview = () => previewGeneration === pngtuberPreviewGeneration
+            && currentModelType === 'pngtuber';
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
         const previewFolder = modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName;
         // 检查点提交与成功提示共用的本地名称：currentModelInfo 存在按同一性撤销的
@@ -1467,7 +1472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 加载期间可能已有更新的预览发起（同类型重叠），或用户切走了类型：
             // 被取代的旧预览到此为止，不再加载状态预览控件，也不再提交任何状态。
-            if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
+            if (!isCurrentPreview()) {
                 return false;
             }
             // 检查点：头像已被运行时接受并显示（loadPNGTuberAvatar 内部操作同一容器），
@@ -1499,7 +1504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 已被取消/取代的预览（切走类型或被更新预览顶掉）加载失败是预期内事件，
             // 例如切走后其文件被删除导致 fetch 404——静默丢弃，不在其他类型页面
             // 弹出无关的 PNGTuber 失败提示。
-            if (previewGeneration === pngtuberPreviewGeneration && currentModelType === 'pngtuber') {
+            if (isCurrentPreview()) {
                 console.error('[PNGTuber] preview failed:', error);
                 const message = error && error.message ? error.message : String(error || 'Unknown error');
                 showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
@@ -1523,16 +1528,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentModelInfo = null;
             }
             if (committedInfo && unfinalizedPNGTuberCommit === committedInfo) {
-                // 登记只在「本预览成功收尾（世代号/类型复查通过，即随后守卫将放行）」
-                // 或「条目已被其他流程覆盖/撤销」时清除。被同类型取代且条目仍是
-                // currentModelInfo 时保留登记——否则 B 提交之前用户切走类型，离开块
-                // 查不到登记、撤销不到 A，A 的 pngtuber 条目会滞留在新类型下
-                // （删除防护 committed 槽持续误拦、保存流程读到过期记录）。
-                // B 到达自己的检查点会覆盖登记；类型切走时上方撤销已把条目清掉，
-                // 走「已被覆盖」分支清除登记。
-                const finalizedHere = previewGeneration === pngtuberPreviewGeneration
-                    && currentModelType === 'pngtuber';
-                if (finalizedHere || currentModelInfo !== committedInfo) {
+                // 登记在「本预览未被取消（仍是最新一代且类型未切走——含新鲜加载
+                // 失败的出口，语义是未过期而非成功）」或「条目已被其他流程覆盖/
+                // 撤销」时清除。被同类型取代且条目仍是 currentModelInfo 时保留——
+                // 否则 B 提交之前用户切走类型，离开块查不到登记、撤销不到 A，
+                // A 的 pngtuber 条目会滞留在新类型下（删除防护 committed 槽持续
+                // 误拦、保存流程读到过期记录）。B 到达自己的检查点会覆盖登记；
+                // 类型切走时上方撤销已把条目清掉，走「已被覆盖」分支清除。
+                if (isCurrentPreview() || currentModelInfo !== committedInfo) {
                     unfinalizedPNGTuberCommit = null;
                 }
             }
@@ -1543,7 +1546,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 取代的加载不再 show()，容器可见性与提示的回写发生在这里——迟到的续体必须
         // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 报成当前模型。
         //（本预览已提交条目的撤销在上方 finally 统一处理。）
-        if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
+        if (!isCurrentPreview()) {
             return false;
         }
         if (live2dContainer) live2dContainer.style.display = 'none';
@@ -6763,15 +6766,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // 选择已通过语音检查、确实被接受，才计为「用户手动选择」——若在拒绝路径
-        // 之前自增，被语音模式挡回的选择也会让角色自动加载链误判为已被取代而放弃，
-        // 启动流程会停在空模型上
+        currentModelInfo = findLive2DModelBySelection(getLive2DOptionSelection(selectedOption));
+        if (!currentModelInfo) return;
+        // 选择已通过语音检查、且确实匹配到有效的 Live2D 模型，才计为「用户手动
+        // 选择」：两条拒绝路径（语音模式挡回、类型切换过渡期下拉里残留的其他类型
+        // 旧选项匹配为 null）之前自增，都会让角色自动加载链在世代号复查处误判
+        // 「已被取代」而放弃，启动流程停在记忆/默认模型上
         if (!isSuppressedModelManagerChangeEvent(e)) {
             userModelSelectionGeneration += 1;
         }
-
-        currentModelInfo = findLive2DModelBySelection(getLive2DOptionSelection(selectedOption));
-        if (!currentModelInfo) return;
 
         // 获取选中的option元素，从中获取item_id
         const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
