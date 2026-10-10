@@ -448,16 +448,16 @@ test('控件加载期间切走类型：撤销本预览已提交的条目，不�
 });
 
 test('删除防护：已提交模型与加载中预览必须同时护住（Codex P1 单槽 || 回归）', () => {
-    // 提取纯函数 helper 验证行为
+    // 提取纯函数 helper 与槽位函数验证行为
     const slice = extractSlice(
         'function isBoundPNGTuberDeleteKey(',
         'async function deleteSelectedModels(');
-    const sandbox = {};
+    const sandbox = { currentModelInfo: null, pendingPNGTuberPreview: null };
     vm.createContext(sandbox);
-    vm.runInContext(slice + '\n;globalThis.api = { isBoundPNGTuberDeleteKey };', sandbox, {
+    vm.runInContext(slice + '\n;globalThis.api = { isBoundPNGTuberDeleteKey, getBoundPNGTuberDeleteKeys };', sandbox, {
         filename: 'isBoundPNGTuberDeleteKey',
     });
-    const { isBoundPNGTuberDeleteKey } = sandbox.api;
+    const { isBoundPNGTuberDeleteKey, getBoundPNGTuberDeleteKeys } = sandbox.api;
 
     // A 已提交显示、B 加载中：两个都必须拦，第三者放行
     assert.equal(isBoundPNGTuberDeleteKey('A', 'A', 'B'), true);
@@ -471,13 +471,39 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     assert.equal(isBoundPNGTuberDeleteKey('', 'A', 'B'), false);
     assert.equal(isBoundPNGTuberDeleteKey('A', '', ''), false);
 
-    // 接线断言：deleteSelectedModels 的安全检查必须分别取两个 folder 并调用 helper，
+    // getBoundPNGTuberDeleteKeys：committed 槽按类型门控、folder 缺失回退 name、双槽独立
+    let keys = getBoundPNGTuberDeleteKeys();
+    assert.equal(keys.committed, '');
+    assert.equal(keys.pending, '');
+    // live2d 条目不得冒充 pngtuber 绑定槽（跨类型同名误伤）
+    sandbox.currentModelInfo = { type: 'live2d', folder: 'shared', name: 'shared' };
+    keys = getBoundPNGTuberDeleteKeys();
+    assert.equal(keys.committed, '');
+    sandbox.currentModelInfo = { type: 'pngtuber', folder: 'A', name: 'a-name' };
+    keys = getBoundPNGTuberDeleteKeys();
+    assert.equal(keys.committed, 'A');
+    sandbox.currentModelInfo = { type: 'pngtuber', folder: '', name: 'a-name' };
+    keys = getBoundPNGTuberDeleteKeys();
+    assert.equal(keys.committed, 'a-name');
+    sandbox.pendingPNGTuberPreview = { folder: 'B', generation: 3 };
+    keys = getBoundPNGTuberDeleteKeys();
+    assert.equal(keys.committed, 'a-name');
+    assert.equal(keys.pending, 'B');
+
+    // 接线断言：deleteSelectedModels 安全检查必须经共享槽位函数取双槽并调用 helper，
     // 不得回到 || 单槽折叠（那会让「A 已提交 + B 加载中」时 B 失去防护）
     const start = source.indexOf('async function deleteSelectedModels(');
     const end = source.indexOf('const message = t(', start);
     assert.ok(start >= 0 && end > start, 'deleteSelectedModels 区块不存在');
     const block = source.slice(start, end);
-    assert.match(block, /const currentPNGTuberFolder = currentModelInfo && currentModelInfo\.type === 'pngtuber' \? currentModelInfo\.folder : '';/);
-    assert.match(block, /const pendingPNGTuberFolder = pendingPNGTuberPreview \? pendingPNGTuberPreview\.folder : '';/);
-    assert.ok(block.includes('isBoundPNGTuberDeleteKey(key, currentPNGTuberFolder, pendingPNGTuberFolder)'));
+    assert.ok(block.includes('const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();'));
+    assert.ok(block.includes('isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)'));
+
+    // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的
+    const uiStart = source.indexOf('// 检查是否正在使用');
+    assert.ok(uiStart > 0, '删除弹窗 isBound 区块不存在');
+    const uiBlock = source.slice(uiStart, source.indexOf('const checkbox = document.createElement', uiStart));
+    assert.ok(uiBlock.includes('isBound = isBoundPNGTuberDeleteKey('));
+    assert.ok(uiBlock.includes('boundPNGTuberKeys.committed'));
+    assert.ok(uiBlock.includes('boundPNGTuberKeys.pending'));
 });

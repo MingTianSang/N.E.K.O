@@ -1415,6 +1415,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const previewGeneration = ++pngtuberPreviewGeneration;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
         const previewFolder = modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName;
+        // 检查点提交与成功提示共用的本地名称：currentModelInfo 存在按同一性撤销的
+        // 写入者，提示文案不再依赖共享可变状态
+        const committedName = modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber');
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
         // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
@@ -1443,7 +1446,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 会在它自己的检查点重新提交。
             currentLive3dSubType = '';
             currentModelInfo = {
-                name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
+                name: committedName,
                 folder: previewFolder,
                 path: modelInfo.path || pngtuberConfig.idle_image || '',
                 url: modelInfo.url || pngtuberConfig.idle_image || '',
@@ -1500,7 +1503,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuberContainer.classList.remove('hidden');
             pngtuberContainer.style.display = 'block';
         }
-        showStatus(`已加载PNGTuber模型: ${currentModelInfo.name}`, 2000);
+        showStatus(`已加载PNGTuber模型: ${committedName}`, 2000);
 
         if (options.markDirty) {
             window.hasUnsavedChanges = true;
@@ -8557,6 +8560,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 获取当前使用中的模型标识
             const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
             const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
+            const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
 
             allUserModels.forEach(model => {
                 const item = document.createElement('div');
@@ -8567,12 +8571,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (model.type === 'live2d') {
                     isBound = currentLive2DName === model.name;
                 } else if (model.type === 'pngtuber') {
-                    isBound = currentModelType === 'pngtuber' && (
-                        (currentModelInfo && (
-                            currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
-                        ))
-                        // 加载进行中的预览尚未提交 currentModelInfo，用 pending 记录识别
-                        || (!!pendingPNGTuberPreview && pendingPNGTuberPreview.folder === model.folder)
+                    // 与 deleteSelectedModels 安全检查复用同一判定（含类型门控与
+                    // 已提交/pending 双槽）：被禁用的即会被拦截的，消除「复选框
+                    // 可勾选、确认时却被静默移除」的不一致
+                    isBound = isBoundPNGTuberDeleteKey(
+                        model.deleteKey || model.folder || model.name,
+                        boundPNGTuberKeys.committed,
+                        boundPNGTuberKeys.pending
                     );
                 } else {
                     isBound = currentLive3DUrl === model.url;
@@ -8660,6 +8665,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             || (!!pendingFolder && key === pendingFolder);
     }
 
+    // PNGTuber 的两个「绑定中」标识槽位，删除弹窗 UI 与 deleteSelectedModels 安全检查
+    // 共用，保证复选框禁用态与确认时的拦截永远一致：committed=已提交模型（按类型门控，
+    // folder 缺失时回退 name），pending=加载中的在途预览。
+    function getBoundPNGTuberDeleteKeys() {
+        return {
+            committed: currentModelInfo && currentModelInfo.type === 'pngtuber'
+                ? (currentModelInfo.folder || currentModelInfo.name || '')
+                : '',
+            pending: pendingPNGTuberPreview ? pendingPNGTuberPreview.folder : '',
+        };
+    }
+
     async function deleteSelectedModels() {
         if (selectedDeleteModels.size === 0) return;
 
@@ -8675,14 +8692,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
         // 加载进行中的 PNGTuber 预览（currentModelInfo 尚未提交）同样视为绑定中，
         // 否则「预览加载期间删除该模型」会绕过防护，删完预览又把模型显示回来。
-        // 已提交模型与 pending 预览可能并存（A 正在显示时选了 B 加载），两个都要护住，
+        // 已提交与 pending 是两个槽位（A 正在显示时选了 B 加载），分别比对，
         // 不能用 || 折叠成单槽——否则加载中的那个会失去防护。
-        const currentPNGTuberFolder = currentModelInfo && currentModelInfo.type === 'pngtuber' ? currentModelInfo.folder : '';
-        const pendingPNGTuberFolder = pendingPNGTuberPreview ? pendingPNGTuberPreview.folder : '';
+        const boundPNGTuberKeys = getBoundPNGTuberDeleteKeys();
         for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
             const isBound = (type === 'live2d' && key === currentLive2DName) ||
-                            (type === 'pngtuber' && isBoundPNGTuberDeleteKey(key, currentPNGTuberFolder, pendingPNGTuberFolder)) ||
+                            (type === 'pngtuber' && isBoundPNGTuberDeleteKey(key, boundPNGTuberKeys.committed, boundPNGTuberKeys.pending)) ||
                             ((type === 'vrm' || type === 'mmd') && key === currentLive3DUrl);
             if (isBound) {
                 selectedDeleteModels.delete(modelId);
