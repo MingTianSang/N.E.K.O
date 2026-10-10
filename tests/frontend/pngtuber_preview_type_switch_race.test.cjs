@@ -297,8 +297,10 @@ test('头像加载被接受后立即提交模型信息，metadata fetch 期间�
     assert.equal(sandbox.currentModelInfo.name, 'demo');
     assert.equal(sandbox.currentModelInfo.type, 'pngtuber');
     assert.equal(sandbox.currentModelInfo.pngtuber.idle_image, '/user_pngtuber/demo/idle.png');
-    // 预览尚未结束，pending 记录仍在（finally 统一清理）
-    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'demo');
+    // pending 的防护使命随提交结束、不陪跑 metadata fetch（Codex P2 第二轮）：
+    // 该 fetch 是无超时的裸请求，若挂起则 finally 永不执行，悬置的 pending
+    // 会让该模型被删除安全检查误拦为「绑定中」
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
 
     resolveFetch();
     const result = await preview;
@@ -306,6 +308,20 @@ test('头像加载被接受后立即提交模型信息，metadata fetch 期间�
     assert.equal(sandbox.pendingPNGTuberPreview, null);
     assert.equal(sandbox.statusMessages.length, 1);
     assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型: demo/);
+});
+
+test('离开 pngtuber 类型即作废在途预览的 pending 删除防护', () => {
+    // 头像加载挂起时 finally 永不执行，pending 只能由切走类型的入口作废，
+    // 否则该模型在整个页面会话里都无法删除
+    const start = source.indexOf('async function switchModelDisplay(');
+    assert.ok(start >= 0, 'switchModelDisplay 不存在');
+    const end = source.indexOf('const sidebar =', start);
+    assert.ok(end > start, 'switchModelDisplay 序块不存在');
+    const block = source.slice(start, end);
+    assert.ok(block.includes("if (previousModelType === 'pngtuber' && type !== 'pngtuber') {"));
+    assert.ok(block.includes('pendingPNGTuberPreview = null;'));
+    // 作废必须发生在改写 currentModelType 之前依据 previousModelType 判定
+    assert.ok(block.indexOf("previousModelType === 'pngtuber'") < block.indexOf('currentModelType = type;'));
 });
 
 test('控件加载期间切走类型：撤销本预览已提交的条目，不把 pngtuber 信息留在 live2d 下', async () => {

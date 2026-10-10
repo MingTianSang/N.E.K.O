@@ -1450,6 +1450,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 type: 'pngtuber',
                 pngtuber: pngtuberConfig,
             };
+            // pending 的删除防护使命随提交结束（此后由 currentModelInfo 接管），
+            // 不陪跑 metadata fetch：该请求是无超时的裸 fetch，一旦挂起，finally
+            // 永远不执行，pending 记录会悬置整个页面会话，让该模型被安全检查
+            // 误拦为「绑定中」而无法删除。
+            if (pendingPNGTuberPreview && pendingPNGTuberPreview.generation === previewGeneration) {
+                pendingPNGTuberPreview = null;
+            }
             await loadPNGTuberPreviewControls(pngtuberConfig, previewGeneration);
         } catch (error) {
             console.error('[PNGTuber] preview failed:', error);
@@ -2090,6 +2097,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
+        // 离开 pngtuber 时作废在途预览的 pending 删除防护：该预览解析时必被类型守卫
+        // 丢弃，防护不应比取消活得更久——否则头像加载挂起（finally 永远不执行）时，
+        // pending 记录会悬置整个页面会话，让该模型被删除安全检查误拦为「绑定中」。
+        if (previousModelType === 'pngtuber' && type !== 'pngtuber') {
+            pendingPNGTuberPreview = null;
+        }
         if (previousModelType === 'live2d' && type !== 'live2d' && currentModelInfo && currentModelInfo.type !== 'pngtuber') {
             rememberSelectedLive2DModel(modelSelect?.selectedOptions?.[0]);
         }
