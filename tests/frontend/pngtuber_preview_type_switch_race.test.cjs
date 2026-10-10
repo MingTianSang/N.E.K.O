@@ -417,9 +417,11 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     const staleIdx = loaderBlock.indexOf('if (isStale()) return false;');
     const domIdx = loaderBlock.indexOf("modelSelect.innerHTML = '';");
     assert.ok(staleIdx > 0 && domIdx > staleIdx, '加载器的过期复查必须先于 DOM 写入');
-    // catch 路径同样不得写 DOM
+    // catch 路径同样不得写 DOM（catchIdx 先断言存在，避免 -1 让位置比较恒真）
     const catchIdx = loaderBlock.indexOf('} catch (error) {');
-    assert.ok(loaderBlock.indexOf('if (isStale()) return false;', catchIdx) > catchIdx, 'catch 路径缺少过期复查');
+    assert.ok(catchIdx > 0, 'loader catch 区块不存在');
+    const catchStaleIdx = loaderBlock.indexOf('if (isStale()) return false;', catchIdx);
+    assert.ok(catchStaleIdx > catchIdx, 'catch 路径缺少过期复查');
     // 类型复查内置于加载器：上传后/删除后刷新等不传 isStale 的调用方也受保护
     // （wehos 第 7 轮可选项 2）
     assert.ok(loaderBlock.includes("currentModelType !== 'pngtuber'"), '加载器缺少内置类型复查');
