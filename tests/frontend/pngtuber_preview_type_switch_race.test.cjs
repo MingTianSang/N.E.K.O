@@ -349,6 +349,36 @@ test('离开 pngtuber：先作废在途预览（世代号+运行时 loadToken）
     const guardIdx = coreSource.indexOf('if (!isCurrentLoad()) return false;', loadStart);
     const setStateIdx = coreSource.indexOf("this.setState('idle');", loadStart);
     assert.ok(loadStart >= 0 && guardIdx > loadStart && setStateIdx > guardIdx);
+    // 在途标记的生命周期（wehos 第 5 轮：load 只清自己这一代的标记——A 在途中
+    // B 开始加载后，A 结束不得清掉 B 的标记）：进入即登记本代，唯一挂起点返回后
+    // 按世代匹配清除，且清除先于 isCurrentLoad 检查点
+    const markerSetIdx = coreSource.indexOf('this._inFlightLoadGeneration = loadGeneration;', loadStart);
+    const markerClearIdx = coreSource.indexOf('if (this._inFlightLoadGeneration === loadGeneration) this._inFlightLoadGeneration = 0;', loadStart);
+    const adapterIdx = coreSource.indexOf('await this.setupLayeredAdapter(', loadStart);
+    assert.ok(markerSetIdx > loadStart && markerSetIdx < adapterIdx, '在途标记应在挂起点前登记');
+    assert.ok(markerClearIdx > adapterIdx && markerClearIdx < guardIdx, '标记清除应在挂起点后、检查点前，且按世代匹配');
+});
+
+test('切换链世代号：旧链的列表 await 之后不得再发起预览（Codex P1 链级竞态）', () => {
+    // 场景：角色 A 配置的 switchModelDisplay('pngtuber') 还挂在 loadPNGTuberModels()，
+    // 用户切走→切回→选了 B；A 的列表请求随后返回，旧链若继续为 preferredConfig=A
+    // 发起预览，会给 A 分配比 B 更新的预览世代号、反向顶掉用户的新选择。
+    // 预览世代号在预览发起时才分配，识别不了链级过期——必须在链入口捕获世代号、
+    // 发起预览前复查。
+    const start = source.indexOf('async function switchModelDisplay(');
+    assert.ok(start >= 0, 'switchModelDisplay 不存在');
+    const captureIdx = source.indexOf('const switchGeneration = ++modelDisplaySwitchGeneration;', start);
+    assert.ok(captureIdx > start, '链世代号必须在 switchModelDisplay 入口捕获');
+    const pngBranchStart = source.indexOf('await loadPNGTuberModels();', captureIdx);
+    assert.ok(pngBranchStart > captureIdx, 'pngtuber 分支列表加载不存在');
+    const previewCallIdx = source.indexOf('await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(', pngBranchStart);
+    assert.ok(previewCallIdx > pngBranchStart, 'pngtuber 分支预览调用不存在');
+    // 复查必须落在「列表 await 之后、发起预览之前」
+    const recheckIdx = source.indexOf('if (switchGeneration !== modelDisplaySwitchGeneration) {', pngBranchStart);
+    assert.ok(recheckIdx > pngBranchStart && recheckIdx < previewCallIdx, '链过期复查缺失或位置错误');
+    // 捕获必须先于分支内任何 await（否则捕获不到并发切换）
+    const firstAwaitIdx = source.indexOf('await ', captureIdx);
+    assert.ok(firstAwaitIdx > captureIdx, '入口捕获后才有 await');
 });
 
 test('cancelInFlightLoad：在途加载作废且丢 config；已完成加载的 config 必须保留', () => {
@@ -446,13 +476,17 @@ test('控件加载期间切走类型：撤销本预览已提交的条目，不�
     await tick();
     // 头像立即被接受（默认桩），检查点已提交本预览的 pngtuber 条目
     assert.equal(sandbox.currentModelInfo.name, 'demo');
+    // 模拟摆放暂存：stageModelManagerPNGTuberPlacement 会把 .pngtuber 原地替换成
+    // 新的合并对象——撤销判定必须按「条目对象同一性」而非嵌套 .pngtuber 同一性，
+    // 否则暂存过的预览被取消时撤销失配，过期条目留在 live2d 下（Codex P2）
+    sandbox.currentModelInfo.pngtuber = { idle_image: '/merged/by-placement.png' };
     // 用户在 metadata fetch 期间切到 live2d
     sandbox.currentModelType = 'live2d';
     resolveFetch();
     const result = await preview;
 
     assert.equal(result, false);
-    // 按对象同一性撤销：清理的只能是本预览自己提交的条目；
+    // 按条目对象同一性撤销：清理的只能是本预览自己提交的条目；
     // 若新流程已写入更新信息（对象不同一），不会被触碰（由重叠预览用例覆盖）
     assert.equal(sandbox.currentModelInfo, null);
     assert.deepEqual(sandbox.statusMessages, []);
@@ -528,15 +562,19 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     // 纯活遍历会删掉新勾选项，纯副本会无视取消，两者都不合格。
     assert.ok(deleteLoopBlock.includes('for (const modelId of [...selectedDeleteModels]) {'));
     assert.ok(deleteLoopBlock.includes('if (!selectedDeleteModels.has(modelId)) continue;'));
+    // 结果弹窗必带跳过数量后，循环后的 2 秒状态条属于重复反馈，不得保留
+    // （确认前过滤循环的同款提示在 confirmIdx 之前，不在本区块内）
+    assert.ok(!deleteLoopBlock.includes("showStatus(t('live2d.cannotDeleteBoundModel'"));
 
     // 结果弹窗：有跳过时成功/失败弹窗附数量；全部被拦时弹跳过说明而非「失败 0 个」误报
     const fnEndIdx = source.indexOf('if (deleteModelBtn) {', loopEndIdx);
     const tailBlock = source.slice(loopEndIdx, fnEndIdx);
     assert.ok(tailBlock.includes('} else if (failCount > 0) {'));
-    assert.ok(tailBlock.includes('} else if (skippedBoundCount > 0) {'));
-    assert.ok(tailBlock.includes("t('live2d.deleteSkippedBound'"));
+    assert.ok(tailBlock.includes('} else if (skippedMessage) {'));
+    // 文案只计算一次，全拦下分支复用同一段（wehos 第 5 轮可选项）
+    assert.equal(tailBlock.split("t('live2d.deleteSkippedBound'").length - 1, 1);
     assert.ok(tailBlock.includes('count: skippedBoundCount'));
-    // skippedPart 只计算一次（if/else 之前），不在两个分支里重复
+    assert.equal(tailBlock.split('const skippedMessage =').length - 1, 1);
     assert.equal(tailBlock.split('const skippedPart =').length - 1, 1);
 
     // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的。

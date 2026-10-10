@@ -1426,6 +1426,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 提交点在下方的「头像加载被接受」检查点（见该处注释）。
         // pending 记录带世代号：重叠预览下新预览会覆盖它，旧预览退出时只清理属于自己的记录。
         pendingPNGTuberPreview = { folder: previewFolder, generation: previewGeneration };
+        // 检查点提交的 currentModelInfo 条目对象引用：撤销判定按「条目同一性」而非
+        // 嵌套的 .pngtuber 同一性——摆放暂存（stageModelManagerPNGTuberPlacement）
+        // 会把 .pngtuber 原地替换成新的合并对象，若比对嵌套引用，暂存过的预览被
+        // 取消时撤销会失配，过期 pngtuber 条目将留在新类型下喂给保存/删除链路。
+        let committedInfo = null;
 
         try {
             if (window.loadPNGTuberAvatar) {
@@ -1445,7 +1450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 竞态安全性：上面刚复查过世代号+类型；被取代的旧预览到不了这里，更新的预览
             // 会在它自己的检查点重新提交。
             currentLive3dSubType = '';
-            currentModelInfo = {
+            committedInfo = {
                 name: committedName,
                 folder: previewFolder,
                 path: modelInfo.path || pngtuberConfig.idle_image || '',
@@ -1453,6 +1458,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 type: 'pngtuber',
                 pngtuber: pngtuberConfig,
             };
+            currentModelInfo = committedInfo;
             // pending 的删除防护使命随提交结束（此后由 currentModelInfo 接管），
             // 不陪跑 metadata fetch：该请求是无超时的裸 fetch，一旦挂起，finally
             // 永远不执行，pending 记录会悬置整个页面会话，让该模型被安全检查
@@ -1482,10 +1488,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 取代的加载不再 show()，容器可见性与提示的回写发生在这里——迟到的续体必须
         // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 报成当前模型。
         if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
-            // 本预览已在检查点提交、随后又被取消/取代时，撤掉自己的提交——按对象同一性
-            // 判定，只清理自己写下的条目，绝不触碰其他流程已写入的更新信息。
-            if (currentModelInfo && currentModelInfo.type === 'pngtuber'
-                && currentModelInfo.pngtuber === pngtuberConfig) {
+            // 本预览已在检查点提交、随后又被取消/取代时，撤掉自己的提交——按「条目
+            // 对象同一性」判定（摆放暂存会原地替换 .pngtuber，不能比对嵌套引用），
+            // 只清理自己写下的条目，绝不触碰其他流程已写入的更新信息。
+            if (committedInfo && currentModelInfo === committedInfo) {
                 currentModelInfo = null;
             }
             return false;
@@ -2101,10 +2107,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // 切换链世代号：每次 switchModelDisplay 入口自增。链条内部的 await（模型列表
+    // 加载等）期间用户可能切走再切回并选了新模型——旧链恢复后若继续为它的
+    // preferredConfig 发起预览，会给旧模型分配比新选择更新的预览世代号，反向顶掉
+    // 用户的新选择。预览世代号只在预览发起时分配，识别不了「整条切换链已过期」，
+    // 需要这一层链世代号在发起预览前复查。
+    let modelDisplaySwitchGeneration = 0;
+
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
+        const switchGeneration = ++modelDisplaySwitchGeneration;
         // 离开 pngtuber 时先作废在途预览、再释放其 pending 删除防护：页面层世代号自增
         // 让迟到完成过不了检查点，运行时层 loadToken 作废让迟到的 loadPNGTuberAvatar
         // 不再 show()。顺序不能反——若只清防护不作废，「切走→删除在途模型→切回」后
@@ -2229,6 +2243,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             try {
                 await loadPNGTuberModels();
+                // 切换链过期复查：列表 await 期间用户可能已切走再切回并选了新模型，
+                // 旧链此刻再发起 preferredConfig 预览会拿到更新的预览世代号、反向
+                // 覆盖用户刚做的选择——链已过期则整条放弃（return 触发 finally 的
+                // 教程事件派发，读的是共享 currentModelType，无害）。
+                if (switchGeneration !== modelDisplaySwitchGeneration) {
+                    return;
+                }
                 await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(options.preferredPNGTuberConfig || null);
             } catch (error) {
                 console.error('加载PNGTuber模型列表失败:', error);
@@ -8789,10 +8810,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        if (skippedBoundCount > 0) {
-            showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
-        }
-
         await loadUserModels();
         selectedDeleteModels.clear();
         updateConfirmDeleteButton();
@@ -8837,10 +8854,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // 有项被绑定复查拦下时把数量并入结果弹窗：状态条 toast 只有 2 秒且先于
-        // 列表刷新，用户「选了 3 个只删了 2 个」时需要一个持久的说明
-        const skippedPart = skippedBoundCount > 0
-            ? `，${t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount })}`
+        // 列表刷新，用户「选了 3 个只删了 2 个」时需要一个持久的说明。文案只计算
+        // 一次，全拦下分支复用同一段；结果弹窗必带跳过数量后，循环后的 2 秒状态条
+        // 属于重复反馈，已移除。
+        const skippedMessage = skippedBoundCount > 0
+            ? t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount })
             : '';
+        const skippedPart = skippedMessage ? `，${skippedMessage}` : '';
         if (successCount > 0) {
             const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '') + skippedPart;
             await showAlert(successMessage);
@@ -8848,10 +8868,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const failedPart = t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount, reason: lastErrorMessage });
             const reasonPart = lastErrorMessage ? `：${lastErrorMessage}` : '';
             await showAlert(`✗ ${failedPart}${reasonPart}${skippedPart}`);
-        } else if (skippedBoundCount > 0) {
-            // 全部被拦下：不弹「失败 0 个」误报，但也不能只有 2 秒状态条——
-            // 弹窗是唯一持久的结果反馈
-            await showAlert(t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount }));
+        } else if (skippedMessage) {
+            // 全部被拦下：不弹「失败 0 个」误报，但弹窗是唯一持久的结果反馈
+            await showAlert(skippedMessage);
         }
     }
 
