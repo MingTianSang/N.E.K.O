@@ -1459,9 +1459,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             await loadPNGTuberPreviewControls(pngtuberConfig, previewGeneration);
         } catch (error) {
-            console.error('[PNGTuber] preview failed:', error);
-            const message = error && error.message ? error.message : String(error || 'Unknown error');
-            showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            // 已被取消/取代的预览（切走类型或被更新预览顶掉）加载失败是预期内事件，
+            // 例如切走后其文件被删除导致 fetch 404——静默丢弃，不在其他类型页面
+            // 弹出无关的 PNGTuber 失败提示。
+            if (previewGeneration === pngtuberPreviewGeneration && currentModelType === 'pngtuber') {
+                console.error('[PNGTuber] preview failed:', error);
+                const message = error && error.message ? error.message : String(error || 'Unknown error');
+                showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            }
             return false;
         } finally {
             if (pendingPNGTuberPreview && pendingPNGTuberPreview.generation === previewGeneration) {
@@ -2097,10 +2102,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
-        // 离开 pngtuber 时作废在途预览的 pending 删除防护：该预览解析时必被类型守卫
-        // 丢弃，防护不应比取消活得更久——否则头像加载挂起（finally 永远不执行）时，
-        // pending 记录会悬置整个页面会话，让该模型被删除安全检查误拦为「绑定中」。
+        // 离开 pngtuber 时先作废在途预览、再释放其 pending 删除防护：页面层世代号自增
+        // 让迟到完成过不了检查点，运行时层 loadToken 作废让迟到的 loadPNGTuberAvatar
+        // 不再 show()。顺序不能反——若只清防护不作废，「切走→删除在途模型→切回」后
+        // 旧加载完成会把已删除模型重新显示并提交，保存流程还会持久化已不存在的路径；
+        // 若只作废不清防护，挂起的加载会让 pending 悬置、该模型整个会话无法删除。
         if (previousModelType === 'pngtuber' && type !== 'pngtuber') {
+            pngtuberPreviewGeneration += 1;
+            if (typeof window.cancelPNGTuberAvatarLoads === 'function') {
+                try { window.cancelPNGTuberAvatarLoads(); } catch (_) { /* ignore */ }
+            }
             pendingPNGTuberPreview = null;
         }
         if (previousModelType === 'live2d' && type !== 'live2d' && currentModelInfo && currentModelInfo.type !== 'pngtuber') {

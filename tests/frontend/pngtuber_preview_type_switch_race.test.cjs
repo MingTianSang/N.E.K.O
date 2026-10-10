@@ -310,9 +310,7 @@ test('头像加载被接受后立即提交模型信息，metadata fetch 期间�
     assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型: demo/);
 });
 
-test('离开 pngtuber 类型即作废在途预览的 pending 删除防护', () => {
-    // 头像加载挂起时 finally 永不执行，pending 只能由切走类型的入口作废，
-    // 否则该模型在整个页面会话里都无法删除
+test('离开 pngtuber：先作废在途预览（世代号+运行时 loadToken），再释放 pending 防护', () => {
     const start = source.indexOf('async function switchModelDisplay(');
     assert.ok(start >= 0, 'switchModelDisplay 不存在');
     const end = source.indexOf('const sidebar =', start);
@@ -320,8 +318,52 @@ test('离开 pngtuber 类型即作废在途预览的 pending 删除防护', () =
     const block = source.slice(start, end);
     assert.ok(block.includes("if (previousModelType === 'pngtuber' && type !== 'pngtuber') {"));
     assert.ok(block.includes('pendingPNGTuberPreview = null;'));
-    // 作废必须发生在改写 currentModelType 之前依据 previousModelType 判定
+    // 只清防护不作废的话，「切走→删除在途模型→切回」后旧加载完成会复活已删除模型：
+    // 必须同时自增页面世代号（拦截检查点提交）并作废运行时 loadToken（拦截 show()）
+    assert.ok(block.includes('pngtuberPreviewGeneration += 1;'));
+    assert.ok(block.includes('window.cancelPNGTuberAvatarLoads'));
+    // 顺序：两个作废都必须先于释放删除防护
+    const clearIdx = block.indexOf('pendingPNGTuberPreview = null;');
+    assert.ok(block.indexOf('pngtuberPreviewGeneration += 1;') < clearIdx);
+    assert.ok(block.indexOf('window.cancelPNGTuberAvatarLoads') < clearIdx);
+    // 作废判定依据 previousModelType，必须先于 currentModelType 改写
     assert.ok(block.indexOf("previousModelType === 'pngtuber'") < block.indexOf('currentModelType = type;'));
+
+    // 跨文件契约：pngtuber-core 必须提供并导出 cancelPNGTuberAvatarLoads，
+    // 且其实现确实推进 loadPNGTuberAvatar 使用的序列号
+    const coreSource = fs.readFileSync(
+        path.join(PROJECT_ROOT, 'static', 'pngtuber-core.js'), 'utf8');
+    assert.ok(coreSource.includes('function cancelPNGTuberAvatarLoads() {'));
+    assert.ok(coreSource.includes('pngtuberLoadSequence += 1;'));
+    assert.ok(coreSource.includes('window.cancelPNGTuberAvatarLoads = cancelPNGTuberAvatarLoads;'));
+});
+
+test('预览失败且仍在 pngtuber 类型：照常报错提示', async () => {
+    const sandbox = makeSandbox();
+    sandbox.window.loadPNGTuberAvatar = async () => { throw new Error('boom'); };
+    const result = await runPreview(sandbox);
+
+    assert.equal(result, false);
+    assert.equal(sandbox.statusMessages.length, 1);
+    assert.match(sandbox.statusMessages[0], /PNGTuber 模型加载失败: boom/);
+    assert.equal(sandbox.currentModelInfo, null);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
+});
+
+test('切走后旧预览加载失败（如文件已删 404）：静默丢弃，不弹无关报错', async () => {
+    const sandbox = makeSandbox();
+    sandbox.window.loadPNGTuberAvatar = async () => {
+        // 模拟切走：类型改写 + switchModelDisplay 入口的世代号作废
+        sandbox.currentModelType = 'live2d';
+        sandbox.pngtuberPreviewGeneration += 1;
+        throw new Error('404 Not Found');
+    };
+    const result = await runPreview(sandbox);
+
+    assert.equal(result, false);
+    assert.deepEqual(sandbox.statusMessages, []);
+    assert.equal(sandbox.currentModelInfo, null);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
 });
 
 test('控件加载期间切走类型：撤销本预览已提交的条目，不把 pngtuber 信息留在 live2d 下', async () => {

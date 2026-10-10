@@ -5201,8 +5201,17 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
+    // 作废所有在途的 loadPNGTuberAvatar：自增序列号，让在途调用完成时因 loadToken
+    // 过期而不再 show()、不再派发 pngtuber-model-loaded（网络请求本身不中断，
+    // 完成即丢弃）。模型管理页离开 pngtuber 类型时调用，配合页面层的预览世代号
+    // 一起丢弃在途预览，之后才能安全释放该模型的删除防护。
+    function cancelPNGTuberAvatarLoads() {
+        pngtuberLoadSequence += 1;
+    }
+
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.cancelPNGTuberAvatarLoads = cancelPNGTuberAvatarLoads;
 })();
