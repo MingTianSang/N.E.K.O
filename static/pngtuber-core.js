@@ -3934,6 +3934,20 @@
             }, delayMs);
         }
 
+        // 取消在途 load()：推进内部世代号与生命周期 token，让 isCurrentLoad 不再通过——
+        // 挂起的 setupLayeredAdapter 解析后不会再 setState('idle') 把旧图片写进已可见的
+        // 容器，也不会挂拖拽监听/悬浮按钮/锁标。config 一并重置为空对象：保存流程读
+        // pngtuberManager.config 作 runtime 配置，被取消模型的路径不能再被合并进 Save；
+        // 空对象走 stateToSrc / getActivePlacement 等既有兜底链，不会抛错。
+        cancelInFlightLoad() {
+            this._loadGeneration = (Number(this._loadGeneration) || 0) + 1;
+            this._latestLifecycleLoadToken = Math.max(
+                Number(this._latestLifecycleLoadToken) || 0,
+                pngtuberLoadSequence
+            );
+            this.config = {};
+        }
+
         async load(config, options = {}) {
             const loadToken = Number(options.loadToken) || 0;
             if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
@@ -5203,10 +5217,17 @@
 
     // 作废所有在途的 loadPNGTuberAvatar：自增序列号，让在途调用完成时因 loadToken
     // 过期而不再 show()、不再派发 pngtuber-model-loaded（网络请求本身不中断，
-    // 完成即丢弃）。模型管理页离开 pngtuber 类型时调用，配合页面层的预览世代号
-    // 一起丢弃在途预览，之后才能安全释放该模型的删除防护。
+    // 完成即丢弃）。同时穿透到 PNGTuberManager.load() 的内部有效性判定
+    // （isCurrentLoad 只看 _loadGeneration/_latestLifecycleLoadToken，外层序列号
+    // 对它不可见），否则挂起的内部加载解析后仍会 setState 把旧图片写进已可见容器、
+    // 并把被取消模型的 config 留给保存流程。模型管理页离开 pngtuber 类型时调用，
+    // 配合页面层的预览世代号一起丢弃在途预览，之后才能安全释放删除防护。
     function cancelPNGTuberAvatarLoads() {
         pngtuberLoadSequence += 1;
+        const manager = window.pngtuberManager;
+        if (manager && typeof manager.cancelInFlightLoad === 'function') {
+            try { manager.cancelInFlightLoad(); } catch (_) { /* ignore */ }
+        }
     }
 
     window.PNGTuberManager = PNGTuberManager;

@@ -8,13 +8,15 @@ const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const PAGE_CONTROLLER_JS = path.join(
     PROJECT_ROOT, 'static', 'js', 'model_manager', 'page-controller.js');
 const source = fs.readFileSync(PAGE_CONTROLLER_JS, 'utf8');
+const CORE_JS = path.join(PROJECT_ROOT, 'static', 'pngtuber-core.js');
+const coreSource = fs.readFileSync(CORE_JS, 'utf8');
 
-function extractSlice(startMarker, endMarker) {
-    const start = source.indexOf(startMarker);
+function extractSlice(startMarker, endMarker, src = source) {
+    const start = src.indexOf(startMarker);
     assert.ok(start >= 0, `找不到区块起点: ${startMarker}`);
-    const end = source.indexOf(endMarker, start);
+    const end = src.indexOf(endMarker, start);
     assert.ok(end > start, `找不到区块终点: ${endMarker}`);
-    return source.slice(start, end);
+    return src.slice(start, end);
 }
 
 const previewSlice = extractSlice(
@@ -330,12 +332,64 @@ test('离开 pngtuber：先作废在途预览（世代号+运行时 loadToken）
     assert.ok(block.indexOf("previousModelType === 'pngtuber'") < block.indexOf('currentModelType = type;'));
 
     // 跨文件契约：pngtuber-core 必须提供并导出 cancelPNGTuberAvatarLoads，
-    // 且其实现确实推进 loadPNGTuberAvatar 使用的序列号
-    const coreSource = fs.readFileSync(
-        path.join(PROJECT_ROOT, 'static', 'pngtuber-core.js'), 'utf8');
+    // 先自增序列号（拦截外层 loadPNGTuberAvatar 的 show()），再穿透到管理器
+    // 内部作废在途 load()——isCurrentLoad 只看 _loadGeneration/_latestLifecycleLoadToken，
+    // 外层序列号对它不可见，缺了内部作废则挂起的加载解析后仍会 setState 写旧图
     assert.ok(coreSource.includes('function cancelPNGTuberAvatarLoads() {'));
-    assert.ok(coreSource.includes('pngtuberLoadSequence += 1;'));
     assert.ok(coreSource.includes('window.cancelPNGTuberAvatarLoads = cancelPNGTuberAvatarLoads;'));
+    const cancelFn = extractSlice(
+        'function cancelPNGTuberAvatarLoads() {',
+        'window.PNGTuberManager =',
+        coreSource);
+    assert.ok(cancelFn.includes('pngtuberLoadSequence += 1;'));
+    assert.ok(cancelFn.includes('manager.cancelInFlightLoad()'));
+    assert.ok(cancelFn.indexOf('pngtuberLoadSequence += 1;') < cancelFn.indexOf('manager.cancelInFlightLoad()'));
+    // load() 的 isCurrentLoad 检查点必须先于 setState('idle')——作废生效的守卫位置
+    const loadStart = coreSource.indexOf('async load(config, options = {}) {');
+    const guardIdx = coreSource.indexOf('if (!isCurrentLoad()) return false;', loadStart);
+    const setStateIdx = coreSource.indexOf("this.setState('idle');", loadStart);
+    assert.ok(loadStart >= 0 && guardIdx > loadStart && setStateIdx > guardIdx);
+});
+
+test('cancelInFlightLoad：内部 isCurrentLoad 作废且 config 重置（内部加载挂起竞态）', () => {
+    // 提取真实的 cancelInFlightLoad 方法执行
+    const slice = extractSlice(
+        'cancelInFlightLoad() {',
+        'async load(config, options = {}) {',
+        coreSource);
+    // pngtuberLoadSequence 取 cancelPNGTuberAvatarLoads 自增后的值（先序列号后内部作废）
+    const sandbox = { pngtuberLoadSequence: 9 };
+    vm.createContext(sandbox);
+    vm.runInContext(`globalThis.manager = {\n${slice}\n};`, sandbox, { filename: 'cancelInFlightLoad' });
+    const manager = sandbox.manager;
+
+    // 在途 load()（loadToken=8）已捕获 gen=6，字段为 load 进行中的状态
+    manager._loadGeneration = 6;
+    manager._latestLifecycleLoadToken = 8;
+    manager.config = { idle_image: '/user_pngtuber/deleted/idle.png' };
+    const captured = { gen: 6, token: 8 };
+    // load() 内部 isCurrentLoad 的语义复刻
+    const isCurrentLoad = () => (
+        captured.gen === manager._loadGeneration
+        && (!captured.token || captured.token === manager._latestLifecycleLoadToken)
+    );
+    assert.equal(isCurrentLoad(), true, '取消前在途加载应有效');
+
+    manager.cancelInFlightLoad();
+
+    // 取消后 isCurrentLoad 双条件均不满足：挂起的 setupLayeredAdapter 解析后
+    // 命中 load() 的 return false，不再 setState('idle') 把旧图片写进已可见容器，
+    // 也不再挂拖拽监听/悬浮按钮/锁标
+    assert.equal(isCurrentLoad(), false, '取消后在途加载必须失效');
+    assert.equal(manager._loadGeneration, 7);
+    assert.ok(manager._latestLifecycleLoadToken >= 9);
+    // 被取消（可能已被删除）模型的路径不得再作为 runtime 配置被合并进 Save；
+    // 空对象经保存合并链后无 idle_image，走「配置无效」拦截而非泄漏占位图
+    // （vm 跨 realm 对象原型不同一，用键集断言代替 deepEqual）
+    assert.equal(Object.keys(manager.config).length, 0);
+    assert.equal(manager.config.idle_image, undefined);
+    // 下一次新加载（token=10 > 序列号）不受入口检查影响
+    assert.equal(10 < manager._latestLifecycleLoadToken, false);
 });
 
 test('预览失败且仍在 pngtuber 类型：照常报错提示', async () => {
