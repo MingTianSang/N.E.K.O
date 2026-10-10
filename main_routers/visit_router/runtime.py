@@ -45,11 +45,13 @@ connects ``websocket_router`` / ``turn.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import random
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -116,6 +118,7 @@ from main_routers.visit_router.transport_ws import (
 from main_routers.visit_router.transcript_upload import UploadJournal
 from utils.logger_config import get_module_logger
 from utils.visit_route_state import (
+    VISIT_ROUTE_KIND,
     activate_visit_route,
     finalize_visit_route_state,
     get_visit_route_state,
@@ -142,6 +145,7 @@ _SHUTDOWN_ROOM_CANCEL_S = 1.0
 _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
+_ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
 
 # ═════════════════════════════════════════════════════════════════════
 # 依赖注入
@@ -271,6 +275,11 @@ def get_runtime(lanlan_name: str) -> Optional["VisitRuntime"]:
     return _runtimes.get(str(lanlan_name or ""))
 
 
+def live_runtimes() -> list["VisitRuntime"]:
+    """Every registered runtime (one per visiting character), in registration order."""
+    return list(_runtimes.values())
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
@@ -346,6 +355,23 @@ _stop_gen = 0
 _stopping = False
 """True while ``stop_all`` runs: a ``start_visit`` arriving meanwhile is refused (it would not be stopped)."""
 
+_account_changes = 0
+"""Community logouts / account switches in progress (:func:`account_change`): no visit is admitted."""
+
+_account_gen = 0
+"""Bumped when an account change starts: a ``start_visit`` that was awaiting meanwhile does not register."""
+
+_account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = None
+"""Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
+
+
+def _account_change_mutex() -> asyncio.Lock:
+    global _account_change_lock
+    loop = asyncio.get_running_loop()
+    if _account_change_lock is None or _account_change_lock[0] is not loop:
+        _account_change_lock = (loop, asyncio.Lock())
+    return _account_change_lock[1]
+
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
     """Registry ``has_background_tasks``: this character's visit background writes are running."""
@@ -366,6 +392,24 @@ async def _remember_name(character_uid: str) -> None:
         name = await local_chars.resolve_char_name(character_uid)
     except Exception:  # noqa: BLE001 - 认不出名字就只按 uid 登记
         return
+    if not name:
+        return
+    for old, uid in list(_uid_by_name.items()):
+        if uid == character_uid and old != name:
+            del _uid_by_name[old]
+    _uid_by_name[name] = character_uid
+
+
+async def _remember_name_strict(character_uid: str) -> None:
+    """Like :func:`_remember_name`, but a config read failure raises (the clearing guard fails closed).
+
+    A guard registered only under the uid would not block a rename of the
+    character's current name, so it must not be entered without one; a
+    deleted character (no current name) has nothing left to protect.
+    """
+    from main_logic.visit import local_chars
+
+    name = await local_chars.resolve_char_name(character_uid)
     if not name:
         return
     for old, uid in list(_uid_by_name.items()):
@@ -403,6 +447,36 @@ def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[A
     return task
 
 
+@contextlib.asynccontextmanager
+async def hold_character_lifecycle(character_uids: Iterable[str]):
+    """``lifecycle_guard`` of the clearing endpoints: rename / delete of these characters answer 400 while held.
+
+    Entered under the character-config mutation lock (the one rename and
+    delete run under), so a rename already in progress finishes first and
+    the clearing then re-reads the new name; once entered, the characters
+    count as having visit background work (``is_character_lifecycle_locked``).
+    """
+    from utils.character_memory import character_config_mutation_lock
+
+    held = asyncio.get_running_loop().create_future()
+    buckets: list[tuple[str, set]] = []
+    try:
+        async with character_config_mutation_lock:
+            for uid in sorted({str(u) for u in character_uids if u}):
+                await _remember_name_strict(uid)
+                bucket = _visit_bg_tasks.setdefault(uid, set())
+                bucket.add(held)
+                buckets.append((uid, bucket))
+        yield
+    finally:
+        if not held.done():
+            held.set_result(None)
+        for uid, bucket in buckets:
+            bucket.discard(held)
+            if not bucket and _visit_bg_tasks.get(uid) is bucket:
+                _visit_bg_tasks.pop(uid, None)
+
+
 def current_instance(lanlan_name: str) -> Optional[str]:
     """Registry ``current_instance``: the visit id owning the character."""
     rt = _runtimes.get(str(lanlan_name or ""))
@@ -437,6 +511,10 @@ def _reset_for_tests() -> None:
     _room_cancels.clear()
     _outbox_cleanups.clear()
     _awaited_writes.clear()
+    global _account_changes, _account_gen, _account_change_lock
+    _account_changes = 0
+    _account_gen = 0
+    _account_change_lock = None
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -1179,6 +1257,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
+
+    def replay_for_bind(self) -> None:
+        """Queue :meth:`bind_replay_frames` on the ordered display queue (``visit_bind``).
+
+        Taken and queued synchronously when the socket binds: frames queued
+        earlier go out first, frames of later transitions after, so an older
+        snapshot never lands behind a newer phase.
+        """
+        for frame in self.bind_replay_frames():
+            self._post_display(frame)
 
     # ── 媒体 ─────────────────────────────────────────────────────────
 
@@ -2059,6 +2147,35 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             _awaited_writes.add(write)
             write.add_done_callback(_awaited_writes.discard)
 
+    async def wait_upload_sealed(self, timeout: float) -> bool:
+        """Wait (bounded) until this visit's upload file is sealed; False on timeout.
+
+        Also True once the exit flow ended with nothing left to seal (no
+        upload journal was ever opened, or the seal step failed). A seal the
+        exit flow handed to a background task (header still writing, a slow
+        disk) is waited for even after the exit flow itself finished.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while True:
+            sealing = self._sealing
+            header_pending = self._header_pending()
+            if sealing is not None and sealing.done() and not header_pending:
+                return True
+            task = self._exit_task
+            exited = (task is not None and task.done()) or self._terminated
+            if exited and not self.seal_pending():
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(_HANDOFF_POLL_S)
+
+    def seal_pending(self) -> bool:
+        """The upload seal is still being written (a background chain may outlive the exit flow)."""
+        sealing = self._sealing
+        return ((sealing is not None and not sealing.done()) or self._header_pending()
+                or (self._files_deferred and not self._deferred_files_done))
+
     def _seal_settled(self) -> bool:
         return not self._header_pending() and (self._sealing is None or self._sealing.done())
 
@@ -2530,6 +2647,9 @@ async def start_visit(
     if side not in ("host", "guest"):
         raise ValueError("side must be 'host' or 'guest'")
     stop_gen = _stop_gen
+    account_gen = _account_gen
+    if _account_changes:
+        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
@@ -2560,6 +2680,9 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
+        if _account_gen != account_gen or _account_changes:
+            # 入场途中开始了登出 / 换账号：这一场会跑在已不存在 / 别人的账号下，不登记
+            raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
         if _stop_gen != stop_gen or _stopping:
             # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
@@ -2604,9 +2727,19 @@ async def _local_account() -> Optional[str]:
 
 
 async def route_stream_message(lanlan_name: str, message: dict) -> bool:
+    from main_routers.visit_router import display_socket
+    from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION
+
     rt = _runtimes.get(str(lanlan_name or ""))
     if rt is None or not is_visit_route_active(lanlan_name):
         return False
+    origin = DISPLAY_SOCKET_CONNECTION.get()
+    if origin is not None and not display_socket.is_bound(origin):
+        # 来自没 visit_bind 的 display socket（分派途中路由换成了串门）：吞掉、把未授权提示发回发起的
+        # 那条连接（不是当前的 mgr.websocket），不代亲人发言
+        request_id = message.get("request_id") if isinstance(message, dict) else None
+        await display_socket.refuse(origin, request_id)
+        return True
     return await rt.on_stream_message(message)
 
 
@@ -2669,6 +2802,77 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
         return 200, {"ok": True, "mode": "wrap_up", "exit_task_started": False}
     started = rt.request_finalize("route_end")
     return 200, {"ok": True, "mode": "finalize", "exit_task_started": started}
+
+
+def cancel_background_writes() -> int:
+    """Startup rollback: cancel every registered visit background write (digest / summary); returns how many."""
+    tasks = [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
+    for task in tasks:
+        task.cancel()
+    return len(tasks)
+
+
+@asynccontextmanager
+async def account_change(
+    timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S,
+    *,
+    ends_visits: Optional[Callable[[], Awaitable[bool]]] = None,
+):
+    """Hold across a community logout / account switch: no visit is admitted, live ones end first.
+
+    On entry the admission fence goes up (a start already past its account
+    lookup is refused as well), then every live visit is ended and its
+    upload seal awaited (:func:`end_visits_for_account_change`); the caller
+    changes the credentials inside the block. Account changes run one at a
+    time (the fence goes up before queuing). ``ends_visits()`` (asked once
+    the fence is up, so no visit is admitted while it decides) can keep live
+    visits running, e.g. for a re-login as the same account. Ending visits
+    never raises.
+    """
+    global _account_changes, _account_gen
+    _account_changes += 1
+    _account_gen += 1
+    try:
+        # 准入闸先立起再排队：前一次变更还在等某场封存时，那场可能已从 _runtimes 注销，
+        # 后一次看到空表就会抢先改凭证——账号变更一次一个
+        async with _account_change_mutex():
+            if (_runtimes or _seals_in_background()) and (ends_visits is None or await ends_visits()):
+                try:
+                    await end_visits_for_account_change(timeout)
+                except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
+                    logger.warning("visit: ending live visits before the account change failed: %r", exc)
+            yield
+    finally:
+        _account_changes -= 1
+
+
+def _seals_in_background() -> list["VisitRuntime"]:
+    """Recently ended runtimes whose upload seal is still being written."""
+    return [rt for rt in list(_recent.values()) if rt.seal_pending()]
+
+
+async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S) -> int:
+    """Community logout / account switch: ``route_end`` every live visit, wait until each sealed its upload.
+
+    The upload file names the account the visit ran under; the local login
+    state is cleared or replaced only after that (bounded by ``timeout``,
+    shared by all visits). Returns how many visits were ended.
+    """
+    runtimes = list(_runtimes.values())
+    ended = 0
+    for rt in runtimes:
+        if rt.request_finalize("route_end"):
+            ended += 1
+    # 刚注销、封存还在后台写的场次（退出流程超过封存期限）同样要等：它们已不在 _runtimes 里
+    runtimes += [rt for rt in _seals_in_background() if rt not in runtimes]
+    if runtimes:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        results = await asyncio.gather(*(rt.wait_upload_sealed(max(0.0, deadline - loop.time()))
+                                         for rt in runtimes), return_exceptions=True)
+        if not all(result is True for result in results):
+            logger.warning("visit: account change went ahead before every upload was sealed")
+    return ended
 
 
 async def stop_all(reason: str = "shutdown") -> None:
@@ -2775,7 +2979,7 @@ def register_visit_route_kind() -> None:
     from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
 
     register_external_route_kind(ExternalRouteKind(
-        kind="neko_visit",
+        kind=VISIT_ROUTE_KIND,
         is_active=is_visit_route_active,
         route_stream_message=route_stream_message,
         on_start_session=on_start_session,
@@ -2792,5 +2996,6 @@ __all__ = [
     "VisitRuntime", "VisitRefused", "RuntimeDeps", "start_visit", "end_visit", "stop_all",
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
-    "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
+    "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
+    "hold_character_lifecycle", "end_visits_for_account_change", "account_change", "cancel_background_writes",
 ]

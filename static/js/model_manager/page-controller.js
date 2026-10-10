@@ -3032,15 +3032,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             const tryMatchVrm = () => {
                                 if (!_vrmPathSwitch) return false;
                                 const vrmPath = _vrmPathSwitch;
-                                const vrmFilename = vrmPath.split(/[/\\]/).pop();
-                                const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
-                                    if (!opt.value) return false;
-                                    return opt.value === vrmPath;
-                                }) || Array.from(vrmModelSelect.options).find(opt => {
-                                    if (!opt.value) return false;
-                                    const optFilename = opt.getAttribute('data-filename') || '';
-                                    return optFilename === vrmFilename || opt.value.endsWith(vrmFilename);
-                                });
+                                const matchedOption = ModelPathHelper.findVrmOption(vrmModelSelect.options, vrmPath);
                                 if (matchedOption) {
                                     vrmModelSelect.value = matchedOption.value;
                                     dispatchModelManagerChange(vrmModelSelect);
@@ -3093,11 +3085,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         return;
                     }
 
-                    // 使用 ModelPathHelper 确保 data-path 属性永远是有效的 URL
+                    // URL is for loading; data-path preserves the raw configuration reference.
                     const validPath = ModelPathHelper.normalizeModelPath(modelPath, 'model');
 
                     option.value = validPath;
-                    option.setAttribute('data-path', validPath);
+                    option.setAttribute('data-path', ModelPathHelper.normalizeModelPath(model.path || modelPath, 'model'));
                     if (filename) {
                         option.setAttribute('data-filename', filename);
                     }
@@ -3741,7 +3733,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 加载模型特定的情感映射配置
                 if (vrmManager && vrmManager.expression && modelPath) {
                     // 从模型路径提取模型名称
-                    const modelName = modelPath.split('/').pop().replace(/\.vrm$/i, '');
+                    const modelName = ModelPathHelper.getVrmModelName(modelPath, filename);
                     vrmManager.expression.loadMoodMap(modelName);
                 }
 
@@ -4707,7 +4699,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 const option = document.createElement('option');
                 option.value = validPath;
-                option.setAttribute('data-path', validPath);
+                option.setAttribute('data-path', ModelPathHelper.normalizeModelPath(model.path || modelPath, 'model'));
                 option.setAttribute('data-sub-type', 'vrm');
                 if (filename) option.setAttribute('data-filename', filename);
                 if (model.item_id) option.dataset.itemId = model.item_id;
@@ -9540,19 +9532,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
 
                     // 在合并列表中查找匹配的 VRM 选项
-                    const vrmFilename = vrmModelPath.split(/[/\\]/).pop();
-                    const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
-                        if (!opt.value) return false;
-                        const optPath = opt.getAttribute('data-path') || '';
-                        const optFilename = opt.getAttribute('data-filename') || '';
-                        const optValue = opt.value || '';
-
-                        if (optValue === vrmModelPath || optPath === vrmModelPath) return true;
-                        if (vrmFilename && (optFilename === vrmFilename || optValue.endsWith(vrmFilename) || optPath.endsWith(vrmFilename))) return true;
-                        if (vrmFilename && (optPath.includes(vrmFilename) || optValue.includes(vrmFilename))) return true;
-
-                        return false;
-                    });
+                    const matchedOption = ModelPathHelper.findVrmOption(vrmModelSelect.options, vrmModelPath);
 
                     if (matchedOption) {
                         vrmModelSelect.value = matchedOption.value;
