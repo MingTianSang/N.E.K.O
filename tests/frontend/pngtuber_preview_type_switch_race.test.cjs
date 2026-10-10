@@ -52,6 +52,7 @@ function makeSandbox({ initialType = 'pngtuber', typeDuringLoad = 'pngtuber' } =
         currentLive3dSubType: '',
         currentModelInfo: null,
         pendingPNGTuberPreview: null,
+        unfinalizedPNGTuberCommit: null,
         savePositionBtn: null,
         pngtuberPreviewGeneration: 0,
         t: (key, fallback) => fallback,
@@ -303,11 +304,15 @@ test('头像加载被接受后立即提交模型信息，metadata fetch 期间�
     // 该 fetch 是无超时的裸请求，若挂起则 finally 永不执行，悬置的 pending
     // 会让该模型被删除安全检查误拦为「绑定中」
     assert.equal(sandbox.pendingPNGTuberPreview, null);
+    // 已提交未定稿的条目引用已登记：若 fetch 从此挂起，离开块按它代行撤销
+    // （Codex P2@1495：只靠预览出口的撤销在挂起时不可达）
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, sandbox.currentModelInfo);
 
     resolveFetch();
     const result = await preview;
     assert.equal(result, true);
     assert.equal(sandbox.pendingPNGTuberPreview, null);
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, null, '成功收尾后登记必须清除');
     assert.equal(sandbox.statusMessages.length, 1);
     assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型: demo/);
 });
@@ -330,6 +335,10 @@ test('离开 pngtuber：先作废在途预览（世代号+运行时 loadToken）
     assert.ok(block.indexOf('window.cancelPNGTuberAvatarLoads') < clearIdx);
     // 作废判定依据 previousModelType，必须先于 currentModelType 改写
     assert.ok(block.indexOf("previousModelType === 'pngtuber'") < block.indexOf('currentModelType = type;'));
+    // 已在检查点提交、预览未走完的条目：离开时按条目对象同一性代行撤销
+    // （metadata fetch 挂起时预览自己的 finally 永不可达——Codex P2@1495）
+    assert.ok(block.includes('if (unfinalizedPNGTuberCommit && currentModelInfo === unfinalizedPNGTuberCommit) {'));
+    assert.ok(block.includes('unfinalizedPNGTuberCommit = null;'));
 
     // 跨文件契约：pngtuber-core 必须提供并导出 cancelPNGTuberAvatarLoads，
     // 先自增序列号（拦截外层 loadPNGTuberAvatar 的 show()），再穿透到管理器
@@ -364,21 +373,70 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     // 用户切走→切回→选了 B；A 的列表请求随后返回，旧链若继续为 preferredConfig=A
     // 发起预览，会给 A 分配比 B 更新的预览世代号、反向顶掉用户的新选择。
     // 预览世代号在预览发起时才分配，识别不了链级过期——必须在链入口捕获世代号、
-    // 发起预览前复查。
+    // 发起预览前复查，并把链有效性返回给调用方（角色配置路径在 switchModelDisplay
+    // 返回后还会自己发起预览，函数内部的复查拦不到它——wehos 第 6 轮 🔴）。
     const start = source.indexOf('async function switchModelDisplay(');
     assert.ok(start >= 0, 'switchModelDisplay 不存在');
     const captureIdx = source.indexOf('const switchGeneration = ++modelDisplaySwitchGeneration;', start);
     assert.ok(captureIdx > start, '链世代号必须在 switchModelDisplay 入口捕获');
-    const pngBranchStart = source.indexOf('await loadPNGTuberModels();', captureIdx);
+    // 捕获必须先于函数内任何 await：入口到捕获点之间不得出现 await
+    // （此前用 indexOf('await ', captureIdx) 断言恒真，没有验证力——wehos 指出）
+    assert.ok(!source.slice(start, captureIdx).includes('await '), '捕获前不得有 await');
+
+    const pngBranchStart = source.indexOf('await loadPNGTuberModels({ isStale: chainStale });', captureIdx);
     assert.ok(pngBranchStart > captureIdx, 'pngtuber 分支列表加载不存在');
     const previewCallIdx = source.indexOf('await selectAndPreviewFirstPNGTuberModelAfterModeSwitch(', pngBranchStart);
     assert.ok(previewCallIdx > pngBranchStart, 'pngtuber 分支预览调用不存在');
-    // 复查必须落在「列表 await 之后、发起预览之前」
-    const recheckIdx = source.indexOf('if (switchGeneration !== modelDisplaySwitchGeneration) {', pngBranchStart);
+    // 复查必须落在「列表 await 之后、发起预览之前」，且过期时返回 false（链无效）
+    const recheckIdx = source.indexOf('if (chainStale()) {', pngBranchStart);
     assert.ok(recheckIdx > pngBranchStart && recheckIdx < previewCallIdx, '链过期复查缺失或位置错误');
-    // 捕获必须先于分支内任何 await（否则捕获不到并发切换）
-    const firstAwaitIdx = source.indexOf('await ', captureIdx);
-    assert.ok(firstAwaitIdx > captureIdx, '入口捕获后才有 await');
+    assert.ok(source.indexOf('return false;', recheckIdx) < previewCallIdx, '过期链必须返回 false');
+
+    // 函数末尾把链有效性作为返回值传出
+    const fnEndIdx = source.indexOf('_dispatchTutorialEvent();', previewCallIdx);
+    assert.ok(fnEndIdx > previewCallIdx);
+    const fnTail = source.slice(previewCallIdx, fnEndIdx);
+    assert.ok(fnTail.includes('return switchGeneration === modelDisplaySwitchGeneration;'));
+
+    // 角色配置加载路径必须消费该返回值：只查 currentModelType 拦不住
+    // 「切走又切回」的场景（届时类型复查会通过）
+    const charPathIdx = source.indexOf("const switchChainValid = await switchModelDisplay('pngtuber'");
+    assert.ok(charPathIdx > 0, '角色配置路径未消费链有效性');
+    const charBlock = source.slice(charPathIdx, source.indexOf('const matchedOption = findPNGTuberOptionByConfig(', charPathIdx));
+    assert.ok(charBlock.includes('if (!switchChainValid || currentModelType !== \'pngtuber\') return;'));
+
+    // 列表加载器必须在 DOM 写入前复查过期（Codex P2@2251）：过期链的列表返回
+    // 不得把共享 modelSelect 换成 PNGTuber 选项（用户可能已切到 live2d）
+    const loaderStart = source.indexOf('async function loadPNGTuberModels(options = {}) {');
+    assert.ok(loaderStart > 0, 'loadPNGTuberModels 未接收 options');
+    const loaderEnd = source.indexOf('function clearPNGTuberPreviewControls(', loaderStart);
+    const loaderBlock = source.slice(loaderStart, loaderEnd);
+    const staleIdx = loaderBlock.indexOf('if (isStale()) return false;');
+    const domIdx = loaderBlock.indexOf("modelSelect.innerHTML = '';");
+    assert.ok(staleIdx > 0 && domIdx > staleIdx, '加载器的过期复查必须先于 DOM 写入');
+    // catch 路径同样不得写 DOM
+    const catchIdx = loaderBlock.indexOf('} catch (error) {');
+    assert.ok(loaderBlock.indexOf('if (isStale()) return false;', catchIdx) > catchIdx, 'catch 路径缺少过期复查');
+});
+
+test('控件加载抛异常且预览已被作废：finally 兜底撤销已提交条目', async () => {
+    const sandbox = makeSandbox();
+    // 头像立即被接受（检查点已提交），随后 metadata fetch 期间切走并抛错
+    sandbox.fetchPNGTuberLayeredMetadata = async () => {
+        sandbox.currentModelType = 'live2d';
+        sandbox.pngtuberPreviewGeneration += 1;
+        throw new Error('render boom');
+    };
+    const result = await runPreview(sandbox);
+
+    assert.equal(result, false);
+    // catch 出口也必须撤销（撤销只在 try 之后的出口时，异常路径会把过期条目
+    // 留在 live2d 下——wehos 第 6 轮可选项 2）
+    assert.equal(sandbox.currentModelInfo, null);
+    // 被作废预览的失败静默
+    assert.deepEqual(sandbox.statusMessages, []);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, null);
 });
 
 test('cancelInFlightLoad：在途加载作废且丢 config；已完成加载的 config 必须保留', () => {
