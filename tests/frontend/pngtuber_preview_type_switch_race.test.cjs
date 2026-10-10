@@ -394,11 +394,11 @@ test('切换链世代号：旧链的列表 await 之后不得再发起预览（C
     const staleReturnIdx = source.indexOf('return false;', recheckIdx);
     assert.ok(staleReturnIdx !== -1 && staleReturnIdx < previewCallIdx, '过期链必须返回 false');
 
-    // 函数末尾把链有效性作为返回值传出
+    // 函数末尾把链有效性作为返回值传出（isStale 并入由链世代号专门用例断言）
     const fnEndIdx = source.indexOf('_dispatchTutorialEvent();', previewCallIdx);
     assert.ok(fnEndIdx > previewCallIdx);
     const fnTail = source.slice(previewCallIdx, fnEndIdx);
-    assert.ok(fnTail.includes('return switchGeneration === modelDisplaySwitchGeneration;'));
+    assert.ok(fnTail.includes('return switchGeneration === modelDisplaySwitchGeneration'));
 
     // 角色配置加载路径必须消费该返回值：只查 currentModelType 拦不住
     // 「切走又切回」的场景（届时类型复查会通过）
@@ -747,20 +747,36 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     // 预览世代号、反向顶掉 B。
     assert.ok(source.includes('let userModelSelectionGeneration = 0;'), '缺少手动选择世代号声明');
 
-    // 自增点：真实用户（非 suppress）的模型下拉选择
+    // 自增点：真实用户（非 suppress）的模型下拉选择，且只在「选择确实被接受」后计数
     const modelSelHandler = source.indexOf("modelSelect.addEventListener('change', async (e) => {");
     assert.ok(modelSelHandler > 0);
-    const bumpInModelSel = source.indexOf('userModelSelectionGeneration += 1;', modelSelHandler);
-    assert.ok(bumpInModelSel > modelSelHandler && bumpInModelSel - modelSelHandler < 600,
-        'modelSelect handler 须在入口附近自增手动选择世代号');
-    assert.ok(source.slice(modelSelHandler, bumpInModelSel).includes('!isSuppressedModelManagerChangeEvent(e)'),
-        '自增必须以「非 suppress（真实用户）」为门槛');
+    const pngBranchIdx = source.indexOf("if (currentModelType === 'pngtuber') {", modelSelHandler);
+    assert.ok(pngBranchIdx > modelSelHandler);
+    // 入口到 pngtuber 分支之间不得有自增（Codex P2@6698：语音模式拒绝路径之前
+    // 自增，会让被挡回的选择误废角色自动加载链）
+    assert.ok(!source.slice(modelSelHandler, pngBranchIdx).includes('userModelSelectionGeneration += 1;'),
+        '自增不得位于选择被接受之前');
+    // pngtuber 分支（无拒绝路径，选择即接受）内自增，且以非 suppress 为门槛
+    const pngLoadIdx = source.indexOf('await loadSelectedPNGTuberOption(', pngBranchIdx);
+    const pngBranchBlock = source.slice(pngBranchIdx, pngLoadIdx);
+    assert.ok(pngBranchBlock.includes('userModelSelectionGeneration += 1;'));
+    assert.ok(pngBranchBlock.includes('!isSuppressedModelManagerChangeEvent(e)'));
+    // live2d 路径：自增必须在语音检查之后
+    const voiceIdx = source.indexOf('const voiceStatus = await checkVoiceModeStatus();', pngLoadIdx);
+    const live2dCommitIdx = source.indexOf('currentModelInfo = findLive2DModelBySelection(', voiceIdx);
+    const live2dBumpIdx = source.indexOf('userModelSelectionGeneration += 1;', voiceIdx);
+    assert.ok(voiceIdx > pngLoadIdx && live2dCommitIdx > voiceIdx, 'live2d 路径结构变化');
+    assert.ok(live2dBumpIdx > voiceIdx && live2dBumpIdx < live2dCommitIdx,
+        'live2d 自增必须落在语音检查之后、提交流程之前');
+    // vrmModelSelect 同理：自增在语音检查之后，且以非 suppress 为门槛
     const vrmHandler = source.indexOf("vrmModelSelect.addEventListener('change', async (e) => {");
     assert.ok(vrmHandler > 0);
-    const bumpInVrm = source.indexOf('userModelSelectionGeneration += 1;', vrmHandler);
-    assert.ok(bumpInVrm > vrmHandler && bumpInVrm - vrmHandler < 700,
-        'vrmModelSelect handler 须自增手动选择世代号');
-    assert.ok(source.slice(vrmHandler, bumpInVrm).includes('!isSuppressedModelManagerChangeEvent(e)'));
+    const vrmVoiceIdx = source.indexOf('const voiceStatus = await checkVoiceModeStatus();', vrmHandler);
+    const vrmBumpIdx = source.indexOf('userModelSelectionGeneration += 1;', vrmHandler);
+    assert.ok(vrmVoiceIdx > vrmHandler, 'vrm 语音检查不存在');
+    assert.ok(vrmBumpIdx > vrmVoiceIdx, 'vrmModelSelect 自增必须在语音检查之后');
+    assert.ok(source.slice(vrmVoiceIdx, vrmBumpIdx).includes('!isSuppressedModelManagerChangeEvent(e)'),
+        'vrm 自增必须以非 suppress 为门槛');
 
     // 角色加载链：捕获先于链内第一个 await；/api/characters 返回后复查；
     // pngtuber 路径守卫并入同一复查（覆盖 switchModelDisplay 期间的手选）
@@ -774,4 +790,76 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     assert.ok(postFetchCheck > fetchIdx && postFetchCheck - fetchIdx < 200, '/api/characters 返回后必须复查');
     const pngGuardIdx = source.indexOf('|| selectionGenerationAtStart !== userModelSelectionGeneration) return;', fetchIdx);
     assert.ok(pngGuardIdx > postFetchCheck, 'pngtuber 路径守卫必须并入手动选择世代号复查');
+
+    // 手动选择世代号必须随 options.isStale 进入切换链内部（wehos 🔴 / Codex P1@2274：
+    // 链内 selectAndPreview 会在调用方复查之前先为角色模型发起预览）
+    const charSwitchIdx = source.indexOf("const switchChainValid = await switchModelDisplay('pngtuber'", fnStart);
+    assert.ok(charSwitchIdx > fnStart);
+    const charSwitchBlock = source.slice(charSwitchIdx, source.indexOf('});', charSwitchIdx));
+    assert.ok(charSwitchBlock.includes('isStale: () => selectionGenerationAtStart !== userModelSelectionGeneration'),
+        '角色配置路径必须把手动选择世代号复查注入切换链');
+    // 链内合并判定：chainStale = 链世代号 || 调用方 isStale
+    const chainStaleIdx = source.indexOf('const chainStale = () => switchGeneration !== modelDisplaySwitchGeneration');
+    assert.ok(chainStaleIdx > 0, 'chainStale 定义不存在');
+    const chainStaleBlock = source.slice(chainStaleIdx, source.indexOf('await loadPNGTuberModels({ isStale: chainStale });', chainStaleIdx));
+    assert.ok(chainStaleBlock.includes('options.isStale'), 'chainStale 必须并入调用方注入的 isStale');
+    // 末尾返回值同样计入 isStale
+    const tailReturnIdx = source.indexOf('return switchGeneration === modelDisplaySwitchGeneration', chainStaleIdx);
+    assert.ok(tailReturnIdx > chainStaleIdx);
+    assert.ok(source.slice(tailReturnIdx, tailReturnIdx + 300).includes('options.isStale'),
+        '链有效性返回值必须并入调用方 isStale');
+});
+
+test('A 已提交被 B 取代但 B 未提交：A 条目保留，双槽防护完整（Codex P2@1497）', async () => {
+    const sandbox = makeSandbox();
+    let resolveFetchA;
+    let resolveAvatarB;
+    const gateFetchA = new Promise((resolve) => { resolveFetchA = resolve; });
+    const gateAvatarB = new Promise((resolve) => { resolveAvatarB = resolve; });
+    let avatarCalls = 0;
+    sandbox.window.loadPNGTuberAvatar = async () => {
+        avatarCalls += 1;
+        if (avatarCalls === 2) await gateAvatarB; // B 的头像加载很慢
+    };
+    sandbox.fetchPNGTuberLayeredMetadata = async (config) => {
+        if (String(config.idle_image).includes('/a/')) {
+            await gateFetchA;
+        }
+        return null;
+    };
+
+    const previewA = runPreview(sandbox, { name: 'A', idle: '/user_pngtuber/a/idle.png' });
+    await tick();
+    // A 已过检查点提交，挂在 metadata fetch
+    assert.equal(sandbox.currentModelInfo.name, 'A');
+
+    // 用户选 B：B 登记 pending、挂在头像加载（尚未提交）
+    const previewB = runPreview(sandbox, { name: 'B', idle: '/user_pngtuber/b/idle.png' });
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'B');
+
+    // A 的 fetch 归来：A 被取代退出，但已提交的条目必须保留——屏上头像仍是 A，
+    // 「committed=A + pending=B」正是删除防护双槽的设计状态；若置 null，
+    // B 挂起/失败时页面没有可保存/可暂存的记录，A 的 folder 也失去删除防护
+    resolveFetchA();
+    const resultA = await previewA;
+    assert.equal(resultA, false);
+    assert.equal(sandbox.currentModelInfo.name, 'A', '被取代 ≠ 被撤销：B 提交前 A 条目保留');
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'B');
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, null, 'A 已定稿（被取代），登记应交给 B');
+
+    // B 提交后覆盖 A
+    resolveAvatarB();
+    const resultB = await previewB;
+    assert.equal(resultB, true);
+    assert.equal(sandbox.currentModelInfo.name, 'B');
+});
+
+test('上传流程：列表刷新过期时不得继续选中/兜底直载（Codex P2@3193）', () => {
+    const uploadIdx = source.indexOf("await fetch('/api/model/pngtuber/upload_model'");
+    assert.ok(uploadIdx > 0, '上传流程不存在');
+    const uploadBlock = source.slice(uploadIdx, source.indexOf('uploadBtn.disabled = false;', uploadIdx));
+    // 刷新结果必须被消费：过期（false）时跳过「选中新模型/兜底 loadPNGTuberAvatar」，
+    // 否则会后台替换运行时 config，切回时凭空出现导入头像甚至被保存
+    assert.ok(uploadBlock.includes('const refreshed = await loadPNGTuberModels();'));
+    assert.ok(uploadBlock.includes('if (refreshed !== false && result.folder && modelSelect) {'));
 });
