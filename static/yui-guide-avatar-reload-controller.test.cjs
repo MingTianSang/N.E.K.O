@@ -165,6 +165,85 @@ test('tutorial avatar reload snapshots proactive chat when override starts, not 
     assert.equal(window.scheduleCalls, 1);
 });
 
+test('tutorial avatar reload snapshots persisted user truth when memory is already suppressed', async () => {
+    const window = loadReloadControllerWindow();
+    // 另一层抑制（或历史污染）已把内存关死；持久化设置仍保留用户真值。
+    window.proactiveChatEnabled = false;
+    window.appState.proactiveChatEnabled = false;
+    window.proactiveVisionChatEnabled = false;
+    window.appState.proactiveVisionChatEnabled = false;
+    window.localStorage = {
+        getItem(key) {
+            if (key !== 'project_neko_settings') return null;
+            return JSON.stringify({
+                proactiveChatEnabled: true,
+                proactiveVisionEnabled: true,
+                proactiveVisionChatEnabled: true,
+                proactiveNewsChatEnabled: false,
+                proactiveVideoChatEnabled: true,
+                proactivePersonalChatEnabled: false,
+                proactiveMusicEnabled: true,
+                proactiveMemeEnabled: false,
+                proactiveMiniGameInviteEnabled: true
+            });
+        }
+    };
+    const saveCalls = [];
+    window.appSettings = {
+        saveSettings(options) {
+            saveCalls.push(options || null);
+        }
+    };
+
+    const host = {
+        constructor: {
+            detectModelPrefix() {
+                return 'live2d';
+            }
+        }
+    };
+    const controller = window.TutorialAvatarReloadController.createController({
+        host,
+        timeoutMs: 200,
+        resolveCurrentName: () => Promise.resolve('LanLan'),
+        fetchCharacters: () => Promise.resolve({
+            '猫娘': {
+                LanLan: {
+                    model_type: 'live2d',
+                    live2d: 'lanlan'
+                }
+            }
+        }),
+        buildSnapshotPayload: () => ({ model_type: 'live2d', live2d: 'lanlan' }),
+        reloadModel: () => Promise.resolve(),
+        setPreparing: () => {},
+        revealPrepared: () => {},
+        applyIdentityOverride: () => {},
+        clearViewportWatcher: () => {}
+    });
+
+    await controller.beginOverride();
+
+    assert.equal(window.proactiveChatEnabled, false);
+    assert.equal(window.appState.proactiveChatEnabled, false);
+    assert.deepEqual(saveCalls, []);
+
+    await controller.restoreOverride();
+
+    // 恢复的是持久化用户真值（开），而不是 beginOverride 时的内存抑制态（关）。
+    assert.equal(window.proactiveChatEnabled, true);
+    assert.equal(window.appState.proactiveChatEnabled, true);
+    assert.equal(window.proactiveVisionChatEnabled, true);
+    assert.equal(window.appState.proactiveVisionChatEnabled, true);
+    assert.equal(window.scheduleCalls, 1);
+    // 恢复后立即回写一次，纠正抑制期间可能被写盘的关闭态。
+    // （saveSettings 的参数对象诞生于 vm 上下文，prototype 与本上下文不同，
+    // deepStrictEqual 会误报，故按属性断言。）
+    assert.equal(saveCalls.length, 1);
+    assert.equal(saveCalls[0] && saveCalls[0].skipServerSync, true);
+    assert.equal(saveCalls[0] && saveCalls[0].tutorialProactiveRestore, true);
+});
+
 test('tutorial avatar reload does not overwrite proactive state restored by the tutorial lifecycle', async () => {
     const window = loadReloadControllerWindow();
     window.proactiveChatEnabled = false;

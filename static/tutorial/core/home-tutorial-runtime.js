@@ -81,11 +81,31 @@
         }
     }
 
+    function readPersistedProactiveSettings() {
+        try {
+            const storage = window.localStorage || null;
+            const raw = storage ? storage.getItem('project_neko_settings') : null;
+            if (!raw) return null;
+            const settings = JSON.parse(raw);
+            if (!settings || typeof settings !== 'object') return null;
+            return settings;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function snapshotProactiveState() {
         const snapshot = {};
         const appState = window.appState || null;
+        // 持久化设置是用户意图的权威来源：教程抑制是多层的（头像重载控制器会先于
+        // feature controller begin 把这十个键在内存里关掉），直接快照内存会把上一层
+        // 的临时抑制当成用户设置，end() 时"恢复"出全关。教程期间设置面板被锁、
+        // 落盘又有护栏，localStorage 里的值就是教程前的用户真值。
+        const persisted = readPersistedProactiveSettings();
         HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
-            if (typeof window[key] !== 'undefined') {
+            if (persisted && typeof persisted[key] === 'boolean') {
+                snapshot[key] = persisted[key];
+            } else if (typeof window[key] !== 'undefined') {
                 snapshot[key] = !!window[key];
             } else if (appState && typeof appState[key] !== 'undefined') {
                 snapshot[key] = !!appState[key];
@@ -149,6 +169,22 @@
             } catch (error) {
                 console.warn('[HomeTutorialRuntime] failed to restart proactive schedule:', error);
             }
+        }
+    }
+
+    function persistRestoredProactiveState() {
+        // 恢复后立即回写一次 localStorage（skipServerSync，周期同步随后会带上；
+        // tutorialProactiveRestore 让 saveSettings 跳过教程护栏，用刚恢复的
+        // 用户真值覆盖抑制期间可能漏网写盘的关闭态），避免下次启动读回全关。
+        try {
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings({
+                    skipServerSync: true,
+                    tutorialProactiveRestore: true
+                });
+            }
+        } catch (error) {
+            console.warn('[HomeTutorialRuntime] failed to persist restored proactive state:', error);
         }
     }
 
@@ -517,6 +553,7 @@
         if (snapshot.proactive) {
             applyProactiveState(snapshot.proactive);
             maybeRestartProactiveSchedule(snapshot.proactive);
+            persistRestoredProactiveState();
         }
         if (snapshot.agentFlags) {
             void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)

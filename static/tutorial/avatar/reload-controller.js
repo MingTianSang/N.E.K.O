@@ -16,11 +16,31 @@
         'proactiveMiniGameInviteEnabled'
     ]);
 
+    function readPersistedProactiveSettings() {
+        try {
+            const storage = window.localStorage || null;
+            const raw = storage ? storage.getItem('project_neko_settings') : null;
+            if (!raw) return null;
+            const settings = JSON.parse(raw);
+            if (!settings || typeof settings !== 'object') return null;
+            return settings;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function snapshotProactiveState() {
         const appState = window.appState || null;
         const snapshot = {};
+        // 持久化设置是用户意图的权威来源：本控制器与 home-tutorial feature
+        // controller 是两层独立抑制，内存值可能已被另一层临时置 false，
+        // 直接快照内存会导致恢复出全关。教程期间设置面板被锁、落盘有护栏，
+        // localStorage 里的值就是教程前的用户真值。
+        const persisted = readPersistedProactiveSettings();
         PROACTIVE_STATE_KEYS.forEach((key) => {
-            if (typeof window[key] !== 'undefined') {
+            if (persisted && typeof persisted[key] === 'boolean') {
+                snapshot[key] = persisted[key];
+            } else if (typeof window[key] !== 'undefined') {
                 snapshot[key] = !!window[key];
             } else if (appState && typeof appState[key] !== 'undefined') {
                 snapshot[key] = !!appState[key];
@@ -91,6 +111,22 @@
             state[key] = false;
         });
         return state;
+    }
+
+    function persistRestoredProactiveState() {
+        // 恢复后立即回写一次 localStorage（skipServerSync，周期同步随后会带上；
+        // tutorialProactiveRestore 让 saveSettings 跳过教程护栏，用刚恢复的
+        // 用户真值覆盖抑制期间可能漏网写盘的关闭态），避免下次启动读回全关。
+        try {
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings({
+                    skipServerSync: true,
+                    tutorialProactiveRestore: true
+                });
+            }
+        } catch (error) {
+            console.warn('[TutorialAvatarReloadController] 主动搭话恢复状态回写失败:', error);
+        }
     }
 
     class TutorialAvatarReloadController {
@@ -294,6 +330,9 @@
                     }
                 } finally {
                     applyProactiveState(proactiveSnapshot, { restart: true });
+                    if (proactiveSnapshot) {
+                        persistRestoredProactiveState();
+                    }
                     this.revealPrepared();
                     this.clearViewportWatcher();
                     if (this.override === override) {

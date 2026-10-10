@@ -566,6 +566,69 @@
         'forgeDropEffectsEnabled'
     ];
 
+    // 教程抑制期间被临时关掉的十个主动搭话键。首页教程（NekoHomeTutorialFeatureController）
+    // 和教程头像重载控制器都只在内存里把它们置 false（不写盘），而 saveSettings /
+    // syncSettingsToServer 读的恰好是这些内存镜像。没有护栏时，抑制期间的任何一次
+    // 自动保存（首启回写、boot GET 合并回写、独立 ASR 决策、字幕开关等）都会把
+    // 「教程临时关闭」当作用户设置持久化：教程结束后开关全关、60s 周期同步还会把
+    // 关闭态推上服务器，且 _markUserDirtySettings 会把它们标成用户显式修改，让下次
+    // 启动的 server merge 丢弃服务器真值。抑制激活期间这十个键一律以持久化的
+    // 用户真值为准（教程期间设置面板被锁，localStorage 值就是教程前的用户设置）。
+    const _TUTORIAL_HELD_PROACTIVE_KEYS = [
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveCommunityChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled'
+    ];
+
+    function _isTutorialProactiveSuppressionActive() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            // 头像重载控制器在 feature controller begin 之前就自行关闭这些键
+            // （round prelude 先 beginAvatarOverride 后 beginTakingOver），
+            // 那段时间 feature controller 的护栏看不到抑制，需要单独识别。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            return !!(reloadController
+                && typeof reloadController.hasActiveOverride === 'function'
+                && reloadController.hasActiveOverride());
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _tutorialProactiveHoldValues() {
+        if (!_isTutorialProactiveSuppressionActive()) {
+            return null;
+        }
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            if (!raw) return null;
+            const persisted = JSON.parse(raw);
+            if (!persisted || typeof persisted !== 'object') return null;
+            const held = {};
+            let any = false;
+            _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+                if (typeof persisted[key] === 'boolean') {
+                    held[key] = persisted[key];
+                    any = true;
+                }
+            });
+            return any ? held : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     function _normalizeIndependentAsrProviderPreference(value) {
         // Accepted values mirror INDEPENDENT_ASR_PROVIDER_PREFERENCES in
         // utils/conversation_settings_constants.py; anything else follows the
@@ -680,6 +743,11 @@
      */
     function _markUserDirtySettings() {
         const current = getConversationSettings();
+        // 教程抑制期间这十个键的内存值是临时状态、不是用户意图：diff 前还原成
+        // 持久化真值，否则抑制会把它们全标成用户显式修改（_dirtySettingsKeys
+        // 单调不清除），boot merge 会因 dirty 丢弃服务器真值、保留关闭态。
+        const tutorialProactiveHold = _tutorialProactiveHoldValues();
+        if (tutorialProactiveHold) Object.assign(current, tutorialProactiveHold);
         if (_settingsBaseline) {
             const keys = new Set(
                 Object.keys(current).concat(Object.keys(_settingsBaseline))
@@ -1359,6 +1427,11 @@
             }
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
+                // 教程抑制的十个主动搭话键按持久化真值上行：feature controller 的
+                // 跳过护栏在上面，但头像重载层单独抑制时（controller 未激活）
+                // POST 仍会发出，不能把临时关闭态推给服务器。
+                const sendHold = _tutorialProactiveHoldValues();
+                if (sendHold) Object.assign(settings, sendHold);
                 const mutationVersionAtSend = _crossWindowMutationVersion;
                 const etagKeyMutationVersionsAtSend =
                     _etagKeyMutationVersionsSnapshot();
@@ -1455,7 +1528,10 @@
                             === optimizationDecisionAtSend.value
                     ) {
                         _optimizationDecisionPendingSync = false;
-                        _writeSharedSettings(getConversationSettings(), []);
+                        const ackSettings = getConversationSettings();
+                        const ackHold = _tutorialProactiveHoldValues();
+                        if (ackHold) Object.assign(ackSettings, ackHold);
+                        _writeSharedSettings(ackSettings, []);
                     }
                     _confirmSharedKeyWrites(
                         payload,
@@ -1729,6 +1805,16 @@
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
+        // 教程抑制的十个主动搭话键此时是临时内存态、不是用户设置：落盘前还原成
+        // 持久化真值，防止把临时关闭写进 project_neko_settings，并经 storage
+        // 事件扩散给兄弟窗口、被下次启动读回。
+        // 例外：教程收口的恢复回写（tutorialProactiveRestore）——那一刻内存里
+        // 刚被还原成用户真值，而两层抑制的标记可能还没清完，必须放行让恢复值
+        // 覆盖掉抑制期间可能漏网写盘的关闭态。
+        if (!(options && options.tutorialProactiveRestore)) {
+            const tutorialProactiveHold = _tutorialProactiveHoldValues();
+            if (tutorialProactiveHold) Object.assign(settings, tutorialProactiveHold);
+        }
         // Stamp the keys the user explicitly changed (plus a monotonic write id)
         // into the shared snapshot: every save copies independentAsrEnabled
         // along, so the receiving window needs this metadata to tell a real
