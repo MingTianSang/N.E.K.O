@@ -49,6 +49,7 @@ function makeSandbox({ initialType = 'pngtuber', typeDuringLoad = 'pngtuber' } =
         currentModelType: initialType,
         currentLive3dSubType: '',
         currentModelInfo: null,
+        pendingPNGTuberPreview: null,
         savePositionBtn: null,
         pngtuberPreviewGeneration: 0,
         t: (key, fallback) => fallback,
@@ -137,6 +138,8 @@ test('加载中途切到 live2d：迟到的续体不得重新显示 PNG 容器/�
     assert.equal(sandbox.currentModelInfo, null);
     // 切走后连状态预览控件都不应再加载
     assert.deepEqual(sandbox.records.renderCalls, []);
+    // 取消后 pending 记录必须清空，删除防护恢复到已提交模型
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
 });
 
 test('加载中途切到 live3d：迟到的续体同样不得接管显示', async () => {
@@ -163,6 +166,8 @@ test('入口即已切走（角色配置加载链被打断）：不启动过期�
     assert.deepEqual(sandbox.statusMessages, []);
     // 过期入口调用不得自增世代号（否则会作废仍在进行的合法预览）
     assert.equal(sandbox.pngtuberPreviewGeneration, 0);
+    // 也不得登记 pending 记录（否则会错误保护与新预览无关的模型）
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
 });
 
 test('同类型重叠预览：慢的旧预览 A 不得覆盖先完成的新预览 B', async () => {
@@ -225,4 +230,107 @@ test('旧预览的状态下拉不得在被取代后渲染（metadata fetch 竞�
     assert.equal(sandbox.currentModelInfo.name, 'B');
     // 只渲染了 B 的状态列表；A 的迟到 metadata 被世代号拦下
     assert.deepEqual(sandbox.records.renderCalls, [metadataB]);
+});
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('重叠预览乱序退出：旧预览退出不得清掉新预览的 pending 记录', async () => {
+    const sandbox = makeSandbox();
+    let resolveA;
+    let resolveB;
+    const gateA = new Promise((resolve) => { resolveA = resolve; });
+    const gateB = new Promise((resolve) => { resolveB = resolve; });
+    sandbox.window.loadPNGTuberAvatar = async () => {
+        sandbox.avatarLoadCalls += 1;
+        await (sandbox.avatarLoadCalls === 1 ? gateA : gateB);
+    };
+
+    const previewA = runPreview(sandbox, { name: 'A', idle: '/user_pngtuber/a/idle.png' });
+    const previewB = runPreview(sandbox, { name: 'B', idle: '/user_pngtuber/b/idle.png' });
+    // pending 记录被最新预览 B 覆盖（删除防护跟着最新选择走）
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'B');
+    assert.equal(sandbox.pendingPNGTuberPreview.generation, 2);
+
+    // 被取代的 A 先结束：finally 按世代号判定，不得误清 B 的 pending
+    resolveA();
+    const resultA = await previewA;
+    assert.equal(resultA, false);
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'B');
+    assert.equal(sandbox.currentModelInfo, null);
+
+    // B 随后正常完成：提交并清理自己的 pending
+    resolveB();
+    const resultB = await previewB;
+    assert.equal(resultB, true);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
+    assert.equal(sandbox.currentModelInfo.name, 'B');
+});
+
+test('头像加载被接受后立即提交模型信息，metadata fetch 期间不再空窗', async () => {
+    const sandbox = makeSandbox();
+    let resolveAvatar;
+    let resolveFetch;
+    const gateAvatar = new Promise((resolve) => { resolveAvatar = resolve; });
+    const gateFetch = new Promise((resolve) => { resolveFetch = resolve; });
+    sandbox.window.loadPNGTuberAvatar = async () => {
+        sandbox.avatarLoadCalls += 1;
+        await gateAvatar;
+    };
+    sandbox.fetchPNGTuberLayeredMetadata = async () => {
+        await gateFetch;
+        return null;
+    };
+
+    const preview = runPreview(sandbox);
+    await tick();
+    // 头像仍在加载：currentModelInfo 未提交，但 pending 记录已就位，
+    // deleteSelectedModels 的安全检查据此仍能拦住「删除加载中的模型」
+    assert.equal(sandbox.currentModelInfo, null);
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'demo');
+    assert.equal(sandbox.pendingPNGTuberPreview.generation, 1);
+
+    resolveAvatar();
+    await tick();
+    // 核心断言（Codex P2）：头像已被运行时接受并显示，模型信息在 metadata fetch
+    // 之前提交——期间拖拽/缩放 PNG 时 stageModelManagerPNGTuberPlacement
+    // 不再因 !currentModelInfo 拒绝暂存摆放
+    assert.equal(sandbox.currentModelInfo.name, 'demo');
+    assert.equal(sandbox.currentModelInfo.type, 'pngtuber');
+    assert.equal(sandbox.currentModelInfo.pngtuber.idle_image, '/user_pngtuber/demo/idle.png');
+    // 预览尚未结束，pending 记录仍在（finally 统一清理）
+    assert.equal(sandbox.pendingPNGTuberPreview.folder, 'demo');
+
+    resolveFetch();
+    const result = await preview;
+    assert.equal(result, true);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
+    assert.equal(sandbox.statusMessages.length, 1);
+    assert.match(sandbox.statusMessages[0], /已加载PNGTuber模型: demo/);
+});
+
+test('控件加载期间切走类型：撤销本预览已提交的条目，不把 pngtuber 信息留在 live2d 下', async () => {
+    const sandbox = makeSandbox();
+    let resolveFetch;
+    const gateFetch = new Promise((resolve) => { resolveFetch = resolve; });
+    sandbox.fetchPNGTuberLayeredMetadata = async () => {
+        await gateFetch;
+        return null;
+    };
+
+    const preview = runPreview(sandbox);
+    await tick();
+    // 头像立即被接受（默认桩），检查点已提交本预览的 pngtuber 条目
+    assert.equal(sandbox.currentModelInfo.name, 'demo');
+    // 用户在 metadata fetch 期间切到 live2d
+    sandbox.currentModelType = 'live2d';
+    resolveFetch();
+    const result = await preview;
+
+    assert.equal(result, false);
+    // 按对象同一性撤销：清理的只能是本预览自己提交的条目；
+    // 若新流程已写入更新信息（对象不同一），不会被触碰（由重叠预览用例覆盖）
+    assert.equal(sandbox.currentModelInfo, null);
+    assert.deepEqual(sandbox.statusMessages, []);
+    assert.equal(sandbox.pngtuberContainer.style.display, undefined);
+    assert.equal(sandbox.pendingPNGTuberPreview, null);
 });

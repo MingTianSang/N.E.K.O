@@ -1400,6 +1400,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 运行时层丢弃旧加载，页面层用世代号丢弃旧提交。
     let pngtuberPreviewGeneration = 0;
 
+    // 加载进行中的 PNGTuber 预览记录（入口设置、预览退出时清空）：currentModelInfo 现在
+    // 要到头像加载被接受后才提交，加载窗口内的模型改由它供 deleteSelectedModels 的安全
+    // 检查与删除列表的 isBound 识别，保持与旧「入口即写 currentModelInfo」相同的
+    // 「加载中的模型不可删」保护。
+    let pendingPNGTuberPreview = null;
+
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
@@ -1408,11 +1414,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentModelType !== 'pngtuber') return false;
         const previewGeneration = ++pngtuberPreviewGeneration;
         const modelName = modelInfo.name || pngtuberConfig.name || pngtuberConfig.folder || pngtuberConfig.model_folder || '';
+        const previewFolder = modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName;
         // 不在此处写 window._modelManagerCurrentAvatarType：该旗标由 switchModelDisplay() 单独维护
         // （函数入口无条件置为当前真实 model type），保证它恒等于 currentModelType。本函数的所有
         // 调用方都已先经过 switchModelDisplay('pngtuber')，单写入者纪律可避免旗标在非 pngtuber 页面
         // 被误置而导致 live2d-init 静默跳过 Live2D/VRM 初始化。
-        // currentModelInfo 也不在入口写入，推迟到加载成功且类型/世代复查通过后再提交（见下方注释）。
+        // currentModelInfo 也不在入口写入：加载失败或被取代/取消时不能留下 pngtuber 条目，
+        // 提交点在下方的「头像加载被接受」检查点（见该处注释）。
+        // pending 记录带世代号：重叠预览下新预览会覆盖它，旧预览退出时只清理属于自己的记录。
+        pendingPNGTuberPreview = { folder: previewFolder, generation: previewGeneration };
 
         try {
             if (window.loadPNGTuberAvatar) {
@@ -1425,35 +1435,46 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
                 return false;
             }
+            // 检查点：头像已被运行时接受并显示（loadPNGTuberAvatar 内部操作同一容器），
+            // 模型信息在此提交，不能等到状态预览控件的 metadata fetch 之后——该请求可能
+            // 很慢甚至挂起，而期间用户已经能拖拽/缩放 PNG，stageModelManagerPNGTuberPlacement
+            // 会因 !currentModelInfo 拒绝暂存摆放，这些编辑将无法持久化。
+            // 竞态安全性：上面刚复查过世代号+类型；被取代的旧预览到不了这里，更新的预览
+            // 会在它自己的检查点重新提交。
+            currentLive3dSubType = '';
+            currentModelInfo = {
+                name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
+                folder: previewFolder,
+                path: modelInfo.path || pngtuberConfig.idle_image || '',
+                url: modelInfo.url || pngtuberConfig.idle_image || '',
+                type: 'pngtuber',
+                pngtuber: pngtuberConfig,
+            };
             await loadPNGTuberPreviewControls(pngtuberConfig, previewGeneration);
         } catch (error) {
             console.error('[PNGTuber] preview failed:', error);
             const message = error && error.message ? error.message : String(error || 'Unknown error');
             showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
             return false;
+        } finally {
+            if (pendingPNGTuberPreview && pendingPNGTuberPreview.generation === previewGeneration) {
+                pendingPNGTuberPreview = null;
+            }
         }
-        // 上面的异步加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d），
+        // 控件加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d），
         // 或同类型下已发起更新的预览（A 加载中选了 B）。switchModelDisplay 的新类型分支
         // 已隐藏 pngtuber 容器并接管显示；pngtuber-core 的 loadPNGTuberAvatar 只保证被
-        // 取代的加载不再 show()，容器可见性与模型信息的回写发生在这里——迟到的续体必须
-        // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 提交为当前模型。
+        // 取代的加载不再 show()，容器可见性与提示的回写发生在这里——迟到的续体必须
+        // 直接退出，否则刚加载完的 PNG 会盖住 live2d/3d 模型，或把旧 PNGTuber 报成当前模型。
         if (previewGeneration !== pngtuberPreviewGeneration || currentModelType !== 'pngtuber') {
+            // 本预览已在检查点提交、随后又被取消/取代时，撤掉自己的提交——按对象同一性
+            // 判定，只清理自己写下的条目，绝不触碰其他流程已写入的更新信息。
+            if (currentModelInfo && currentModelInfo.type === 'pngtuber'
+                && currentModelInfo.pngtuber === pngtuberConfig) {
+                currentModelInfo = null;
+            }
             return false;
         }
-        // currentModelInfo / currentLive3dSubType 推迟到这里才提交：加载期间用户可能已切到
-        // live2d/live3d，若在入口就写入，取消后会留下一个 pngtuber 条目挂在新类型下——
-        // showStatus 的定时器、reloadCurrentLive2DModelInModelManager 与保存流程都会读它，
-        // 轻则状态栏显示 PNG 模型名，重则把 idle_image 当 live2d 路径重载/保存。
-        // 取消时也不回填旧值：新类型流程可能已写入更新的模型信息，盲目恢复会把它盖掉。
-        currentLive3dSubType = '';
-        currentModelInfo = {
-            name: modelInfo.label || modelName || t('live2d.pngtuber', 'PNGTuber'),
-            folder: modelInfo.folder || pngtuberConfig.folder || pngtuberConfig.model_folder || modelName,
-            path: modelInfo.path || pngtuberConfig.idle_image || '',
-            url: modelInfo.url || pngtuberConfig.idle_image || '',
-            type: 'pngtuber',
-            pngtuber: pngtuberConfig,
-        };
         if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.classList.add('hidden');
@@ -8522,8 +8543,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (model.type === 'live2d') {
                     isBound = currentLive2DName === model.name;
                 } else if (model.type === 'pngtuber') {
-                    isBound = currentModelType === 'pngtuber' && currentModelInfo && (
-                        currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
+                    isBound = currentModelType === 'pngtuber' && (
+                        (currentModelInfo && (
+                            currentModelInfo.folder === model.folder || currentModelInfo.name === model.name
+                        ))
+                        // 加载进行中的预览尚未提交 currentModelInfo，用 pending 记录识别
+                        || (!!pendingPNGTuberPreview && pendingPNGTuberPreview.folder === model.folder)
                     );
                 } else {
                     isBound = currentLive3DUrl === model.url;
@@ -8616,7 +8641,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 安全防护：移除当前绑定的模型，不允许删除
         const currentLive2DName = currentModelInfo ? currentModelInfo.name : '';
         const currentLive3DUrl = (typeof vrmModelSelect !== 'undefined' && vrmModelSelect) ? vrmModelSelect.value : '';
-        const currentPNGTuberFolder = currentModelInfo && currentModelInfo.type === 'pngtuber' ? currentModelInfo.folder : '';
+        // 加载进行中的 PNGTuber 预览（currentModelInfo 尚未提交）同样视为绑定中，
+        // 否则「预览加载期间删除该模型」会绕过防护，删完预览又把模型显示回来。
+        const currentPNGTuberFolder = (currentModelInfo && currentModelInfo.type === 'pngtuber' ? currentModelInfo.folder : '')
+            || (pendingPNGTuberPreview ? pendingPNGTuberPreview.folder : '');
         for (const modelId of [...selectedDeleteModels]) {
             const { type, key } = parseModelId(modelId);
             const isBound = (type === 'live2d' && key === currentLive2DName) ||
