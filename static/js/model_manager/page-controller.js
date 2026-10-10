@@ -1411,6 +1411,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     // switchModelDisplay 的离开块按此登记代行（同样按条目对象同一性判定）。
     let unfinalizedPNGTuberCommit = null;
 
+    // ⚠️ 位置约束：以下两个世代号声明必须位于初始化处第一个
+    // `await switchModelDisplay(savedModelType, savedSubType)` 之前——整个控制器在
+    // DOMContentLoaded 的 async 回调里自上而下顺序执行，函数声明虽被提升、
+    // let 绑定在声明语句执行前却处于 TDZ，提前调用会抛 ReferenceError，
+    // 被初始化处的 catch 吞成「切换显示模式失败」，持久化的模型类型恢复静默失效。
+    // （tests/frontend/pngtuber_preview_type_switch_race.test.cjs 有位置断言钉住。）
+
+    // 切换链世代号：每次 switchModelDisplay 入口自增。链条内部的 await（模型列表
+    // 加载等）期间用户可能切走再切回并选了新模型——旧链恢复后若继续为它的
+    // preferredConfig 发起预览，会给旧模型分配比新选择更新的预览世代号，反向顶掉
+    // 用户的新选择。预览世代号只在预览发起时分配，识别不了「整条切换链已过期」，
+    // 需要这一层链世代号在发起预览前复查。
+    let modelDisplaySwitchGeneration = 0;
+
+    // 用户手动选择世代号：真实的（非 suppress 的）模型下拉选择**被接受**时自增。
+    // 角色配置自动加载链在发起外部请求前捕获它、落地前复查——同模式下的手动选择
+    // （如记忆模式已是 pngtuber、初始化已填充下拉时用户选了 B）不会触发
+    // switchModelDisplay，切换链世代号对它无感知；没有这个世代号，自动加载链
+    // 会在请求返回后以「最新链」的身份预览角色模型 A，反向顶掉用户刚选的 B，
+    // 且后续保存的就是 A。
+    let userModelSelectionGeneration = 0;
+
     async function previewPNGTuberConfig(pngtuberConfig, modelInfo = {}, options = {}) {
         if (!pngtuberConfig || !pngtuberConfig.idle_image) return false;
         // 入口即校验类型：调用链（如角色配置加载）在 await 期间可能已被用户手动切换打断，
@@ -1501,7 +1523,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentModelInfo = null;
             }
             if (committedInfo && unfinalizedPNGTuberCommit === committedInfo) {
-                unfinalizedPNGTuberCommit = null;
+                // 登记只在「本预览成功收尾（世代号/类型复查通过，即随后守卫将放行）」
+                // 或「条目已被其他流程覆盖/撤销」时清除。被同类型取代且条目仍是
+                // currentModelInfo 时保留登记——否则 B 提交之前用户切走类型，离开块
+                // 查不到登记、撤销不到 A，A 的 pngtuber 条目会滞留在新类型下
+                // （删除防护 committed 槽持续误拦、保存流程读到过期记录）。
+                // B 到达自己的检查点会覆盖登记；类型切走时上方撤销已把条目清掉，
+                // 走「已被覆盖」分支清除登记。
+                const finalizedHere = previewGeneration === pngtuberPreviewGeneration
+                    && currentModelType === 'pngtuber';
+                if (finalizedHere || currentModelInfo !== committedInfo) {
+                    unfinalizedPNGTuberCommit = null;
+                }
             }
         }
         // 控件加载期间用户可能已切到其他模型类型（pngtuber → live2d/live3d），
@@ -2123,21 +2156,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             return createModelSaveResult('fail', errorMessage, { reason: 'exception', error });
         }
     }
-
-    // 切换链世代号：每次 switchModelDisplay 入口自增。链条内部的 await（模型列表
-    // 加载等）期间用户可能切走再切回并选了新模型——旧链恢复后若继续为它的
-    // preferredConfig 发起预览，会给旧模型分配比新选择更新的预览世代号，反向顶掉
-    // 用户的新选择。预览世代号只在预览发起时分配，识别不了「整条切换链已过期」，
-    // 需要这一层链世代号在发起预览前复查。
-    let modelDisplaySwitchGeneration = 0;
-
-    // 用户手动选择世代号：真实的（非 suppress 的）模型下拉选择发生时自增。
-    // 角色配置自动加载链在发起外部请求前捕获它、落地前复查——同模式下的手动选择
-    // （如记忆模式已是 pngtuber、初始化已填充下拉时用户选了 B）不会触发
-    // switchModelDisplay，切换链世代号对它无感知；没有这个世代号，自动加载链
-    // 会在请求返回后以「最新链」的身份预览角色模型 A，反向顶掉用户刚选的 B，
-    // 且后续保存的就是 A。
-    let userModelSelectionGeneration = 0;
 
     // 模型类型切换处理
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
@@ -6717,10 +6735,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selectedOption = e.target[e.target.selectedIndex];
 
         if (currentModelType === 'pngtuber') {
-            // 真实用户的 PNGTuber 选择（该分支无拒绝路径，选择即被接受）：
-            // 作废尚未落地的角色自动加载链。程序化 dispatch 带 suppress 标记，
-            // 属于链内动作，不作废。
-            if (!isSuppressedModelManagerChangeEvent(e)) {
+            // 选项确为 pngtuber 模型、且非程序化 dispatch，才计为「用户手动选择」：
+            // 类型切换的过渡窗口（角色链还挂在列表请求上）里，共享下拉可能仍是
+            // 旧 live2d 选项且可用，选中它会被 loadSelectedPNGTuberOption 按
+            // dataset 拒绝——被拒绝的选择不得作废角色自动加载链，否则 pngtuber
+            // 模式会停在旧选项上且没有头像（列表 DOM 提交与角色预览都被误取消）。
+            if (!isSuppressedModelManagerChangeEvent(e)
+                && selectedOption && selectedOption.dataset.modelType === 'pngtuber') {
                 userModelSelectionGeneration += 1;
             }
             await loadSelectedPNGTuberOption(selectedOption, {

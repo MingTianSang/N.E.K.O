@@ -761,6 +761,11 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     const pngBranchBlock = source.slice(pngBranchIdx, pngLoadIdx);
     assert.ok(pngBranchBlock.includes('userModelSelectionGeneration += 1;'));
     assert.ok(pngBranchBlock.includes('!isSuppressedModelManagerChangeEvent(e)'));
+    // 自增必须以「选项确为 pngtuber 模型」为门槛：类型切换过渡窗口里下拉可能仍是
+    // 旧 live2d 选项，选中会被 loadSelectedPNGTuberOption 按 dataset 拒绝，
+    // 被拒绝的选择不得作废角色自动加载链（Codex P2@6724）
+    assert.ok(pngBranchBlock.includes("selectedOption.dataset.modelType === 'pngtuber'"),
+        'pngtuber 分支自增必须先验证选项类型');
     // live2d 路径：自增必须在语音检查之后
     const voiceIdx = source.indexOf('const voiceStatus = await checkVoiceModeStatus();', pngLoadIdx);
     const live2dCommitIdx = source.indexOf('currentModelInfo = findLive2DModelBySelection(', voiceIdx);
@@ -845,13 +850,39 @@ test('A 已提交被 B 取代但 B 未提交：A 条目保留，双槽防护完�
     assert.equal(resultA, false);
     assert.equal(sandbox.currentModelInfo.name, 'A', '被取代 ≠ 被撤销：B 提交前 A 条目保留');
     assert.equal(sandbox.pendingPNGTuberPreview.folder, 'B');
-    assert.equal(sandbox.unfinalizedPNGTuberCommit, null, 'A 已定稿（被取代），登记应交给 B');
+    // 登记必须保留（wehos 🔴）：A 条目仍是 currentModelInfo 且本预览未成功收尾——
+    // 若此时清掉登记，B 提交前用户切走类型，离开块查不到登记、撤销不到 A，
+    // A 的 pngtuber 条目会滞留在新类型下
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, sandbox.currentModelInfo,
+        'B 提交前登记必须保留，供离开块代行撤销');
 
     // B 提交后覆盖 A
     resolveAvatarB();
     const resultB = await previewB;
     assert.equal(resultB, true);
     assert.equal(sandbox.currentModelInfo.name, 'B');
+    assert.equal(sandbox.unfinalizedPNGTuberCommit, null, 'B 成功收尾后登记应清除');
+});
+
+test('世代号声明位置：必须先于初始化首个 switchModelDisplay 调用（TDZ）', () => {
+    // 整个控制器在 DOMContentLoaded 的 async 回调里自上而下顺序执行：函数声明提升
+    // 可达，但 let 绑定在声明语句执行前处于 TDZ——初始化在声明之前调用
+    // switchModelDisplay 会抛 ReferenceError，被 catch 吞成「切换显示模式失败」，
+    // 持久化的模型类型恢复静默失效（Codex P1@2132，wehos 确认为阻塞级）
+    const firstCallIdx = source.indexOf('await switchModelDisplay(savedModelType, savedSubType);');
+    assert.ok(firstCallIdx > 0, '初始化调用点不存在');
+    const declarations = [
+        'let modelDisplaySwitchGeneration = 0;',
+        'let userModelSelectionGeneration = 0;',
+        'let pngtuberPreviewGeneration = 0;',
+        'let pendingPNGTuberPreview = null;',
+        'let unfinalizedPNGTuberCommit = null;',
+    ];
+    for (const decl of declarations) {
+        const idx = source.indexOf(decl);
+        assert.ok(idx > 0, `缺少声明: ${decl}`);
+        assert.ok(idx < firstCallIdx, `声明必须先于初始化首个 switchModelDisplay 调用: ${decl}`);
+    }
 });
 
 test('上传流程：列表刷新过期时不得继续选中/兜底直载（Codex P2@3193）', () => {
