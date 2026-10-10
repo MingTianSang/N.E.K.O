@@ -509,11 +509,18 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     const deleteLoopBlock = source.slice(confirmIdx, loopEndIdx);
     assert.ok(deleteLoopBlock.includes('if (isDeleteBoundModel(type, key)) {'));
     assert.ok(deleteLoopBlock.includes('skippedBoundCount'));
+    // 删除循环必须遍历「活的」Set 而非副本：删除期间弹窗仍可交互，
+    // 用户点取消（hideDeleteModelModal 会 clear()）或取消勾选时未访问项必须跳过
+    // （wehos 第 3 轮 🔴：遍历副本会让中途取消失效、剩余模型照删）
+    assert.ok(deleteLoopBlock.includes('for (const modelId of selectedDeleteModels) {'));
+    assert.ok(!deleteLoopBlock.includes('[...selectedDeleteModels]'));
 
-    // 全部被复查拦下时不得弹「失败 0 个」误报
+    // 全部被复查拦下时不得弹「失败 0 个」误报；有跳过时结果弹窗必须带跳过数量
     const fnEndIdx = source.indexOf('if (deleteModelBtn) {', loopEndIdx);
     const tailBlock = source.slice(loopEndIdx, fnEndIdx);
     assert.ok(tailBlock.includes('} else if (failCount > 0) {'));
+    assert.ok(tailBlock.includes("t('live2d.deleteSkippedBound'"));
+    assert.ok(tailBlock.includes('count: skippedBoundCount'));
 
     // 删除弹窗 UI 必须复用同一 helper 与同一槽位来源：被禁用的即会被拦截的。
     // 截取起点取 UI 函数的槽位声明之前（wehos 第 2 轮：起点过晚会漏掉
@@ -525,4 +532,16 @@ test('删除防护：已提交模型与加载中预览必须同时护住（Codex
     assert.ok(uiBlock.includes('isBound = isBoundPNGTuberDeleteKey('));
     assert.ok(uiBlock.includes('boundPNGTuberKeys.committed'));
     assert.ok(uiBlock.includes('boundPNGTuberKeys.pending'));
+});
+
+test('live2d.deleteSkippedBound 在全部 8 个语言文件中就位', () => {
+    const localesDir = path.join(PROJECT_ROOT, 'static', 'locales');
+    const expected = ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'];
+    for (const lang of expected) {
+        const data = JSON.parse(fs.readFileSync(path.join(localesDir, `${lang}.json`), 'utf8'));
+        assert.ok(data.live2d, `${lang}: 缺少 live2d 段`);
+        const value = data.live2d.deleteSkippedBound;
+        assert.equal(typeof value, 'string', `${lang}: 缺少 live2d.deleteSkippedBound`);
+        assert.ok(value.includes('{{count}}'), `${lang}: deleteSkippedBound 缺少 {{count}} 插值`);
+    }
 });

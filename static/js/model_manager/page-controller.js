@@ -8734,7 +8734,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         let deletedLive3D = false;
         let deletedPNGTuber = false;
 
-        for (const modelId of [...selectedDeleteModels]) {
+        // 遍历「活的」Set 而非副本：删除期间弹窗仍可交互，用户点取消/关闭
+        // （hideDeleteModelModal 会 clear()）或取消勾选时，未访问项必须随之跳过——
+        // 遍历副本会让这些中途取消失效、剩余模型照删。循环体自身不修改 Set
+        // （绑定复查拦下的项用 continue），活遍历是安全的。
+        for (const modelId of selectedDeleteModels) {
             const { type, key } = parseModelId(modelId);
             // DELETE 发出前用最新绑定状态逐项复查：确认框等待期间异步流程可能已把
             // 该模型变成「使用中」（新登记的 pending 预览 / 新提交的 currentModelInfo），
@@ -8832,12 +8836,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (successCount > 0) {
-            const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '');
+            // 有项被绑定复查拦下时把数量并入结果弹窗：状态条 toast 只有 2 秒且先于
+            // 列表刷新，用户「选了 3 个只删了 2 个」时需要一个持久的说明
+            const skippedPart = skippedBoundCount > 0
+                ? `，${t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount })}`
+                : '';
+            const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '') + skippedPart;
             await showAlert(successMessage);
         } else if (failCount > 0) {
             const failedPart = t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount, reason: lastErrorMessage });
             const reasonPart = lastErrorMessage ? `：${lastErrorMessage}` : '';
-            await showAlert(`✗ ${failedPart}${reasonPart}`);
+            const skippedPart = skippedBoundCount > 0
+                ? `，${t('live2d.deleteSkippedBound', '跳过 {{count}} 个正在使用的模型', { count: skippedBoundCount })}`
+                : '';
+            await showAlert(`✗ ${failedPart}${reasonPart}${skippedPart}`);
         }
         // successCount === 0 && failCount === 0 只可能是全部被删除循环内的绑定复查
         // 拦下，已有「无法删除当前正在使用的模型」状态提示，不再弹「失败 0 个」误报
