@@ -560,24 +560,11 @@
                     console.warn('[YuiGuide] failed to force-disable GalGame during guide:', error);
                 }
             }
-            const proactiveKeys = [
-                'proactiveChatEnabled',
-                'proactiveVisionEnabled',
-                'proactiveVisionChatEnabled',
-                'proactiveNewsChatEnabled',
-                'proactiveVideoChatEnabled',
-                'proactivePersonalChatEnabled',
-                'proactiveMusicEnabled',
-                'proactiveMemeEnabled',
-                'proactiveMiniGameInviteEnabled'
-            ];
-            const appState = window.appState || null;
-            proactiveKeys.forEach((key) => {
-                window[key] = false;
-                if (appState && typeof appState[key] !== 'undefined') {
-                    appState[key] = false;
-                }
-            });
+            // 纯运行时抑制：不改写任何 proactive 设置内存（与小剧场约定一致，
+            // 键改写会在抑制期间的任意一次 saveSettings 里把临时关闭固化成
+            // 用户设置）。停运行时 + 派发事件即可：app-proactive 的事件监听
+            // 会登记抑制标志并停调度，触发面由 isHomeTutorialFeatureSuppressed
+            // 统一拦截。旧实现此处还漏了 proactiveCommunityChatEnabled。
             [
                 'stopProactiveChatSchedule',
                 'stopProactiveVisionDuringSpeech',

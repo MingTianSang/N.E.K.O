@@ -133,6 +133,17 @@
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
             }
+            // 头像重载层的运行时抑制：覆盖它单独抑制的窗口（feature controller
+            // begin 之前）以及 teardown 时持久化护栏已提前放行、但模型恢复
+            // 尚未完成的窗口——期间经其他入口重排的定时器触发时也要被拦下，
+            // 不能对着仍在展示的临时教程模型开口。仅本窗口的触发闸门，
+            // 不进 leader 心跳广播、不影响剧场语音守卫。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            if (reloadController && typeof reloadController.isProactiveRuntimeHeld === 'function'
+                && reloadController.isProactiveRuntimeHeld()) {
+                return true;
+            }
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
                 && window.isNekoHomeTutorialInteractionLocked() === true;
         } catch (_) {
@@ -2196,8 +2207,15 @@
                 }
             }
 
-            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+            // 教程可能在本次异步采集途中开始：stop 停得掉 interval、停不掉
+            // 已在飞的调用，而新方案下设置内存保持真值（开），发送前
+            // 必须显式复查抑制闸门，否则这一帧会落在教程期间。命中时还要
+            // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
+            // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
+            if (!isProactiveVisionEnabledNow() || !S.isRecording
+                || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
+                releaseProactiveVisionStream();
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
@@ -2242,6 +2260,13 @@
             return;
         }
 
+        // 首页教程/头像重载运行时抑制期间禁止启动（含 teardown 的模型恢复
+        // 窗口：该窗口持久化护栏已放行、内存标志已恢复，但临时教程模型仍在
+        // 展示，此时开始的语音会话不应触发屏幕帧推送）。
+        if (isHomeTutorialFeatureSuppressed()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -2249,7 +2274,8 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+                || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -2575,15 +2601,18 @@
         }
 
         var privacyBlocksVision = !isProactiveVisionEnabledNow();
+        // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
+        // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
+        var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording && !privacyBlocksVision) {
+        if (S.isRecording && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }
@@ -2609,6 +2638,20 @@
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
 
+    function rearmProactiveVisionAfterSuppression() {
+        // 抑制期间开始的录音被视觉闸门拒建定时器，且此后没有周期性重试：
+        // 释放时若录音仍在进行必须补挂，否则该会话在用户重开麦克风之前
+        // 永远不推视觉帧。启动函数内部会自查 leader/视觉开关/goodbye/
+        // 手动共享等全部条件，这里只负责补一次机会。
+        try {
+            if (S.isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('[Proactive] 教程抑制解除后补挂主动视觉失败:', e);
+        }
+    }
+
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
@@ -2618,8 +2661,54 @@
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
             _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+            rearmProactiveVisionAfterSuppression();
         } else if (detail.active === false) {
             _homeTutorialFeatureSuppressedByEvent = false;
+            rearmProactiveVisionAfterSuppression();
+        }
+    });
+
+    // click-guide 的抑制源是 isNekoClickGuideActive（不走 home-tutorial 事件面），
+    // 视觉 tick 闸门会在导览期间停表：它自己的释放事件必须同样补挂，
+    // 否则导览期间进行中的录音在其余下会话里永远不再推帧。
+    // 聊天定时器不需要补：导览期间它从未被停，触发时闸门放行即恢复。
+    window.addEventListener('neko:click-guide-active', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active !== false) return;
+        rearmProactiveVisionAfterSuppression();
+    });
+
+    // 教程的最终释放边：teardown 直接清 isInTutorial/isTutorialRunning，
+    // 不经过任何抑制层的 end；而各来源的 features-suppressed false 事件
+    // 都可能早于这次最终解锁到达——scheduleProactiveChat 在闸门仍关时
+    // 直接返回、不留定时器，早到的重排等于白白停摆。交互锁的 locked:false
+    // 转变聚合了全部锁层（pending / isInTutorial / suppression / isTutorialRunning），
+    // 是唯一可靠的统一重排与补挂时机。
+    // 只认「先锁→后解」的转变：home-tutorial-runtime 模块加载时会同步派发
+    // locked:false（reason:'init'），那不是教程释放——彼时 app.js ready()
+    // 还没过存储/页面配置屏障，提前武装会吃掉启动宽限（_proactiveStartupDelayApplied），
+    // 甚至让定时器在 WebSocket 初始化前就挂着。
+    var _homeTutorialLockObserved = null;
+    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var locked = detail.locked === true;
+        var wasLocked = _homeTutorialLockObserved === true;
+        _homeTutorialLockObserved = locked;
+        if (locked || !wasLocked) return;
+        try {
+            // 首启的 pending-lock 超时转变可能早于 app.js ready() 调
+            // initProactiveChatScheduler()：调度器未初始化时跳过——初始化器
+            // 随后会按设计完成排程（含 _proactiveStartupDelayApplied 启动
+            // 宽限），此处强行 scheduleProactiveChat 会吃掉宽限、在
+            // WebSocket 就绪前挂上定时器。真正的教程抑制释放必然发生在
+            // ready() 之后，不受影响。
+            if (S._proactiveSchedulerInitialized !== true) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
+            rearmProactiveVisionAfterSuppression();
+        } catch (e) {
+            console.warn('[Proactive] 教程锁释放后恢复调度/补挂视觉失败:', e);
         }
     });
 
@@ -2635,6 +2724,11 @@
     window.scheduleProactiveChat = scheduleProactiveChat;
     window.isProactiveLeader = isProactiveLeader;
     window.isProactiveChatSuppressed = isProactiveChatSuppressed;
+    // 教程抑制的统一运行时闸门，供 app-screen / app-buttons / app-audio-capture
+    // 等按设置值决定保留/申请屏幕流的路径复用（新方案下教程不再改写设置内存，
+    // 所有「因为开关是开的所以保留资源」的判断都要显式过这道闸）。
+    window.isNekoHomeTutorialProactiveSuppressed = isHomeTutorialFeatureSuppressed;
+    mod.isHomeTutorialFeatureSuppressed = isHomeTutorialFeatureSuppressed;
     window.captureCanvasFrame = captureCanvasFrame;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
