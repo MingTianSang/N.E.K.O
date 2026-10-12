@@ -2613,6 +2613,9 @@
         var privacyBlocksVision = !isProactiveVisionEnabledNow();
         // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
         // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
+        // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
+        // 若后端截图也不可用，教程结束后的静默重排无法恢复这条来源，需
+        // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
         var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
         // 如果正在录音（语音模式），流可能正在被使用，不释放
@@ -2653,6 +2656,8 @@
         // 释放时若录音仍在进行必须补挂，否则该会话在用户重开麦克风之前
         // 永远不推视觉帧。启动函数内部会自查 leader/视觉开关/goodbye/
         // 手动共享等全部条件，这里只负责补一次机会。
+        // 可静默重建的桌面源/后端截图可以恢复；浏览器 getDisplayMedia
+        // 不能由教程解锁事件重新授权，后端不可用时需用户手势重新获取。
         try {
             if (S.isRecording) {
                 startProactiveVisionDuringSpeech();
