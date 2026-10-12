@@ -1444,12 +1444,13 @@
         // RESTORE_COMPLETE/ACK never closes the native handoff.
         if (window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel') return false;
         var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
+        if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) return false;
+        if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
+        var toggled = I.toggleMinimized();
+        if (toggled !== true) return false;
         if (activationId) {
-            if (window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
             window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
         }
-        if (I.getCurrentChatSurfaceMode() !== 'minimized') return false;
-        I.toggleMinimized();
         return true;
     }
 
@@ -1939,7 +1940,8 @@
     }
 
     I.toggleMinimized = function toggleMinimized() {
-        if (I.isMinimizeTransitioning) return;
+        if (I.isMinimizeTransitioning) return false;
+        var wasMinimized = !!I.minimized;
         if (I.minimized && I.idleDockActive && I.idleDockSavedPosition) {
             var shell = I.getShell();
             if (shell) {
@@ -1953,6 +1955,7 @@
             stopIdleDockMinimizeObserver();
         }
         I.cycleChatSurfaceMode();
+        return wasMinimized !== !!I.minimized || I.isMinimizeTransitioning || !!I.pendingChatSurfaceMode;
     }
 
     I.prewarmUserDisplayName = function prewarmUserDisplayName() {

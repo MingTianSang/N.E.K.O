@@ -119,6 +119,8 @@ function _getNekoIdleCat1PlaygroundDropState(button) {
             draggingBodyId: '',
             lastPointerSamples: [],
             pointerSampleSession: null,
+            pendingYarnActivationId: '',
+            pendingYarnActivationTimer: 0,
             gravityPxPerSecond2: _NEKO_IDLE_CAT1_PLAYGROUND_GRAVITY_PX_PER_SECOND2,
             floorY: 0,
             wallLeft: 0,
@@ -180,6 +182,11 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     state.end = null;
     state.bodies = new Map();
     state.draggingBodyId = '';
+    state.pendingYarnActivationId = '';
+    if (state.pendingYarnActivationTimer) {
+        clearTimeout(state.pendingYarnActivationTimer);
+        state.pendingYarnActivationTimer = 0;
+    }
     state.lastPointerSamples = [];
     state.pointerSampleSession = null;
     state.entryQuestionBlockElement = _consumeNekoIdleCat1PlaygroundQuestionBlockClone(button);
@@ -247,6 +254,11 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     state.draggingBodyId = '';
     state.pointerBodyId = '';
     state.pointerId = null;
+    state.pendingYarnActivationId = '';
+    if (state.pendingYarnActivationTimer) {
+        clearTimeout(state.pendingYarnActivationTimer);
+        state.pendingYarnActivationTimer = 0;
+    }
     state.lastPointerSamples = [];
     state.pointerSampleSession = null;
     state.start = null;
@@ -294,6 +306,25 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
     _installNekoIdleCat1PlaygroundPointerListeners(button);
     _startNekoIdleCat1PlaygroundPhysics(button);
     return true;
+}
+
+function _handleNekoIdleCat1PlaygroundYarnActivationAck(event) {
+    const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+    const activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
+    if (!activationId) return false;
+    let handled = false;
+    _forEachNekoIdleReturnButton((button) => {
+        const state = button && button.__nekoIdleCat1PlaygroundDropState;
+        if (!state || state.released || state.pendingYarnActivationId !== activationId) return;
+        state.pendingYarnActivationId = '';
+        if (state.pendingYarnActivationTimer) {
+            clearTimeout(state.pendingYarnActivationTimer);
+            state.pendingYarnActivationTimer = 0;
+        }
+        handled = true;
+        if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);
+    });
+    return handled;
 }
 
 function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason) {
@@ -441,7 +472,10 @@ function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail) {
             } catch (_) {}
         }
     }
-    return dispatched;
+    // The desktop Pet renderer only owns the transport leg. Its companion
+    // bridge must acknowledge the restore before the yarn affordance is
+    // consumed; Web keeps the synchronous local/broadcast behavior.
+    return window.__NEKO_DESKTOP_RUNTIME__ ? activationId : dispatched;
 }
 
 function _cancelNekoIdleCat1PlaygroundPendingEntry(button) {
@@ -1513,6 +1547,7 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
     if (state.pointerId !== null && event && event.pointerId !== undefined && event.pointerId !== state.pointerId) return false;
     const body = state.bodies.get(state.pointerBodyId);
     if (!body) return false;
+    const cancelled = !!(event && event.type === 'pointercancel');
     if (!state.draggingBodyId) {
         if (body.element && typeof body.element.releasePointerCapture === 'function' && event && event.pointerId !== undefined) {
             try { body.element.releasePointerCapture(event.pointerId); } catch (_) {}
@@ -1523,12 +1558,21 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
         state.pointerSampleSession = null;
         body.dragging = false;
         if (body.id === 'cat') window.NekoDesktopWindowGravity?.releaseBody(button, body, { admit: false });
-        if (body.id === 'yarn' || body.id === 'desktop-yarn') {
-            const activationDispatched = _dispatchNekoIdleCat1PlaygroundYarnActivate({
+        if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {
+            const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate({
                 reason: 'cat1-playground-yarn-click',
                 source: body.id
             });
-            if (activationDispatched) _removeNekoIdleCat1PlaygroundYarnBody(button);
+            if (activationResult === true) {
+                _removeNekoIdleCat1PlaygroundYarnBody(button);
+            } else if (typeof activationResult === 'string') {
+                state.pendingYarnActivationId = activationResult;
+                state.pendingYarnActivationTimer = setTimeout(() => {
+                    if (state.pendingYarnActivationId !== activationResult) return;
+                    state.pendingYarnActivationId = '';
+                    state.pendingYarnActivationTimer = 0;
+                }, 4000);
+            }
         }
         state.lastTickAt = 0;
         _startNekoIdleCat1PlaygroundPhysics(button);
@@ -1538,7 +1582,6 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
     if (body.element && typeof body.element.releasePointerCapture === 'function' && event && event.pointerId !== undefined) {
         try { body.element.releasePointerCapture(event.pointerId); } catch (_) {}
     }
-    const cancelled = !!(event && event.type === 'pointercancel');
     const shouldAdmitCat = body.id === 'cat' && state.pointerMoved === true && !cancelled;
     const velocity = _getNekoIdleCat1PlaygroundPointerVelocity(state, cancelled, Date.now());
     body.vx = velocity.vx;
@@ -1794,6 +1837,7 @@ if (typeof window !== 'undefined') {
     window.addEventListener('neko:cat-local-active-change', _handleNekoIdleCat1GravityCatActiveChange);
     window.addEventListener('neko:auto-goodbye:state-change', _handleNekoIdleCat1GravityCatTierChange);
     window.addEventListener('neko:idle-cat1-playground-desktop-pointer', _handleNekoIdleCat1PlaygroundDesktopPointerEvent);
+    window.addEventListener('neko:idle-cat1-playground-yarn-activation-ack', _handleNekoIdleCat1PlaygroundYarnActivationAck);
     window.addEventListener('pagehide', () => {
         _releaseAllNekoIdleCat1PlaygroundDropLifecycles('pagehide');
     });

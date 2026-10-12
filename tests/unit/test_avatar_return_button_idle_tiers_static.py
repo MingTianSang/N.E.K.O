@@ -576,9 +576,13 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "state.pointerBodyId = '';" in pointer_up_block
     _assert_source_order(
         pointer_up_block,
-        "playground yarn click dispatches before consuming the restore affordance",
-        "const activationDispatched = _dispatchNekoIdleCat1PlaygroundYarnActivate",
-        "if (activationDispatched) _removeNekoIdleCat1PlaygroundYarnBody(button);",
+        "playground yarn only activates on a completed click and waits for desktop confirmation",
+        "const cancelled = !!(event && event.type === 'pointercancel');",
+        "if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {",
+        "const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate",
+        "if (activationResult === true) {",
+        "_removeNekoIdleCat1PlaygroundYarnBody(button);",
+        "state.pendingYarnActivationId = activationResult;",
     )
     assert "state.phase = 'ballistic';" in pointer_up_block
     assert "state.suppressClickBodyId = body.id;" in pointer_up_block
@@ -624,6 +628,9 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail)" in source
     assert "activationId," in source
     assert "neko:idle-cat1-playground-yarn-activate" in source
+    assert "neko:idle-cat1-playground-yarn-activation-ack" in source
+    assert "if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);" in source
+    assert "return window.__NEKO_DESKTOP_RUNTIME__ ? activationId : dispatched;" in source
     assert "action: 'idle_cat1_playground_yarn_activate'" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
 
