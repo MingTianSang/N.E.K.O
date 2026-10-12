@@ -302,6 +302,7 @@ function runtime(options = {}) {
       container.isConnected = button.isConnected = false;
       [...observers].forEach(observer => observer.fn());
     },
+    mutate: () => [...observers].forEach(observer => observer.fn()),
     resources: () => ({ frames: frames.size, observers: observers.size, subscribers: subscribers.size }),
   };
   return api;
@@ -1789,6 +1790,53 @@ test('reduced motion keeps gravity while removing bounce deformation and rebound
     assert.equal(r.button.style.getPropertyValue('--neko-window-gravity-scale-y'), '1.0000');
   }
   assert.equal(r.state().phase, 'resting');
+});
+
+test('busy sensing retains the owned scene through a container size mutation', () => {
+  const r = runtime();
+  r.sample(); r.settle();
+  const before = r.state();
+  r.rawSample(undefined, { status: 'pending', reason: 'busy' });
+  const readRect = r.container.getBoundingClientRect.bind(r.container);
+  r.container.getBoundingClientRect = () => ({ ...readRect(), width: 140, height: 140 });
+  assert.doesNotThrow(() => r.mutate());
+  assert.equal(r.state().windowKey, before.windowKey, 'busy does not mean the owned window closed');
+  assert.equal(r.state().phase, 'resting');
+  assert.ok(r.state().bounds.bottom < 900 - 140, 'resized hull retains the window floor');
+});
+
+test('Playground window closure ends at the desktop floor and cannot admit a later scene', () => {
+  const r = runtime();
+  attachPlaygroundBody(r);
+  r.sample();
+  r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+  r.settle();
+  assert.equal(r.state().phase, 'idle');
+  assert.equal(r.window.NekoDesktopWindowGravity.isActive(r.button), false);
+  assert.equal(r.resources().observers, 0);
+  const window = sceneWindow('later', { x: 0, y: 0, width: 1200, height: 900 });
+  r.rawSample(window.rect, { windows: [window] });
+  r.frame();
+  assert.equal(r.state().phase, 'idle', 'scene alone cannot restart the ended owner');
+});
+
+test('Windows ball mouse capture stops propagation before the DOM drag owner can start', () => {
+  for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const r = runtime({ model });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+    r.setAppearance('ball');
+    const native = installDragProducer(r, 'native');
+    const dom = installDragProducer(r, model, { fromCreation: true });
+    let starts = 0;
+    r.context.document.createElement = () => ({});
+    r.window.addEventListener('neko:return-ball-manual-move', event => {
+      if (event.detail.reason === 'return-ball-drag-start') starts++;
+    });
+    const event = native.down(360, 260);
+    if (!event.stopped) dom.down(360, 260);
+    assert.equal(event.stopped, true, `${model}: native capture must stop bubbling`);
+    assert.equal(starts, 1, `${model}: one pointer must have one drag owner`);
+  }
 });
 
 test('unload releases observers, frames and subscriptions; Web creates no gravity runner', () => {

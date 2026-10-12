@@ -418,16 +418,18 @@
         advancePhysics(state, timestamp);
         if (!state.windowKey) adoptWindow(state);
         render(state);
-        if (!state.windowKey && state.grounded && state.y === state.bounds.bottom
-            && state.vx === 0 && state.squash === 0) {
-            // This is only the landing of an interrupted window interaction.
-            // An empty desktop must not start a new, permanent gravity box.
-            cancel(state.button);
-            return;
-        }
+        if (finishDesktopLanding(state)) return;
         // Resting needs no RAF and never blocks another action or its animation.
         // A new native-window fact wakes it when the box actually changes.
         if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+    }
+
+    function finishDesktopLanding(state) {
+        if (state.windowKey || !state.grounded || state.y !== state.bounds.bottom
+            || state.vx !== 0 || state.squash !== 0) return false;
+        // An interrupted window interaction ends at the desktop floor.
+        cancel(state.button);
+        return true;
     }
 
     function cancel(button) {
@@ -568,7 +570,7 @@
                 const actual = rect(state.container.getBoundingClientRect());
                 if (!actual) return;
                 if (actual.width !== state.size.width || actual.height !== state.size.height) {
-                    updateBounds(state, latest);
+                    if (latest) updateBounds(state, latest);
                 }
                 // Tier/layout changes can bypass the shared movement helper.
                 // Keep physics in control until landing, then allow horizontal walks.
@@ -737,7 +739,7 @@
         if (pendingRead) {
             // Keep the explicit drag/release fact. The native reader is busy,
             // not empty; the eventual scene or no-window result decides it.
-            latest = null;
+            if (!current) latest = null;
             sceneUnavailable = false;
             return false;
         }
@@ -970,7 +972,7 @@
         collide(state);
         collideBorders(state, previous, elapsed);
         render(state, { fromPlayground: true });
-
+        finishDesktopLanding(state);
         return true;
     }
 
