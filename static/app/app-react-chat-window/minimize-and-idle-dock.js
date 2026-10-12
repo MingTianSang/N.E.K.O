@@ -1436,6 +1436,23 @@
         I.setChatSurfaceMode('minimized');
     }
 
+    I._handleIdleCat1PlaygroundYarnActivate = function _handleIdleCat1PlaygroundYarnActivate(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        // Desktop owns this activation through the trusted Pet → main → chat
+        // IPC path. The BroadcastChannel copy is still needed by Web, but if
+        // it toggles the desktop renderer first the later IPC is deduped and
+        // RESTORE_COMPLETE/ACK never closes the native handoff.
+        if (window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel') return false;
+        var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
+        if (activationId) {
+            if (window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
+            window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
+        }
+        if (I.getCurrentChatSurfaceMode() !== 'minimized') return false;
+        I.toggleMinimized();
+        return true;
+    }
+
     I.cycleChatSurfaceMode = function cycleChatSurfaceMode() {
         return I.setChatSurfaceMode(I.getNextChatSurfaceMode(I.getCurrentChatSurfaceMode()));
     }

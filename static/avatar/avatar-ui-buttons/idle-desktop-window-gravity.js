@@ -27,6 +27,11 @@
     const insets = Object.freeze({ left: 89 / 512, top: 49 / 512, right: 118 / 512, bottom: 19 / 512 });
     let current = null;
     let latest = null;
+    // Only an explicit pointer release may hand the cat to a window.
+    // A held drag is free, while a throw and a fresh native scene must never
+    // claim a stationary cat.
+    let pendingAdmission = null;
+    let sceneUnavailable = false;
     let playgroundActive = false;
     let disposed = false;
     let removalObserver = null;
@@ -106,9 +111,10 @@
 
     function sceneFor(result) {
         if (!result || result.status === 'unavailable') return [];
-        if (Array.isArray(result.windows)) return result.windows;
-        // Older desktop builds still publish one external window.
-        return [{ key: 'legacy', kind: 'external', rect: result.rect }];
+        // Legacy sensing has only the focused-window rect and is not a gravity
+        // scene. Treating it as a synthetic container makes Playground gravity
+        // depend on focus and reintroduces the old owner ambiguity.
+        return Array.isArray(result.windows) ? result.windows : [];
     }
 
     function sceneSignature(scene) {
@@ -211,28 +217,36 @@
         if (state.x < b.left || state.x > b.right || state.y < b.top || state.y > b.bottom) collide(state);
     }
 
-    function getCandidate() {
-        if (disposed || !playgroundActive || current || !latest) return null;
-        for (const button of document.querySelectorAll('.neko-idle-return-btn')) {
-            const container = _getNekoIdleReturnContainerFromButton(button);
-            const art = button.querySelector('.neko-idle-return-art');
-            if (!isCat(button, container) || !art || isReturning(button)) continue;
-            const dragging = container.getAttribute('data-dragging');
-            const body = getBody(button);
-            if (dragging === 'true' || dragging === 'pending' || (body && body.dragging)) continue;
-            const size = rect(container.getBoundingClientRect());
-            const scene = sceneFor(latest);
-            for (const target of scene) {
-                if (target.collisionOnly === true) continue;
-                const bounds = boundsFor(target.rect, size, body);
-                if (!contains(bounds, size)) continue;
-                return {
-                    targetKind: KIND, sessionId: latest.sessionId, revision: latest.revision,
-                    windowKey: target.key, scene, sceneSignature: sceneSignature(scene),
-                    borders: buildBorders(scene, target.key),
-                    button, container, size, bounds, hull: body && body.visibleInsetRatios || insets,
-                };
-            }
+    function getCandidate(admission) {
+        if (disposed || !playgroundActive || current || !latest || !admission) return null;
+        const button = admission.button;
+        const container = button && _getNekoIdleReturnContainerFromButton(button);
+        const art = button && button.querySelector('.neko-idle-return-art');
+        if (!isCat(button, container) || !art || isReturning(button)) return null;
+        const dragging = container.getAttribute('data-dragging');
+        const body = getBody(button);
+        if (admission.body && body !== admission.body) return null;
+        if ((dragging === 'true' || dragging === 'pending' || (body && body.dragging))
+            && admission.kind !== 'drag') return null;
+        const measured = rect(container.getBoundingClientRect());
+        if (!measured) return null;
+        // A gesture sample, not a later scene refresh, determines admission.
+        const size = {
+            ...measured,
+            x: Number.isFinite(admission.x) ? admission.x : measured.x,
+            y: Number.isFinite(admission.y) ? admission.y : measured.y,
+        };
+        const scene = sceneFor(latest);
+        for (const target of scene) {
+            if (target.collisionOnly === true) continue;
+            const bounds = boundsFor(target.rect, size, body);
+            if (!contains(bounds, size)) continue;
+            return {
+                targetKind: KIND, sessionId: latest.sessionId, revision: latest.revision,
+                windowKey: target.key, scene, sceneSignature: sceneSignature(scene),
+                borders: buildBorders(scene, target.key),
+                button, container, size, bounds, hull: body && body.visibleInsetRatios || insets,
+            };
         }
         return null;
     }
@@ -444,8 +458,96 @@
         return true;
     }
 
-    function startCandidate(expected) {
-        const candidate = getCandidate();
+    function resumePendingAdmission(admission) {
+        if (!admission || !playgroundActive) return;
+        const body = getBody(admission.button);
+        if (admission.body && body !== admission.body) return;
+        if (body && !body.dragging && typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+            _startNekoIdleCat1PlaygroundPhysics(admission.button);
+        }
+    }
+
+    function clearPendingAdmission(resume = true) {
+        const admission = pendingAdmission;
+        pendingAdmission = null;
+        if (resume) resumePendingAdmission(admission);
+        return admission;
+    }
+
+    function attemptPendingAdmission() {
+        const admission = pendingAdmission;
+        if (!admission || !playgroundActive || !latest) return false;
+        if (admission.kind === 'drag') {
+            const body = getBody(admission.button);
+            const drag = admission.container && dragMotions.get(admission.container);
+            if ((!body || !body.dragging) && (!drag || !drag.moved)) {
+                clearPendingAdmission(false);
+                return false;
+            }
+        }
+        // The admission point is the explicit pointer-release fact. The
+        // Playground may advance the body while native sensing is busy; using
+        // the body's later position here would reject a valid handoff or let
+        // a throw claim a window after it has moved into one.
+        const expected = {
+            targetKind: KIND,
+            sessionId: latest.sessionId,
+            revision: latest.revision,
+        };
+        const started = startCandidate(expected, admission);
+        pendingAdmission = null;
+        if (!started) resumePendingAdmission(admission);
+        return started;
+    }
+
+    function requestAdmission(button, body = null, options = {}) {
+        if (disposed || !playgroundActive || current || !button) return false;
+        // A release after a confirmed empty scene is a completed failed
+        // handoff, not a promise to retry when a future window appears. A new
+        // drag remains eligible and will replace this fact once it starts.
+        if ((options.kind || 'release') !== 'drag' && sceneUnavailable) {
+            clearPendingAdmission(false);
+            return false;
+        }
+        const container = _getNekoIdleReturnContainerFromButton(button);
+        const measured = container && typeof container.getBoundingClientRect === 'function'
+            ? rect(container.getBoundingClientRect()) : null;
+        if (!container || !measured || (body && body !== getBody(button))) return false;
+        pendingAdmission = {
+            button, body, container,
+            kind: options.kind || 'release',
+            x: Number.isFinite(options.x) ? options.x
+                : body && Number.isFinite(Number(body.x)) ? Number(body.x) : measured.x,
+            y: Number.isFinite(options.y) ? options.y
+                : body && Number.isFinite(Number(body.y)) ? Number(body.y) : measured.y,
+        };
+        if (latest) attemptPendingAdmission();
+        return true;
+    }
+
+    function requestContainerAdmission(container, options = {}) {
+        if (!container) return false;
+        for (const button of document.querySelectorAll('.neko-idle-return-btn')) {
+            if (_getNekoIdleReturnContainerFromButton(button) !== container) continue;
+            return requestAdmission(button, getBody(button), options);
+        }
+        return false;
+    }
+
+    function dragBody(button, body) {
+        if (!body || !body.dragging || body !== getBody(button)) return false;
+        // Playground owns every pointer position while the pointer is held.
+        // Gravity must not inspect the start point, path, or current window
+        // bounds during that gesture. The final position is checked once on
+        // releaseBody, after the body has left dragging state.
+        if (current) {
+            if (current.button === button) cancel(button);
+        }
+        return false;
+    }
+
+    function startCandidate(expected, admission) {
+        const candidate = getCandidate(admission);
         if (!candidate || (expected && (candidate.sessionId !== expected.sessionId
             || candidate.revision !== expected.revision || expected.targetKind !== KIND))) return false;
         const state = {
@@ -456,6 +558,7 @@
             reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
         };
         current = state;
+        pendingAdmission = null;
         state.button.classList.add(ACTIVE_CLASS);
         if (typeof MutationObserver === 'function' && state.container.parentNode) {
             removalObserver = new MutationObserver(() => {
@@ -481,7 +584,9 @@
         const body = getBody(state.button);
         if (body) { state.vx = clampSpeed(body.vx || 0); state.vy = clampSpeed(body.vy || 0); }
         collide(state);
-        publishMovementState(state);
+        // Commit the explicit admission point before the Playground loop can
+        // sample the body's pre-admission position on its next frame.
+        render(state, { fromPlayground: true });
         requestFrame(state);
         return true;
     }
@@ -617,17 +722,64 @@
         if (disposed) return false;
         if (result && latest && result.sessionId === latest.sessionId
             && Number(result.revision) <= latest.revision) return false;
+        const pendingRead = result && result.status === 'pending' && result.reason === 'busy';
         const noWindows = result && result.status === 'unavailable'
             && ['no-window', 'no-window-on-model-display'].includes(result.reason);
         if (!result || !result.sessionId || !Number.isFinite(Number(result.revision))
-            || (!noWindows && (!['current', 'changed'].includes(result.status) || !rect(result.rect)))) {
+            || (!pendingRead && !noWindows
+                && (!['current', 'changed'].includes(result.status) || !rect(result.rect)))) {
             latest = null;
+            if (result && result.sessionId) sceneUnavailable = true;
+            clearPendingAdmission();
+            cancel(null);
+            return false;
+        }
+        if (pendingRead) {
+            // Keep the explicit drag/release fact. The native reader is busy,
+            // not empty; the eventual scene or no-window result decides it.
+            latest = null;
+            sceneUnavailable = false;
+            return false;
+        }
+        // A first gravity sample can legitimately report no windows while the
+        // native enumeration is still in flight. Keep an explicit drag handoff
+        // alive until a real scene arrives; consuming it here makes entry
+        // timing-dependent and strands the cat outside the window.
+        if (noWindows) {
+            sceneUnavailable = true;
+            if (current) {
+                // An existing owner must keep its physical continuation when
+                // the supporting window disappears. Only an unowned drag
+                // treats the same sample as an in-flight read placeholder.
+                latest = result;
+                updateBounds(current, result);
+            } else {
+                latest = null;
+                // A completed release cannot be replayed against a window
+                // that appears later. An active drag remains eligible until
+                // its own release event arrives.
+                if (!pendingAdmission || pendingAdmission.kind !== 'drag') {
+                    clearPendingAdmission(false);
+                }
+            }
+            return false;
+        }
+        // Playground gravity requires the scene-capable session. A legacy
+        // focused-window result must not be silently converted into a fake
+        // gravity container.
+        if (!noWindows && !Array.isArray(result.windows)) {
+            latest = null;
+            clearPendingAdmission();
             cancel(null);
             return false;
         }
         latest = result;
+        sceneUnavailable = false;
         const state = current;
-        if (!state) return startCandidate();
+        if (!state) {
+            attemptPendingAdmission();
+            return false;
+        }
         if (state.sessionId !== result.sessionId
             || (!Array.isArray(result.windows) && Array.isArray(result.changes) && result.changes.includes('identity'))) {
             cancel(state.button);
@@ -662,13 +814,18 @@
             return;
         }
         if (reason === 'return-ball-drag-motion') {
-            if (drag) { drag.moved = true; recordDragPoint(drag, detail); }
+            if (drag) {
+                drag.moved = true;
+                recordDragPoint(drag, detail);
+            }
             return;
         }
         if (reason === 'return-ball-drag-end' || reason === 'return-ball-drag-cancel') {
             const velocity = releaseVelocity(drag, detail);
             dragMotions.delete(container);
-            if (!current) startCandidate();
+            if (!current && reason === 'return-ball-drag-end' && drag && drag.moved && !detail.dragCancelled) {
+                requestContainerAdmission(container);
+            }
             const state = current;
             if (!state || state.container !== container) return;
             state.pointerHeld = false;
@@ -702,6 +859,9 @@
         playgroundActive = detail.active === true;
         if (!playgroundActive) {
             latest = null;
+            sceneUnavailable = false;
+            dragMotions = new WeakMap();
+            clearPendingAdmission(false);
             cancel(null);
             return;
         }
@@ -709,15 +869,21 @@
             // Drop any legacy rect delivered before the sensing owner switches
             // the session to gravity; wait for the first gravity scene result.
             latest = null;
+            sceneUnavailable = false;
+            dragMotions = new WeakMap();
+            clearPendingAdmission(false);
             if (current) cancel(null);
             return;
         }
         if (current && latest) updateBounds(current, latest);
-        else startCandidate();
+        else attemptPendingAdmission();
     }
 
     function handleLifecycle() {
-        if (_getNekoGoodbyeIdleAppearance() !== _NEKO_GOODBYE_IDLE_APPEARANCE_CAT) dragMotions = new WeakMap();
+        if (_getNekoGoodbyeIdleAppearance() !== _NEKO_GOODBYE_IDLE_APPEARANCE_CAT || !playgroundActive) {
+            dragMotions = new WeakMap();
+        }
+        if (_getNekoGoodbyeIdleAppearance() !== _NEKO_GOODBYE_IDLE_APPEARANCE_CAT) clearPendingAdmission(false);
         if (current && (!playgroundActive || !isCat(current.button, current.container)
             || isReturning(current.button))) cancel(null);
     }
@@ -793,7 +959,6 @@
     // gravity integrator is skipped for this body while window physics owns it.
     function stepBody(button, body, timestamp) {
         if (!playgroundActive) return false;
-        if (!current) startCandidate();
         const state = current;
         if (!state || state.button !== button || body !== getBody(button) || paused(state)) return false;
         const previous = { x: state.x, y: state.y };
@@ -812,10 +977,7 @@
     function syncBody(body) {
         const state = current;
         if (!state || body !== getBody(state.button)) return false;
-        if (body.dragging) {
-            if (!contains(state.bounds, body)) cancel(state.button);
-            return false;
-        }
+        if (body.dragging) return false;
         const previous = { x: state.x, y: state.y };
         state.x = body.x; state.y = body.y;
         state.vx = clampSpeed(body.vx); state.vy = clampSpeed(body.vy);
@@ -826,9 +988,20 @@
         return true;
     }
 
-    function releaseBody(button, body) {
+    function releaseBody(button, body, options = {}) {
         if (!playgroundActive || body !== getBody(button)) return false;
-        if (!current) startCandidate();
+        if (current && current.button === button
+            && (!current.windowKey || !contains(current.bounds, body))) {
+            // The body was free during the gesture. Drop the old owner before
+            // evaluating the final release point, otherwise collide() snaps
+            // an out-of-window release back into the stale box.
+            cancel(button);
+        }
+        if (!current && options.admit === true) {
+            requestAdmission(button, body);
+        } else if (options.admit !== true) {
+            if (pendingAdmission && pendingAdmission.body === body) clearPendingAdmission(false);
+        }
         if (current && current.button === button) current.lastStepAt = now();
         return syncBody(body);
     }
@@ -853,7 +1026,8 @@
     }
 
     window.NekoDesktopWindowGravity = Object.freeze({
-        isActive, isMoving, cancel, getState, applyPosition, constrainTarget, stepBody, syncBody, releaseBody, getBounds,
+        isActive, isMoving, cancel, getState, applyPosition, constrainTarget, stepBody, syncBody, releaseBody, dragBody, getBounds,
+        requestAdmission,
         canWalk, usesContinuousDrag,
         createDragSampleSession: _createNekoIdleDragSampleSession,
         recordDragSample: _recordNekoIdleDragSample,
@@ -869,7 +1043,12 @@
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
 
-    function cancelAll() { dragMotions = new WeakMap(); cancel(null); }
+    function cancelAll() {
+        dragMotions = new WeakMap();
+        sceneUnavailable = false;
+        clearPendingAdmission(false);
+        cancel(null);
+    }
 
     function dispose() {
         if (disposed) return;

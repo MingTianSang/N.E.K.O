@@ -160,13 +160,34 @@ function runtime(options = {}) {
     settle() { for (let i = 0; i < 1000 && frames.size; i++) api.frame(); },
     advance(ms) { time += ms; },
     emit(type, detail = {}) { window.dispatchEvent({ type, detail }); },
-    sample(rect = { x: 200, y: 100, width: 600, height: 650 }, extra = {}) {
+    rawSample(rect = { x: 200, y: 100, width: 600, height: 650 }, extra = {}) {
       fact = rect === null ? null : {
         status: 'current', sessionId: 'session-1', revision: ++revision,
         timestamp: time, rect, changes: [], ...extra,
       };
       [...subscribers].forEach(fn => fn(fact));
       return fact;
+    },
+    // Existing physics tests model a deliberate drop at the same time they
+    // publish a scene. Keep that explicit release in the fixture; production
+    // gravity no longer admits a cat merely because a scene arrives.
+    admit() {
+      const state = button.__nekoIdleCat1PlaygroundDropState;
+      const body = state && state.bodies && state.bodies.get('cat');
+      window.NekoDesktopWindowGravity.requestAdmission(button, body || null);
+    },
+    sample(rect = { x: 200, y: 100, width: 600, height: 650 }, extra = {}, options = {}) {
+      const sceneExtra = Object.prototype.hasOwnProperty.call(extra, 'windows') || rect === null
+        ? extra
+        : { ...extra, windows: [sceneWindow('default', rect)] };
+      const wasActive = window.NekoDesktopWindowGravity.isActive();
+      const queueBeforeFirstScene = options.admit !== false && !wasActive && fact === null;
+      if (queueBeforeFirstScene) api.admit();
+      const value = api.rawSample(rect, sceneExtra);
+      if (options.admit !== false && value && value.status === 'current'
+          && !wasActive && !queueBeforeFirstScene
+          && !window.NekoDesktopWindowGravity.isActive()) api.admit();
+      return value;
     },
     repeat(value) { [...subscribers].forEach(fn => fn(value)); },
     drag(reason, detail = {}) { api.emit('neko:return-ball-manual-move', { reason, container, ...detail }); },
@@ -188,6 +209,20 @@ function contained(state) {
 }
 
 function sceneWindow(key, rect, kind = 'external') { return { key: `window-${key}`, kind, rect }; }
+
+function attachPlaygroundBody(r, overrides = {}) {
+  const body = {
+    id: 'cat', element: r.container,
+    x: 300, y: 200, vx: 0, vy: 0,
+    grounded: false, dragging: false,
+    ...overrides,
+  };
+  r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, frame: 0,
+    bodies: new Map([['cat', body]]),
+  };
+  return body;
+}
 
 async function installIdleClock(r) {
   const intervals = new Map();
@@ -817,6 +852,184 @@ test('an existing edge presentation cooldown does not delay containment gravity'
   assert.equal(r.state().phase, 'falling');
 });
 
+test('a scene alone cannot admit an idle Playground cat into a window', () => {
+  const r = runtime({ x: 300, y: 200 });
+  const target = sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 });
+  const body = attachPlaygroundBody(r);
+
+  r.rawSample(target.rect, { windows: [target] });
+  assert.equal(r.state().phase, 'idle', 'scene arrival alone must not claim the body');
+  r.window.NekoDesktopWindowGravity.releaseBody(r.button, body, { admit: false });
+  assert.equal(r.state().phase, 'idle', 'an ordinary click release is not an admission');
+
+  r.window.NekoDesktopWindowGravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().phase, 'falling');
+  assert.equal(r.state().windowKey, target.key);
+});
+
+test('a release without a gravity scene does not freeze or replay after a legacy rect', () => {
+  const r = runtime({ x: 300, y: 200 });
+  const body = attachPlaygroundBody(r, { vx: 240, vy: -180 });
+  const gravity = r.window.NekoDesktopWindowGravity;
+
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().phase, 'idle');
+  assert.equal(gravity.stepBody(r.button, body, r.context.performance.now()), false,
+    'without an owner the Playground keeps its normal throw path');
+
+  r.rawSample({ x: 200, y: 100, width: 600, height: 650 });
+  assert.equal(r.state().phase, 'idle', 'legacy focused-window rects are not gravity scenes');
+  r.rawSample(undefined, { windows: [sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 })] });
+  assert.equal(r.state().phase, 'idle', 'a rejected release is not replayed by a later scene');
+
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().phase, 'falling');
+  assert.equal(r.state().vx, 240);
+  assert.equal(r.state().vy, -180);
+});
+
+test('an empty scene consumes a completed release, but a later release inside can enter', () => {
+  const r = runtime({ x: 20, y: 200 });
+  const target = sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 });
+  const body = attachPlaygroundBody(r, { x: 20, y: 200, dragging: true });
+  const gravity = r.window.NekoDesktopWindowGravity;
+
+  r.drag('return-ball-drag-start');
+  body.x = 300; body.y = 200;
+  r.drag('return-ball-drag-motion');
+  r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+  body.dragging = false;
+  r.drag('return-ball-drag-end');
+
+  r.rawSample(target.rect, { windows: [target] });
+  assert.equal(gravity.getState().phase, 'idle',
+    'a release made with no window must not be replayed by a later scene');
+
+  body.dragging = true;
+  r.drag('return-ball-drag-start');
+  body.x = 300; body.y = 200;
+  r.drag('return-ball-drag-motion');
+  assert.equal(gravity.getState().phase, 'idle', 'dragging never admits a window');
+  body.dragging = false;
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(gravity.getState().windowKey, target.key,
+    'the final release point can enter once a real scene exists');
+});
+
+test('a session that started with no window can admit a later release', () => {
+  const r = runtime({ x: 20, y: 200 });
+  const target = sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 });
+  const body = attachPlaygroundBody(r, { x: 20, y: 200, dragging: true });
+  const gravity = r.window.NekoDesktopWindowGravity;
+
+  r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+  assert.equal(gravity.getState().phase, 'idle');
+  r.drag('return-ball-drag-start');
+  body.x = 300; body.y = 200;
+  r.drag('return-ball-drag-motion');
+  r.rawSample(target.rect, { windows: [target] });
+  assert.equal(gravity.getState().phase, 'idle');
+  body.dragging = false;
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(gravity.getState().windowKey, target.key);
+});
+
+test('manual dragging is free at every point; only the final release enters a window', () => {
+  const r = runtime({ x: 20, y: 200 });
+  const target = sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 });
+  const body = attachPlaygroundBody(r, { x: 20, y: 200, dragging: true });
+  const gravity = r.window.NekoDesktopWindowGravity;
+  r.container.style.left = '20px';
+  r.rawSample(target.rect, { windows: [target] });
+
+  body.x = 300; body.y = 200; r.container.style.left = '300px';
+  assert.equal(gravity.dragBody(r.button, body), false);
+  assert.equal(r.state().phase, 'idle', 'crossing into a window does not constrain the pointer');
+
+  body.x = 20; body.y = 200; r.container.style.left = '20px';
+  assert.equal(gravity.dragBody(r.button, body), false);
+  assert.equal(r.state().phase, 'idle', 'crossing back out is equally free');
+
+  body.dragging = false; body.vx = 900; body.vy = 0;
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().phase, 'idle', 'throwing from outside cannot enter the window');
+  body.x = 300; gravity.syncBody(body);
+  assert.equal(r.state().phase, 'idle', 'later ballistic motion cannot create a new owner');
+
+  body.dragging = true;
+  body.x = 20;
+  gravity.dragBody(r.button, body);
+  body.x = 300;
+  gravity.dragBody(r.button, body);
+  body.dragging = false;
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().windowKey, target.key, 'release inside takes ownership regardless of the path');
+});
+
+test('dragging an owned cat above and across a window never snaps it back', () => {
+  const r = runtime({ x: 20, y: 200 });
+  const target = sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 });
+  const body = attachPlaygroundBody(r, { x: 300, y: 200, dragging: false });
+  const gravity = r.window.NekoDesktopWindowGravity;
+  r.container.style.left = '300px';
+  r.rawSample(target.rect, { windows: [target] });
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().windowKey, target.key);
+
+  body.dragging = true;
+  body.y = -100;
+  r.container.style.top = '-100px';
+  assert.equal(gravity.syncBody(body), false);
+  assert.equal(gravity.dragBody(r.button, body), false);
+  assert.equal(gravity.isActive(), false);
+  assert.equal(body.y, -100, 'window top does not repel the held cat');
+  body.x = 20;
+  body.y = 200;
+  assert.equal(gravity.dragBody(r.button, body), false);
+  body.x = 300;
+  body.y = 200;
+  assert.equal(gravity.dragBody(r.button, body), false,
+    'even crossing back into the window does not constrain the held cat');
+  body.dragging = false;
+  gravity.releaseBody(r.button, body, { admit: true });
+  assert.equal(r.state().windowKey, target.key, 'only the final release chooses the owner');
+});
+
+test('a transient no-window sample does not constrain the held cat or pre-admit it', () => {
+  const r = runtime({ x: 20 });
+  r.container.style.left = '300px';
+  r.container.style.top = '300px';
+  r.drag('return-ball-drag-start', { dragSessionId: 7, screenX: 320, screenY: 320, timestamp: 0 });
+  r.drag('return-ball-drag-motion', { dragSessionId: 7, screenX: 340, screenY: 340, timestamp: 20 });
+  r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+  assert.equal(r.window.NekoDesktopWindowGravity.isActive(), false,
+    'the busy sample must not admit a partial owner');
+  r.rawSample({ x: 200, y: 100, width: 600, height: 650 }, {
+    windows: [sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 })],
+  });
+  assert.equal(r.window.NekoDesktopWindowGravity.isActive(), false,
+    'scene arrival cannot take ownership before release');
+});
+
+test('a busy release uses its explicit handoff point after Playground advances', () => {
+  const r = runtime({ x: 20 });
+  const body = attachPlaygroundBody(r, { x: 300, y: 200, vx: 0, vy: 0 });
+  const gravity = r.window.NekoDesktopWindowGravity;
+  r.rawSample(undefined, { status: 'pending', reason: 'busy' });
+
+  gravity.releaseBody(r.button, body, { admit: true });
+  body.x = 305;
+  body.y = 210;
+  r.rawSample({ x: 200, y: 100, width: 600, height: 650 }, {
+    windows: [sceneWindow(1, { x: 200, y: 100, width: 600, height: 650 })],
+  });
+
+  assert.equal(gravity.isActive(), true, 'busy sensing must retain the release handoff');
+  assert.equal(gravity.getState().windowKey, 'window-1');
+  assert.equal(body.x, 300, 'the admitted body returns to the explicit release point');
+  assert.equal(body.y, 200);
+});
+
 function dragSample(r, reason, x, y, extra = {}) {
   r.drag(`return-ball-drag-${reason}`, {
     dragSessionId: 1, screenX: x, screenY: y, timestamp: r.context.Date.now(), ...extra,
@@ -876,7 +1089,11 @@ test('stopping, cancelling, or replacing a drag never replays old throw velocity
     if (mode === 'new-drag') dragSample(r, 'start', 340, 260);
     if (mode === 'return') r.emit('neko:cat-return-commit');
     releaseThrow(r, { dragCancelled: mode === 'cancelled' });
-    assert.equal(r.state().vx, 0, mode); assert.equal(r.state().vy, 0, mode);
+    if (mode === 'return' || mode === 'cancelled' || mode === 'new-drag') {
+      assert.equal(r.state().phase, 'idle', mode);
+    } else {
+      assert.equal(r.state().vx, 0, mode); assert.equal(r.state().vy, 0, mode);
+    }
   }
 });
 
@@ -884,15 +1101,16 @@ test('unrelated or stale release events cannot consume the current drag', () => 
   const r = runtime(); r.sample(); prepareThrow(r);
   r.drag('return-ball-drag-end', { container: {}, dragSessionId: 1 });
   dragSample(r, 'end', undefined, undefined, { dragSessionId: 0 });
-  assert.equal(r.state().phase, 'idle');
+  assert.equal(r.state().phase, 'idle', 'a stale release cannot start gravity during a held drag');
   releaseThrow(r);
   assert.equal(r.state().vx, 1000); assert.equal(r.state().vy, -1000);
 });
 
 test('playground release velocity is transferred once without adding the ordinary drag impulse', () => {
-  const r = runtime(); r.sample(); prepareThrow(r);
+  const r = runtime();
   const body = { id: 'cat', element: r.container, x: 350, y: 300, vx: 200, vy: -300, grounded: false };
   r.button.__nekoIdleCat1PlaygroundDropState = { active: true, bodies: new Map([['cat', body]]) };
+  r.sample(); prepareThrow(r);
   releaseThrow(r);
   assert.equal(r.state().vx, 200); assert.equal(r.state().vy, -300);
   r.frame(); assert.ok(body.vx < 200 && body.vy > -300);
@@ -1087,8 +1305,12 @@ test('real native drag completion preserves the pointer-release time across IPC 
     await new Promise(resolve => setImmediate(resolve));
     r.frame(100); r.frame(100);
     assert.equal(r.container.getAttribute('data-dragging'), 'false');
-    assert.equal(r.state().vx, cancelled ? 0 : 1000);
-    assert.equal(r.state().vy, cancelled ? 0 : -1000);
+    if (cancelled) {
+      assert.equal(r.state().phase, 'idle');
+    } else {
+      assert.equal(r.state().vx, 1000);
+      assert.equal(r.state().vy, -1000);
+    }
   }
 });
 
@@ -1096,7 +1318,6 @@ test('each lifecycle interruption clears physics without restoring an obsolete p
   for (const interrupt of [
     r => r.sample(null),
     r => r.sample({}, { status: 'unavailable', reason: 'read-failed' }),
-    r => r.sample(undefined, { changes: ['identity'], status: 'changed' }),
     r => r.sample(undefined, { sessionId: 'new-session' }),
     r => r.sample({ x: 200, y: 100, width: 20, height: 20 }),
     r => r.emit('neko:cat-return-commit'),

@@ -134,6 +134,8 @@ CAT1 本地文字的 `5%` 哈气彩蛋只通过哈气专用窄入口请求既有
 
 Electron 桌面窗口感知在普通猫形态只覆盖 CAT1，并使用默认 `legacy` session 提供旧 active-window rect；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止。只有 CAT1 Playground active 才切换为 `gravity` session 并接收完整窗口 scene；Playground 退出立即停止并清空 scene。这里复用 CAT1/Playground 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。该 sensing bridge 是 Primary Pet renderer 的通用桌面能力；`source=desktop-window-sensing` 的正式原生窗口事实只保留在 recent events 和 debug 中，不排入 Cat Mind decision。其他页面功能可以订阅同一正式 session，但不能再次启动 session 或复制读取周期。Web 页面没有桌面 bridge 时无动作。页面 session owner 不创建第二窗口目标或 Cat Mind action request。
 
+桌面窗口重力的交互准入不属于 Cat Mind：Playground 内猫的手动拖动在任意位置都合法，拖动期间窗口重力不按起点或路径准入、碰撞或限制位置；只在松手时按最终位置选择窗口。释放后的抛掷不会在后续 scene 到达时重新认领窗口；窗口读取的 `pending/busy` 暂态保留这次释放的位置等待结果，真实 `no-window` 消费失败请求，不能在未来窗口出现时重放。毛线球短点击只恢复对话框并结束毛线球 body，猫 body 仍由 Playground 持有；恢复链路的去重和 Electron 锁释放遵循 `cat1-playground-drop-design.md`，不新增 Cat Mind observation、需求值或动作 owner。
+
 ### 3.5 动作完成和中断
 
 | 结果事件 | 食欲 | 困意 | 精力 | 社交需求 | 刺激需求 |

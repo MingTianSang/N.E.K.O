@@ -122,6 +122,18 @@
                 timestamp: Date.now(),
             });
         }
+        // A gravity start may be waiting for the single-flight native read.
+        // This is not an unavailable scene: dropping it here makes the
+        // renderer mistake "busy" for a real no-window result and strands a
+        // manual handoff until the next lifecycle restart.
+        if (status === 'pending') {
+            if (value.reason !== 'busy') return null;
+            return Object.freeze({
+                ...base,
+                reason: value.reason,
+                timestamp: Date.now(),
+            });
+        }
         if (status !== 'current' && status !== 'changed') return null;
         const rect = readRect(value.rect);
         if (!rect) return null;
@@ -273,7 +285,6 @@
     }
 
     function stopSession() {
-        cat1Active = false;
         if (!sensingActive
             && !startPending
             && !sessionId
@@ -332,7 +343,8 @@
             const startedSessionId = readSessionId(result && result.sessionId);
             if (disposed
                 || !sensingActive
-                || expectedGeneration !== generation) {
+                || expectedGeneration !== generation
+                || sessionMode !== mode) {
                 removeOwnSubscription();
                 if (startedSessionId) {
                     try {
@@ -369,7 +381,11 @@
             stopSession();
             return;
         }
-        if (sessionId && sessionMode !== desiredMode) {
+        // A pending start belongs to the mode that created it just as much as
+        // an established session does. Invalidate it before starting the new
+        // mode; otherwise a slow legacy start can become the Playground's
+        // gravity session (and vice versa).
+        if ((sessionId || startPending) && sessionMode !== desiredMode) {
             stopSession();
         }
         if (!sensingActive) {

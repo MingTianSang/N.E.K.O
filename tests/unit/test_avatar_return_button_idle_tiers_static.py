@@ -577,6 +577,12 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "if (!state.draggingBodyId) {" in pointer_up_block
     assert "state.pointerBodyId = '';" in pointer_up_block
+    _assert_source_order(
+        pointer_up_block,
+        "playground yarn click dispatches before consuming the restore affordance",
+        "const activationDispatched = _dispatchNekoIdleCat1PlaygroundYarnActivate",
+        "if (activationDispatched) _removeNekoIdleCat1PlaygroundYarnBody(button);",
+    )
     assert "state.phase = 'ballistic';" in pointer_up_block
     assert "state.suppressClickBodyId = body.id;" in pointer_up_block
     assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
@@ -617,6 +623,11 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "_dispatchNekoIdleReturnClickFromButton(button);" not in question_click_block
 
     assert "function _suppressNekoIdleCat1PlaygroundNonCatNativeEvent(event)" in source
+    assert "function _removeNekoIdleCat1PlaygroundYarnBody(button)" in source
+    assert "function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail)" in source
+    assert "activationId," in source
+    assert "neko:idle-cat1-playground-yarn-activate" in source
+    assert "action: 'idle_cat1_playground_yarn_activate'" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
 
     body_input_block = _source_slice_between(
@@ -718,6 +729,8 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
     assert "case 'idle_cat1_playground_yarn_request':" in interpage_source
     assert "function dispatchIdleCat1PlaygroundYarnRequest(detail)" in interpage_source
+    assert "case 'idle_cat1_playground_yarn_activate':" in interpage_source
+    assert "function dispatchIdleCat1PlaygroundYarnActivate(detail)" in interpage_source
     interpage_yarn_block = _source_slice_between(
         interpage_source,
         "function dispatchIdleCat1PlaygroundYarnRequest(detail)",
@@ -760,6 +773,8 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
     assert "function _handleIdleCat1PlaygroundYarnRequest(event)" in app_source
     assert "window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);" in app_source
+    assert "function _handleIdleCat1PlaygroundYarnActivate(event)" in app_source
+    assert "window.addEventListener('neko:idle-cat1-playground-yarn-activate', _handleIdleCat1PlaygroundYarnActivate);" in app_source
     app_block = _source_slice_between(
         app_source,
         "function _handleIdleCat1PlaygroundYarnRequest(event)",
@@ -768,6 +783,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     )
     assert "setChatSurfaceMode('minimized')" in app_block
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
+    assert "window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel'" in app_block
     assert "detail.reason" not in app_block
     assert "cat1-playground-entry" not in app_block
 
@@ -1129,7 +1145,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     assert "!_isNekoGoodbyeIdleBallButton(button)" in dispatch_click_block
     auto_goodbye_listener_block = _source_slice_between(
         avatar_source,
-        "window.addEventListener('neko:auto-goodbye:state-change'",
+        "window.addEventListener('neko:auto-goodbye:state-change', (event) => {",
         "window.addEventListener('neko:goodbye-idle-appearance'",
         "auto goodbye visual tier listener",
     )

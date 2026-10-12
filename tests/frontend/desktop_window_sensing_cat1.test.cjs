@@ -87,10 +87,13 @@ function createRuntime(options = {}) {
 
   if (options.bridge !== false) {
     window.nekoDesktopWindowSensing = {
-      start() {
-        starts.push(now);
+      start(startOptions = {}) {
+        starts.push({
+          at: now,
+          mode: startOptions.mode === 'gravity' ? 'gravity' : 'legacy',
+        });
         if (typeof options.start === 'function') {
-          return options.start();
+          return options.start(startOptions, starts.length);
         }
         return Promise.resolve({
           status: 'ready',
@@ -163,6 +166,12 @@ function createRuntime(options = {}) {
       }
       window.dispatchEvent(new CustomEventLike(
         'neko:auto-goodbye:state-change',
+        { detail },
+      ));
+    },
+    publishPlaygroundState(detail) {
+      window.dispatchEvent(new CustomEventLike(
+        'neko:idle-cat1-playground-state',
         { detail },
       ));
     },
@@ -365,6 +374,80 @@ test('a late start result never breaks the next CAT1 session subscription', asyn
 
   assert.equal(runtime.observations.length, before + 1);
   assert.deepEqual(runtime.stops, ['stale-session']);
+});
+
+test('switching to Playground invalidates a pending legacy start before it resolves', async () => {
+  const pending = new Map();
+  const runtime = createRuntime({
+    start: ({ mode }, count) => {
+      const deferred = createDeferred();
+      pending.set(count, deferred);
+      return deferred.promise;
+    },
+  });
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  runtime.publishPlaygroundState({ active: true, tier: 'cat1' });
+  await flushPromises();
+
+  assert.deepEqual(runtime.starts.map(start => start.mode), ['legacy', 'gravity']);
+  assert.deepEqual(runtime.stops, []);
+
+  pending.get(2).resolve({
+    status: 'ready', sessionId: 'gravity-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 }, windows: [],
+  });
+  await flushPromises();
+  pending.get(1).resolve({
+    status: 'ready', sessionId: 'stale-legacy-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+  await flushPromises();
+
+  assert.deepEqual(runtime.stops, ['stale-legacy-session']);
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent().sessionId, 'gravity-session');
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows.length, 0);
+});
+
+test('leaving Playground invalidates a pending gravity start before legacy resumes', async () => {
+  const pending = new Map();
+  const runtime = createRuntime({
+    start: ({ mode }, count) => {
+      const deferred = createDeferred();
+      pending.set(count, deferred);
+      return deferred.promise;
+    },
+  });
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  pending.get(1).resolve({
+    status: 'ready', sessionId: 'legacy-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+  await flushPromises();
+
+  runtime.publishPlaygroundState({ active: true, tier: 'cat1' });
+  await flushPromises();
+  runtime.publishPlaygroundState({ active: false, tier: 'cat1' });
+  await flushPromises();
+
+  assert.deepEqual(runtime.starts.map(start => start.mode), ['legacy', 'gravity', 'legacy']);
+  pending.get(3).resolve({
+    status: 'ready', sessionId: 'resumed-legacy-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+  await flushPromises();
+  pending.get(2).resolve({
+    status: 'ready', sessionId: 'stale-gravity-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 }, windows: [],
+  });
+  await flushPromises();
+
+  assert.deepEqual(runtime.stops, ['legacy-session', 'stale-gravity-session']);
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent().sessionId, 'resumed-legacy-session');
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext.getCurrent().windows, undefined);
 });
 
 test('character switch clears the active sensing session and allows a fresh CAT1 session', async () => {
@@ -623,6 +706,33 @@ test('shared unavailable results contain no stale rect and dispose removes the d
   runtime.window.dispatchEvent({ type: 'pagehide' });
   await flushPromises();
   assert.equal('nekoDesktopWindowSensingContext' in runtime.window, false);
+});
+
+test('busy gravity starts stay pending instead of becoming a false empty scene', async () => {
+  const runtime = createRuntime({
+    start: ({ mode }) => Promise.resolve({
+      status: mode === 'gravity' ? 'pending' : 'ready',
+      sessionId: 'gravity-session',
+      reason: mode === 'gravity' ? 'busy' : undefined,
+      rect: mode === 'gravity' ? undefined : { x: 10, y: 20, width: 300, height: 200 },
+    }),
+  });
+  const shared = runtime.window.nekoDesktopWindowSensingContext;
+  const received = [];
+  shared.subscribe(value => received.push(value === null ? null : plain(value)));
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  runtime.publishPlaygroundState({ active: true, tier: 'cat1' });
+  await flushPromises();
+
+  assert.deepEqual(plain(shared.getCurrent()), {
+    status: 'pending', sessionId: 'gravity-session', revision: 2,
+    reason: 'busy', timestamp: 1000,
+  });
+  assert.equal(runtime.observations.length, 1,
+    'busy is an internal sensing state, not a Cat Mind observation');
+  assert.equal(received.at(-1).status, 'pending');
 });
 
 test('adapter has no reader, polling timer, DOM state or Cat Mind action producer', () => {
