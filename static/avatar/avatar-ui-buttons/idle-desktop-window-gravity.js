@@ -308,10 +308,10 @@
     }
 
     function usesContinuousDrag(container) {
-        // Keep the Windows carrier fixed for physical cats. Native shrink/restore
+        // Keep the Windows carrier fixed during Playground physics. Native shrink/restore
         // hides both the DOM and BrowserWindow while awaiting IPC/resize, leaving
         // a visible gap before a throw. All avatar providers have a DOM drag path.
-        if (window.__NEKO_DESKTOP_RUNTIME__?.platform !== 'win32') return false;
+        if (disposed || !playgroundActive || window.__NEKO_DESKTOP_RUNTIME__?.platform !== 'win32') return false;
         return [...document.querySelectorAll('.neko-idle-return-btn')].some(button =>
             _getNekoIdleReturnContainerFromButton(button) === container && isCat(button, container));
     }

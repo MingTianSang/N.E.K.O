@@ -325,7 +325,7 @@ Playground 按下准备拖拽时由指针控制位置，未移动松开则继续
 
 毛线球短点击通过一次性 `activationId` 串联 renderer、本地页面 relay、Electron preload/main 和 Compact Chat；BroadcastChannel 与 IPC 的重复送达只允许一次恢复。Electron 的 Playground desktop bridge lock 在 `RESTORE_COMPLETE` 确认后释放，renderer 重载或恢复失败时由有界超时兜底；转发失败不会把锁永久留在 active，也不会提前删除可重试的恢复状态。
 
-Windows 启用窗口重力时，猫形态的四种模型统一沿用页面内拖拽，保持原生承载窗口大小与可见性，松手同一事件内提交位置并继承速度；不再经过原生缩窗、隐藏、恢复窗口和双 RAF 等待。Windows 多窗口模式在创建返回按钮时就注册页面拖拽，包括初始隐藏或呼吸球形态，确保之后切换为猫时已有处理器接手；普通呼吸球仍由原生捕获监听器处理。其他平台继续原有路径，Niri 的裁剪确认与最终帧等待仍保留。
+Windows 仅在 Playground 玩法活动期间，让猫形态的四种模型统一沿用页面内连续拖拽，保持原生承载窗口大小与可见性，松手同一事件内提交位置并继承速度；不再经过原生缩窗、隐藏、恢复窗口和双 RAF 等待。以 Playground 的 active 生命周期作为切换条件，玩法退出后恢复原生拖拽；仅启用设置但未进入玩法、普通 CAT1/CAT2/CAT3 和呼吸球都保留原生窗口移动路径。Windows 多窗口模式在创建返回按钮时就注册页面拖拽，包括初始隐藏或呼吸球形态，确保之后进入玩法时已有处理器接手；玩法外的鼠标和触摸仍由原生捕获监听器独占。其他平台继续原有路径，Niri 的裁剪确认与最终帧等待仍保留。
 
 松手后的 `data-neko-return-click-suppressed` 只拦截拖拽产生的误点击，不阻止重力接管、速度继承或后续物理帧。重力单独判断 `data-neko-model-cat-transitioning="cat-to-model"` 与正式 return 清理事件；其他动作继续使用原有的防误点击/返回占用判断。
 

@@ -1445,12 +1445,16 @@ test('actual return transitions still interrupt a throw even while drag clicks a
   assert.equal(r.state().phase, 'idle', 'window facts must not restart physics during return');
 });
 
-test('continuous drag is limited to real Windows cats, including entry from outside a window', () => {
+test('continuous drag is limited to Windows Playground cats, including entry from outside a window', () => {
   const r = runtime();
   r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
   const gravity = r.window.NekoDesktopWindowGravity;
   assert.equal(gravity.isActive(), false);
   assert.equal(gravity.usesContinuousDrag(r.container), true);
+  r.emit('neko:idle-cat1-playground-state', { active: false });
+  assert.equal(gravity.usesContinuousDrag(r.container), false, 'ordinary cats retain native carrier dragging');
+  r.emit('neko:idle-cat1-playground-state', { active: true });
+  assert.equal(gravity.usesContinuousDrag(r.container), true, 'Playground entry enables continuous drag before window admission');
   r.setAppearance('ball');
   assert.equal(gravity.usesContinuousDrag(r.container), false);
   r.setAppearance('cat');
@@ -1842,6 +1846,29 @@ test('Playground closure lands at its work-area floor without a jump on handoff'
     const landedY = body.y;
     r.context._clampNekoIdleCat1PlaygroundBodyToBounds(body);
     assert.equal(body.y, landedY, 'Playground handoff must not teleport the body upward');
+  }
+});
+
+test('Windows cats outside Playground retain one native mouse or touch drag owner', () => {
+  for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) for (const input of ['mouse', 'touch']) {
+    const r = runtime({ model });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+    const native = installDragProducer(r, 'native');
+    const dom = installDragProducer(r, model, { fromCreation: true });
+    r.context.document.createElement = () => ({});
+    r.emit('neko:idle-cat1-playground-state', { active: false });
+    let nativeStarts = 0, dragStarts = 0;
+    r.window.nekoPetDrag.start = () => { nativeStarts++; return true; };
+    r.window.addEventListener('neko:return-ball-manual-move', event => {
+      if (event.detail.reason === 'return-ball-drag-start') dragStarts++;
+    });
+    const event = input === 'mouse' ? native.down(360, 260) : native.touchDown(360, 260);
+    if (!event.stopped) {
+      if (input === 'mouse') dom.down(360, 260); else dom.touchDown(360, 260, event);
+    }
+    assert.equal(event.stopped, true, `${model}/${input}: native capture keeps ownership`);
+    assert.equal(nativeStarts, 1, `${model}/${input}: native carrier must move`);
+    assert.equal(dragStarts, 1, `${model}/${input}: DOM must not duplicate the drag`);
   }
 });
 
