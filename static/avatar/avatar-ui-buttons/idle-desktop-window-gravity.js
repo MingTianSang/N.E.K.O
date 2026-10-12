@@ -616,7 +616,9 @@
         const size = rect(state.container.getBoundingClientRect());
         const origin = screenOrigin();
         const body = getBody(state.button);
-        const bounds = boundsFor({ ...origin, width: window.innerWidth, height: window.innerHeight }, size, body);
+        const floorHeight = body && typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportBottomPx() : window.innerHeight;
+        const bounds = boundsFor({ ...origin, width: window.innerWidth, height: floorHeight }, size, body);
         if (!bounds) { cancel(state.button); return; }
         const scene = sceneFor(result);
         const signature = sceneSignature(scene);

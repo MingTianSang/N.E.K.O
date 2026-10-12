@@ -1820,6 +1820,31 @@ test('Playground window closure ends at the desktop floor and cannot admit a lat
   assert.equal(r.state().phase, 'idle', 'scene alone cannot restart the ended owner');
 });
 
+test('Playground closure lands at its work-area floor without a jump on handoff', () => {
+  for (const floorHeight of [860, 780]) {
+    const r = runtime();
+    const body = attachPlaygroundBody(r, {
+      width: 122, height: 122, visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+    });
+    r.context._getNekoIdleCat1PlaygroundViewportBottomPx = () => floorHeight;
+    r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx = () => ({ left: 0, right: 0, bottom: 0 });
+    const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+    for (const name of ['_updateNekoIdleCat1PlaygroundBodyBounds', '_clampNekoIdleCat1PlaygroundBodyToBounds']) {
+      const start = source.indexOf(`function ${name}(`);
+      vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+    }
+    r.sample();
+    r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+    assert.equal(r.state().bounds.bottom, floorHeight - body.height);
+    r.settle();
+    assert.equal(r.state().phase, 'idle');
+    assert.equal(body.y, floorHeight - body.height, 'landing stays above the reserved taskbar');
+    const landedY = body.y;
+    r.context._clampNekoIdleCat1PlaygroundBodyToBounds(body);
+    assert.equal(body.y, landedY, 'Playground handoff must not teleport the body upward');
+  }
+});
+
 test('Windows ball mouse capture stops propagation before the DOM drag owner can start', () => {
   for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
     const r = runtime({ model });
