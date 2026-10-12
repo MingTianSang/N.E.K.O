@@ -453,6 +453,53 @@ def test_context_prompt_defers_on_suppression_event_without_feature_controller(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("already_declined", [False, True])
+def test_context_prompt_requeues_only_unresolved_decisions_during_tutorial(
+    mock_page: Page, already_declined: bool,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { proactiveChatEnabled: false, proactiveVisionChatEnabled: false };
+            window.nekoTelemetryBranch = 'main';
+        """,
+        script_names=("common_dialogs.js", "app/app-context-prompt.js"),
+    )
+    mock_page.evaluate(
+        """() => {
+            const show = window.showDecisionPrompt;
+            window.__promptCalls = 0;
+            window.showDecisionPrompt = (config) => {
+                window.__promptCalls += 1;
+                return show(config);
+            };
+            window.__promptDone = window.appContextPrompt.handle('play');
+        }"""
+    )
+    mock_page.wait_for_selector(".modal-overlay")
+    mock_page.evaluate(
+        """async (alreadyDeclined) => {
+            // Resolve and suppress in the same task, inside the real 200ms fade-out.
+            if (alreadyDeclined) document.querySelector('.modal-overlay').click();
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: true, source: 'test' },
+            }));
+            await window.__promptDone;
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: false, source: 'test' },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }""",
+        already_declined,
+    )
+    assert mock_page.evaluate("window.__promptCalls") == (1 if already_declined else 2)
+    assert mock_page.locator(".modal-overlay").count() == (0 if already_declined else 1)
+    if not already_declined:
+        mock_page.evaluate("document.querySelector('.modal-overlay').click()")
+        mock_page.wait_for_selector(".modal-overlay", state="detached")
+
+
+@pytest.mark.frontend
 def test_open_context_prompt_is_dismissed_when_internal_game_opens(mock_page: Page):
     _bootstrap_page(
         mock_page,

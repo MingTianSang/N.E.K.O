@@ -36,6 +36,7 @@
     // opened 事件到达时需要能取消这一条，而不影响队列里的其它类型弹窗。
     let _activeContext = '';
     let _activePromptOverlay = null;
+    let _activePromptResolved = false;
     let _cancelActivePrompt = false;
     // settings 还没决议就绪时收到的事件先按类别暂存，等 branch 决议后逐类重放。
     // 后端这条信号是「进入态」一次性推送、不会自动重发；GET 慢时若直接丢，
@@ -202,10 +203,10 @@
     }
 
     function _deferActiveContextPromptForTutorial() {
-        // 抑制开始时已有弹窗展示中：撤回并恢复其未弹状态、重新入队。
-        // 「接受」此刻会被护栏回滚，静默丢掉不如不消费这次信号。
+        // 抑制开始时撤回尚未作答的弹窗并重新入队；已决定、只剩淡出的
+        // 弹窗仍算本会话已处理，不重新提问。
         const context = _activeContext;
-        if (!context) return;
+        if (!context || _activePromptResolved) return;
         if (context === 'play') _shownPlay = false;
         else if (context === 'work') _shownWork = false;
         _pendingContexts.add(context);
@@ -258,6 +259,7 @@
         _promptOpen = true;
         _activeContext = context;
         _activePromptOverlay = null;
+        _activePromptResolved = false;
         _cancelActivePrompt = false;
 
         const cfg = _buildConfig(context);
@@ -282,6 +284,7 @@
                     }
                 },
                 onResolve: function (_value, modal) {
+                    _activePromptResolved = true;
                     if (modal && _activePromptOverlay === modal.overlay) {
                         _activePromptOverlay = null;
                     }
@@ -296,6 +299,7 @@
             _promptOpen = false;
             _activeContext = '';
             _activePromptOverlay = null;
+            _activePromptResolved = false;
             _cancelActivePrompt = false;
             // 弹窗开着期间攒下的另一类 context，关窗后接着重放。
             _drainPending();
