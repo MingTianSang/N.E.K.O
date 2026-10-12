@@ -64,6 +64,51 @@ test('tutorial suppression rejects late vision acquisition at every async bounda
     }
 });
 
+test('both proactive screenshot acquisitions release late streams under suppression', async () => {
+    for (const targetAcquire of [1, 2]) {
+        const listeners = new Map();
+        let settle;
+        let entered;
+        const waiting = new Promise((resolve) => { entered = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let acquisitions = 0;
+        let frames = 0;
+        let stopped = 0;
+        let backendCalls = 0;
+        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            appScreen: {
+                acquireOrReuseCachedStream: async () => {
+                    acquisitions += 1;
+                    if (acquisitions === targetAcquire) { entered(); await gate; }
+                    const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+                    state.screenCaptureStream = stream;
+                    return stream;
+                },
+                captureFrameFromStream: async () => { frames += 1; return null; },
+                fetchBackendScreenshot: async () => { backendCalls += 1; return { dataUrl: null }; }
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: { addEventListener() {}, getElementById() { return null; } },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
+        await waiting;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        settle();
+        assert.equal((await pending).dataUrl, null);
+        assert.equal(frames, targetAcquire - 1, 'do not extract a frame from the late stream');
+        assert.equal(backendCalls, 0, 'do not fall back to another capture after suppression');
+        assert.equal(stopped, targetAcquire, 'discard any first black stream and release the late one');
+        assert.equal(state.screenCaptureStream, null);
+    }
+});
+
 test('click-guide activation stops vision and releases only automatic capture', () => {
     for (const manualSharing of [false, true]) {
         const listeners = new Map();

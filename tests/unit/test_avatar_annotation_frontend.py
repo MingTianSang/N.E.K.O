@@ -320,6 +320,8 @@ _NATIVE_OK_THEN_SWITCH = (
 )
 
 _HELPER_TMPL = """
+const isHomeTutorialFeatureSuppressed = () => false;
+const releaseProactiveVisionStream = () => {};
 const results = {};
 let selected = __SOURCE_ID__;
 const S = {
@@ -392,6 +394,8 @@ def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: s
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     script = """
 const mode = '__MODE__';
+const isHomeTutorialFeatureSuppressed = () => false;
+const releaseProactiveVisionStream = () => {};
 const results = {};
 let current = true;
 function makeStream(label) {
@@ -1158,6 +1162,8 @@ recaptureWithoutNeko({
 
 
 _PROACTIVE_REMEMBERED_TMPL = """
+const isHomeTutorialFeatureSuppressed = () => false;
+const releaseProactiveVisionStream = () => {};
 const results = { calls: [] };
 const S = {
   selectedScreenSourceId: __SOURCE_ID__,

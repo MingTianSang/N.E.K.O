@@ -247,7 +247,9 @@
                         } catch (_) {}
                     }
                 } finally {
-                    // 模型恢复完成才解除运行时 hold 并派发释放事件：
+                    // 恢复尝试（含 showCurrentModel 降级）结束后解除 hold：
+                    // 即使恢复失败也不能永久锁住已结束的教程，当前没有保证
+                    // 再次恢复的重试调度；失败已记录，不能将此处视为恢复成功。
                     // app-proactive 监听后重排调度、为进行中的录音补挂视觉，
                     // 情境弹窗模块重放暂存提示。没有任何设置值需要恢复。
                     override.proactiveRuntimeHold = false;

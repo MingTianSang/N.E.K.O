@@ -2470,6 +2470,10 @@
 
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+        if (isHomeTutorialFeatureSuppressed()) {
+            releaseProactiveVisionStream();
+            return { dataUrl: null, via: null, captureType: null };
+        }
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
@@ -2494,6 +2498,10 @@
             }
             // 重试：会走 Electron sourceId 路径
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+            if (isHomeTutorialFeatureSuppressed()) {
+                releaseProactiveVisionStream();
+                return { dataUrl: null, via: null, captureType: null };
+            }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
