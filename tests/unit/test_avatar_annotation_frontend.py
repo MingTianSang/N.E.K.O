@@ -362,7 +362,8 @@ def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> 
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
-        .replace("__HELPER__", _fn(proactive_src, "captureProactiveChatScreenshotWithSource"))
+        .replace("__HELPER__", _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+                 + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"))
     )
 
 
@@ -466,7 +467,8 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
         .replace(
             "__HELPER__",
-            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
         )
     )
 
@@ -1214,7 +1216,8 @@ def _proactive_remembered_script(
         .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
         .replace(
             "__HELPER__",
-            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
         )
     )
 

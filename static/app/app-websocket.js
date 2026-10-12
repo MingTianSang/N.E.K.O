@@ -5156,6 +5156,8 @@
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {
+                            if (typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                                && window.isNekoHomeTutorialProactiveSuppressed()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
@@ -5170,6 +5172,8 @@
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
+                            if (typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                                && window.isNekoHomeTutorialProactiveSuppressed()) return;
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加

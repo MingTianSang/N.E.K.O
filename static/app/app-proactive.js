@@ -2388,7 +2388,7 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
-    async function captureProactiveChatScreenshotWithSource() {
+    async function captureProactiveChatScreenshotWithSourceInternal() {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2545,6 +2545,19 @@
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
         return { dataUrl: null, via: null, captureType: null };
+    }
+    async function captureProactiveChatScreenshotWithSource() {
+        if (isHomeTutorialFeatureSuppressed()) {
+            return { dataUrl: null, via: null, captureType: null };
+        }
+        var shot = await captureProactiveChatScreenshotWithSourceInternal();
+        // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步
+        // 成功路径都经过这里，避免教程在抓帧期间开始后返回屏幕内容。
+        if (isHomeTutorialFeatureSuppressed()) {
+            releaseProactiveVisionStream();
+            return { dataUrl: null, via: null, captureType: null };
+        }
+        return shot;
     }
     mod.captureProactiveChatScreenshotWithSource = captureProactiveChatScreenshotWithSource;
 

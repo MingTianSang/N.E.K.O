@@ -109,6 +109,93 @@ test('both proactive screenshot acquisitions release late streams under suppress
     }
 });
 
+test('every successful proactive screenshot route rechecks tutorial suppression', async () => {
+    for (const route of ['cached', 'native', 'stream', 'retry', 'backend']) {
+        const listeners = new Map();
+        let settle;
+        let enter;
+        const entered = new Promise((resolve) => { enter = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let frames = 0;
+        let stopped = 0;
+        const stream = {
+            active: true,
+            getTracks() { return [{ stop() { stopped += 1; } }]; },
+            getVideoTracks() { return [{ readyState: 'live' }]; }
+        };
+        const delayedFrame = async () => { enter(); await gate; return { dataUrl: 'FRAME' }; };
+        const state = {
+            isRecording: true, proactiveVisionEnabled: true,
+            screenCaptureStream: route === 'cached' ? stream : null,
+            selectedScreenSourceId: route === 'native' ? 'screen:0' : null
+        };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            getDesktopCaptureProvider: () => route === 'native' ? { captureSourceAsDataUrl() {} } : null,
+            captureDesktopSourceWithTimeout: async () => {
+                await delayedFrame(); return { success: true, dataUrl: 'NATIVE' };
+            },
+            appScreen: {
+                acquireOrReuseCachedStream: async () => {
+                    if (route === 'backend') return null;
+                    state.screenCaptureStream = stream;
+                    return stream;
+                },
+                captureFrameFromStream: async () => {
+                    frames += 1;
+                    if (route === 'retry' && frames === 1) return null;
+                    return delayedFrame();
+                },
+                fetchBackendScreenshot: delayedFrame,
+                scheduleScreenCaptureIdleCheck() {}
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: { addEventListener() {}, getElementById() { return null; } },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
+        await entered;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        settle();
+        assert.equal((await pending).dataUrl, null, route);
+        assert.equal(frames, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+        assert.equal(state.screenCaptureStream == null, true, route);
+        assert.equal(stopped, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+    }
+});
+
+test('request_screenshot rechecks tutorial suppression immediately before sending', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    for (const paired of [true, false]) {
+        for (const tutorialStarts of [true, false]) {
+            let suppressed = false;
+            const sent = [];
+            const window = {
+                isNekoHomeTutorialProactiveSuppressed: () => suppressed,
+                captureProactiveChatScreenshot: async () => { suppressed = tutorialStarts; return 'FRAME'; }
+            };
+            if (paired) window.appProactive = {
+                captureProactiveChatScreenshotWithSource: async () => {
+                    suppressed = tutorialStarts;
+                    return { dataUrl: 'FRAME', captureType: 'screen' };
+                }
+            };
+            await vm.runInNewContext(websocketSource.slice(start, end), {
+                window, S: { socket: { readyState: 1, send(value) { sent.push(value); } } },
+                WebSocket: { OPEN: 1 }, console
+            });
+            assert.equal(sent.length, tutorialStarts ? 0 : 1);
+        }
+    }
+});
+
 test('click-guide activation stops vision and releases only automatic capture', () => {
     for (const manualSharing of [false, true]) {
         const listeners = new Map();
