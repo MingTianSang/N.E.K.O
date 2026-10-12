@@ -365,12 +365,12 @@ def test_vision_frame_send_rechecks_suppression_after_async_capture():
     )[0]
     guard = send_fn.rindex("isHomeTutorialFeatureSuppressed()")
     assert guard < send_fn.index("S.socket.send(JSON.stringify(")
-    assert guard < send_fn.rindex("!isProactiveVisionEnabledNow() || !S.isRecording")
+    assert guard < send_fn.rindex("visionDisabled || !S.isRecording")
     # 竞态中已存入的屏幕流也要在抑制命中时释放（手动共享仍受保护：
     # releaseProactiveVisionStream 自身的首个分支）。
     guard_branch = send_fn[guard:send_fn.index("S.socket.send(JSON.stringify(")]
     assert "stopProactiveVisionDuringSpeech();" in guard_branch
-    assert "if (suppressedByTutorial) releaseProactiveVisionStream();" in guard_branch
+    assert "if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();" in guard_branch
 
 
 def test_app_settings_carries_no_tutorial_machinery():

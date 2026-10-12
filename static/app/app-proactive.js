@@ -2213,9 +2213,10 @@
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
             var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || suppressedByTutorial) {
+            var visionDisabled = !isProactiveVisionEnabledNow();
+            if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
-                if (suppressedByTutorial) releaseProactiveVisionStream();
+                if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required

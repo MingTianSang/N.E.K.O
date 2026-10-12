@@ -1358,11 +1358,11 @@ def _frame_script(
     ("after_capture", "released"),
     [
         ("S.isRecording = false;", 0),
-        ("visionEnabled = false;", 0),
+        ("visionEnabled = false;", 1),
         ("tutorialSuppressed = true;", 1),
     ],
 )
-def test_inflight_vision_releases_stream_only_for_tutorial(after_capture, released):
+def test_inflight_vision_keeps_cache_only_when_recording_ends(after_capture, released):
     out = _run(_frame_script(
         source_id="null", stream="({})", after_capture=after_capture,
     ))

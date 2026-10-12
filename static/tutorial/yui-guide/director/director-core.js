@@ -599,6 +599,7 @@
             } catch (error) {
                 console.warn('[YuiGuide] failed to ensure chat window before avatar floating guide:', error);
             }
+            if (this.destroyed || this.isStopping()) return;
             this.enforceAvatarFloatingGuideFeatureSuppression(
                 'avatar-floating-day' + Number(round) + '-surface-ready'
             );
