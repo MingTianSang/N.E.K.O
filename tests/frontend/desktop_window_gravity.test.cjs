@@ -381,11 +381,16 @@ test('another bounce does not restart the idle countdown', async () => {
   for (let i = 0; i < 2; i++) {
     r.advance(awakeInterval - 1000); r.idleTick();
     assert.equal(r.idleState().visualTier, 'cat1');
+    const tierBeforeBounce = r.idleState().visualTier;
+    const interactionBeforeBounce = r.idleState().lastInteractionAt;
     r.sample({ x: 200, y: 100 - i * 30, width: 600, height: 650 }); r.advance(100);
     r.sample({ x: 200, y: 70 - i * 30, width: 600, height: 650 });
     assert.ok(!r.window.nekoAutoGoodbye.getIdleBlockReasons().includes('window-gravity-motion'));
-    r.settle(); r.idleTick();
-    assert.ok(['cat1', 'cat2', 'cat3'].includes(r.idleState().visualTier));
+    assert.equal(r.idleState().visualTier, tierBeforeBounce, 'window bounce must not change the idle tier');
+    r.settle();
+    assert.equal(r.idleState().visualTier, tierBeforeBounce, 'landing must not change the idle tier');
+    assert.equal(r.idleState().lastInteractionAt, interactionBeforeBounce, 'bounce must not reset the idle clock');
+    r.idleTick();
   }
 });
 
@@ -398,10 +403,16 @@ test('sleeping cats keep their idle tier when a window moves', async () => {
       ? r.sample(owner.rect, { windows: [{ ...panel, rect: { ...panel.rect, y: raised ? 370 : 450 } }, owner] })
       : r.sample({ x: 200, y: raised ? 20 : 100, width: 600, height: 650 });
     sample(false); r.settle();
-    r.advance(r.idleState().thresholdsMs[tier] - r.idleState().thresholdsMs.cat1); r.idleTick();
-    assert.ok(['cat1', 'cat2', 'cat3'].includes(r.idleState().visualTier), 'resting gravity must not break idle state');
+    const elapsed = r.context.Date.now() - r.idleState().lastInteractionAt;
+    r.advance(r.idleState().thresholdsMs[tier] + 1000 - elapsed); r.idleTick();
+    const restingTier = r.idleState().visualTier;
+    assert.equal(restingTier, tier, 'the fixture must reach the requested sleeping tier');
     sample(false); r.advance(100); sample(true);
-    assert.ok(['cat1', 'cat2', 'cat3'].includes(r.idleState().visualTier), 'window motion must not corrupt the idle state');
+    assert.equal(r.idleState().visualTier, restingTier, 'window motion must preserve the sleeping tier');
+    r.settle();
+    assert.equal(r.idleState().visualTier, restingTier, 'landing must preserve the sleeping tier');
+    r.idleTick();
+    assert.equal(r.idleState().visualTier, restingTier, 'idle tick after landing must preserve the sleeping tier');
     assert.notEqual(r.idleState().lastTierSource, 'window-gravity-wake');
   }
 });
