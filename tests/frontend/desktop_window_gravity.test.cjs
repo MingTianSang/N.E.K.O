@@ -27,6 +27,112 @@ function style(values = {}) {
   }, values);
 }
 
+function installYarnActivation(r) {
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  Object.assign(r.context, {
+    setTimeout: r.window.setTimeout, clearTimeout: r.window.clearTimeout,
+    _forEachNekoIdleReturnButton: callback => callback(r.button),
+    _clearNekoIdleCat1PlaygroundPointerListeners() {},
+    _installNekoIdleCat1PlaygroundPointerListeners() {},
+    _startNekoIdleCat1PlaygroundPhysics() {},
+    _dispatchNekoIdleCat1PlaygroundYarnActivate() { throw new Error('cancellation must not activate yarn'); },
+  });
+  for (const name of ['_getNekoIdleCat1PlaygroundScreenPoint', '_recordNekoIdleCat1PlaygroundPointerSample',
+    '_getNekoIdleCat1PlaygroundPointerVelocity', '_getNekoIdleCat1PlaygroundThrowAngularVelocity',
+    '_handleNekoIdleCat1PlaygroundPointerDownForBody', '_handleNekoIdleCat1PlaygroundPointerUp',
+    '_dispatchNekoIdleCat1PlaygroundDragState', '_removeNekoIdleCat1PlaygroundYarnBody',
+    '_handleNekoIdleCat1PlaygroundYarnActivationAck']) {
+    const start = source.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, name);
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+  }
+}
+
+for (const bodyId of ['yarn', 'desktop-yarn']) {
+  for (const dragging of [false, true]) {
+    test(`confirmed activation cancels ${bodyId} ${dragging ? 'drag' : 'press'} before removal`, () => {
+      const r = runtime();
+      installYarnActivation(r);
+      const captures = [], removed = [], dragEvents = [];
+      const body = {
+        id: bodyId, desktop: bodyId === 'desktop-yarn', x: 300, y: 200,
+        element: {
+          setPointerCapture: id => captures.push(['set', id]),
+          releasePointerCapture: id => captures.push(['release', id]),
+          parentNode: { removeChild: element => removed.push(element) },
+        },
+      };
+      const cat = { id: 'cat', vx: 123, vy: -45 };
+      const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+        active: true, released: false, container: r.container, phase: 'ballistic',
+        bodies: new Map([['cat', cat], [bodyId, body]]), pointerBodyId: '',
+        pendingYarnActivationId: 'request-1', pendingYarnActivationTimer: r.window.setTimeout(() => {}),
+      };
+      const phase = state.phase;
+      r.window.addEventListener('neko:idle-cat1-playground-drag-state', event => dragEvents.push(event.detail));
+      r.context._handleNekoIdleCat1PlaygroundPointerDownForBody(r.button, body, {
+        pointerId: 17, clientX: 300, clientY: 200, stopPropagation() {},
+      });
+      if (dragging) {
+        state.draggingBodyId = bodyId;
+        state.pointerMoved = true;
+        state.phase = 'dragging';
+        r.container.setAttribute('data-neko-cat1-playground-dragging', bodyId);
+      }
+      assert.equal(r.context._handleNekoIdleCat1PlaygroundYarnActivationAck({
+        detail: { activationId: 'request-1', confirmed: true },
+      }), true);
+      assert.equal(state.bodies.has(bodyId), false);
+      assert.equal(state.bodies.get('cat'), cat);
+      assert.equal(cat.vx, 123); assert.equal(cat.vy, -45);
+      assert.equal(state.pointerBodyId, '');
+      assert.equal(state.pointerId, null);
+      assert.equal(state.draggingBodyId || '', '');
+      assert.equal(state.pointerSampleSession, null);
+      assert.equal(body.dragging, false);
+      assert.equal(r.container.getAttribute('data-neko-cat1-playground-dragging'), null);
+      assert.equal(state.phase, phase);
+      assert.deepEqual(captures, [['set', 17], ['release', 17]]);
+      assert.equal(removed.length, body.desktop ? 1 : 0);
+      assert.equal(dragEvents.length, dragging ? 1 : 0);
+      if (dragging) {
+        assert.equal(dragEvents[0].active, false);
+        assert.equal(dragEvents[0].bodyId, bodyId);
+      }
+      assert.equal(r.button.getAttribute('data-neko-idle-tier'), 'cat1');
+      assert.equal(state.pendingYarnActivationTimer, 0);
+      assert.equal(r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, { pointerId: 17 }), false);
+      assert.equal(dragEvents.length, dragging ? 1 : 0, 'later pointerup must not duplicate drag end');
+    });
+  }
+}
+
+test('activation rejection preserves yarn drag, and confirmation preserves a different body drag', () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'dragging',
+    bodies: new Map([['cat', { id: 'cat', dragging: true }], ['yarn', { id: 'yarn' }]]),
+    pointerBodyId: 'yarn', pointerId: 17, draggingBodyId: 'yarn', pendingYarnActivationId: 'request-1',
+  };
+  r.container.setAttribute('data-neko-cat1-playground-dragging', 'yarn');
+  r.context._handleNekoIdleCat1PlaygroundYarnActivationAck({ detail: { activationId: 'request-1', confirmed: false } });
+  assert.equal(state.bodies.has('yarn'), true);
+  assert.equal(state.pointerBodyId, 'yarn');
+  assert.equal(state.draggingBodyId, 'yarn');
+  assert.equal(r.container.getAttribute('data-neko-cat1-playground-dragging'), 'yarn');
+  state.pointerBodyId = state.draggingBodyId = 'cat';
+  state.pendingYarnActivationId = 'request-2';
+  r.container.setAttribute('data-neko-cat1-playground-dragging', 'cat');
+  r.context._handleNekoIdleCat1PlaygroundYarnActivationAck({ detail: { activationId: 'request-2', confirmed: true } });
+  assert.equal(state.bodies.has('yarn'), false);
+  assert.equal(state.pointerBodyId, 'cat');
+  assert.equal(state.draggingBodyId, 'cat');
+  assert.equal(state.pointerId, 17);
+  assert.equal(state.bodies.get('cat').dragging, true);
+  assert.equal(r.container.getAttribute('data-neko-cat1-playground-dragging'), 'cat');
+});
+
 function runtime(options = {}) {
   let time = 1000;
   let sequence = 0;

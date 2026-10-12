@@ -288,9 +288,10 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
         const body = state.bodies.get(bodyId);
         if (!body) return;
         if (state.pointerBodyId === bodyId) {
-            state.pointerBodyId = '';
-            state.pointerId = null;
-            state.draggingBodyId = '';
+            _handleNekoIdleCat1PlaygroundPointerUp(button, {
+                type: 'pointercancel',
+                pointerId: state.pointerId
+            });
         }
         if (body.desktop && body.element && body.element.parentNode) {
             try { body.element.parentNode.removeChild(body.element); } catch (_) {}
