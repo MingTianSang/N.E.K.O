@@ -61,13 +61,6 @@
         { id: 'celebrate', nameKey: 'emoteMaker.animationCelebrate', duration: 3 }
     ];
 
-    const CATEGORY_META = {
-        template: { titleKey: 'emoteMaker.basicTemplates', items: EXPRESSIONS },
-        mood: { titleKey: 'emoteMaker.moodTemplates', items: EXPRESSIONS.slice(0, 5) },
-        action: { titleKey: 'emoteMaker.actionTemplates', items: EXPRESSIONS.slice(5) },
-        decoration: { titleKey: 'emoteMaker.categoryDecoration', items: ACCESSORIES }
-    };
-
     const state = {
         category: 'template',
         expressionId: '',
@@ -150,7 +143,6 @@
     let templateLibraryState = templateLibraryModule
         ? templateLibraryModule.emptyStore() : null;
     // 桌面端若能拿到绝对路径，跨重启就能静默重读；拿不到就靠用户点一次重新定位。
-    let templateSourcePath = '';
 
     const history = [];
     const future = [];
@@ -386,10 +378,6 @@
         'emoteMaker.packFormatFlat': '平铺（GIF，通用兼容）',
         'emoteMaker.packFormatLayered': '分层（多状态，可驱动）',
         'emoteMaker.packLayeredUnavailable': '分层打包模块未加载。',
-        'emoteMaker.lastTemplateLabel': '上次打开',
-        'emoteMaker.reopenLastTemplate': '重新打开',
-        'emoteMaker.reopenLastTemplateFile': '重新打开（选择模板文件）',
-        'emoteMaker.reopenLastTemplateFolder': '重新打开（上次那个目录）',
         'emoteMaker.packRootBadge': '默认节点',
         'emoteMaker.packNodeScene': '场景',
         'emoteMaker.packNodeDuration': '时长（秒）',
@@ -1148,48 +1136,6 @@
         return asset?.nameKey ? t(asset.nameKey) : t('emoteMaker.noTemplates');
     }
 
-    function appendReactionMarker(container, asset) {
-        if (!container || !asset.marker) return;
-        const marker = document.createElement('span');
-        marker.className = `asset-reaction-marker asset-reaction-marker-${asset.id}`;
-        marker.textContent = asset.marker;
-        marker.setAttribute('aria-hidden', 'true');
-        container.appendChild(marker);
-    }
-
-    function createAssetCard(asset, category) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'asset-card';
-        button.dataset.assetId = asset.id;
-        button.dataset.category = category;
-        const isExpressionCategory = category === 'template' || category === 'mood' || category === 'action';
-        const selected = isExpressionCategory
-            ? state.expressionId === asset.id
-            : state.accessoryId === asset.id;
-        if (selected) button.classList.add('is-selected');
-        button.setAttribute('aria-pressed', String(selected));
-        button.setAttribute('aria-label', getAssetLabel(asset));
-
-        const imageBox = document.createElement('span');
-        imageBox.className = 'asset-card-image' + (asset.src ? '' : ' is-empty');
-        if (asset.src) {
-            const image = document.createElement('img');
-            image.src = asset.src;
-            image.alt = getAssetLabel(asset);
-            image.loading = 'lazy';
-            if (asset.marker) image.classList.add('is-reaction-base');
-            imageBox.appendChild(image);
-        }
-        appendReactionMarker(imageBox, asset);
-        const label = document.createElement('span');
-        label.className = 'asset-card-label';
-        label.textContent = getAssetLabel(asset);
-        button.append(imageBox, label);
-        button.addEventListener('click', () => selectAsset(asset, category));
-        return button;
-    }
-
     function createTemplateLibraryCard(entry) {
         const card = document.createElement('div');
         card.className = 'asset-card template-lib-card';
@@ -1335,29 +1281,10 @@
 
     function renderAssetGrid() {
         if (!assetGrid || !assetSectionTitle) return;
-        if (templatePackage) {
-            // 场景列表已经并进预览下方那一块了；左侧再摆一份就是两个入口给两份
-            // 一样的清单。模板模式下这块改成"最近用过的模板"。
-            renderTemplateLibraryGrid();
-            return;
-        }
-        assetGrid.classList.remove('is-template-library');
-        const meta = CATEGORY_META[state.category] || CATEGORY_META.template;
-        assetSectionTitle.textContent = t(meta.titleKey);
-        const query = state.assetQuery.trim().toLocaleLowerCase();
-        const items = query
-            ? meta.items.filter((item) => getAssetLabel(item).toLocaleLowerCase().includes(query))
-            : meta.items;
-        if (!items.length) {
-            assetSectionTitle.textContent = t('emoteMaker.noTemplates');
-            const empty = document.createElement('div');
-            empty.className = 'empty-template-state';
-            empty.setAttribute('role', 'status');
-            empty.textContent = t('emoteMaker.noTemplates');
-            assetGrid.replaceChildren(empty);
-            return;
-        }
-        assetGrid.replaceChildren(...items.map((item) => createAssetCard(item, state.category)));
+        // 左侧永远是模板库：加载了模板它是"最近用过"，没加载它就是入口本身
+        //（点一条 = 从本地副本装回来）。以前的部件网格依赖 EXPRESSIONS 那套
+        // 永远为空的脚手架，早就只剩一排点不动的分类。
+        renderTemplateLibraryGrid();
     }
 
     function getPartGroup(groupId) {
@@ -1528,47 +1455,21 @@
         }));
     }
 
-    function selectAsset(asset, category) {
-        recordChange(() => {
-            if (category === 'template' || category === 'mood' || category === 'action') {
-                state.expressionId = asset.id;
-                state.selectedLayer = 'expression';
-            } else {
-                state.accessoryId = asset.id;
-                state.selectedLayer = 'accessory';
-            }
-        });
-    }
-
     function renderCategoryTabs() {
-        const hasTemplates = EXPRESSIONS.length > 0 || ACCESSORIES.length > 0;
-        const inTemplateMode = Boolean(templatePackage);
-        // 「模板/情绪/动作/装饰」这四个分类、搜索框、随机搭配全部依赖 EXPRESSIONS /
-        // ACCESSORIES 这两个部件源，而它们是两处 const []，全文件没有任何地方往里写：
-        // 于是分类永远禁用、随机搭配点了直接 return、搜索框筛一份空列表。
-        // 与其摆一排点不动的东西，不如空态只留导入卡片。
-        // 各元素分别处理：分类条在任何状态下都不该出现，其余三件是"有模板才有内容"
+        // 「模板/情绪/动作/装饰」这四个分类、随机搭配全部依赖 EXPRESSIONS / ACCESSORIES
+        // 这两个部件源，而它们是两处 const []，全文件没有任何地方往里写：与其摆一排
+        // 点不动的东西，不如收掉。搜索/标题/清单则不再看"有没有加载模板"——
+        // 没加载时左侧就是模板库本身，点一条 = 从本地副本装回来。
         const tabStrip = document.querySelector('.category-tabs');
         if (tabStrip) tabStrip.hidden = true;
-        const chrome = [
+        [
             document.querySelector('.asset-search'),
             document.querySelector('.asset-section-heading'),
             assetGrid,
-        ];
-        chrome.forEach((el) => { if (el) el.hidden = !inTemplateMode; });
+        ].forEach((el) => { if (el) el.hidden = false; });
         const randomize = $('#randomize-btn');
         if (randomize) randomize.hidden = true;
-        document.querySelectorAll('.category-tab').forEach((button) => {
-            const active = button.dataset.category === state.category;
-            button.classList.toggle('is-active', active);
-            button.setAttribute('aria-selected', String(active));
-            button.setAttribute('tabindex', active ? '0' : '-1');
-            button.disabled = Boolean(templatePackage) || !hasTemplates;
-        });
-        if (assetGrid) {
-            const activeTab = document.querySelector(`.category-tab[data-category="${state.category}"]`);
-            if (activeTab) assetGrid.setAttribute('aria-labelledby', activeTab.id);
-        }
+        if (assetGrid) assetGrid.setAttribute('aria-labelledby', 'asset-section-title');
     }
 
     function renderInspectorTabs() {
@@ -4198,8 +4099,8 @@
             saved = null;
         }
         lastTemplate = saved && saved.schemaVersion === 1 && saved.fingerprint ? saved : null;
-        // 快照里有 importKind，但 lastImportKind 是模块变量：不回填的话重载后
-        // 「重新打开」一定弹文件选择器，也就永远走不到桌面端记住的那个目录。
+        // 快照里有 importKind，但 lastImportKind 是模块变量：不回填的话，老条目
+        // （还没有本地副本的那种）退回重新定位时会弹错选择器。
         if (lastTemplate) lastImportKind = lastTemplate.importKind === 'file' ? 'file' : 'directory';
     }
 
@@ -4224,7 +4125,6 @@
             pkg: templatePackage,
             store: templateAssetStore,
             textureFiles: Array.isArray(textureCacheFiles) ? [...textureCacheFiles] : [],
-            sourcePath: templateSourcePath,
         });
         return key;
     }
@@ -4263,7 +4163,6 @@
                 key,
                 pkg: templatePackage,
                 importKind: lastImportKind,
-                sourcePath: templateSourcePath || (existing && existing.sourcePath) || '',
                 thumb: thumb || (existing && existing.thumb) || '',
                 addedAt: existing && existing.addedAt,
                 session: {
@@ -4450,7 +4349,6 @@
         templatePackage = held.pkg;
         templateAssetStore = held.store;
         textureCacheFiles = [...held.textureFiles];
-        templateSourcePath = held.sourcePath || '';
         lastImportKind = entry.importKind === 'file' ? 'file' : 'directory';
         lastTemplate = {
             ...entry.session,
@@ -4505,7 +4403,7 @@
         }
         if (entry && entry.importKind === 'directory' && window.nekoHost
             && typeof window.nekoHost.pickTemplateDirectory === 'function') {
-            await importTemplateDirectoryFromHost({ templateLibraryKey: key });
+            await importTemplateDirectoryFromHost();
         } else {
             templateFileInput?.click();
         }
@@ -4535,31 +4433,9 @@
             releaseTemplateAssetStore();
             templatePackage = null;
             textureCacheFiles = [];
-            templateSourcePath = '';
             lastTemplate = null;
         }
         renderAll();
-    }
-
-    function renderLastTemplatePrompt() {
-        const host = $('#last-template-row');
-        if (!host) return;
-        const show = Boolean(lastTemplate) && !templatePackage;
-        host.hidden = !show;
-        if (!show) return;
-        const label = $('#last-template-name');
-        if (label) {
-            label.textContent = lastTemplate.displayName
-                || lastTemplate.packageName
-                || t('emoteMaker.reopenLastTemplate');
-        }
-        const button = $('#reopen-last-template-btn');
-        if (button) {
-            // 按上次的导入方式复原：目录包和单文件包用的是两个不同的选择器。
-            button.textContent = lastTemplate.importKind === 'file'
-                ? t('emoteMaker.reopenLastTemplateFile')
-                : t('emoteMaker.reopenLastTemplateFolder');
-        }
     }
 
     function applyTemplateSession(manifest) {
@@ -5256,7 +5132,6 @@
         renderInspectorTabs();
         syncExportControls();
         renderPackPanel();
-        renderLastTemplatePrompt();
         renderSceneListFilter();
         renderGroupBar();
         renderAssetGrid();
@@ -6079,10 +5954,9 @@
         );
     }
 
-    async function importTemplateDirectoryFromHost(options = {}) {
+    async function importTemplateDirectoryFromHost() {
         const bridge = window.nekoHost;
         if (!bridge || typeof bridge.pickTemplateDirectory !== 'function') return false;
-        const reopenLast = options.reopenLast === true;
         const previousFilename = templateImportFilename?.textContent || '';
         if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
@@ -6090,19 +5964,10 @@
         try {
             // 不给 startPath：桌面端会把对话框开在用户上次选过的目录，
             // 这里给了反而会盖掉它。界面只需要点一下确认。
-            // 先试不弹框的直接重开；主进程说"记不住了"才退回正常选择框
-            let result = reopenLast
-                ? await bridge.pickTemplateDirectory({ reopenLast: true })
-                : null;
-            if (result && result.needsPick) {
-                setTemplateImportStatus(t('emoteMaker.templateFolderMissing'), 'muted');
-                result = null;
-            }
-            if (!result) {
-                result = await bridge.pickTemplateDirectory({
-                    title: t('emoteMaker.selectTemplateFolder'),
-                });
-            }
+            // （"记住上次目录"属于被本地副本取代的旧重开路径，这里只管新导入。）
+            let result = await bridge.pickTemplateDirectory({
+                title: t('emoteMaker.selectTemplateFolder'),
+            });
             if (!result || result.cancelled) {
                 setTemplateImportStatus(t('emoteMaker.templateFolderCancelled'), 'muted');
                 return true;
@@ -6507,22 +6372,6 @@
                 return;
             }
             void downloadPng();
-        });
-        $('#reopen-last-template-btn')?.addEventListener('click', () => {
-            void (async () => {
-                // 有本地副本就先用它：重开不该让用户再去认一遍路径
-                const restoreKey = lastTemplate?.fingerprint || currentTemplateKey();
-                if (await tryRestoreTemplateFromArchive(restoreKey)) return;
-                // 桌面端优先：走桥才能用上"上次选过的目录"，网页 input 只会弹一个空白选择框
-                if (lastImportKind !== 'file'
-                    && window.nekoHost && typeof window.nekoHost.pickTemplateDirectory === 'function') {
-                    // 桌面端：直接重开上次那个目录，不再让人在对话框里认一遍路
-                    void importTemplateDirectoryFromHost({ reopenLast: true });
-                    return;
-                }
-                const input = lastImportKind === 'file' ? templateFileInput : templateDirectoryInput;
-                input?.click();
-            })();
         });
         $('#open-state-stage-btn')?.addEventListener('click', () => { openStateStage(); });
         document.querySelectorAll('[data-pack-mode]').forEach((button) => {

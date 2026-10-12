@@ -297,10 +297,10 @@ def test_empty_state_does_not_echo_the_import_button(page: Page, running_server:
             importCard: visible('.template-import-card'),
         };
     }""")
-    # 这四个都靠 EXPRESSIONS/ACCESSORIES 供内容，而它们是两处空常量：
-    # 分类永远禁用、随机搭配点了直接 return、搜索框筛空列表 → 空态不该摆出来
-    assert dead == {"tabs": False, "search": False, "sectionHeading": False,
-                    "grid": False, "randomize": False, "importCard": True}, dead
+    # 没加载模板时左侧就是模板库本身（搜一遍/看清单/点一条从副本装回来）；
+    # 分类条和随机搭配靠 EXPRESSIONS/ACCESSORIES 供内容，它们是两处空常量，永远收着
+    assert dead == {"tabs": False, "search": True, "sectionHeading": True,
+                    "grid": True, "randomize": False, "importCard": True}, dead
 
     _import(page, "first.zip", "第一个", "A", scenes=2)
     loaded = page.evaluate("""() => {
@@ -331,13 +331,19 @@ def test_reopens_from_the_local_copy_after_reload(library_page: Page) -> None:
         "() => document.querySelector('.template-lib-usage').textContent")
 
     library_page.reload(wait_until="networkidle")
-    # 重载后还没有加载任何模板，左侧只剩导入卡片；跨重启的入口是「上次打开」那一行
+    # 重载后还没有加载任何模板，但左侧本来就是模板库：卡片直接可见、直接点。
+    # 可见性要看 computed display —— 只查 DOM 存在会被 display:none 骗过（踩过）。
     library_page.wait_for_function(
-        "() => !document.querySelector('#last-template-row').hidden", timeout=20000)
+        """() => {
+            const grid = document.querySelector('#asset-grid');
+            const card = grid && grid.querySelector('.template-lib-card');
+            return Boolean(card) && getComputedStyle(grid).display !== 'none';
+        }""", timeout=20000)
 
     choosers: list[object] = []
     library_page.on("filechooser", lambda chooser: choosers.append(chooser))
-    library_page.evaluate("() => document.querySelector('#reopen-last-template-btn').click()")
+    library_page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card .template-lib-open').click()")
     library_page.wait_for_function(
         "() => document.body.classList.contains('editor-has-template')", timeout=25000)
     assert choosers == [], f"重开走的是本地副本，不该再要用户定位文件: {choosers}"
@@ -427,8 +433,13 @@ def test_supplemented_textures_survive_a_reload(library_page: Page) -> None:
 
     library_page.reload(wait_until="networkidle")
     library_page.wait_for_function(
-        "() => !document.querySelector('#last-template-row').hidden", timeout=20000)
-    library_page.evaluate("() => document.querySelector('#reopen-last-template-btn').click()")
+        """() => {
+            const grid = document.querySelector('#asset-grid');
+            const card = grid && grid.querySelector('.template-lib-card');
+            return Boolean(card) && getComputedStyle(grid).display !== 'none';
+        }""", timeout=20000)
+    library_page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card .template-lib-open').click()")
     library_page.wait_for_function(
         "() => document.body.classList.contains('editor-has-template')", timeout=25000)
     assert "1" in library_page.evaluate(

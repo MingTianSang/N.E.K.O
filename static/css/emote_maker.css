@@ -868,31 +868,6 @@ button {
     opacity: 0.38;
 }
 
-/* 上次打开的模板。只存元数据，所以这一行永远是"再点一次"，不是自动恢复。 */
-.last-template-row {
-    margin-top: 10px;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--emote-muted);
-}
-
-/* 显式 display:flex 会盖掉 [hidden] 的 UA 默认值，必须自己补一条。 */
-.last-template-row[hidden] {
-    display: none;
-}
-
-.last-template-name {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--emote-text);
-    font-weight: 700;
-}
-
 .export-actions {
     margin-top: auto;
     padding-top: 14px;
@@ -2440,10 +2415,8 @@ select:focus-visible {
     display: none;
 }
 
-.editor-empty .asset-section-heading,
-.editor-empty #asset-grid {
-    display: none;
-}
+/* 空态左侧要显示模板库本身（有副本的条目点一条就装回来），
+   所以 heading/清单不再跟着 editor-empty 一起藏。 */
 
 .template-canvas-status > span {
     display: block;

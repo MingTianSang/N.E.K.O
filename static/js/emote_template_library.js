@@ -114,8 +114,6 @@
             packageName: text(src.pkg?.source?.packageName) || text(src.packageName),
             displayName: text(src.pkg?.model?.displayName) || text(src.displayName) || text(src.pkg?.source?.sharedModelKey),
             importKind: src.importKind === 'directory' ? 'directory' : 'file',
-            // 桌面端能拿到绝对路径时才有意义：跨重启就靠它静默重读
-            sourcePath: text(src.sourcePath),
             thumb: thumb.length <= MAX_THUMB_CHARS ? thumb : '',
             addedAt: Number(src.addedAt) || Date.now(),
             lastUsedAt: Number(src.lastUsedAt) || Date.now(),
