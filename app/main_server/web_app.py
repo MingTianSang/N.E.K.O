@@ -372,6 +372,7 @@ from main_routers.capture_router import router as capture_router  # noqa
 from main_routers.characters_router import router as characters_router  # noqa
 from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
+from main_routers.emote_template_router import router as emote_template_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
 from main_routers.widget_mode_router import router as widget_mode_router  # noqa
@@ -796,6 +797,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 
 # 挂载全部路由
 app.include_router(config_router)
+app.include_router(emote_template_router)
 app.include_router(proactive_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)

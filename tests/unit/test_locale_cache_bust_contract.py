@@ -81,6 +81,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-pr3140-gravity-main-merge",
         "2026-10-12-visit-frame-badges-main-merge-4",
         "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr14a-debrief-pr3398-merge",
         "2026-10-12-visit-frame-badges-main-merge-2",
@@ -89,7 +90,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-visit-frame-badges-merge",
         "2026-10-12-pr14a-debrief-ambiguous-names-merge",
         "2026-10-12-pr14a-debrief-main-merge",
-        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-11-vrm-emotion-recovery",
         "2026-10-11-vrm-emotion-load-state-main-rebase",
         "2026-10-11-pr3385-cloudsave-visit-data-busy",
@@ -170,7 +170,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-theater-air-basketball-main-merge",
 
         "2026-10-04-voice-readiness-review-main-merge",
-        "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-voice-readiness-model-picker-merge",
         "2026-10-04-storage-requesty-main-merge",
         "2026-10-03-voice-readiness-recovery",
@@ -179,21 +178,16 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-voice-readiness",
         "2026-10-03-storage-rollback-errors",
         "2026-10-04-external-route-registry-main-merge-round3",
-        "2026-10-04-storage-requesty-main-merge",
         "2026-10-01-theater-ordinary-chat-unavailable",
         "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-screen-share-avatar-tools-main-merge",
         "2026-09-30-theater-suggestion-fill-copy",
         "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-30-theater-avatar-tools-main-merge",
-        "2026-10-03-storage-rollback-errors",
-        "2026-10-04-external-route-registry-main-merge-round3",
         "2026-10-03-external-route-registry-main-merge-round2",
         "2026-10-03-requesty-model-picker-main-merge",
         "2026-10-03-external-route-registry-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-02-external-route-registry",
-        "2026-10-03-storage-rollback-errors",
         "2026-10-03-assist-key-tutorial-clarified",
         "2026-10-03-requesty-key-tutorial",
         "2026-10-03-requesty-main-merge",
@@ -203,10 +197,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-assist-model-id-removal",
         "2026-10-03-model-picker-url-hint",
         "2026-10-03-assist-model-picker",
-        "2026-10-03-theater-air-basketball-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-03-requesty-air-basketball-main-merge",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-click-guide-review-main-merge",
         "2026-09-28-click-guide-review",
         "2026-09-28-click-guide-main-merge",
@@ -417,14 +408,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-30-social-login-prompt-voice-identity-merge",
         "2026-09-30-theater-social-settings-main-merge",
         "2026-09-29-click-guide-screen-source-merge",
-        "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-27-air-basketball-main-merge",
         "2026-10-02-air-basketball-main-merge",
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-click-guide-memory-reactivation",
-        "2026-10-03-air-basketball-review-round3",
     }
 )
 
@@ -437,7 +425,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "22f663e9900e37f69e70976a154e0790d5c3499b316752b5f96a1eb64b20e5c1"
+LOCALE_KEY_SIGNATURE = "d8e230c6963fe91cf98b29cf92f3c277d28268b1c109fce3f0728475a511a7ff"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

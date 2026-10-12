@@ -1,0 +1,181 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const library = require('../../static/js/emote_template_library.js');
+
+function pkg(overrides = {}) {
+    return {
+        source: { packageName: 'demo.zip', sharedModelKey: 'Demo' },
+        model: { displayName: '演示' },
+        counts: { scenes: 12, animations: 7 },
+        ...overrides,
+    };
+}
+
+function entry(key, extra = {}) {
+    return library.makeEntry({
+        key,
+        displayName: key,
+        thumb: 'data:image/png;base64,AAAA',
+        ...extra,
+    });
+}
+
+function fakeStorage(initial = {}) {
+    const data = { ...initial };
+    return {
+        data,
+        getItem: (k) => (k in data ? data[k] : null),
+        setItem: (k, v) => { data[k] = String(v); },
+        removeItem: (k) => { delete data[k]; },
+    };
+}
+
+test('同一个模板反复导入只占一个条目', () => {
+    const a = library.entryKeyFor(pkg());
+    const b = library.entryKeyFor(pkg({ model: { displayName: '改了显示名' } }));
+    assert.equal(a, b, '显示名不该参与身份：改了名就变成两个模板是错的');
+    assert.notEqual(a, library.entryKeyFor(pkg({ counts: { scenes: 13, animations: 7 } })),
+        '场景数变了就是另一个模板');
+});
+
+test('认不出身份的模板拒绝入库，而不是挤成同一条', () => {
+    assert.equal(library.entryKeyFor(null), '');
+    assert.equal(library.entryKeyFor({}), '');
+    assert.equal(library.entryKeyFor({ source: {}, counts: { scenes: 0, animations: 0 } }), '');
+    assert.throws(() => library.makeEntry({}), { code: 'no_key' });
+});
+
+test('超出条数上限时按"最久没用"淘汰，不是按加入顺序', () => {
+    let store = library.emptyStore();
+    const now = Date.now();
+    // 先塞满
+    for (let i = 0; i < library.MAX_ENTRIES; i += 1) {
+        store = library.upsert(store, entry(`old-${i}`, { lastUsedAt: now - (i + 1) * 1000 }));
+    }
+    assert.equal(store.entries.length, library.MAX_ENTRIES);
+    // old-11 最久没用，但它刚被碰过 → 该走的是次久没用的 old-10，而不是加入最早的 old-0
+    store = library.touch(store, `old-${library.MAX_ENTRIES - 1}`);
+    store = library.upsert(store, entry('fresh'));
+    assert.equal(store.entries.length, library.MAX_ENTRIES, '容量不该超');
+    assert.ok(library.find(store, 'fresh'), '新条目要进来');
+    assert.ok(library.find(store, 'old-11'), '刚用过的不该被挤掉');
+    assert.ok(library.find(store, 'old-0'), '按加入顺序淘汰是错的：它其实是最常用的');
+    assert.equal(library.find(store, 'old-10'), null, '最久没用的那条该走');
+});
+
+test('更新同一条目时保留加入时间，只刷新会话', () => {
+    let store = library.upsert(library.emptyStore(), entry('k', { addedAt: 111, lastUsedAt: 111 }));
+    store = library.upsert(store, entry('k', { addedAt: 999, displayName: '新名字' }));
+    assert.equal(store.entries.length, 1);
+    assert.equal(store.entries[0].addedAt, 111);
+    assert.equal(store.entries[0].displayName, '新名字');
+});
+
+test('移除当前条目会一起清掉 currentKey', () => {
+    let store = library.upsert(library.emptyStore(), entry('a'));
+    store = library.touch(store, 'a');
+    assert.equal(store.currentKey, 'a');
+    store = library.remove(store, 'a');
+    assert.equal(library.find(store, 'a'), null);
+    assert.equal(store.currentKey, '', '留着指向已删条目的 currentKey，下次开页会找不到东西');
+});
+
+test('会话字段只认运行时真看得懂的值', () => {
+    const session = library.normalizeSession({
+        packFormat: 'layered', packPriority: ' EMOTION ', sceneId: 'a.json#1',
+        packSceneIds: { idle_image: 'a.json#0' },
+    });
+    assert.equal(session.packFormat, 'layered');
+    // 大小写/空格宽容，但认不得的一律回默认（别让界面能选出一个运行时不认的值）
+    assert.equal(session.packPriority, 'emotion');
+    assert.equal(session.sceneId, 'a.json#0'.slice(0, 0) + 'a.json#1');
+    assert.deepEqual(session.packSceneIds, { idle_image: 'a.json#0' });
+    assert.equal(library.normalizeSession({ packFormat: 'weird' }).packFormat, 'flat');
+    assert.equal(library.normalizeSession({ packPriority: 'loud' }).packPriority, 'talking');
+    assert.deepEqual(library.normalizeSession(null).character, { skins: [], sliders: [], slots: [] });
+});
+
+test('表演台的每状态设置活在节点图里，所以节点图必须跟着模板走', () => {
+    const graph = { schemaVersion: 1, nodes: [{ id: 'o1' }], links: [] };
+    assert.deepEqual(library.normalizeSession({ nodeGraph: graph }).nodeGraph, graph);
+    assert.equal(library.normalizeSession({}).nodeGraph, null);
+});
+
+test('过大的缩略图直接丢掉，而不是把整库挤爆', () => {
+    const huge = `data:image/png;base64,${'A'.repeat(library.MAX_THUMB_CHARS + 10)}`;
+    const made = library.makeEntry({ key: 'k', thumb: huge });
+    assert.equal(made.thumb, '');
+    assert.equal(library.makeEntry({ key: 'k', thumb: 'data:small' }).thumb, 'data:small');
+});
+
+test('超体积时先牺牲缩略图，保住当前模板的缩略图到最后', () => {
+    const filler = `data:image/png;base64,${'x'.repeat(8 * 1024)}`;
+    let store = library.upsert(library.emptyStore(), entry('current', { thumb: filler }));
+    store = library.upsert(store, entry('other', { thumb: filler }));
+    store = library.touch(store, 'current');
+    const shrunk = library.shrinkToFit(store, JSON.stringify(store).length - 2000);
+    assert.ok(shrunk, '还能救');
+    assert.equal(shrunk.entries.find((e) => e.key === 'other').thumb, '');
+    assert.ok(shrunk.entries.find((e) => e.key === 'current').thumb.length > 0, '当前那条的图不该第一个被扔');
+    const hopeless = library.shrinkToFit(store, 8);
+    assert.equal(hopeless, null, '救不回来时要如实说，不要偷偷写一半');
+});
+
+test('存得下就丢图救回来，真存不下就如实抛错', () => {
+    const thumb = `data:image/png;base64,${'y'.repeat(8 * 1024)}`;
+    let store = library.upsert(library.emptyStore(), entry('current', { thumb }));
+    store = library.upsert(store, entry('other', { thumb }));
+    store = library.touch(store, 'current');
+    const saved = JSON.parse(library.serialize(store, JSON.stringify(store).length - 2000));
+    const current = saved.entries.find((item) => item.key === 'current');
+    assert.ok(current, '当前模板不该被丢掉');
+    assert.ok(current.thumb.length > 0, '当前那条的缩略图应当保到最后');
+    assert.throws(() => library.serialize(store, 64), { code: 'quota' },
+        '救不回来时要抛错，让调用方只留当前条目，而不是悄悄写一半');
+});
+
+test('读回来的库坏了一部分也只丢坏的那条', () => {
+    const storage = fakeStorage();
+    library.save(storage, library.upsert(library.emptyStore(), entry('good')));
+    const raw = JSON.parse(storage.getItem(library.STORAGE_KEY));
+    raw.entries.push({ nope: true });
+    storage.setItem(library.STORAGE_KEY, JSON.stringify(raw));
+    const store = library.load(storage);
+    assert.equal(store.entries.length, 1, '认不出的条目该丢');
+    assert.equal(store.entries[0].key, 'good');
+    assert.equal(library.load(fakeStorage()).entries.length, 0);
+    const broken = fakeStorage({ [library.STORAGE_KEY]: '{不是JSON' });
+    assert.deepEqual(library.load(broken), library.emptyStore(), '坏数据要当没有，不能抛');
+    assert.deepEqual(library.load(null), library.emptyStore());
+});
+
+test('存到一半存储炸了不许把异常留给页面', () => {
+    assert.throws(() => library.save(null, library.emptyStore()), { code: 'no_storage' });
+    const full = {
+        getItem: () => { throw new Error('denied'); },
+        setItem: () => { throw new Error('QuotaExceededError'); },
+    };
+    assert.deepEqual(library.load(full), library.emptyStore());
+    assert.throws(() => library.save(full, library.emptyStore()), /QuotaExceeded/);
+});
+
+test('老数据只有一份会话快照，升级后应当变成库里的一条', () => {
+    const storage = fakeStorage();
+    const legacy = {
+        fingerprint: 'demo.zip::Demo::12::7',
+        packageName: 'demo.zip', displayName: '演示', importKind: 'directory',
+        sceneId: 'demo.zip#3', packSceneIds: { idle_image: 'demo.zip#0' },
+        adjustOverwrite: false,
+    };
+    const store = library.migrateFromLegacy(legacy, storage);
+    assert.equal(store.entries.length, 1);
+    assert.equal(store.currentKey, legacy.fingerprint);
+    assert.equal(store.entries[0].importKind, 'directory');
+    assert.equal(store.entries[0].session.sceneId, 'demo.zip#3');
+    assert.equal(store.entries[0].session.adjustOverwrite, false);
+    // 已经入库过就不该再来一次（否则每次开页都会重播迁移）
+    library.save(storage, store);
+    assert.equal(library.migrateFromLegacy(legacy, storage), null);
+    assert.equal(library.migrateFromLegacy(null, storage), null);
+});

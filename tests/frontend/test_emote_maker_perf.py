@@ -1,0 +1,76 @@
+"""页面性能守卫（这些数字都是量出来的，不是"感觉更快"）。
+
+背景：播放循环每帧都无条件写 DOM，实测 1 秒里 122 次 textContent + 122 次
+setAttribute；表演台拖一次起止手柄会重建八行（30 次拖动 = 14 次
+replaceChildren + 108 次 querySelectorAll）。两者都已改成"变了才写"，
+这里钉住，别被人顺手改回去。
+"""
+
+from __future__ import annotations
+
+from playwright.sync_api import Page
+
+INSTR = """() => {
+    window.__C = { rc: 0, qs: 0, text: 0, attr: 0, ls: 0 };
+    const bump = (k) => { window.__C[k] += 1; };
+    const rc = Element.prototype.replaceChildren;
+    Element.prototype.replaceChildren = function (...a) { bump('rc'); return rc.apply(this, a); };
+    const qsa = Element.prototype.querySelectorAll;
+    Element.prototype.querySelectorAll = function (s) { bump('qs'); return qsa.call(this, s); };
+    const sa = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (n, v) { bump('attr'); return sa.call(this, n, v); };
+    const d = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    Object.defineProperty(Node.prototype, 'textContent', {
+        get: d.get, set(v) { bump('text'); return d.set.call(this, v); },
+    });
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) { bump('ls'); return setItem.call(this, k, v); };
+    return true;
+}"""
+BASE = "() => JSON.parse(JSON.stringify(window.__C))"
+DELTA = """(base) => {
+    const out = {};
+    for (const k of Object.keys(window.__C)) out[k] = window.__C[k] - base[k];
+    return out;
+}"""
+
+
+def test_playing_does_not_rewrite_unchanged_dom(page: Page, running_server: str) -> None:
+    """播放循环每帧都会跑控制条更新：值没变就不该写。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.wait_for_timeout(400)
+    page.evaluate(INSTR)
+    page.evaluate("() => document.querySelector('#play-animation-btn')?.click()")
+    base = page.evaluate(BASE)
+    page.wait_for_timeout(1000)
+    writes = page.evaluate(DELTA, base)
+    # 之前这里是 text=122 / attr=122（每秒）
+    assert writes["text"] <= 3, f"播放中每秒仍在重写 {writes['text']} 次文本: {writes}"
+    assert writes["attr"] <= 3, f"播放中每秒仍在写 {writes['attr']} 次属性: {writes}"
+    assert writes["rc"] == 0, writes
+
+
+def test_dragging_the_range_handles_rebuilds_nothing(page: Page, running_server: str) -> None:
+    """拖起止手柄是最高频的交互：只该重绘画布，不该拆建 DOM。"""
+    import io
+    src = io.open('tests/frontend/test_emote_state_stage.py', encoding='utf-8').read()
+    boot_js = src.split('BOOT = """')[1].split('"""')[0]
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.wait_for_timeout(300)
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate(INSTR)
+    page.evaluate(boot_js, 1.0 / 12)
+    page.wait_for_timeout(500)
+    base = page.evaluate(BASE)
+    strip = page.locator(".st-strip-canvas").bounding_box()
+    page.mouse.move(strip["x"] + strip["width"] * 0.98, strip["y"] + strip["height"] / 2)
+    page.mouse.down()
+    for i in range(30):
+        page.mouse.move(strip["x"] + strip["width"] * (0.98 - i * 0.018),
+                        strip["y"] + strip["height"] / 2)
+    page.mouse.up()
+    page.wait_for_timeout(150)
+    cost = page.evaluate(DELTA, base)
+    assert cost["rc"] == 0, f"30 次拖动重建了 {cost['rc']} 块 DOM"
+    # 标签表被缓存后，拖动路径上不该再有整表查询
+    assert cost["qs"] <= 12, f"拖动时仍在整表查询: {cost['qs']} 次"

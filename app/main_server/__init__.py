@@ -552,6 +552,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/subtitle",
     "/agenthud",
     "/card_maker",
+    "/emote_maker",
     "/jukebox",
     "/jukebox/manager",
     "/toast",
