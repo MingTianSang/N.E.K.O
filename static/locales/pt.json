@@ -4840,6 +4840,17 @@
         }
     },
     "vrmEmotionManager": {
+        "waitingForModel": "Carregando o modelo selecionado. Aguarde…",
+        "retryLoad": "Tentar carregar novamente",
+        "loadTimeout": "O carregamento excedeu o tempo limite. Tente novamente; a configuração salva não foi alterada.",
+        "saveTimeout": "O salvamento excedeu o tempo limite; o resultado não foi confirmado. Confira a configuração antes de tentar novamente.",
+        "recoveryBlocked": "Dois carregamentos de modelos ainda não terminaram. Aguarde a conclusão ou reabra a janela de gerenciamento de modelos antes de tentar novamente.",
+        "sourceUnavailable": "Abra esta página pelo Gerenciador de Modelos e mantenha essa janela aberta.",
+        "invalidModel": "Este modelo não está mais disponível. Selecione-o novamente.",
+        "modelLoadFailed": "Não foi possível carregar o modelo selecionado. Tente novamente.",
+        "sourceChanged": "O modelo de prévia mudou ou está indisponível. Tente carregar o modelo selecionado novamente.",
+        "noConfigurableExpressions": "O modelo foi carregado, mas não possui expressões configuráveis.",
+        "retainedBindings": "Estas associações salvas estão indisponíveis neste modelo e serão preservadas sem prévia:",
         "title": "Gerente de mapeamento de emoções VRM - Projeto N.E.K.O.",
         "pageTitle": "Gerenciador de mapeamento de emoções VRM",
         "subtitle": "Configure mapeamentos de expressão para diferentes emoções",
@@ -6631,6 +6642,30 @@
         }
     },
     "visit": {
+        "debrief": {
+            "question": "Guardar esta visita no diário dela?",
+            "choiceDiary": "Guardar no diário",
+            "choiceForget": "Não guardar",
+            "savedDiary": "Guardado no diário dela",
+            "forgot": "Tudo bem, desta vez não será guardado",
+            "askLaterHint": "Estas opções ficam por 7 dias; toque quando quiser",
+            "previewTitle": "Guardar isto?",
+            "previewFactsLabel": "Ela vai se lembrar disto:",
+            "previewConfirm": "Gravar",
+            "previewVoided": "Este registro foi descartado; nada foi gravado",
+            "generating": "Escrevendo…",
+            "committing": "Gravando… se ainda não der certo, vai tentar de novo automaticamente",
+            "commitFailed": "Não foi possível gravar na memória: o serviço de memória recusou esta gravação e as novas tentativas automáticas pararam.",
+            "commitFailedPartial": "Os fatos foram gravados, mas a entrada do diário ainda não.",
+            "commitRetry": "Tentar de novo",
+            "commitAbandon": "Desistir",
+            "abandonPartialConfirm": "Os fatos já foram gravados e não podem ser desfeitos; a entrada do diário não foi gravada. Se desistir, esta entrada não será gravada. Desistir?",
+            "abandoned": "Desistiu; nada foi gravado",
+            "abandonedPartial": "Desistiu: os fatos foram gravados, a entrada do diário não",
+            "commitFailedUnknown": "Parte pode já estar na memória, mas não foi possível confirmar.",
+            "abandonUnknownConfirm": "Parte pode já estar na memória sem confirmação; desistir não desfaz isso. Desistir?",
+            "abandonedUnknown": "Desistiu: parte pode ter sido gravada, mas não foi possível confirmar"
+        },
         "settings": {
             "groupTitle": "Visitas",
             "enabled": "Permitir visitas",
