@@ -2671,10 +2671,14 @@
     // click-guide 的抑制源是 isNekoClickGuideActive（不走 home-tutorial 事件面），
     // 视觉 tick 闸门会在导览期间停表：它自己的释放事件必须同样补挂，
     // 否则导览期间进行中的录音在其余下会话里永远不再推帧。
-    // 聊天定时器不需要补：导览期间它从未被停，触发时闸门放行即恢复。
+    // 聊天定时器若在导览期间到点，触发和重排都会被闸门拦下、不留新表，
+    // 释放时也必须重排；调度器尚未初始化时由初始化器负责首次排程。
     window.addEventListener('neko:click-guide-active', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active !== false) return;
+        if (S._proactiveSchedulerInitialized === true && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            scheduleProactiveChat();
+        }
         rearmProactiveVisionAfterSuppression();
     });
 

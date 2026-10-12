@@ -6,6 +6,51 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app/app-proactive.js'), 'utf8');
 
+test('click-guide release restores chat after its timer expires while suppressed', async () => {
+    const listeners = new Map();
+    const timers = new Map();
+    let nextTimer = 0;
+    const state = {
+        isRecording: true,
+        proactiveChatEnabled: true,
+        proactiveNewsChatEnabled: true,
+        proactiveVisionEnabled: false,
+        proactiveChatInterval: 15
+    };
+    const window = {
+        appState: state, appConst: {},
+        addEventListener(type, listener) { listeners.set(type, listener); }
+    };
+    vm.runInNewContext(source, {
+        window,
+        document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } },
+        console,
+        setTimeout(fn) { timers.set(++nextTimer, fn); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+        clearInterval() {}
+    });
+    const release = () => listeners.get('neko:click-guide-active')({ detail: { active: false } });
+    release();
+    assert.equal(timers.size, 0, 'release must not initialize the scheduler early');
+    state._proactiveSchedulerInitialized = true;
+    window.scheduleProactiveChat();
+    assert.equal(timers.size, 1);
+    window.isNekoClickGuideActive = true;
+    const timer = timers.get(state.proactiveChatTimer);
+    timers.delete(state.proactiveChatTimer);
+    await timer();
+    assert.equal(state.proactiveChatTimer, null);
+    assert.equal(timers.size, 0, 'the guide blocks rearming the expired timer');
+    window.isNekoClickGuideActive = false;
+    release();
+    assert.equal(timers.size, 1, 'release must restore the chat timer');
+
+    listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+    release();
+    assert.equal(timers.size, 0, 'other tutorial sources must still block rearming');
+});
+
 test('overlapping tutorial sources keep vision stopped until the final release', () => {
     const listeners = new Map();
     let intervalCount = 0;
