@@ -174,16 +174,18 @@ test('request_screenshot rechecks tutorial suppression immediately before sendin
     const start = websocketSource.indexOf('(async function () {', branch);
     const end = websocketSource.indexOf('})();', start) + 5;
     for (const paired of [true, false]) {
-        for (const tutorialStarts of [true, false]) {
-            let suppressed = false;
+        for (const phase of ['before', 'during', 'none']) {
+            let suppressed = phase === 'before';
+            let captures = 0;
             const sent = [];
             const window = {
                 isNekoHomeTutorialProactiveSuppressed: () => suppressed,
-                captureProactiveChatScreenshot: async () => { suppressed = tutorialStarts; return 'FRAME'; }
+                captureProactiveChatScreenshot: async () => { captures += 1; suppressed = phase === 'during'; return 'FRAME'; }
             };
             if (paired) window.appProactive = {
                 captureProactiveChatScreenshotWithSource: async () => {
-                    suppressed = tutorialStarts;
+                    captures += 1;
+                    suppressed = phase === 'during';
                     return { dataUrl: 'FRAME', captureType: 'screen' };
                 }
             };
@@ -191,7 +193,9 @@ test('request_screenshot rechecks tutorial suppression immediately before sendin
                 window, S: { socket: { readyState: 1, send(value) { sent.push(value); } } },
                 WebSocket: { OPEN: 1 }, console
             });
-            assert.equal(sent.length, tutorialStarts ? 0 : 1);
+            assert.equal(sent.length, 1, 'always resolve the backend screenshot request');
+            assert.equal(JSON.parse(sent[0]).data, phase === 'none' ? 'FRAME' : '');
+            assert.equal(captures, phase === 'before' ? 0 : 1);
         }
     }
 });
