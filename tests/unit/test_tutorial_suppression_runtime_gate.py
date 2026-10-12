@@ -138,9 +138,9 @@ def test_avatar_reload_layer_holds_runtime_until_model_restore_settles():
     assert "this.override.proactiveRuntimeHold === true" in held_fn
 
     begin_block = source.split("beginOverride(", 1)[1].split("restoreOverride()", 1)[0]
-    assert begin_block.index("stopProactiveRuntime();") < begin_block.index(
-        "override.proactiveRuntimeHold = true;"
-    ) < begin_block.index("dispatchTutorialSuppressionEvent(true);")
+    assert begin_block.index("override.proactiveRuntimeHold = true;") < begin_block.index(
+        "dispatchTutorialSuppressionEvent(true);"
+    ) < begin_block.index("stopProactiveRuntime();")
 
     restore_block = source.split("restoreOverride()", 1)[1].split(
         "window.TutorialAvatarReloadController", 1
@@ -161,6 +161,9 @@ def test_director_fallback_stops_runtime_without_key_writes():
     assert "'stopProactiveChatSchedule'" in fallback
     assert "'releaseProactiveVisionStream'" in fallback
     assert "neko:home-tutorial-features-suppressed" in fallback
+    assert fallback.index("window.dispatchEvent(") < fallback.index(
+        "'releaseProactiveVisionStream'"
+    )
     assert "window[key] = false" not in fallback
     assert "appState[key] = false" not in fallback
 
@@ -172,7 +175,7 @@ def test_central_gate_and_vision_wiring_in_app_proactive():
         "\n    }", 1
     )[0]
     assert "window.isNekoClickGuideActive === true" in gate_fn
-    assert "_homeTutorialFeatureSuppressedByEvent" in gate_fn
+    assert "_homeTutorialSuppressionSources.size > 0" in gate_fn
     assert "controller.isActive()" in gate_fn
     assert "reloadController.isProactiveRuntimeHeld()" in gate_fn
     assert "window.isNekoHomeTutorialInteractionLocked" in gate_fn
@@ -202,12 +205,17 @@ def test_central_gate_and_vision_wiring_in_app_proactive():
     assert "var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();" in release_fn
     assert release_fn.count("!privacyBlocksVision && !suppressionBlocksVision") == 2
 
-    # 释放补挂：两个 active:false 分支 + click-guide 释放边。
+    # 多源叠加时只在最后一个 active:false 补挂，另有 click-guide 释放边。
     assert "function rearmProactiveVisionAfterSuppression()" in source
     listener = source.split(
         "window.addEventListener('neko:home-tutorial-features-suppressed'", 1
     )[1].split("});", 1)[0]
-    assert listener.count("rearmProactiveVisionAfterSuppression();") == 2
+    assert "_homeTutorialSuppressionSources.add(detail.source || 'default');" in listener
+    assert "_homeTutorialSuppressionSources.delete(detail.source || 'default');" in listener
+    assert listener.index("if (_homeTutorialSuppressionSources.size > 0) return;") < listener.index(
+        "scheduleProactiveChat();"
+    )
+    assert listener.count("rearmProactiveVisionAfterSuppression();") == 1
     click_listener = source.split(
         "window.addEventListener('neko:click-guide-active'", 1
     )[1].split("});", 1)[0]
@@ -254,7 +262,7 @@ def test_context_prompt_defers_while_tutorial_suppresses():
         "\n    }", 1
     )[0]
     # 按来源引用计数兜住 controller 缺失的 fallback 环境（与 app-proactive 的
-    # _homeTutorialFeatureSuppressedByEvent 同一模式），且多源叠加时
+    # _homeTutorialSuppressionSources 同一模式），且多源叠加时
     # 某一来源先释放不得提前放开闸门（petal 过渡里头像层先于 director 释放）。
     assert "const _tutorialSuppressionSources = new Set();" in source
     assert "_tutorialSuppressionSources.size > 0" in gate_fn
@@ -357,12 +365,12 @@ def test_vision_frame_send_rechecks_suppression_after_async_capture():
     )[0]
     guard = send_fn.rindex("isHomeTutorialFeatureSuppressed()")
     assert guard < send_fn.index("S.socket.send(JSON.stringify(")
-    assert send_fn.rindex("!isProactiveVisionEnabledNow() || !S.isRecording") < guard
+    assert guard < send_fn.rindex("!isProactiveVisionEnabledNow() || !S.isRecording")
     # 竞态中已存入的屏幕流也要在抑制命中时释放（手动共享仍受保护：
     # releaseProactiveVisionStream 自身的首个分支）。
     guard_branch = send_fn[guard:send_fn.index("S.socket.send(JSON.stringify(")]
     assert "stopProactiveVisionDuringSpeech();" in guard_branch
-    assert "releaseProactiveVisionStream();" in guard_branch
+    assert "if (suppressedByTutorial) releaseProactiveVisionStream();" in guard_branch
 
 
 def test_app_settings_carries_no_tutorial_machinery():

@@ -117,9 +117,14 @@ test('tutorial avatar reload stops proactive runtime without rewriting settings 
         clearViewportWatcher: () => calls.push({ type: 'clearViewport' })
     });
 
+    window.releaseProactiveVisionStream = function () {
+        assert.equal(controller.isProactiveRuntimeHeld(), true);
+        assert.equal(suppressionEvents(events, true).length, 1);
+        this.stopCalls.push('stream');
+    };
     await controller.beginOverride();
 
-    // 运行时被停、标志立起、事件派发——但设置内存一个字都不许改：
+    // 标志与事件先于流释放生效，但设置内存一个字都不许改：
     // 这些值由 saveSettings 持久化并跨窗口同步，改写即污染。
     assert.deepEqual(window.stopCalls, ['chat', 'vision', 'stream']);
     assert.equal(controller.isProactiveRuntimeHeld(), true);

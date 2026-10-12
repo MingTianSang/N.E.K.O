@@ -143,9 +143,9 @@
                 // 设置内存，也不管 feature controller 是否已激活——本层标志
                 // 要活到模型恢复完成，比 controller 的生命周期更长（它的 end
                 // 先于 restoreOverride），两层各管各的、由同一道闸门聚合。
-                stopProactiveRuntime();
                 override.proactiveRuntimeHold = true;
                 dispatchTutorialSuppressionEvent(true);
+                stopProactiveRuntime();
 
                 if (!skipSourceModelFade) {
                     await Promise.resolve(this.fadeOutCurrentModel({

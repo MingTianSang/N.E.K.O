@@ -2,8 +2,49 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app/app-proactive.js'), 'utf8');
+
+test('overlapping tutorial sources keep vision stopped until the final release', () => {
+    const listeners = new Map();
+    let intervalCount = 0;
+    const window = {
+        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: false },
+        appConst: {},
+        addEventListener(type, listener) { listeners.set(type, listener); }
+    };
+    vm.runInNewContext(source, {
+        window,
+        document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } },
+        console,
+        setInterval() { intervalCount += 1; return intervalCount; },
+        clearInterval() {},
+        clearTimeout() {}
+    });
+    const emit = (active, source) => listeners.get('neko:home-tutorial-features-suppressed')({
+        detail: { active, source }
+    });
+    emit(true, 'yui-guide-director');
+    emit(true, 'avatar-reload-override');
+    emit(true, 'yui-guide-director'); // Enforce repeats must not create extra holds.
+    emit(false, 'avatar-reload-override');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), true);
+    assert.equal(intervalCount, 0);
+    emit(false, 'yui-guide-director');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), false);
+    assert.equal(intervalCount, 1);
+
+    emit(true); // Feature controller's begin/end have no source field.
+    emit(true, 'avatar-reload-override');
+    emit(false);
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), true);
+    assert.equal(intervalCount, 1);
+    emit(false, 'avatar-reload-override');
+    assert.equal(window.appProactive.isHomeTutorialFeatureSuppressed(), false);
+    assert.equal(intervalCount, 2);
+});
 
 test('proactive scheduler re-arms after new-user icebreaker suppression', () => {
     assert.match(source, /function getNewUserIcebreakerRetryDelayMs\(\)/);

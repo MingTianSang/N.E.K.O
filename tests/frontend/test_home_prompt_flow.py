@@ -3821,6 +3821,10 @@ def test_avatar_floating_director_fallback_enforcement_stops_runtime_without_rew
             window.proactiveVisionEnabled = true;
             window.__fallbackGalgameRequests = [];
             window.__fallbackProactiveStops = [];
+            window.__fallbackSuppressed = false;
+            window.addEventListener('neko:home-tutorial-features-suppressed', (event) => {
+                window.__fallbackSuppressed = event.detail.active === true;
+            });
             window.reactChatWindowHost = {
                 setGalgameModeEnabled: (enabled, options) => {
                     window.__fallbackGalgameRequests.push({ enabled, options });
@@ -3828,7 +3832,9 @@ def test_avatar_floating_director_fallback_enforcement_stops_runtime_without_rew
             };
             window.stopProactiveChatSchedule = () => { window.__fallbackProactiveStops.push('chat'); };
             window.stopProactiveVisionDuringSpeech = () => { window.__fallbackProactiveStops.push('vision'); };
-            window.releaseProactiveVisionStream = () => { window.__fallbackProactiveStops.push('stream'); };
+            window.releaseProactiveVisionStream = () => {
+                window.__fallbackProactiveStops.push(window.__fallbackSuppressed ? 'stream' : 'ungated-stream');
+            };
         """,
         script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )

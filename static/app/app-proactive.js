@@ -103,7 +103,7 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
-    let _homeTutorialFeatureSuppressedByEvent = false;
+    const _homeTutorialSuppressionSources = new Set();
 
     function isProactiveVisionEnabledNow() {
         // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
@@ -126,7 +126,7 @@
     function isHomeTutorialFeatureSuppressed() {
         if (window.isNekoClickGuideActive === true) return true;
         try {
-            if (_homeTutorialFeatureSuppressedByEvent) {
+            if (_homeTutorialSuppressionSources.size > 0) {
                 return true;
             }
             const controller = window.NekoHomeTutorialFeatureController;
@@ -2212,10 +2212,10 @@
             // 必须显式复查抑制闸门，否则这一帧会落在教程期间。命中时还要
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
-            if (!isProactiveVisionEnabledNow() || !S.isRecording
-                || isHomeTutorialFeatureSuppressed()) {
+            var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
-                releaseProactiveVisionStream();
+                if (suppressedByTutorial) releaseProactiveVisionStream();
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
@@ -2655,15 +2655,15 @@
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
-            _homeTutorialFeatureSuppressedByEvent = true;
+            _homeTutorialSuppressionSources.add(detail.source || 'default');
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
-        } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
-            _homeTutorialFeatureSuppressedByEvent = false;
-            scheduleProactiveChat();
-            rearmProactiveVisionAfterSuppression();
         } else if (detail.active === false) {
-            _homeTutorialFeatureSuppressedByEvent = false;
+            _homeTutorialSuppressionSources.delete(detail.source || 'default');
+            if (_homeTutorialSuppressionSources.size > 0) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
             rearmProactiveVisionAfterSuppression();
         }
     });

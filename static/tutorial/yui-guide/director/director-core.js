@@ -565,19 +565,6 @@
             // 用户设置）。停运行时 + 派发事件即可：app-proactive 的事件监听
             // 会登记抑制标志并停调度，触发面由 isHomeTutorialFeatureSuppressed
             // 统一拦截。旧实现此处还漏了 proactiveCommunityChatEnabled。
-            [
-                'stopProactiveChatSchedule',
-                'stopProactiveVisionDuringSpeech',
-                'releaseProactiveVisionStream'
-            ].forEach((methodName) => {
-                if (typeof window[methodName] === 'function') {
-                    try {
-                        window[methodName]();
-                    } catch (error) {
-                        console.warn('[YuiGuide] failed to stop proactive feature during guide:', methodName, error);
-                    }
-                }
-            });
             try {
                 window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
                     detail: {
@@ -591,6 +578,19 @@
             } catch (error) {
                 console.warn('[YuiGuide] failed to broadcast enforced tutorial feature suppression:', error);
             }
+            [
+                'stopProactiveChatSchedule',
+                'stopProactiveVisionDuringSpeech',
+                'releaseProactiveVisionStream'
+            ].forEach((methodName) => {
+                if (typeof window[methodName] === 'function') {
+                    try {
+                        window[methodName]();
+                    } catch (error) {
+                        console.warn('[YuiGuide] failed to stop proactive feature during guide:', methodName, error);
+                    }
+                }
+            });
         }
 
         async ensureAvatarFloatingGuideSurfaceReady(round) {

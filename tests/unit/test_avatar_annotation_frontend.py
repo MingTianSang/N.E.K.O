@@ -1282,7 +1282,7 @@ def test_helper_never_classifies_a_native_frame_by_a_leftover_stream():
 # --------------------------------------------------------------------------
 
 _FRAME_TMPL = """
-const results = { sent: [] };
+const results = { sent: [], stopped: 0, released: 0 };
 const window = {
   screen: { width: 1920, height: 1080, isExtended: false },
   appUtils: { isMobile: () => false },
@@ -1303,11 +1303,18 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
-const isProactiveVisionEnabledNow = () => true;
-const stopProactiveVisionDuringSpeech = () => {};
+let visionEnabled = true;
+const isProactiveVisionEnabledNow = () => visionEnabled;
+let tutorialSuppressed = false;
+const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
+const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
+const releaseProactiveVisionStream = () => { results.released += 1; };
 const getDesktopProvider = () => ({ nativeFrameCapture: true, captureSourceAsDataUrl: () => {} });
 const acquireOrReuseCachedStream = async () => __STREAM__;
-const captureFrameFromStream = async () => ({ dataUrl: 'data:image/jpeg;base64,STREAM' });
+const captureFrameFromStream = async () => {
+  __AFTER_CAPTURE__
+  return { dataUrl: 'data:image/jpeg;base64,STREAM' };
+};
 const fetchBackendScreenshot = async () => ({ dataUrl: 'data:image/jpeg;base64,BACKEND' });
 const normalizeNativeCaptureDataUrlForStream = async () => 'data:image/jpeg;base64,NATIVE';
 const getAvatarScreenPosition = (captureType) =>
@@ -1326,6 +1333,7 @@ def _frame_script(
     source_id: str,
     stream: str,
     native: str = _NATIVE_OK,
+    after_capture: str = "",
     remembered_capture: str = (
         "({ required: false, allowed: true, isCurrent: () => true })"
     ),
@@ -1337,11 +1345,30 @@ def _frame_script(
         .replace("__SOURCE_ID__", source_id)
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
+        .replace("__AFTER_CAPTURE__", after_capture)
         .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
         .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("after_capture", "released"),
+    [
+        ("S.isRecording = false;", 0),
+        ("visionEnabled = false;", 0),
+        ("tutorialSuppressed = true;", 1),
+    ],
+)
+def test_inflight_vision_releases_stream_only_for_tutorial(after_capture, released):
+    out = _run(_frame_script(
+        source_id="null", stream="({})", after_capture=after_capture,
+    ))
+    assert out["sent"] == []
+    assert out["stopped"] == 1
+    assert out["released"] == released
 
 
 @pytest.mark.unit
