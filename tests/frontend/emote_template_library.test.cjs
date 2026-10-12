@@ -179,3 +179,15 @@ test('老数据只有一份会话快照，升级后应当变成库里的一条',
     assert.equal(library.migrateFromLegacy(legacy, storage), null);
     assert.equal(library.migrateFromLegacy(null, storage), null);
 });
+
+test('副本占用讲成人话：KB/MB，不用 0 KB 糊弄', () => {
+    assert.equal(library.formatBytes(0), '', '没副本就没字，别挂一个 0 KB');
+    assert.equal(library.formatBytes(-5), '');
+    assert.equal(library.formatBytes(NaN), '');
+    assert.equal(library.formatBytes(3), '1 KB', '不到 1 KB 也算 1 KB，用户不需要字节');
+    assert.equal(library.formatBytes(2048), '2 KB');
+    assert.equal(library.formatBytes(512 * 1024), '512 KB');
+    assert.equal(library.formatBytes(3 * 1024 * 1024), '3 MB');
+    assert.equal(library.formatBytes(3.14 * 1024 * 1024), '3.1 MB', '百兆以下保留一位小数');
+    assert.equal(library.formatBytes(1234 * 1024 * 1024), '1234 MB', '往上取整，别显示 1234.0');
+});

@@ -43,6 +43,19 @@
     }
 
     /**
+     * 副本占用要"真实显示"：数字来自后端 stat，这里只负责把它讲成人话。
+     * 1 MB 以下用 KB（贴图补几张的量级），不到 1 KB 也别显示 0 KB。
+     */
+    function formatBytes(bytes) {
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value <= 0) return '';
+        if (value < 1024) return '1 KB';
+        if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+        const mb = value / (1024 * 1024);
+        return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+    }
+
+    /**
      * 同一个模板反复导入应当命中同一条目（否则库会被重复项塞满）。
      * 用的是"包名 + 共享模型 key + 场景数 + 动画数"，和会话快照的指纹一致 ——
      * 两份内容一样的副本会合并成一条，这是故意的：从编辑器的角度看它们就是同一个模板。
@@ -262,6 +275,7 @@
         BUDGET_CHARS,
         TemplateLibraryError,
         entryKeyFor,
+        formatBytes,
         emptyStore,
         makeEntry,
         normalizeSession,

@@ -4756,3 +4756,18 @@ body.is-pack-dragging * {
 [data-theme="dark"] .secondary-button {
     background: rgba(255, 255, 255, 0.04);
 }
+
+/* ── 导入即拷副本：占用显示 ───────────────────────────────────────────────── */
+.template-lib-size {
+    flex: 0 0 auto;
+    margin-left: auto;
+    color: var(--emote-muted);
+    font-size: 10px;
+}
+
+.template-lib-usage {
+    flex: 0 0 auto;
+    color: var(--emote-muted);
+    font-size: 10px;
+    white-space: nowrap;
+}

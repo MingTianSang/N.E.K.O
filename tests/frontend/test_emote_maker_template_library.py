@@ -315,3 +315,122 @@ def test_empty_state_does_not_echo_the_import_button(page: Page, running_server:
     assert loaded["shown"] is True, f"读进模板后徽章没收回来，运行状态没地方报了: {loaded}"
     assert loaded["sameAsButton"] is False, loaded
     assert loaded["text"], loaded
+
+
+def test_reopens_from_the_local_copy_after_reload(library_page: Page) -> None:
+    """导入即拷副本：重开页面后点库卡片，直接从副本恢复，不再弹任何文件选择器。
+
+    filechooser 是这条用件的判据：没有副本时点击卡片会落到「请重新定位」，
+    那一步在测试里就是一次 filechooser 事件 —— 出现了就算失败。
+    """
+    _import(library_page, "first.zip", "第一个", "A", scenes=2)
+    # 副本落盘在后台进行：卡片上出现占用字样才算存上了
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('.template-lib-size'))", timeout=20000)
+    assert "本地副本" in library_page.evaluate(
+        "() => document.querySelector('.template-lib-usage').textContent")
+
+    library_page.reload(wait_until="networkidle")
+    # 重载后还没有加载任何模板，左侧只剩导入卡片；跨重启的入口是「上次打开」那一行
+    library_page.wait_for_function(
+        "() => !document.querySelector('#last-template-row').hidden", timeout=20000)
+
+    choosers: list[object] = []
+    library_page.on("filechooser", lambda chooser: choosers.append(chooser))
+    library_page.evaluate("() => document.querySelector('#reopen-last-template-btn').click()")
+    library_page.wait_for_function(
+        "() => document.body.classList.contains('editor-has-template')", timeout=25000)
+    assert choosers == [], f"重开走的是本地副本，不该再要用户定位文件: {choosers}"
+    assert "第一个" in library_page.evaluate(
+        "() => document.querySelector('#workspace-title').textContent")
+    # 恢复必须落回同一个库身份（同键）：起个 template.zip 的新名字就会分裂成
+    # 两条 —— 旧条目的取景/组随之全丢。这条就是防它的。
+    identities = library_page.evaluate("""() => (JSON.parse(
+        localStorage.getItem('neko-emote-maker-template-library') || '{}').entries || []
+    ).map((entry) => entry.key)""")
+    assert len(identities) == 1 and identities[0].startswith("first.zip::"), identities
+
+    # 再导一次同一个包：副本必须原地覆盖。等的是服务端真有这个键的条目，
+    # 而不是卡片上的占用字样 —— 那个可能是上一次导入留下的，测不出"这次存上了"。
+    _import(library_page, "first.zip", "第一个", "A", scenes=2)
+    library_page.wait_for_function("""() => {
+        const key = document.querySelector('#asset-grid .template-lib-card').dataset.templateKey;
+        return fetch('/api/emote-maker/library')
+            .then((r) => r.json())
+            .then((d) => d.entries.filter((e) => e.key === key).length === 1);
+    }""", timeout=20000)
+    listing = library_page.evaluate("""() => {
+        const key = document.querySelector('#asset-grid .template-lib-card').dataset.templateKey;
+        return fetch('/api/emote-maker/library')
+            .then((r) => r.json())
+            .then((d) => ({ key, mine: d.entries.find((e) => e.key === key) }));
+    }""")
+    assert listing["mine"] and listing["mine"]["bytes"] > 0, listing
+
+
+def test_removing_a_template_frees_its_local_copy(library_page: Page) -> None:
+    """删除库条目要真的删掉磁盘副本并如实报出释放了多少。"""
+    _import(library_page, "solo.zip", "独一份", "S", scenes=1)
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('.template-lib-size'))", timeout=20000)
+    my_key = library_page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card').dataset.templateKey")
+    before = library_page.evaluate("""(key) => fetch('/api/emote-maker/library')
+        .then((r) => r.json())
+        .then((d) => d.entries.find((e) => e.key === key))""", my_key)
+    assert before and before["bytes"] > 0
+
+    library_page.evaluate("() => document.querySelector('.template-lib-remove').click()")
+    library_page.wait_for_function("""(key) => fetch('/api/emote-maker/library')
+        .then((r) => r.json())
+        .then((d) => !d.entries.some((e) => e.key === key))""", arg=my_key, timeout=15000)
+    toast = library_page.evaluate("() => document.querySelector('#emote-toast').textContent")
+    assert "已释放" in toast, f"删了副本却没报释放了多少: {toast!r}"
+
+
+_PNG_1PX = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_supplemented_textures_survive_a_reload(library_page: Page) -> None:
+    """导入后补的贴图要合并进副本：重开随副本一起回来，不再只活一次会话。"""
+    _import(library_page, "tex.zip", "带贴图", "T", scenes=1)
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('.template-lib-size'))", timeout=20000)
+    # webkitdirectory 的 input 塞不进单个文件（Playwright 只收目录路径），
+    # 直接构造 File 挂到 input 上再派 change —— 与真选择器走同一条处理函数
+    library_page.evaluate("""(png) => {
+        const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+        const file = new File([bytes], 'Custom.png', { type: 'image/png' });
+        Object.defineProperty(file, 'webkitRelativePath', {
+            value: 'Texture Cache/Custom Textures/Custom.png',
+        });
+        const input = document.querySelector('#emotelab-texture-cache-input');
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }""", __import__("base64").b64encode(_PNG_1PX).decode("ascii"))
+    library_page.wait_for_function(
+        "() => document.querySelector('#template-texture-cache-filename').textContent.includes('1')",
+        timeout=10000)
+    # 副本里真有这张贴图，而不是只叠在当前会话的内存里
+    library_page.wait_for_function("""() => {
+        const key = document.querySelector('#asset-grid .template-lib-card').dataset.templateKey;
+        return fetch(`/api/emote-maker/library/textures?key=${encodeURIComponent(key)}`)
+            .then((r) => r.json())
+            .then((d) => (d.paths || []).includes('Texture Cache/Custom Textures/Custom.png'));
+    }""", timeout=15000)
+
+    library_page.reload(wait_until="networkidle")
+    library_page.wait_for_function(
+        "() => !document.querySelector('#last-template-row').hidden", timeout=20000)
+    library_page.evaluate("() => document.querySelector('#reopen-last-template-btn').click()")
+    library_page.wait_for_function(
+        "() => document.body.classList.contains('editor-has-template')", timeout=25000)
+    assert "1" in library_page.evaluate(
+        "() => document.querySelector('#template-texture-cache-filename').textContent"), \
+        "补充的贴图没随副本回来"

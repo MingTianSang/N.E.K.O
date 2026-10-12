@@ -244,6 +244,9 @@
         'emoteMaker.textureCacheNotSelected': "未补充缺失贴图",
         'emoteMaker.textureCacheSelected': "已补充 {{count}} 张贴图",
         'emoteMaker.templateLibrary': "模板库",
+        'emoteMaker.libraryUsage': "本地副本 {{size}}",
+        'emoteMaker.libraryFreed': "已释放 {{size}} 本地副本",
+        'emoteMaker.archiveSaveFailed': "本地副本没存上：下次打开这个模板可能要重新选一次文件",
         'emoteMaker.templateLibraryEmpty': "这里只有当前这一个模板；再导入一个就会并排留在库里。",
         'emoteMaker.templateInUse': "使用中",
         'emoteMaker.removeTemplate': "移除",
@@ -705,6 +708,13 @@
         spineRendererGeneration += 1;
         disposeSpineRenderer();
         renderAll();
+        // 补充的贴图合并进本地副本（重开时随副本一起回来）。
+        // 静默失败等于让"已补充 N 张"变成一句只管当前会话的谎话，所以失败要说。
+        const textureArchiveKey = currentTemplateKey();
+        if (textureArchiveKey) {
+            void persistArchiveTextures(textureArchiveKey, textureCacheFiles)
+                .catch(() => showToast(t('emoteMaker.archiveSaveFailed')));
+        }
         void activateNativeSpineRenderer();
     }
 
@@ -1202,6 +1212,14 @@
         label.className = 'asset-card-label';
         label.textContent = entry.displayName || entry.packageName || t('emoteMaker.templateSceneList');
         open.append(imageBox, label);
+        // 副本占多少就写多少：真实数字（后端 stat 来的），不是估的
+        const archiveBytes = templateArchiveBytes.get(entry.key) || 0;
+        if (archiveBytes > 0) {
+            const size = document.createElement('small');
+            size.className = 'template-lib-size';
+            size.textContent = formatTemplateBytes(archiveBytes);
+            open.append(size);
+        }
         open.setAttribute('aria-label', `${label.textContent}${isCurrent ? ` · ${t('emoteMaker.templateInUse')}` : ''}`);
         open.disabled = isCurrent || packBusy;
         open.addEventListener('click', () => { void switchTemplate(entry.key); });
@@ -1234,6 +1252,19 @@
         if (!assetSectionTitle || !assetGrid) return;
         assetGrid.classList.add('is-template-library');
         assetSectionTitle.textContent = t('emoteMaker.templateLibrary');
+        // 库的占用总数：有副本才写，没有就别挂一个"0 MB"
+        let usage = $('.template-lib-usage');
+        if (!usage) {
+            usage = document.createElement('small');
+            usage.className = 'template-lib-usage';
+            const actions = $('.asset-section-actions');
+            (actions || assetSectionTitle.parentElement)?.append(usage);
+        }
+        usage.textContent = templateArchiveTotalBytes > 0
+            ? interpolate(t('emoteMaker.libraryUsage'), {
+                size: formatTemplateBytes(templateArchiveTotalBytes),
+            })
+            : '';
         const randomize = $('#randomize-btn');
         if (randomize) randomize.hidden = true;
         const entries = templateLibraryModule && templateLibraryState
@@ -4262,6 +4293,147 @@
         }
     }
 
+    // ── 导入即拷副本 ──────────────────────────────────────────────────────────
+    // 导入成功后把整份 zip（连附带贴图）拷进应用数据目录，重开直接从副本恢复。
+    // 副本即唯一事实：原件更新/删除/挪走都与这里无关，想更新就再导一次（同键原地覆盖）。
+    // 后端没有这套接口时一切照旧：存副本失败提示一句，重开退回"请重新定位"。
+    const TEMPLATE_LIBRARY_API = '/api/emote-maker/library';
+    let templateArchiveBytes = new Map();
+    let templateArchiveTotalBytes = 0;
+
+    function formatTemplateBytes(bytes) {
+        return templateLibraryModule && typeof templateLibraryModule.formatBytes === 'function'
+            ? templateLibraryModule.formatBytes(bytes) : '';
+    }
+
+    async function refreshTemplateArchiveSizes() {
+        try {
+            const response = await fetch(TEMPLATE_LIBRARY_API, { credentials: 'same-origin' });
+            const payload = await response.json();
+            if (!response.ok || !payload.success || !Array.isArray(payload.entries)) return;
+            const next = new Map(payload.entries.map((entry) => [
+                String(entry.key), Number(entry.bytes) || 0,
+            ]));
+            const nextTotal = Number(payload.totalBytes) || 0;
+            const same = nextTotal === templateArchiveTotalBytes
+                && next.size === templateArchiveBytes.size
+                && [...next].every(([key, bytes]) => templateArchiveBytes.get(key) === bytes);
+            if (same) return;
+            templateArchiveBytes = next;
+            templateArchiveTotalBytes = nextTotal;
+            renderTemplateLibraryGrid();
+        } catch (_) {
+            // 占用显示拿不到就先不显示，不影响任何功能
+        }
+    }
+
+    function archiveTextureForm(textureFiles) {
+        const form = new FormData();
+        (textureFiles || []).forEach((texture) => {
+            form.append('textures', texture, texture.name || 'texture.png');
+            form.append('texture_paths', texture.webkitRelativePath || texture.name || '');
+        });
+        return form;
+    }
+
+    /** 把刚导入的模板拷一份到应用数据目录。失败要说话：用户以为下次还能免定位。 */
+    async function persistTemplateArchive(key, file, textureFiles) {
+        const form = archiveTextureForm(textureFiles);
+        // 文件名必须原样带过去：副本要靠它恢复出同一个库身份
+        form.append('file', file, file.name || 'template.zip');
+        const response = await fetch(
+            `${TEMPLATE_LIBRARY_API}/archive?key=${encodeURIComponent(key)}`,
+            { method: 'POST', body: form, credentials: 'same-origin' },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.success) throw new Error(payload.error || 'archive-failed');
+        await refreshTemplateArchiveSizes();
+    }
+
+    /** 导入之后才补的贴图单独合并进副本：不然重开一次就丢，正是副本要消掉的痛点。 */
+    async function persistArchiveTextures(key, textureFiles) {
+        if (!textureFiles || !textureFiles.length) return;
+        const response = await fetch(
+            `${TEMPLATE_LIBRARY_API}/textures?key=${encodeURIComponent(key)}`,
+            { method: 'POST', body: archiveTextureForm(textureFiles), credentials: 'same-origin' },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.success) throw new Error(payload.error || 'textures-failed');
+        await refreshTemplateArchiveSizes();
+    }
+
+    async function fetchArchiveTextureFiles(key) {
+        const listResponse = await fetch(
+            `${TEMPLATE_LIBRARY_API}/textures?key=${encodeURIComponent(key)}`,
+            { credentials: 'same-origin' },
+        );
+        const listPayload = await listResponse.json().catch(() => null);
+        if (!listResponse.ok || !listPayload?.success) return [];
+        const paths = Array.isArray(listPayload.paths) ? listPayload.paths : [];
+        return Promise.all(paths.map(async (path) => {
+            const response = await fetch(`${TEMPLATE_LIBRARY_API}/texture`
+                + `?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`,
+            { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`texture-missing:${path}`);
+            const blob = await response.blob();
+            const file = new File([blob], String(path).split('/').pop() || 'texture.png',
+                { type: 'image/png' });
+            // 覆盖层按相对路径精确匹配；构造出来的 File 自带 webkitRelativePath 是空串
+            Object.defineProperty(file, 'webkitRelativePath', { value: String(path) });
+            return file;
+        }));
+    }
+
+    /**
+     * 从本地副本把一个模板装回来。没有副本 / 副本拉不下来 → false，
+     * 调用方再走原来的"请重新定位"。老库条目第一次被点开时走的就是这条路：
+     * 重新定位导入完成后副本自然就有了（迁移不需要专门代码）。
+     */
+    async function tryRestoreTemplateFromArchive(key) {
+        if (!key || !templateLibraryModule) return false;
+        const entry = templateLibraryModule.find(templateLibraryState, key);
+        try {
+            const [archiveResponse, textureFiles] = await Promise.all([
+                fetch(`${TEMPLATE_LIBRARY_API}/archive?key=${encodeURIComponent(key)}`,
+                    { credentials: 'same-origin' }),
+                fetchArchiveTextureFiles(key).catch(() => []),
+            ]);
+            if (!archiveResponse.ok) return false;
+            const blob = await archiveResponse.blob();
+            // 副本记着当初的文件名，必须原样还给 File：库键的第一段就是它
+            // （adapter 拿上传文件名当 packageName），起个新名字等于把同一个模板
+            // 分裂成两个库身份，旧条目的会话与组就全丢了。
+            const rawName = archiveResponse.headers.get('X-Archive-Filename') || '';
+            const fileName = rawName ? decodeURIComponent(rawName) : 'template.zip';
+            const file = new File([blob], fileName, { type: 'application/zip' });
+            return await importTemplateFile(file, {
+                displayName: entry?.displayName || '',
+                textureFiles,
+                kind: entry?.importKind === 'directory' ? 'directory' : 'file',
+                fromArchive: true,
+            });
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /** 删副本，返回真实释放的字节数。失败返回 0：库条目照删，磁盘上那份留着也无害。 */
+    async function deleteTemplateArchive(key) {
+        if (!key) return 0;
+        try {
+            const response = await fetch(
+                `${TEMPLATE_LIBRARY_API}?key=${encodeURIComponent(key)}`,
+                { method: 'DELETE', credentials: 'same-origin' },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.success) return 0;
+            await refreshTemplateArchiveSizes();
+            return Number(payload.freedBytes) || 0;
+        } catch (_) {
+            return 0;
+        }
+    }
+
     /**
      * 从内存注册表把某个模板装回来：不读盘、不请求后端、不重新解析场景。
      * 会话恢复复用 applyTemplateSession —— 它按"指纹对不对得上"决定要不要套皮肤/滑杆，
@@ -4325,6 +4497,12 @@
         }
         const entry = templateLibraryModule.find(templateLibraryState, key);
         persistTemplateToLibrary();
+        // 内存里没有（重启过）就先试本地副本：有副本就不该再让用户去认一遍路径。
+        // 旧条目第一次没有副本，走完重新定位导入后副本自然就有了。
+        if (await tryRestoreTemplateFromArchive(key)) {
+            showToast(t('emoteMaker.templateSwitched'));
+            return;
+        }
         if (entry && entry.importKind === 'directory' && window.nekoHost
             && typeof window.nekoHost.pickTemplateDirectory === 'function') {
             await importTemplateDirectoryFromHost({ templateLibraryKey: key });
@@ -4344,6 +4522,13 @@
         try {
             templateLibraryModule.save(localStorage, templateLibraryState);
         } catch (_) { /* 存不下就只丢这一次的记忆 */ }
+        // 库条目删了，磁盘上的副本也要真的删掉并如实报出释放了多少 —— 占用显示
+        // 和实际占用必须对得上，否则"删了还占着"比不显示更糟
+        void deleteTemplateArchive(key).then((freed) => {
+            if (freed > 0) showToast(interpolate(t('emoteMaker.libraryFreed'), {
+                size: formatTemplateBytes(freed) || String(freed),
+            }));
+        });
         if (isCurrent) {
             spineRendererGeneration += 1;
             disposeSpineRenderer();
@@ -5946,8 +6131,14 @@
         }
     }
 
-    async function importTemplateFile(file, { displayName = '', textureFiles, kind = 'file' } = {}) {
-        if (!file) return;
+    /**
+     * @returns {Promise<boolean>} 导入是否成功。重开（从副本/重新定位）依赖这个返回值
+     * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
+     */
+    async function importTemplateFile(file, {
+        displayName = '', textureFiles, kind = 'file', fromArchive = false,
+    } = {}) {
+        if (!file) return false;
         lastImportKind = kind === 'directory' ? 'directory' : 'file';
         const previousFilename = templateImportFilename?.textContent || '';
         const nextTextureFiles = normalizeTextureCacheFiles(
@@ -6108,7 +6299,18 @@
             persistTemplateSession();
             rememberLoadedTemplate();
             persistTemplateToLibrary({ withThumb: true });
+            // 导入即拷副本：在后台拷，别把界面卡住；失败要说话，不然用户会以为
+            // 下次打开还能免定位。从副本恢复进来的那份不必再拷自己一遍。
+            if (!fromArchive) {
+                const archiveKey = currentTemplateKey();
+                if (archiveKey) {
+                    void persistTemplateArchive(archiveKey, file, nextTextureFiles).catch(() => {
+                        showToast(t('emoteMaker.archiveSaveFailed'));
+                    });
+                }
+            }
             void activateNativeSpineRenderer();
+            return true;
         } catch (error) {
             // A staged asset store belongs to the failed candidate only. The
             // active package/renderer remains untouched when validation fails.
@@ -6119,6 +6321,7 @@
                 reportImportFailure(error, { restoreFilename: previousFilename });
                 renderAll();
             }
+            return committed;
         } finally {
             if (templateImportButton) templateImportButton.disabled = false;
             if (templateDirectoryButton) templateDirectoryButton.disabled = false;
@@ -6306,15 +6509,20 @@
             void downloadPng();
         });
         $('#reopen-last-template-btn')?.addEventListener('click', () => {
-            // 桌面端优先：走桥才能用上"上次选过的目录"，网页 input 只会弹一个空白选择框
-            if (lastImportKind !== 'file'
-                && window.nekoHost && typeof window.nekoHost.pickTemplateDirectory === 'function') {
-                // 桌面端：直接重开上次那个目录，不再让人在对话框里认一遍路
-                void importTemplateDirectoryFromHost({ reopenLast: true });
-                return;
-            }
-            const input = lastImportKind === 'file' ? templateFileInput : templateDirectoryInput;
-            input?.click();
+            void (async () => {
+                // 有本地副本就先用它：重开不该让用户再去认一遍路径
+                const restoreKey = lastTemplate?.fingerprint || currentTemplateKey();
+                if (await tryRestoreTemplateFromArchive(restoreKey)) return;
+                // 桌面端优先：走桥才能用上"上次选过的目录"，网页 input 只会弹一个空白选择框
+                if (lastImportKind !== 'file'
+                    && window.nekoHost && typeof window.nekoHost.pickTemplateDirectory === 'function') {
+                    // 桌面端：直接重开上次那个目录，不再让人在对话框里认一遍路
+                    void importTemplateDirectoryFromHost({ reopenLast: true });
+                    return;
+                }
+                const input = lastImportKind === 'file' ? templateFileInput : templateDirectoryInput;
+                input?.click();
+            })();
         });
         $('#open-state-stage-btn')?.addEventListener('click', () => { openStateStage(); });
         document.querySelectorAll('[data-pack-mode]').forEach((button) => {
@@ -6494,6 +6702,8 @@
         loadLayout();
         loadTemplateSession();
         loadTemplateLibrary();
+        // 副本占用是后端 stat 的真实数字，页面起来就去拉一份
+        void refreshTemplateArchiveSizes();
         loadNodeGraph();
         setTemplateImportStatus(t('emoteMaker.templateImportHint'), 'muted');
         bindEvents();

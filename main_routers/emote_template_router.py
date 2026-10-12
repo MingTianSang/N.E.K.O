@@ -1,24 +1,32 @@
 # -*- coding: utf-8 -*-
 """Emote template package inspection endpoints.
 
-The endpoint is intentionally read-only: uploaded EmoteLab archives are
-validated in memory and reduced to a renderer-neutral manifest.  Native Spine
-assets are not copied into ``static`` or persisted by this router; the browser
-owns the short-lived asset store used by the optional renderer.
+两个职责， deliberately separate：
+
+- ``/import/emotelab`` 保持只读：上传的压缩包在内存里校验、瘦身成渲染中立的
+  manifest，不落盘。
+- ``/library`` 是「导入即拷副本」：导入成功后把整份 zip（和附带的补全贴图）
+  存进用户数据目录，重开时直接从副本恢复，不再要求重新定位原件。
 """
 
 from __future__ import annotations
 
 import io
+from urllib.parse import quote
 
-from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from main_logic.emote_template_adapter import (
     MAX_ARCHIVE_BYTES,
     EmoteTemplatePackageError,
     inspect_emotelab_zip,
 )
+from main_logic.emote_template_store import (
+    EmoteTemplateArchiveStore,
+    EmoteTemplateStoreError,
+)
+from .shared_state import get_config_manager
 
 
 router = APIRouter(prefix="/api/emote-maker", tags=["emote-maker"])
@@ -82,6 +90,143 @@ async def get_emote_template_schema():
             },
         },
     }
+
+
+# ── 导入即拷副本 ────────────────────────────────────────────────────────────
+# 键走 query 参数而不是路径段：前端库条目键是 `包名::模型key::场景数::动画数`，
+# 包名里完全可以有 `/`，进了路径段就把路由切碎了。
+def _archive_store() -> EmoteTemplateArchiveStore:
+    config_mgr = get_config_manager()
+    if not config_mgr.ensure_emote_templates_directory():
+        raise EmoteTemplateStoreError("本地模板目录不可用")
+    return EmoteTemplateArchiveStore(config_mgr.emote_templates_dir)
+
+
+def _store_error(exc: Exception, status: int = 400) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"success": False, "error": str(exc)})
+
+
+async def _read_upload_bytes(upload: UploadFile, limit: int, label: str) -> bytes:
+    buffer = io.BytesIO()
+    total = 0
+    while True:
+        chunk = await upload.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise EmoteTemplateStoreError(f"{label}超过上限")
+        buffer.write(chunk)
+    return buffer.getvalue()
+
+
+@router.get("/library")
+async def list_template_library():
+    try:
+        store = _archive_store()
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=500)
+    entries = store.list()
+    return {
+        "success": True,
+        "entries": entries,
+        "totalBytes": sum(entry["bytes"] for entry in entries),
+    }
+
+
+@router.post("/library/archive")
+async def save_template_library_archive(
+    key: str = Query(...),
+    file: UploadFile = File(...),
+    textures: list[UploadFile] | None = File(None),
+    texture_paths: list[str] | None = Form(None),
+):
+    try:
+        store = _archive_store()
+        archive = await _read_upload_bytes(file, MAX_ARCHIVE_BYTES, "模板包")
+        paths = [str(path or "") for path in (texture_paths or [])]
+        blobs: list[tuple[str, bytes]] = []
+        for index, texture in enumerate(textures or []):
+            # 路径数组与文件数组按位对齐；缺的那份退回文件名，路径不合法会被 store 拒掉
+            relative = paths[index] if index < len(paths) else (texture.filename or "")
+            blobs.append((relative, await _read_upload_bytes(
+                texture, MAX_ARCHIVE_BYTES, "附带贴图")))
+        entry = store.save(key, archive, blobs, filename=file.filename or "")
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc)
+    finally:
+        await file.close()
+        for texture in textures or []:
+            await texture.close()
+    return JSONResponse(content={"success": True, "entry": entry})
+
+
+@router.get("/library/archive")
+async def open_template_library_archive(key: str = Query(...)):
+    try:
+        store = _archive_store()
+        path = store.archive_path(key)
+        name = store.archive_name(key)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=404)
+    # 原始文件名走自定义头带回：Content-Disposition 对非 ASCII 会拆成 filename*，
+    # 客户端解析容易踩坑；这里给一个 URL 编码过的现成值
+    return FileResponse(
+        path, filename=name, media_type="application/zip",
+        headers={"X-Archive-Filename": quote(name)},
+    )
+
+
+@router.get("/library/textures")
+async def list_template_library_textures(key: str = Query(...)):
+    try:
+        store = _archive_store()
+        store.archive_path(key)
+        paths = store.texture_paths(key)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=404)
+    return JSONResponse(content={"success": True, "paths": paths})
+
+
+@router.post("/library/textures")
+async def merge_template_library_textures(
+    key: str = Query(...),
+    textures: list[UploadFile] | None = File(None),
+    texture_paths: list[str] | None = Form(None),
+):
+    try:
+        store = _archive_store()
+        paths = [str(path or "") for path in (texture_paths or [])]
+        blobs: list[tuple[str, bytes]] = []
+        for index, texture in enumerate(textures or []):
+            relative = paths[index] if index < len(paths) else (texture.filename or "")
+            blobs.append((relative, await _read_upload_bytes(
+                texture, MAX_ARCHIVE_BYTES, "附带贴图")))
+        result = store.save_textures(key, blobs)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=404 if "还没有本地副本" in str(exc) else 400)
+    finally:
+        for texture in textures or []:
+            await texture.close()
+    return JSONResponse(content={"success": True, **result})
+
+
+@router.get("/library/texture")
+async def open_template_library_texture(key: str = Query(...), path: str = Query(...)):
+    try:
+        target = _archive_store().texture_path(key, path)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=404)
+    return FileResponse(target, filename=target.name, media_type="image/png")
+
+
+@router.delete("/library")
+async def delete_template_library_archive(key: str = Query(...)):
+    try:
+        result = _archive_store().delete(key)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=500)
+    return JSONResponse(content={"success": True, **result})
 
 
 __all__ = ["router"]
