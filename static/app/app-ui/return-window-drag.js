@@ -848,6 +848,7 @@
                 event.stopImmediatePropagation();
                 return;
             }
+            if (window.NekoDesktopWindowGravity?.usesContinuousDrag?.(container)) return;
             const point = getTouchScreenPoint(event.touches[0]);
             if (!point) return;
             event.preventDefault();

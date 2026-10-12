@@ -1322,12 +1322,18 @@ function installDragProducer(r, model, { fromCreation = false } = {}) {
   } else if (manager) manager._setupReturnButtonDrag(r.container);
   const pointer = (x, y) => ({ button: 0, buttons: 1, target: r.container,
     clientX: x, clientY: y, screenX: x + r.window.screenX, screenY: y + r.window.screenY,
-    preventDefault() {}, stopImmediatePropagation() { this.stopped = true; }, stopPropagation() {},
+    preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() { this.stopped = true; }, stopPropagation() {},
   });
   return {
     down: (x, y) => { const event = pointer(x, y); containerEvents.get('mousedown')(event); return event; },
     move: (x, y) => documentEvents.get('mousemove')(pointer(x, y)),
     up: () => documentEvents.get('mouseup')(pointer(400, 220)),
+    touchDown: (x, y, event = { ...pointer(x, y), touches: [pointer(x, y)] }) => {
+      containerEvents.get('touchstart')(event);
+      return event;
+    },
+    touchMove: (x, y) => documentEvents.get('touchmove')({ ...pointer(x, y), touches: [pointer(x, y)] }),
+    touchUp: () => documentEvents.get('touchend')({ type: 'touchend', changedTouches: [pointer(400, 220)] }),
     cancel: () => documentEvents.get('touchcancel')({ type: 'touchcancel' }),
   };
 }
@@ -1379,6 +1385,46 @@ test('Windows button creation wires every cat provider for continuous drag, incl
       assert.ok(r.state().x > released.x + 10, 'the cat keeps its horizontal throw');
     }
   }
+});
+
+test('Windows native touch capture lets every continuous cat drag reach its DOM owner', () => {
+  for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    const r = runtime({ model });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+    r.sample();
+    const native = installDragProducer(r, 'native');
+    r.window.nekoPetDrag.start = () => { throw new Error('continuous touch must not shrink the carrier'); };
+    const dom = installDragProducer(r, model, { fromCreation: true });
+    const event = native.touchDown(360, 260);
+    assert.ok(!event.stopped, `${model}: capture must let touchstart propagate`);
+    assert.ok(!event.defaultPrevented, `${model}: native capture must not suppress continuous touch`);
+    dom.touchDown(360, 260, event);
+    r.advance(20); dom.touchMove(380, 240); r.frame();
+    r.advance(20); dom.touchMove(400, 220); dom.touchUp();
+    assert.equal(r.container.getAttribute('data-dragging'), 'false', model);
+    assert.ok(r.state().vx > 500 && r.state().vy < -500, `${model}: touch release must transfer velocity`);
+  }
+});
+
+test('native touch still owns balls and non-Windows cats, and respects edge locks', () => {
+  for (const [platform, appearance] of [['win32', 'ball'], ['darwin', 'cat']]) {
+    const r = runtime();
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform };
+    r.setAppearance(appearance);
+    const native = installDragProducer(r, 'native');
+    let starts = 0;
+    r.window.nekoPetDrag.start = () => { starts++; return false; };
+    const event = native.touchDown(360, 260);
+    assert.equal(starts, 1, `${platform}/${appearance}: native owner must still start`);
+    assert.equal(event.stopped, true);
+    assert.equal(event.defaultPrevented, true);
+  }
+  const r = runtime();
+  r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+  const native = installDragProducer(r, 'native');
+  r.window.NekoEdgePeekController = { shouldBlockReturnBallDrag: () => true };
+  r.window.nekoPetDrag.start = () => { throw new Error('edge lock must block drag'); };
+  assert.equal(native.touchDown(360, 260).stopped, true);
 });
 
 test('actual return transitions still interrupt a throw even while drag clicks are suppressed', () => {
