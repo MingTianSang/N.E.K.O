@@ -24,7 +24,7 @@
   <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
   <script src="/static/game/sdk/neko-minigame-drawing-avatar-host.js?v={{ static_asset_version }}"></script>
   <script id="neko-minigame-host-launch" type="application/json">
-    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","voice-input","speech-output","avatar-renderer","memory","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:ai-draw-review":{"path":"ai-draw/review","maxRequestBytes":2097152,"maxTimeoutMs":120000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":350000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":350000}}}}}
+    {"adapterUrl":"/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}","registrations":{"drawing-guess":{"mode":"development","gameId":"drawing-guess","routeGameType":"drawing_guess","publisherId":"project-neko","version":"0.1.0","allowedCapabilities":["runtime","logging","voice-input","speech-output","avatar-renderer","memory","storage"],"commandRoutes":{"round:start":{"path":"round/start","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:ai-draw":{"path":"ai-draw","maxRequestBytes":65536,"maxTimeoutMs":90000},"round:ai-draw-review":{"path":"ai-draw/review","maxRequestBytes":2097152,"maxTimeoutMs":120000},"round:input":{"path":"input","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:feedback":{"path":"input","maxRequestBytes":2097152,"maxTimeoutMs":350000},"round:choose-word":{"path":"choose-word","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:timeout":{"path":"timeout","maxRequestBytes":65536,"maxTimeoutMs":30000},"round:vision-guess":{"path":"vision-guess","maxRequestBytes":2097152,"maxTimeoutMs":350000},"round:live":{"path":"live","maxRequestBytes":65536,"maxTimeoutMs":30000}}}}}
   </script>
   <script>
     (function () {
@@ -2021,7 +2021,7 @@
           </div>
           <div id="pngtuber-container" class="dg-model-renderer dg-pngtuber-renderer hidden" hidden></div>
           <div id="model-fallback-container" class="dg-model-fallback hidden" aria-hidden="true" hidden>
-            <img src="/static/assets/neko-idle/cat-idle-cat1.gif" alt="">
+            <img src="/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif?v={{ static_asset_version }}" alt="">
           </div>
           <div class="dg-model-controls" aria-label="Model position controls" data-i18n-aria="drawingGuess.modelControls.group">
             <button id="model-reset-control" class="dg-model-reset" type="button" aria-label="Reset model view" title="Reset model view" data-i18n-aria="drawingGuess.modelControls.reset" data-i18n-title="drawingGuess.modelControls.reset">
@@ -2149,6 +2149,7 @@
   <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d/live2d-core.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-touch-gestures.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d/live2d-interaction.js?v={{ static_asset_version }}"></script>
   <script src="/static/live2d/live2d-model.js?v={{ static_asset_version }}"></script>
   <script src="/static/pngtuber-core.js?v={{ static_asset_version }}"></script>
@@ -2174,6 +2175,7 @@
   <script src="/static/avatar/avatar-popup-common.js?v={{ static_asset_version }}"></script>
   <script src="/static/avatar/avatar-ui-popup.js?v={{ static_asset_version }}"></script>
   <script src="/static/avatar/avatar-ui-popup-config.js?v={{ static_asset_version }}"></script>
+  <script src="/static/avatar/avatar-ui-buttons/cat-resource-registry.js?v={{ static_asset_version }}"></script>
   <script src="/static/avatar/avatar-ui-buttons/core.js?v={{ static_asset_version }}"></script>
   <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js?v={{ static_asset_version }}"></script>
   <script src="/static/avatar/avatar-ui-buttons/idle-playground.js?v={{ static_asset_version }}"></script>

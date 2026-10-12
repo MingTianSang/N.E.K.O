@@ -239,6 +239,7 @@
             this._renderingPaused = false;
             this._loadGeneration = 0;
             this._latestLifecycleLoadToken = 0;
+            this._inFlightLoadGeneration = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -2567,6 +2568,11 @@
             const bounce = this.currentSpeakingBounceTransform();
             const breathing = this.currentLayeredBreathingTransform(timestamp);
             const talkingHop = this.currentTalkingHopTransform(timestamp);
+            // 记录本帧动画位移/缩放，供 getStableAnchorRect() 还原静止锚点，
+            // 让悬浮按钮等 UI 不跟随模型自主上下运动漂移。
+            this._appliedAnimOffsetY = bounce.y + breathing.y + talkingHop.y;
+            this._appliedAnimScaleX = bounce.scaleX * breathing.scaleX * talkingHop.scaleX;
+            this._appliedAnimScaleY = bounce.scaleY * breathing.scaleY * talkingHop.scaleY;
             const placement = this.getActivePlacement();
             const renderPlacement = this.getRenderPlacement(placement);
             const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
@@ -2578,6 +2584,10 @@
                 this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            this._appliedAnimCenterAnchored = centerAnchored;
+            // 镜像时 finalScaleX 为负:right bottom 原点固定的是可见矩形的左边界,
+            // getStableAnchorRect 需要据此选择保持不动的水平边
+            this._appliedAnimMirrored = finalScaleX < 0;
             if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -2699,11 +2709,16 @@
             }
             if (!this.isLocked && this.container) {
                 this.container.classList.remove('locked-hover-fade');
+                // 同步清掉淡化闭包状态（静止定时器/已淡化标志），否则下次上锁后
+                // 第一次指针评估会用残留的 stationaryFadeActive 立即淡化，跳过 1s 等待
+                if (typeof this._resetPngtuberLockedHoverFade === 'function') {
+                    this._resetPngtuberLockedHoverFade();
+                }
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                const shouldHideButtons = this.isLocked
-                    || isYuiGuideFloatingToolbarSuppressed()
-                    || this._pngtuberFloatingControlsVisible === false;
+                const inTutorial = this._floatingButtonsContainer.dataset.inTutorial === 'true';
+                const shouldHideButtons = isYuiGuideFloatingToolbarSuppressed()
+                    || (!inTutorial && (this.isLocked || this._pngtuberFloatingControlsVisible === false));
                 this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
@@ -2712,6 +2727,243 @@
             if (!this.isLocked && typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
             }
+        }
+
+        // 锁定后悬停淡化（与 Live2D/VRM/MMD 对齐）：上锁后模型点击穿透,
+        // 指针在模型附近静止 1 秒或按住 Ctrl 悬停时,容器加 locked-hover-fade
+        // 类淡到 0.12(index.css),提示可以直接操作模型身后的内容。
+        // pngtuber 此前只接了消费端(CSS 规则/解锁清类/锁图标随类同步透明度),
+        // 触发端从未实现,锁定态永远不淡化。
+        // 实现参照 vrm-interaction.js setupFloatingButtonsMouseTracking 的淡化段:
+        // 事件驱动 + rAF 节流(不挂常驻帧循环);pointermove/mousemove 都监听 window,
+        // 锁定穿透模式下 Electron preload 轮询派发的合成事件才能到达 renderer。
+        setupLockedHoverFade() {
+            if (this._lockedHoverFadeInstalled) return;
+            this._lockedHoverFadeInstalled = true;
+
+            const HOVER_FADE_THRESHOLD = 60;    // 与 vrm/mmd 的 hoverFadeThreshold 一致
+            const STATIONARY_FADE_DELAY = 1000; // 静止 1 秒触发,三家一致
+            let ctrlFadeActive = false;
+            let stationaryFadeActive = false;
+            let isCtrlPressed = false;
+            let hasEnteredHoverRange = false;
+            let stationaryFadeTimer = null;
+            let pendingFrame = null;
+
+            const getContainer = () => this.container
+                || document.getElementById(this.containerId || 'pngtuber-container');
+
+            const clearStationaryFadeTimer = () => {
+                if (stationaryFadeTimer !== null) {
+                    clearTimeout(stationaryFadeTimer);
+                    stationaryFadeTimer = null;
+                }
+            };
+
+            const applyFade = (forceFade) => {
+                const container = getContainer();
+                if (!container) return;
+                let shouldFade = forceFade !== undefined ? forceFade : (ctrlFadeActive || stationaryFadeActive);
+                if (window.lockedHoverFadeEnabled === false) shouldFade = false;
+                const changed = container.classList.contains('locked-hover-fade') !== shouldFade;
+                container.classList.toggle('locked-hover-fade', shouldFade);
+                // 锁图标透明度随容器淡化态同步(updateLockIconPosition 读取该类)
+                if (changed && typeof this.updateLockIconPosition === 'function') {
+                    this.updateLockIconPosition();
+                }
+            };
+            this._setPngtuberLockedHoverFade = applyFade;
+
+            const clearFadeActiveState = () => {
+                clearStationaryFadeTimer();
+                ctrlFadeActive = false;
+                stationaryFadeActive = false;
+                hasEnteredHoverRange = false;
+                applyFade(false);
+            };
+            this._resetPngtuberLockedHoverFade = () => {
+                clearFadeActiveState();
+                isCtrlPressed = false;
+                if (pendingFrame !== null) {
+                    cancelAnimationFrame(pendingFrame);
+                    pendingFrame = null;
+                }
+            };
+
+            const fadeEligible = () => {
+                if (window.lockedHoverFadeEnabled === false) return false;
+                if (!this.isLocked) return false;
+                if (this._goodbyeClicked || this._isInReturnState) return false;
+                if (this._isDraggingModel || this.isDragging) return false;
+                if (isModelManagerPage()) return false;
+                if (window.isMobileWidth && window.isMobileWidth()) return false;
+                const modelType = ((window.lanlan_config && window.lanlan_config.model_type) || '').toLowerCase();
+                if (modelType !== 'pngtuber') return false;
+                const container = getContainer();
+                if (!container) return false;
+                if (container.style.display === 'none' || container.classList.contains('hidden')) return false;
+                return true;
+            };
+
+            // 指针到模型稳定锚点矩形的距离(矩形内为 0),剥离呼吸/说话弹跳位移
+            const distanceToModel = (x, y) => {
+                const rect = typeof this.getStableAnchorRect === 'function' ? this.getStableAnchorRect() : null;
+                if (!rect || !(rect.width > 0) || !(rect.height > 0)) return Infinity;
+                const dx = Math.max(rect.left - x, 0, x - rect.right);
+                const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+                return Math.hypot(dx, dy);
+            };
+
+            // 指针在锁图标上时不淡化——用户正要去点它解锁
+            const isOverLockIcon = (x, y) => {
+                const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
+                if (!lockIcon || lockIcon.style.display === 'none') return false;
+                const rect = lockIcon.getBoundingClientRect();
+                const expand = 8;
+                return x >= rect.left - expand && x <= rect.right + expand &&
+                    y >= rect.top - expand && y <= rect.bottom + expand;
+            };
+
+            const evaluate = () => {
+                pendingFrame = null;
+                const x = this._fadePointerX;
+                const y = this._fadePointerY;
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                if (!fadeEligible() || isOverLockIcon(x, y)) {
+                    clearFadeActiveState();
+                    return;
+                }
+                const isNearModel = distanceToModel(x, y) < HOVER_FADE_THRESHOLD;
+                if (isNearModel) {
+                    // 首次进入范围:启动 1s 定时器;已在范围内移动不重启(与 VRM 语义一致)
+                    if (!hasEnteredHoverRange) {
+                        hasEnteredHoverRange = true;
+                        if (stationaryFadeTimer === null && !stationaryFadeActive) {
+                            stationaryFadeTimer = setTimeout(() => {
+                                stationaryFadeTimer = null;
+                                stationaryFadeActive = true;
+                                // 定时期间视口可能已变(窗口最大化挪走模型、平板转到移动宽度),
+                                // 按最后指针位置重判一次;不再满足条件时 evaluate 会撤掉刚置上的静止淡化
+                                if (pendingFrame !== null) {
+                                    cancelAnimationFrame(pendingFrame);
+                                }
+                                evaluate();
+                            }, STATIONARY_FADE_DELAY);
+                        }
+                    }
+                } else {
+                    if (stationaryFadeTimer !== null || stationaryFadeActive) {
+                        clearStationaryFadeTimer();
+                        stationaryFadeActive = false;
+                    }
+                    hasEnteredHoverRange = false;
+                }
+                ctrlFadeActive = isCtrlPressed && isNearModel;
+                applyFade();
+            };
+
+            const onPointerMove = (event) => {
+                // 触摸没有悬停语义：手指抬起后既没有后续 move 也没有 pointerup 监听来撤销,
+                // 1s 静止定时器会让模型一直停在淡化态。跳过触摸 pointermove;可信 mousemove
+                // 也一律跳过——真实鼠标移动已由 pointermove 处理,而轻点后浏览器补发的兼容
+                // mousemove 同样可信,只能这样跨浏览器挡住。Electron 合成的 mousemove 不可信,
+                // 合成 pointermove 的 pointerType 为 mouse,都不受影响
+                if (event.pointerType === 'touch' || (event.type === 'mousemove' && event.isTrusted)) {
+                    return;
+                }
+                if (event.isTrusted) {
+                    isCtrlPressed = event.ctrlKey || event.metaKey;
+                } else if (event.ctrlKey || event.metaKey) {
+                    // 合成事件不携带可信按键态,只做增量更新(与 VRM 一致)
+                    isCtrlPressed = true;
+                }
+                this._fadePointerX = event.clientX;
+                this._fadePointerY = event.clientY;
+                if (pendingFrame === null) {
+                    pendingFrame = requestAnimationFrame(evaluate);
+                }
+            };
+            const onKeyDown = (event) => {
+                if (!(event.ctrlKey || event.metaKey)) return;
+                const wasPressed = isCtrlPressed;
+                isCtrlPressed = true;
+                // 指针静止时按下 Ctrl 也要立即重算淡化,否则 ctrlFadeActive
+                // 要等下一次 pointermove 或 1s 静止定时器才生效,与 onKeyUp
+                // 的即时 applyFade 不对称(wasPressed 挡掉按住时的自动重复)
+                if (!wasPressed && pendingFrame === null) {
+                    pendingFrame = requestAnimationFrame(evaluate);
+                }
+            };
+            const onKeyUp = (event) => {
+                if (!event.ctrlKey && !event.metaKey) {
+                    isCtrlPressed = false;
+                    // Ctrl 释放时重算,让 stationaryFadeActive 有机会生效(与 VRM 一致)
+                    ctrlFadeActive = false;
+                    applyFade();
+                }
+            };
+            const onBlur = () => {
+                // blur 时 Ctrl 键事件无法到达,必须主动清除避免卡死
+                isCtrlPressed = false;
+                ctrlFadeActive = false;
+                // 锁定状态下 blur 通常由鼠标穿透点击引起,保留静止淡化避免闪烁(与 VRM 一致)
+                if (this.isLocked) {
+                    applyFade();
+                    return;
+                }
+                clearFadeActiveState();
+            };
+            const onLockedHoverFadeChanged = () => {
+                if (window.lockedHoverFadeEnabled === false) {
+                    clearFadeActiveState();
+                }
+            };
+            const onResize = () => {
+                // 视口变化会挪动模型,指针不动也要按最后位置重判(含已经淡化的情况)
+                if (pendingFrame === null) {
+                    pendingFrame = requestAnimationFrame(evaluate);
+                }
+            };
+            const onPointerOut = (event) => {
+                // relatedTarget 为空 = 指针离开窗口,或不支持悬停的笔抬起:之后不会再有 move
+                // 来撤销淡化,这里清掉状态并作废最后坐标(防止挂起帧/resize 用旧坐标重新淡化)。
+                // Electron Pet 窗口不处理:锁定时窗口点击穿透、指针由 preload 轮询驱动,真实
+                // 进出事件和穿透切换的关系没有保证(onBlur 同样保留淡化);Pet 窗口通常铺满
+                // 屏幕,离开视口的情况也少。触摸与 onPointerMove 对称地忽略:混合输入设备上
+                // 手指抬起同样产生 relatedTarget 为空的 pointerout,不能清掉鼠标造成的淡化
+                if (event.pointerType === 'touch'
+                    || event.relatedTarget
+                    || window.__LANLAN_IS_ELECTRON_PET__) return;
+                this._fadePointerX = NaN;
+                this._fadePointerY = NaN;
+                if (pendingFrame !== null) {
+                    cancelAnimationFrame(pendingFrame);
+                    pendingFrame = null;
+                }
+                clearFadeActiveState();
+            };
+
+            this._pngtuberFadeListeners = [
+                { target: window, event: 'pointermove', handler: onPointerMove },
+                { target: window, event: 'mousemove', handler: onPointerMove },
+                { target: window, event: 'pointerout', handler: onPointerOut },
+                { target: window, event: 'resize', handler: onResize },
+                { target: window, event: 'keydown', handler: onKeyDown },
+                { target: window, event: 'keyup', handler: onKeyUp },
+                { target: window, event: 'blur', handler: onBlur },
+                { target: window, event: 'neko-locked-hover-fade-changed', handler: onLockedHoverFadeChanged },
+            ];
+            this._pngtuberFadeListeners.forEach((entry) => entry.target.addEventListener(entry.event, entry.handler));
+            this._teardownLockedHoverFade = () => {
+                if (this._pngtuberFadeListeners) {
+                    this._pngtuberFadeListeners.forEach((entry) => entry.target.removeEventListener(entry.event, entry.handler));
+                    this._pngtuberFadeListeners = null;
+                }
+                if (typeof this._resetPngtuberLockedHoverFade === 'function') {
+                    this._resetPngtuberLockedHoverFade();
+                }
+                this._lockedHoverFadeInstalled = false;
+            };
         }
 
         setModelDraggingState(active, moved = false) {
@@ -3210,7 +3462,9 @@
             if (!state.moved) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
-            if (this.isLayeredActive()) this.drawLayeredState();
+            // Keep motion/physics on the animation clock, even when pointer
+            // events arrive faster than the display can present frames.
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
@@ -3390,7 +3644,7 @@
             if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
-            if (this.isLayeredActive()) this.drawLayeredState();
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
         }
 
         async endTouchZoom() {
@@ -3491,17 +3745,74 @@
             this.updateLockIconPosition();
         }
 
+        // 固定锚点：从当前 image rect 中剥离呼吸/说话弹跳/talkingHop 的动画位移与缩放，
+        // 返回模型静止布局下的矩形。悬浮按钮、锁图标等 UI 用它定位，
+        // 避免跟随模型自主上下运动而漂移、难以点击。
+        getStableAnchorRect() {
+            const image = this.image || (this.ensureContainer() && this.image);
+            if (!image) return null;
+            const rect = image.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+            const rectRight = Number.isFinite(rect.right) ? rect.right : rect.left + rect.width;
+            const rectBottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height;
+            const animY = Number(this._appliedAnimOffsetY) || 0;
+            const animScaleX = Number(this._appliedAnimScaleX) || 1;
+            const animScaleY = Number(this._appliedAnimScaleY) || 1;
+            const stableWidth = rect.width / animScaleX;
+            const stableHeight = rect.height / animScaleY;
+            if (this._appliedAnimCenterAnchored === false) {
+                // transform-origin: right bottom —— Y 向缩放围绕底边不动,剥离 Y 向平移即可。
+                // 水平方向:非镜像(finalScaleX>0)时右边界固定;镜像时 scale 为负,
+                // 变换后矩形从原点向右展开,固定的是左边界 rect.left。
+                const bottom = rectBottom - animY;
+                const left = this._appliedAnimMirrored ? rect.left : rectRight - stableWidth;
+                return {
+                    left,
+                    top: bottom - stableHeight,
+                    right: left + stableWidth,
+                    bottom,
+                    width: stableWidth,
+                    height: stableHeight
+                };
+            }
+            // transform-origin: center center —— 缩放围绕中心不动，中心点剥离 Y 向平移
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2 - animY;
+            return {
+                left: centerX - stableWidth / 2,
+                top: centerY - stableHeight / 2,
+                right: centerX + stableWidth / 2,
+                bottom: centerY + stableHeight / 2,
+                width: stableWidth,
+                height: stableHeight
+            };
+        }
+
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
+            // 告别/猫咪态期间锁图标必须保持隐藏。setLocked、scheduleLayout（原生
+            // 窗口收缩触发 resize）、setupHTMLLockIcon 重建、updateFloatingButtonsPosition
+            // 的 isLocked 分支等回写路径都汇聚到本方法，末尾非 important 的
+            // display:block 会直接覆盖中央 goodbye handler 刚写上的
+            // display:none!important，让锁图标在离开瞬间重新冒出。
+            // 与 live2d showButtons 的 _goodbyeClicked 守卫对称。
+            if (this._goodbyeClicked || this._isInReturnState) {
+                lockIcon.style.setProperty('display', 'none', 'important');
+                lockIcon.style.setProperty('visibility', 'hidden', 'important');
+                lockIcon.style.setProperty('opacity', '0', 'important');
+                return;
+            }
             if (isYuiGuideFloatingToolbarSuppressed()) {
                 lockIcon.style.display = 'none';
                 lockIcon.style.visibility = 'hidden';
                 lockIcon.style.opacity = '0';
                 return;
             }
-            const image = this.image || (this.ensureContainer() && this.image);
-            const rect = image ? image.getBoundingClientRect() : null;
+            // 用固定锚点定位，锁图标不随模型呼吸/弹跳上下漂移
+            const rect = typeof this.getStableAnchorRect === 'function'
+                ? this.getStableAnchorRect()
+                : (this.image ? this.image.getBoundingClientRect() : null);
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 if (!window.isInTutorial) lockIcon.style.display = 'none';
                 return;
@@ -3624,11 +3935,33 @@
             }, delayMs);
         }
 
+        // 取消在途 load()：推进内部世代号与生命周期 token，让 isCurrentLoad 不再通过——
+        // 挂起的 setupLayeredAdapter 解析后不会再 setState('idle') 把旧图片写进已可见的
+        // 容器，也不会挂拖拽监听/悬浮按钮/锁标。
+        // config 只在确有在途加载（含抛错未清标记的）时才丢弃：保存流程读
+        // pngtuberManager.config 作最高优先级 runtime 配置，被取消模型的路径不能再被
+        // 合并进 Save；空对象走 stateToSrc / getActivePlacement 等既有兜底链，不会抛错。
+        // 已完成加载写入的 config 则是切回 pngtuber 后拖拽/状态/保存的数据来源——
+        // 无条件清空会让「切回 + 列表接口慢/失败」的窗口（PNG 分支先显示容器再
+        // await 列表与重新预览）退回默认摆放与占位图。
+        cancelInFlightLoad() {
+            this._loadGeneration = (Number(this._loadGeneration) || 0) + 1;
+            this._latestLifecycleLoadToken = Math.max(
+                Number(this._latestLifecycleLoadToken) || 0,
+                pngtuberLoadSequence
+            );
+            if (this._inFlightLoadGeneration) {
+                this.config = {};
+                this._inFlightLoadGeneration = 0;
+            }
+        }
+
         async load(config, options = {}) {
             const loadToken = Number(options.loadToken) || 0;
             if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
             if (loadToken) this._latestLifecycleLoadToken = loadToken;
             const loadGeneration = ++this._loadGeneration;
+            this._inFlightLoadGeneration = loadGeneration;
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
@@ -3642,6 +3975,9 @@
                 detail: { loadToken }
             }));
             await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            // 唯一挂起点已过，本次加载不再「在途」。抛错的加载保留标记：其半写状态
+            // 的 config 应随下一次取消一并丢弃。
+            if (this._inFlightLoadGeneration === loadGeneration) this._inFlightLoadGeneration = 0;
             if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
@@ -4252,6 +4588,11 @@
                 this.clickTimer = null;
             }
             this.stopSpeakingMouthAnimation();
+            // 隐藏前清掉锁定悬停淡化,避免换模型类型等不走解锁的路径把
+            // locked-hover-fade 类留在容器上,下次 show() 时模型以 0.12 透明度出现
+            if (typeof this._resetPngtuberLockedHoverFade === 'function') {
+                this._resetPngtuberLockedHoverFade();
+            }
             const container = this.container || document.getElementById(this.containerId);
             if (container) {
                 container.style.display = 'none';
@@ -4262,6 +4603,9 @@
         dispose() {
             this.detachSpeechListeners();
             this.detachDragListeners();
+            if (typeof this._teardownLockedHoverFade === 'function') {
+                this._teardownLockedHoverFade();
+            }
             if (this._saveTimer) {
                 clearTimeout(this._saveTimer);
                 this._saveTimer = null;
@@ -4312,6 +4656,7 @@
                 characterMenuItems: [
                     { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
                     { id: 'pngtuber-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+                    { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
                 onMouseTrackingToggle: function(enabled) {
@@ -4375,6 +4720,9 @@
             }
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
+            const baseButtonSize = 48;
+            const baseGap = 12;
+            const baseButtonWidth = 82;
 
             this.updateFloatingButtonsPosition = () => {
                 this.syncResponsiveButtonVisibility(buttonsContainer);
@@ -4389,12 +4737,12 @@
                     buttonsContainer.style.display = 'none';
                     return;
                 }
-                if (this.isLocked) {
+                if (this.isLocked && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
                 }
-                if (this._pngtuberFloatingControlsVisible === false) {
+                if (this._pngtuberFloatingControlsVisible === false && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
@@ -4402,6 +4750,8 @@
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.flexDirection = 'column';
+                    buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.transform = 'scale(1)';
                     buttonsContainer.style.bottom = '116px';
                     buttonsContainer.style.right = '16px';
                     buttonsContainer.style.left = '';
@@ -4412,8 +4762,10 @@
                     return;
                 }
 
-                const image = this.image || (this.ensureContainer() && this.image);
-                const rect = image ? image.getBoundingClientRect() : null;
+                // 固定锚点：剥离呼吸/说话弹跳的动画位移，工具栏不随模型自主上下运动漂移
+                const rect = typeof this.getStableAnchorRect === 'function'
+                    ? this.getStableAnchorRect()
+                    : (this.image ? this.image.getBoundingClientRect() : null);
                 if (!rect || rect.width <= 0 || rect.height <= 0) {
                     buttonsContainer.style.display = 'none';
                     return;
@@ -4422,14 +4774,23 @@
                     const style = window.getComputedStyle(child);
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 });
-                const buttonWidth = 82;
-                const buttonHeight = Math.max(48, visibleButtons.length * 48 + Math.max(0, visibleButtons.length - 1) * 12);
+                const baseToolbarHeight = Math.max(
+                    baseButtonSize,
+                    visibleButtons.length * baseButtonSize + Math.max(0, visibleButtons.length - 1) * baseGap
+                );
+                const targetToolbarHeight = rect.height / 2;
+                const scale = Math.max(0.5, Math.min(1, targetToolbarHeight / baseToolbarHeight));
+                const actualToolbarHeight = baseToolbarHeight * scale;
+                const actualToolbarWidth = baseButtonWidth * scale;
                 const targetX = rect.right * 0.8 + rect.left * 0.2;
-                const maxX = window.innerWidth - buttonWidth - 12;
+                const maxX = Math.max(12, window.innerWidth - actualToolbarWidth - 12);
                 const left = Math.max(12, Math.min(targetX, maxX));
-                let top = rect.top + (rect.height - buttonHeight) / 2;
-                top = Math.max(12, Math.min(window.innerHeight - buttonHeight - 12, top));
+                const maxTop = Math.max(12, window.innerHeight - actualToolbarHeight - 12);
+                let top = rect.top + (rect.height - actualToolbarHeight) / 2;
+                top = Math.max(12, Math.min(maxTop, top));
                 buttonsContainer.style.flexDirection = 'column';
+                buttonsContainer.style.transformOrigin = 'left top';
+                buttonsContainer.style.transform = `scale(${scale})`;
                 buttonsContainer.style.left = `${left}px`;
                 buttonsContainer.style.top = `${top}px`;
                 buttonsContainer.style.right = '';
@@ -4511,7 +4872,15 @@
                 this._pngtuberControlsHover = true;
                 showFloatingControls();
             };
-            const unmarkControlsHover = () => {
+            const unmarkControlsHover = (event) => {
+                // 在相邻按钮边缘移动时,mouseleave 可能因目标切换而触发;
+                // 若 relatedTarget 仍在控件区域内,说明指针没有真正离开,不取消悬停标记
+                const related = event && event.relatedTarget;
+                if (related && related !== document && related !== document.documentElement
+                    && (buttonsContainer.contains(related)
+                        || (this._lockIconElement && this._lockIconElement.contains && this._lockIconElement.contains(related)))) {
+                    return;
+                }
                 this._pngtuberControlsHover = false;
                 startHideTimer();
             };
@@ -4555,16 +4924,35 @@
                 }
             };
             const handleWindowBlur = () => clearPointerAndHideSoon();
+            // document 上 capture=true 的 mouseenter/mouseleave 会收到页面内所有元素的
+            // 进出事件;只有 target 为 document/documentElement 且 relatedTarget 为空
+            // 才是真正进出浏览器窗口,否则(如相邻按钮之间跨越边缘)忽略,避免按钮
+            // 在边缘移动时被反复判定隐藏/显示
+            const isWindowBoundaryMouseEvent = (event) => {
+                if (!event) return false;
+                const target = event.target;
+                const isDocTarget = !target || target === document || target === document.documentElement;
+                return isDocTarget && !event.relatedTarget;
+            };
             const handleDocumentMouseEnter = (event) => {
                 if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
-                    handlePointerMove(event);
+                    if (isWindowBoundaryMouseEvent(event)) {
+                        handlePointerMove(event);
+                    } else {
+                        // 元素级 enter 仅刷新指针坐标,不做显示/隐藏判定
+                        this._lastPngtuberPointerX = event.clientX;
+                        this._lastPngtuberPointerY = event.clientY;
+                    }
                     return;
                 }
-                if (shouldKeepFloatingControlsVisible()) {
+                if (isWindowBoundaryMouseEvent(event) && shouldKeepFloatingControlsVisible()) {
                     showFloatingControls();
                 }
             };
-            const handleDocumentMouseLeave = () => clearPointerAndHideSoon();
+            const handleDocumentMouseLeave = (event) => {
+                if (!isWindowBoundaryMouseEvent(event)) return;
+                clearPointerAndHideSoon();
+            };
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {
@@ -4676,6 +5064,10 @@
             window.addEventListener('pngtuber-return-click', returnHandler);
             window.addEventListener('live2d-return-click', returnHandler);
             this.createReturnButton();
+            // 锁定悬停淡化的触发端(幂等安装,监听器挂在 manager 实例上不随工具栏重建)
+            if (typeof this.setupLockedHoverFade === 'function') {
+                this.setupLockedHoverFade();
+            }
 
             const scheduleLayout = () => requestAnimationFrame(() => {
                 this.applyTransform();
@@ -4742,10 +5134,20 @@
 
     installPNGTuberFloatingButtons();
 
-    async function hideOtherAvatarRuntimesForPNGTuber() {
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+    async function hideOtherAvatarRuntimesForPNGTuber(options = {}) {
+        const loadToken = Number(options.loadToken) || 0;
+        // 过期判定：本次加载已被更新的序列号/取消作废，或模型管理页已切走类型。
+        // removeModel 的 await 之后必须复查——挂起期间用户可能已切到 live2d
+        // （离开块作废了本次 token、live2d 分支已显示容器并加载模型），过期调用
+        // 若继续写 DOM 会把刚显示的 Live2D 容器与画布隐藏掉。主 app 调用方不传
+        // loadToken，行为与既往一致。
+        const isStaleCall = () => {
+            if (loadToken && loadToken !== pngtuberLoadSequence) return true;
+            return !!(document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber');
+        };
+        if (isStaleCall()) {
             return;
         }
 
@@ -4761,6 +5163,11 @@
             } catch (error) {
                 console.warn('[PNGTuber] 清理 Live2D runtime 失败:', error);
             }
+        }
+
+        // await 归来复查（下方全部是同步 DOM 写入，复查一次即可覆盖）
+        if (isStaleCall()) {
+            return;
         }
 
         const live2dContainer = document.getElementById('live2d-container');
@@ -4799,7 +5206,7 @@
             detail: { loadToken }
         }));
         try {
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
@@ -4812,10 +5219,10 @@
                 window.pngtuberManager.hide();
                 return window.pngtuberManager;
             }
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.pngtuberManager.show();
-            await hideOtherAvatarRuntimesForPNGTuber();
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
             if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
@@ -4835,8 +5242,24 @@
         return window.pngtuberManager.playLayeredAnimation(target, options);
     }
 
+    // 作废所有在途的 loadPNGTuberAvatar：自增序列号，让在途调用完成时因 loadToken
+    // 过期而不再 show()、不再派发 pngtuber-model-loaded（网络请求本身不中断，
+    // 完成即丢弃）。同时穿透到 PNGTuberManager.load() 的内部有效性判定
+    // （isCurrentLoad 只看 _loadGeneration/_latestLifecycleLoadToken，外层序列号
+    // 对它不可见），否则挂起的内部加载解析后仍会 setState 把旧图片写进已可见容器、
+    // 并把被取消模型的 config 留给保存流程。模型管理页离开 pngtuber 类型时调用，
+    // 配合页面层的预览世代号一起丢弃在途预览，之后才能安全释放删除防护。
+    function cancelPNGTuberAvatarLoads() {
+        pngtuberLoadSequence += 1;
+        const manager = window.pngtuberManager;
+        if (manager && typeof manager.cancelInFlightLoad === 'function') {
+            try { manager.cancelInFlightLoad(); } catch (_) { /* ignore */ }
+        }
+    }
+
     window.PNGTuberManager = PNGTuberManager;
     window.hideOtherAvatarRuntimesForPNGTuber = hideOtherAvatarRuntimesForPNGTuber;
     window.loadPNGTuberAvatar = loadPNGTuberAvatar;
     window.playPNGTuberAnimation = playPNGTuberAnimation;
+    window.cancelPNGTuberAvatarLoads = cancelPNGTuberAvatarLoads;
 })();

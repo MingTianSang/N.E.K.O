@@ -145,6 +145,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
+        onTheaterSubmit: null,
+        onTheaterSuggestedInputSelect: null,
+        onTheaterEnd: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingAvatarInteractions: [],
@@ -337,6 +340,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         // to lastRestorableChatSurfaceMode rather than being persisted directly.
         if (mode !== 'compact' && mode !== 'full') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
+        // 小剧场演绎期间宿主形态被临时覆盖为 compact（含退出时恢复前的中间态），这不是用户选择；
+        // 写入偏好会让刷新、关闭或崩溃后永久丢失用户原来的形态。
+        if (typeof I.isTheaterPresentationActive === 'function' && I.isTheaterPresentationActive()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
         } catch (_) {}
@@ -1024,6 +1030,45 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         };
     }
 
+    function getIdleCat1CompactMirrorPlayYarnResource() {
+        var registry = window.NekoCatResourceRegistry;
+        if (!registry || typeof registry.getAppearance !== 'function') return null;
+        try {
+            var resource = registry.getAppearance('action.cat1.play_yarn', { random: false });
+            if (!resource || !resource.metadata || resource.metadata.wideArt !== true) return null;
+            return resource;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function getIdleCat1CompactMirrorDefaultSrc() {
+        var registry = window.NekoCatResourceRegistry;
+        if (!registry || typeof registry.getAppearance !== 'function') return '';
+        try {
+            var resource = registry.getAppearance('idle.cat1', { random: false });
+            return resource && resource.available && resource.url ? String(resource.url) : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function normalizeIdleCat1CompactMirrorAssetUrl(value) {
+        return String(value || '').split(/[?#]/, 1)[0];
+    }
+
+    function isIdleCat1CompactMirrorWideArt(src) {
+        var resource = getIdleCat1CompactMirrorPlayYarnResource();
+        if (!resource) return false;
+        var normalizedSrc = normalizeIdleCat1CompactMirrorAssetUrl(src);
+        if (!normalizedSrc) return false;
+        var urls = Array.isArray(resource.urls) ? resource.urls : [];
+        if (!urls.length && resource.url) urls = [resource.url];
+        return urls.some(function (url) {
+            return normalizeIdleCat1CompactMirrorAssetUrl(url) === normalizedSrc;
+        });
+    }
+
     function showIdleCat1CompactMirror(detail) {
         var element = getIdleCat1CompactMirrorElement();
         var rect = getIdleCat1CompactMirrorPageRect(detail);
@@ -1034,9 +1079,14 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
         var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
         if (image) {
-            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : getIdleCat1CompactMirrorDefaultSrc();
+            if (!src) {
+                // 没有可用的猫图时不显示镜像，避免沿用上一次的图片。
+                I.hideIdleCat1CompactMirror('missing_asset');
+                return;
+            }
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
-            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+            if (isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {
                 element.removeAttribute('data-neko-cat1-wide-art');

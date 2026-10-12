@@ -26,6 +26,7 @@ from ._shared import (
     base64,
     json,
     logger,
+    new_client_item_id,
     response_arbiter_fail_open_enabled,
     time,
     uuid,
@@ -78,6 +79,24 @@ def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
 
 
 class _ResponseMixin:
+    def get_conversation_turn_type(self) -> str:
+        """Classify delivered content by its provider response ownership."""
+        if getattr(self, "_is_gemini", False):
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            proactive = bool(
+                owner is not None
+                and len(owner) > 4
+                and owner[0] == getattr(self, "_connection_generation", None)
+                and owner[1] is getattr(self, "_gemini_session", None)
+                and owner[2] == getattr(self, "_proactive_inject_outcome_token", None)
+                and owner[4] == getattr(self, "_tool_scope_generation", 0)
+            )
+        else:
+            # Captured when accepted start evidence opens the response. It
+            # survives terminal bookkeeping before a final transcript flush.
+            proactive = getattr(self, "_current_response_source", None) == "proactive"
+        return "proactive_reply" if proactive else "assistant_message"
+
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
@@ -228,7 +247,7 @@ class _ResponseMixin:
 
         item_event_id = f"event_user_item_{uuid.uuid4().hex}"
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
         # 通过 conversation.item.create 添加用户消息，再触发响应。两步都
         # 进入全局仲裁器，直到 response.done 才释放下一次 create 的资格。
@@ -294,7 +313,7 @@ class _ResponseMixin:
         self.note_user_turn_started()
 
         event_suffix = uuid.uuid4().hex
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
         item_event = {
             "type": "conversation.item.create",
@@ -339,7 +358,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -357,7 +378,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         return ticket
 
     def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
@@ -531,7 +552,7 @@ class _ResponseMixin:
         import hashlib
 
         event_suffix = uuid.uuid4().hex
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_multimodal_item_{event_suffix}",
@@ -601,7 +622,7 @@ class _ResponseMixin:
         #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
         #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
         # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
-        # 要付一次未经确认的补偿删除（issue #2982）。
+        # 要等待补偿删除确认后才能降级（issue #2982）。
         _downgrade_if_visual_ownership_lost(item_event)
 
         item_payload = json.dumps(item_event)
@@ -635,7 +656,7 @@ class _ResponseMixin:
         # 时机不同，admission_check 覆盖不了这一段。
         #
         # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
-        # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
+        # 那是**提交之后**才拒，需要等待补偿删除确认（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
         arbiter = self._ensure_response_arbiter()
         # send_event's boolean is the only place the transport ever says "these
@@ -684,7 +705,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -697,7 +720,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         # Only here, and only on the path where ``ticket.sent`` resolved without
         # raising. Everything that could still have removed or rewritten a frame
         # has already run against this very dict -- both ownership downgrades
@@ -994,16 +1017,35 @@ class _ResponseMixin:
             # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
             # scope 下跑完；跑完之后这一轮才真正开始。
             self.note_user_turn_started()
+            preparation_arbiter = None
+            preparation_token = None
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.pause_dispatch()
-                    await arbiter.cancel_current()
+                    preparation_token = arbiter.begin_turn_preparation(stable_turn_id)
+                    preparation_arbiter = arbiter
+                    # Only cancel something the provider is already acting on.
+                    # Independent ASR cuts one spoken sentence into several
+                    # turns, so this prepare routinely lands while the
+                    # *previous* turn's reply is still parked before its first
+                    # send. Cancelling that is not barge-in: nothing is being
+                    # said over the user, and the turn it discards is a
+                    # complete sentence that then never gets answered at all.
+                    # Leave it queued -- the lane is serial, and this turn's
+                    # own ticket is priority 0.
+                    if arbiter.has_live_response or (
+                        arbiter.current_source is not None
+                        and arbiter.current_source != "external_asr"
+                    ):
+                        await arbiter.cancel_current(reason="external_asr_prepare")
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
                 raise
+            finally:
+                if preparation_arbiter is not None:
+                    preparation_arbiter.end_turn_preparation(preparation_token)
         return self._connection_generation != connection_generation
 
     def _consume_cancelled_terminal(self) -> bool:
@@ -1125,13 +1167,17 @@ class _ResponseMixin:
             None,
         )
         if quarantine_task is not None and quarantine_task is not asyncio.current_task():
-            await asyncio.shield(quarantine_task)
-            if (
-                quarantine_task.done()
-                and getattr(self, "_gemini_external_quarantine_task", None)
-                is quarantine_task
-            ):
-                self._gemini_external_quarantine_task = None
+            try:
+                await asyncio.shield(quarantine_task)
+            except Exception:
+                # The retained SDK owner must close successfully before we
+                # reconnect; retry it rather than replaying the old exception.
+                await self._close_gemini()
+            finally:
+                if (quarantine_task.done() and getattr(self, "_gemini_external_quarantine_task", None) is quarantine_task):
+                    self._gemini_external_quarantine_task = None
+        if getattr(self, "_fatal_error_occurred", False) and getattr(self, "_gemini_session", None) is not None:
+            await self._close_gemini()
         if getattr(self, "_gemini_session", None) is None:
             instructions = str(getattr(self, "instructions", "") or "")
             if instructions:
@@ -1623,7 +1669,7 @@ class _ResponseMixin:
         item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
         create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
         outcome_token = create_event_id
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
 
         def _close_outcome_window() -> None:
@@ -2569,7 +2615,7 @@ class _ResponseMixin:
                 events_before_text = ({
                     "type": "conversation.item.create",
                     "item": {
-                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "id": new_client_item_id("vis"),
                         "type": "message",
                         "role": "user",
                         "content": [{
@@ -2596,7 +2642,7 @@ class _ResponseMixin:
                 visual_event = {
                     "type": "conversation.item.create",
                     "item": {
-                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "id": new_client_item_id("vis"),
                         "type": "message",
                         "role": "user",
                         "content": [{
@@ -2631,7 +2677,7 @@ class _ResponseMixin:
                 "type": "conversation.item.create",
                 "event_id": visual_event_id,
                 "item": {
-                    "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                    "id": new_client_item_id("vis"),
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": self._image_description}],

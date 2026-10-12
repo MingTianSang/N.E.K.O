@@ -71,6 +71,13 @@ from memory.external_markdown_import import (
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+# 记忆开关的「请求级」串行化，和文件级的 core_config.json 写锁不是一回事：
+# - 文件一致性（读→改→写不被别的写入方用旧快照覆盖）由 config_manager 的
+#   aupdate_json_config 统一保证，/core_api 保存、启动迁移走的也是那一把；
+# - 这把锁额外罩住强力记忆关闭时那次最长 10 秒的 memory_server 迁移，让开关
+#   请求之间、以及前端恢复用的 GET 回读，都等进行中的开关操作出最终结果。
+# 慢迁移放在文件锁之外，所以这 10 秒里 /core_api 等其它写入方照常落盘不受阻。
+_memory_toggle_write_lock = asyncio.Lock()
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
@@ -831,6 +838,109 @@ def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
         )
 
 
+class _RecentBrowserTheaterEditRejected(Exception):
+    """A browser save may carry an edited theater capsule as ordinary text."""
+
+
+_RECENT_BROWSER_ROLE_TYPES = {"user": "human", "assistant": "ai", "system": "system"}
+
+
+def _recent_payload_type_and_content(item: object) -> tuple[object, object]:
+    """Return the ``(type, content)`` pair of one on-disk or role-style message."""
+    if not isinstance(item, dict):
+        return None, None
+    data = item.get("data")
+    if isinstance(data, dict):
+        return item.get("type"), data.get("content")
+    return (
+        item.get("type") or _RECENT_BROWSER_ROLE_TYPES.get(item.get("role")),
+        item.get("content"),
+    )
+
+
+def _merge_browser_payload_with_theater(
+    current_text: str,
+    payload: list[dict],
+    browser_chat: list | None,
+) -> list[dict]:
+    """Carry theater messages over verbatim when the browser rewrites recent history.
+
+    The browser posts only ``{role, text}`` (plus an optional ``source_index``
+    pointing into the snapshot it loaded), which would strip the theater
+    metadata and turn a capsule into ordinary memory. Every theater message of
+    the locked snapshot is therefore copied back untouched at its original
+    position relative to the surviving ordinary messages, and posted items that
+    stand for a theater message are dropped. Without theater messages the
+    payload is returned unchanged.
+    """
+    from memory.message_sources import is_theater_memory_message
+
+    try:
+        current = json.loads(current_text)
+    except (TypeError, ValueError):
+        return payload
+    if not isinstance(current, list):
+        return payload
+    theater_indexes = [
+        index
+        for index, message in enumerate(current)
+        if is_theater_memory_message(message)
+    ]
+    if not theater_indexes:
+        return payload
+    theater_index_set = set(theater_indexes)
+    chat = browser_chat if isinstance(browser_chat, list) else []
+
+    merged: list[dict] = []
+    next_theater = 0
+    cursor = 0
+    has_unresolved_item = False
+    matched_theater: set[int] = set()
+    for position, item in enumerate(payload):
+        chat_item = chat[position] if position < len(chat) else {}
+        if not isinstance(chat_item, dict):
+            chat_item = {}
+        source = chat_item.get("source_index")
+        if not (
+            isinstance(source, int)
+            and not isinstance(source, bool)
+            and cursor <= source < len(current)
+        ):
+            # 旧客户端只回传 {role, text}：按类型 + 原文向前对齐，编辑过的条目对不上。
+            source = None
+            item_key = _recent_payload_type_and_content(item)
+            for index in range(cursor, len(current)):
+                if _recent_payload_type_and_content(current[index]) == item_key:
+                    source = index
+                    break
+        if source is None:
+            if chat_item.get("theater"):
+                # 浏览器标成剧场的条目绝不能以普通文本写回；原件会从快照补回。
+                continue
+            has_unresolved_item = True
+            merged.append(item)
+            continue
+        cursor = source + 1
+        while (
+            next_theater < len(theater_indexes)
+            and theater_indexes[next_theater] <= source
+        ):
+            merged.append(current[theater_indexes[next_theater]])
+            next_theater += 1
+        if source in theater_index_set:
+            matched_theater.add(source)
+            continue
+        if chat_item.get("theater"):
+            continue
+        merged.append(item)
+    merged.extend(current[index] for index in theater_indexes[next_theater:])
+    if has_unresolved_item and len(matched_theater) < len(theater_indexes):
+        # 有剧场胶囊没被对上，同时又有对不上原文的条目：它可能正是被旧页面改过的
+        # 胶囊，写回就会把剧场虚构当成日常记忆。宁可拒绝，让用户重新加载。
+        raise _RecentBrowserTheaterEditRejected()
+    return merged
+
+
 def _write_recent_browser_payload(
     path: Path,
     payload: list[dict],
@@ -838,6 +948,7 @@ def _write_recent_browser_payload(
     expected_fingerprint: str | None,
     expected_identity_token: str | None,
     expected_generation: tuple[str, int],
+    browser_chat: list | None = None,
 ) -> tuple[bool, str, str]:
     """Replace a browser snapshot unless disk or pending state changed since read."""
     with recent_file_access(
@@ -854,6 +965,10 @@ def _write_recent_browser_payload(
             and expected_fingerprint != current_fingerprint
         ):
             return False, current_fingerprint, current_identity_token
+        # 剧场胶囊只能经 /cache 与 /theater/forget 维护；浏览器保存原样保留。
+        payload = _merge_browser_payload_with_theater(
+            current_text, payload, browser_chat,
+        )
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
         saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1251,6 +1366,16 @@ async def save_recent_file(request: Request):
                 expected_fingerprint=snapshot_fingerprint,
                 expected_identity_token=snapshot_identity_token,
                 expected_generation=admission_generation,
+                browser_chat=chat,
+            )
+        except _RecentBrowserTheaterEditRejected:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "code": "RECENT_FILE_THEATER_READONLY",
+                    "error": "小剧场记忆不能在记忆浏览器中编辑，请重新加载后再保存",
+                },
+                status_code=409,
             )
         except RecentFileDeletedError:
             saved_fingerprint, saved_identity_token = await asyncio.to_thread(
@@ -1366,19 +1491,42 @@ async def update_catgirl_name(request: Request):
         return {"success": False, "error": str(exc)}
 
 
+class _InvalidMemoryToggleValue(ValueError):
+    """A readable configuration contains a setting that can be explicitly repaired."""
+
+
+def _load_memory_toggle_config(config_manager):
+    """Default a missing file to an empty object without hiding read errors."""
+    from utils.config_manager.json_update import load_json_config_snapshot
+    return load_json_config_snapshot(config_manager, 'core_config.json')
+
+
+def _load_memory_toggle_enabled(config_manager, key):
+    """Default missing settings to on, but reject invalid stored values."""
+    config_data = _load_memory_toggle_config(config_manager)
+    enabled = config_data.get(key, True)
+    if not isinstance(enabled, bool):
+        raise _InvalidMemoryToggleValue('Invalid memory setting value')
+    return enabled
+
+
 @router.get('/review_config')
 async def get_review_config():
     """Get the memory review configuration."""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
-        return {"enabled": config_data.get('recent_memory_auto_review', True)}
+        async with _memory_toggle_write_lock:
+            enabled = await asyncio.to_thread(
+                _load_memory_toggle_enabled, config_manager, 'recent_memory_auto_review'
+            )
+        return {"enabled": enabled}
     except Exception as e:
         logger.error(f"读取记忆整理配置失败: {e}")
-        return {"enabled": True}
+        error = {"error": "Failed to read memory review configuration"}
+        if isinstance(e, _InvalidMemoryToggleValue):
+            error["code"] = "invalid_memory_setting"
+        return JSONResponse(error, status_code=503)
 
 
 @router.post('/review_config')
@@ -1386,24 +1534,23 @@ async def update_review_config(request: Request):
     """Update the memory review configuration."""
     try:
         data = await request.json()
-        enabled = data.get('enabled', True)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"success": False, "error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(data, dict) or not isinstance(data.get('enabled'), bool):
+        return JSONResponse({"success": False, "error": "enabled must be a boolean"}, status_code=400)
+    enabled = data['enabled']
 
+    try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
+        async with _memory_toggle_write_lock:
+            def _set_review(config_data):
+                config_data['recent_memory_auto_review'] = enabled
 
-        # 更新配置
-        config_data['recent_memory_auto_review'] = enabled
+            await config_manager.aupdate_json_config('core_config.json', _set_review)
 
-        # 保存配置
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', config_data
-        )
-
-        logger.info(f"记忆整理配置已更新: enabled={enabled}")
-        return {"success": True, "enabled": enabled}
+            logger.info(f"记忆整理配置已更新: enabled={enabled}")
+            return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -1417,13 +1564,17 @@ async def get_powerful_memory_config():
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
-        return {"enabled": config_data.get('powerful_memory_enabled', True)}
+        async with _memory_toggle_write_lock:
+            enabled = await asyncio.to_thread(
+                _load_memory_toggle_enabled, config_manager, 'powerful_memory_enabled'
+            )
+        return {"enabled": enabled}
     except Exception as e:
         logger.error(f"读取强力记忆配置失败: {e}")
-        return {"enabled": True}
+        error = {"error": "Failed to read powerful memory configuration"}
+        if isinstance(e, _InvalidMemoryToggleValue):
+            error["code"] = "invalid_memory_setting"
+        return JSONResponse(error, status_code=503)
 
 
 @router.post('/powerful_memory_config')
@@ -1438,66 +1589,77 @@ async def update_powerful_memory_config(request: Request):
     """
     try:
         data = await request.json()
-        enabled = data.get('enabled', True)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"success": False, "error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(data, dict) or not isinstance(data.get('enabled'), bool):
+        return JSONResponse({"success": False, "error": "enabled must be a boolean"}, status_code=400)
+    enabled = data['enabled']
 
+    try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
-        config_data = await asyncio.to_thread(
-            config_manager.load_json_config, 'core_config.json', default_value={}
-        )
+        async with _memory_toggle_write_lock:
+            config_data = await asyncio.to_thread(
+                _load_memory_toggle_config, config_manager
+            )
 
-        prev_enabled = config_data.get('powerful_memory_enabled', True)
-        config_data['powerful_memory_enabled'] = enabled
+            prev_enabled = config_data.get('powerful_memory_enabled', True)
 
-        # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
-        # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
-        # **成功后**再 save config。否则 migration 失败后 config 已经
-        # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
-        # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
-        # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
-        # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
-        # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
-        # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
-        # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
-        if prev_enabled and not enabled:
-            try:
-                from config import MEMORY_SERVER_PORT
-                from utils.internal_http_client import get_internal_http_client
-                client = get_internal_http_client()
-                resp = await client.post(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
-                    timeout=10.0,
-                )
-                if resp.status_code != 200:
-                    logger.warning(
-                        f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+            # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
+            # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
+            # **成功后**再 save config。否则 migration 失败后 config 已经
+            # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
+            # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
+            # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
+            # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
+            # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
+            # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
+            # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
+            # Only a confirmed false may skip migration; legacy values are unknown.
+            if prev_enabled is not False and not enabled:
+                try:
+                    from config import MEMORY_SERVER_PORT
+                    from utils.internal_http_client import get_internal_http_client
+                    client = get_internal_http_client()
+                    resp = await client.post(
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/reset_confirmed_at",
+                        timeout=10.0,
                     )
-                    return {
-                        "success": False,
-                        "error": f"migration HTTP {resp.status_code}",
-                    }
-                payload = resp.json()
-                if not isinstance(payload, dict) or not payload.get('ok'):
-                    err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
-                    logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
-                    return {"success": False, "error": err}
-                migrated = int(payload.get('count', 0))
-                logger.info(
-                    f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
-                    f"reflection 的 confirmed_at 锚点"
-                )
-            except Exception as e:
-                logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
-                return {"success": False, "error": str(e)}
+                    if resp.status_code != 200:
+                        logger.warning(
+                            f"强力记忆切换 migration HTTP 状态码 {resp.status_code}，配置未保存"
+                        )
+                        return {
+                            "success": False,
+                            "error": f"migration HTTP {resp.status_code}",
+                        }
+                    payload = resp.json()
+                    if not isinstance(payload, dict) or not payload.get('ok'):
+                        err = payload.get('error', 'migration returned ok=false') if isinstance(payload, dict) else 'migration payload invalid'
+                        logger.warning(f"强力记忆切换 migration 失败，配置未保存: {err}")
+                        return {"success": False, "error": err}
+                    migrated = int(payload.get('count', 0))
+                    logger.info(
+                        f"强力记忆切换 ON→OFF：已重置 {migrated} 条 confirmed "
+                        f"reflection 的 confirmed_at 锚点"
+                    )
+                except Exception as e:
+                    logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
+                    return {"success": False, "error": str(e)}
 
-        # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
-        # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', config_data
-        )
+            # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
+            # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
+            # 上面的 config_data 只用来判 prev_enabled；真正落盘对迁移结束后**重新
+            # 读到的**文件做改写，迁移那几秒里别人保存的字段不会被这份旧快照顶掉。
+            # 这个键只有本路由写，且本路由被 _memory_toggle_write_lock 串行化，
+            # 所以 prev_enabled 在落盘时仍然成立。
+            def _set_powerful(fresh_config):
+                fresh_config['powerful_memory_enabled'] = enabled
 
-        logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
-        return {"success": True, "enabled": enabled}
+            await config_manager.aupdate_json_config('core_config.json', _set_powerful)
+
+            logger.info(f"强力记忆配置已更新: enabled={enabled} (prev={prev_enabled})")
+            return {"success": True, "enabled": enabled}
     except MaintenanceModeError:
         raise
     except Exception as e:

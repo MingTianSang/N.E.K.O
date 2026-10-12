@@ -32,7 +32,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.character_memory import character_config_mutation_lock
-from utils.config_manager import get_reserved
+from utils.config_manager import get_character_uid, get_reserved
+from utils.asyncio_retirement import await_retirement
+from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
+from utils.config_manager.storage_roots import chat_avatar_directory
 
 
 _RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
@@ -415,6 +418,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     steamworks = get_steamworks()
     released_derived_task_claims: dict[str, str] = {}
     mutation_lock_acquired = False
+    reserved_names: list[str] = []  # 事务期间占住、不准入路由的角色名
 
     # 检查Steamworks是否初始化成功
     if steamworks is None:
@@ -548,6 +552,27 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "character_name": current_catgirl,
                 "details": {"character_name": current_catgirl},
             }, status_code=400)
+        # 候选角色正在串门 / 小游戏、或串门还在按它的名字写后台数据（收尾、摘要、清除记忆）：
+        # 退订会删掉它，与改名 / 删除同一个守卫（OD-13）。此时已持有角色配置变更锁，
+        # 清除记忆的守卫也在这把锁下登记，两边不会交错
+        from utils.external_route_registry import begin_character_mutation, is_character_lifecycle_locked
+
+        confirmed_names = sorted(
+            name for name in candidate_names if _is_confirmed_workshop_character(current_characters, name)
+        )
+        busy_names = [name for name in confirmed_names if is_character_lifecycle_locked(name)]
+        if busy_names:
+            logger.warning(f"取消订阅被阻止: item_id={item_id_int} 对应角色 {busy_names} 正在串门或小游戏中")
+            return JSONResponse({
+                "success": False,
+                "code": "EXTERNAL_ROUTE_ACTIVE",
+                "error": f"角色「{busy_names[0]}」正在串门或小游戏中，请结束后再取消订阅。",
+                "character_name": busy_names[0],
+                "details": {"character_name": busy_names[0]},
+            }, status_code=400)
+        # 与上面的检查之间没有 await：从这里到写完 characters.json，这些角色不能再开串门 / 小游戏
+        reserved_names = confirmed_names
+        begin_character_mutation(*reserved_names)
 
         # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
         # 与 delete_catgirl 不同：取消订阅场景下，memory_server 对非活跃角色
@@ -626,6 +651,15 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     release_character_recent_transaction,
                 )
                 from ..shared_state import get_remove_one_catgirl
+                from ..characters_router.crud import (
+                    collect_numeric_v2_character_purge,
+                    complete_numeric_v2_character_purge,
+                    discard_numeric_v2_character_purge_intent,
+                    persist_numeric_v2_character_purge_intent,
+                )
+                from services.theater.numeric_v2_archive import NumericV2ArchiveError
+                from services.theater.numeric_v2_store import NumericV2StoreError
+                from services.theater.paths import theater_root
             except Exception as exc:
                 logger.error(
                     f"取消订阅同步清理: 无法 import 生命周期工具: {exc}"
@@ -733,6 +767,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     await fn(name)
 
             pending_del_names: list[str] = []
+            pending_avatar_uids: dict[str, str] = {}
+            deleted_avatar_directory = chat_avatar_directory(config_mgr)
+            # Theater data owned by each deleted character, collected with the
+            # same strict preflight as DELETE /catgirl/{name}.
+            numeric_purges: dict[str, object] = {}
             catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
             target_item_id_str = str(item_id_int)
             # characters.json 是第一项不可逆提交。外层从这里开始会完成本地提交
@@ -765,7 +804,40 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
                 # 避免每次都走 characters_mut.get('猫娘') or {} 的兜底链路。
                 if name in catgirl_map:
+                    # Collect the theater cascade before the irreversible
+                    # characters.json commit. Like the ordinary character
+                    # delete, an unreadable/unattributable theater file fails
+                    # closed: the whole unsubscribe aborts before Steam is
+                    # asked, instead of orphaning that character's transcripts.
                     try:
+                        numeric_purges[name] = await collect_numeric_v2_character_purge(
+                            theater_root(config_mgr),
+                            character_id=str(
+                                get_reserved(catgirl_map[name], "character_id", default="")
+                                or ""
+                            ).strip(),
+                            legacy_catgirl_name=name,
+                            # Like the ordinary delete: a corrupt theater file
+                            # of any character gets one storage repair and a
+                            # retry instead of blocking every unsubscribe until
+                            # the theater page is opened.
+                            config_manager=config_mgr,
+                        )
+                    except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
+                        logger.error(
+                            f"取消订阅同步清理: 剧场数据预检失败 {name}: {exc}",
+                            exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "theater_preflight",
+                            "error": str(getattr(exc, "path", "") or exc),
+                        })
+                        continue
+                    try:
+                        uid = get_character_uid(catgirl_map[name])
+                        if uid:
+                            pending_avatar_uids[name] = uid
                         del catgirl_map[name]
                         pending_del_names.append(name)
                     except Exception as exc:
@@ -784,9 +856,99 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # 该角色，配置会指向不存在的 Workshop 资源，且下次启动可能加载坏卡。
             # 这里 Steam 请求还没发，安全地提前中止并把 summary 返回给前端。
             local_config_cleanup_failed = False
+            # A failed theater preflight aborts before anything is committed:
+            # no character of this item may be removed from characters.json.
+            theater_preflight_failed = any(
+                err.get("stage") == "theater_preflight"
+                for err in cleanup_summary.get("errors") or []
+            )
+
+            # The theater purge runs only after characters.json is committed and
+            # has no rollback, so list its targets durably first: a purge that
+            # then fails is retried from this intent by startup maintenance. An
+            # intent that cannot be written aborts before anything is committed.
+            numeric_purge_intents: dict[str, object] = {}
+            if pending_del_names and not theater_preflight_failed:
+                for name in pending_del_names:
+                    numeric_purge = numeric_purges.get(name)
+                    if numeric_purge is None:
+                        continue
+                    try:
+                        numeric_purge_intents[name] = (
+                            await persist_numeric_v2_character_purge_intent(numeric_purge)
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"取消订阅同步清理: 剧场清理意图写入失败 {name}: {exc}",
+                            exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "theater_preflight",
+                            "error": str(exc),
+                        })
+                        theater_preflight_failed = True
+                        break
+
+            async def _discard_uncommitted_purge_intents() -> None:
+                # The characters stay configured, so their intents must not
+                # survive; startup maintenance also discards an intent whose
+                # character is still configured, should this cleanup fail.
+                for intent_name, intent_path in numeric_purge_intents.items():
+                    try:
+                        await discard_numeric_v2_character_purge_intent(intent_path)
+                    except Exception as exc:
+                        logger.warning(
+                            f"取消订阅同步清理: 未提交的剧场清理意图删除失败 {intent_name}: {exc}"
+                        )
+                numeric_purge_intents.clear()
+
+            if theater_preflight_failed:
+                await _discard_uncommitted_purge_intents()
+
+            # 串门残留退役：提交 characters.json 之前逐个记删除标记（pending_retire），提交后才退役；
+            # 没提交成功时按配置判定角色仍在，只撤标记。记不上标记就和剧场预检失败一样整体中止
+            from main_routers.visit_router import character_hooks as visit_hooks
+
+            visit_items: dict[str, dict] = {}
+            visit_marker_failed = False
+            if pending_del_names and not theater_preflight_failed:
+                for name in pending_del_names:
+                    try:
+                        item = await visit_hooks.begin_retire(config_mgr, name, pending_avatar_uids.get(name))
+                    except Exception as exc:
+                        logger.error(f"取消订阅同步清理: 串门退役标记写入失败 {name}: {exc!r}")
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "visit_retire_marker",
+                            "error": str(exc),
+                        })
+                        visit_marker_failed = True
+                        break
+                    if item is not None:
+                        visit_items[name] = item
+
+            async def _settle_visit_items() -> None:
+                for item_name, item in visit_items.items():
+                    try:
+                        settled = await visit_hooks.settle_retire(config_mgr, item)
+                    except Exception as exc:  # noqa: BLE001 - 标记留着，启动对账补完
+                        settled = False
+                        logger.warning(f"取消订阅同步清理: 串门数据退役失败 {item_name}: {exc!r}")
+                    if not settled:
+                        cleanup_summary["errors"].append({
+                            "character": item_name,
+                            "stage": "visit_retire",
+                            "error": "visit data retirement pending",
+                        })
+                visit_items.clear()
+
+            if visit_marker_failed:
+                # 不提交：已记的标记在下面的中止分支里按「删除没提交」撤掉
+                await _discard_uncommitted_purge_intents()
 
             # 批量写 characters.json（N 个 del → 1 次 atomic write）
-            if pending_del_names:
+            if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
                 try:
                     await config_mgr.asave_characters(characters_mut)
                     cleanup_summary["cleaned_characters"] = list(pending_del_names)
@@ -800,6 +962,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         f"取消订阅同步清理: 批量 asave_characters 失败: {exc}",
                         exc_info=True,
                     )
+                    await _discard_uncommitted_purge_intents()
                     cleanup_summary["errors"].append({
                         "character": "<batch>",
                         "stage": "delete_config",
@@ -808,7 +971,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # 若任一本地配置清理失败（per-name del 或批量写盘），立即中止。
             delete_config_failed = any(
-                err.get("stage") == "delete_config"
+                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:
@@ -816,6 +979,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     f"取消订阅同步清理: 本地角色配置清理失败（item_id={item_id_int}），"
                     f"已中止 Steam UnsubscribeItem 请求以避免配置-订阅不一致"
                 )
+                # 标记按配置收口：已提交删除的角色照常退役，没删掉的只撤标记
+                await _settle_visit_items()
                 return JSONResponse({
                     "success": False,
                     "code": "LOCAL_CONFIG_CLEANUP_FAILED",
@@ -827,6 +992,18 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # 若配置写失败，用户的记忆文件仍原样保留，不会出现回滚 registry
             # 成功但文件已经被 shutil.rmtree 永久删除的假回滚。
             for name in pending_del_names:
+                uid = pending_avatar_uids.get(name)
+                if uid:
+                    try:
+                        await await_retirement(asyncio.to_thread(
+                            remove_chat_avatar_record, deleted_avatar_directory, uid,
+                        ))
+                    except ChatAvatarError as exc:
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_chat_avatar",
+                            "error": exc.code,
+                        })
                 results = await asyncio.gather(
                     _delete_memory_with_retry(name),
                     _write_tombstone(name),
@@ -877,6 +1054,32 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         "stage": "remove_one_catgirl",
                         "error": str(remove_or_exc),
                     })
+
+                # Same cascade as DELETE /catgirl/{name}: sessions, receipts,
+                # public archives, forget intents and quarantined copies. The
+                # character is already gone from characters.json, so this is
+                # an irreversible post-commit cleanup like the memory delete;
+                # a failure keeps the durable intent for startup retry.
+                numeric_purge = numeric_purges.get(name)
+                if numeric_purge is not None:
+                    try:
+                        await complete_numeric_v2_character_purge(
+                            numeric_purge,
+                            numeric_purge_intents.get(name),
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"取消订阅同步清理: 剧场数据清理失败 {name}: {exc}",
+                            exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_theater",
+                            "error": str(exc),
+                        })
+
+            # characters.json 已提交：退役这些角色的串门残留（场次、名册条目、串门人设）
+            await _settle_visit_items()
 
             # 通知 memory_server 重新加载（一次即可）
             try:
@@ -1141,6 +1344,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         try:
             if mutation_lock_acquired:
                 character_config_mutation_lock.release()
+            _end_reservation(reserved_names)
         finally:
             if released_derived_task_claims:
                 await _finish_resume_preserving_cancellation(
@@ -1150,3 +1354,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         item_id_int,
                     )
                 )
+
+
+def _end_reservation(names: list[str]) -> None:
+    """Lift the route-admission reservation of an unsubscribe transaction (no-op when empty)."""
+    if names:
+        from utils.external_route_registry import end_character_mutation
+
+        end_character_mutation(*names)

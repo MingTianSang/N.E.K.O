@@ -15,6 +15,7 @@
         <button
           class="nav-item"
           :class="{ 'nav-item--active': isExactActive || isRouteActive(item.path) }"
+          :aria-label="item.label"
           :aria-current="isExactActive || isRouteActive(item.path) ? 'page' : undefined"
           :data-yui-guide-id="item.guideId || null"
           @click="navigate"
@@ -28,16 +29,20 @@
       <template v-if="adapters.length > 0">
         <div class="nav-divider" />
         <span class="nav-group-label">{{ $t('nav.adapters') }}</span>
+        <!-- id 要编码：插件 id 不保证 URL 安全，`#` / `?` / `/` 会让下面这条路由匹配不上
+             或被拆成 hash/query，点进去就是空白页。-->
         <router-link
           v-for="adapter in adapters"
           :key="adapter.id"
-          :to="`/adapter/${adapter.id}/ui`"
+          :to="`/adapter/${encodeURIComponent(adapter.id)}/ui`"
           custom
           v-slot="{ isActive, navigate }"
         >
           <button
             class="nav-item nav-item--sub"
             :class="{ 'nav-item--active': isActive }"
+            :aria-label="adapter.name"
+            :aria-current="isActive ? 'page' : undefined"
             @click="navigate"
           >
             <el-icon class="nav-item__icon"><Link /></el-icon>
@@ -54,17 +59,19 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
-import { Odometer, Box, VideoPlay, Monitor, Link, Tools } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const { t } = useI18n()
 const pluginStore = usePluginStore()
 
-const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.type === 'adapter'))
+const adapters = computed(() => pluginStore.pluginSummariesWithStatus.filter((p) => p.type === 'adapter'))
 
 const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
+  { path: '/knowledge', icon: Collection, label: t('nav.knowledge') },
+  { path: '/model-api', icon: Connection, label: t('modelApi.title') },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
   { path: '/development', icon: Tools, label: t('development.navTitle'), guideId: 'sidebar-development' },
@@ -76,8 +83,10 @@ function isRouteActive(path: string): boolean {
 }
 
 onMounted(() => {
-  if (pluginStore.pluginsWithStatus.length === 0) {
-    pluginStore.fetchPlugins()
+  if (pluginStore.pluginSummariesWithStatus.length === 0) {
+    void pluginStore.fetchPluginSummaries().catch(error => {
+      console.warn('Sidebar plugin refresh failed:', error)
+    })
   }
 })
 </script>
@@ -195,5 +204,13 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .sidebar { padding-inline: 6px; }
+  .sidebar-brand { justify-content: center; padding-inline: 0; }
+  .sidebar-brand__text, .nav-item__label, .nav-group-label { display: none; }
+  .nav-item, .nav-item--sub { justify-content: center; padding-inline: 10px; }
+  .nav-divider { margin-inline: 8px; }
 }
 </style>

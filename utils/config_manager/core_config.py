@@ -72,6 +72,7 @@ from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
 from ._shared import _as_bool, logger
+from .json_update import update_json_config
 
 
 # 启动期迁移的写盘重试：Windows 上 os.replace 会被杀软扫描短暂占用而抛
@@ -129,6 +130,19 @@ class CoreConfigMixin:
     _REGION_HOSTS_RAW = ('lanlan.tech',)
     _REGION_HOSTS_ADJUSTED = ('lanlan.tech', 'lanlan.app')
 
+    # 文本类槽位 → 服务商 profile 里对应档位的模型字段。omni/tts 不在表里：它们的模型
+    # 不是 chat 档位，由核心 API / TTS 链路各自决定。
+    _SLOT_PROFILE_MODEL_KEYS = {
+        'conversation': 'CONVERSATION_MODEL',
+        'summary': 'SUMMARY_MODEL',
+        'gameMain': 'CONVERSATION_MODEL',
+        'gameSummary': 'SUMMARY_MODEL',
+        'correction': 'CORRECTION_MODEL',
+        'emotion': 'EMOTION_MODEL',
+        'vision': 'VISION_MODEL',
+        'agent': 'AGENT_MODEL',
+    }
+
     @staticmethod
     def _migrated_openclaw_url(raw_url: object) -> str:
         """Return the 8088 equivalent of a legacy 8089 openclawUrl, or '' if not applicable.
@@ -169,40 +183,28 @@ class CoreConfigMixin:
         so the write could interleave with a /core_api save on the loop and replace the
         user's just-saved keys with the worker's older snapshot.
 
-        Scope of the guarantee, stated honestly:
-        - In-process it is serialized by _openclaw_migration_lock, and the servers
-          create the manager at module import, before uvicorn accepts connections.
-        - Cross-process it is NOT airtight: a second entry point (app/monitor.py has its
-          own __main__) can import while another process already serves /core_api, so a
-          save can still land between the load and the save below. The window is that
-          gap only, and only for a config still carrying the legacy 8089.
-        - No config write in this codebase takes a file lock -- /core_api itself is an
-          unlocked load-modify-save, so two concurrent saves already lose updates. Making
-          this airtight means introducing config-wide write locking, which belongs to
-          that shared write path, not to this one-shot migration.
+        The read-modify-write goes through ``update_json_config``, the same per-file
+        lock every other core_config.json writer takes, so neither a concurrent
+        migration nor a /core_api save or memory toggle can be lost in between.
+        That guarantee is in-process only: a second entry point (app/monitor.py has
+        its own __main__) running as a separate process is not covered.
+
+        A config that exists but cannot be parsed is left untouched (no retry: the
+        retry budget is for transient Windows write failures, not for bad content).
 
         get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
         config that somehow arrives with 8089 later is routed correctly regardless.
         """
-        from utils.config_manager import ConfigManager
-        with ConfigManager._openclaw_migration_lock:
-            return self._migrate_openclaw_url_port_locked()
+        def _mutate(core_cfg: dict):
+            migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
+            if migrated:
+                core_cfg['openclawUrl'] = migrated
+            return migrated
 
-    def _migrate_openclaw_url_port_locked(self) -> bool:
-        """Body of migrate_openclaw_url_port; the caller holds the migration lock."""
         for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
             try:
-                core_cfg = self.load_json_config('core_config.json', {})
-                if not isinstance(core_cfg, dict):
-                    return False
-                migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
-                if not migrated:
-                    return False
-                core_cfg['openclawUrl'] = migrated
-                self.save_json_config('core_config.json', core_cfg)
-                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
-                return True
-            except Exception as exc:
+                migrated = update_json_config(self, 'core_config.json', _mutate)
+            except OSError as exc:
                 last = attempt == _OPENCLAW_MIGRATION_ATTEMPTS - 1
                 logger.warning(
                     "自动迁移 openclawUrl 到 8088 失败（第 %d/%d 次）: %s",
@@ -214,6 +216,21 @@ class CoreConfigMixin:
                 # 扫描通常几十毫秒内结束，短暂退避后重试即可越过。POSIX 的 rename(2) 不受此限，
                 # 这里的重试对它是无害空转。
                 time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
+                continue
+            except Exception as exc:
+                # 文件损坏 / 顶层不是对象 / 写栅栏拒写：重试也不会变，原样保留文件。
+                from utils.cloudsave_runtime import MaintenanceModeError
+
+                if isinstance(exc, MaintenanceModeError):
+                    # 维护模式下启动（云存档恢复进行中）是预期情形，读路径仍会在内存里归一化。
+                    logger.debug("维护模式下跳过 openclawUrl 8088 迁移: %s", exc)
+                    return False
+                logger.warning("跳过 openclawUrl 8088 迁移（core_config.json 不可改写）: %s", exc)
+                return False
+            if not migrated:
+                return False
+            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
+            return True
         return False
 
     @staticmethod
@@ -1104,6 +1121,8 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
+        # Requesty is assist-only; a realtime core key cannot authenticate its router.
+        config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1138,9 +1157,23 @@ class CoreConfigMixin:
         # CORE_API_KEY」——后者不该压过用户存在槽位里的 Key。
         try:
             from utils.api_config_loader import get_config as _get_api_config
-            _api_key_registry = _get_api_config().get('api_key_registry', {}) or {}
+            _raw_api_config = _get_api_config()
+            _api_key_registry = _raw_api_config.get('api_key_registry', {}) or {}
+            _raw_assist_providers = _raw_api_config.get('assist_api_providers', {}) or {}
         except Exception:
             _api_key_registry = {}
+            _raw_assist_providers = {}
+
+        def _uses_fixed_models(provider_key: str) -> bool:
+            # 免费版与 fixed_model 服务商（如 Kimi Code）只认自家模型，用户存的模型 ID 不能下发。
+            if provider_key == 'free':
+                return True
+            raw_profile = _raw_assist_providers.get(provider_key)
+            return isinstance(raw_profile, dict) and (
+                _as_bool(raw_profile.get('fixed_model', False))
+                or _as_bool(raw_profile.get('is_free_version', False))
+            )
+
         assist_api_key_raw_fields = {
             _pk: _entry.get('config_field', '')
             for _pk, _entry in _api_key_registry.items()
@@ -1223,16 +1256,21 @@ class CoreConfigMixin:
             if use_mimo_token_plan
             else assist_api_key_fields.get(assist_api_value)
         )
+        is_requesty_assist = assist_api_value == 'requesty'
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
-            if derived_key:
+            if derived_key and not is_requesty_assist:
                 config['AUDIO_API_KEY'] = derived_key
-                config['OPENROUTER_API_KEY'] = derived_key
 
+        # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
+        # its legacy fallback independently of the text router credential.
         if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if not config['OPENROUTER_API_KEY']:
+        if derived_key or is_requesty_assist:
+            # Requesty's missing dedicated key must stay empty for text/Agent.
+            config['OPENROUTER_API_KEY'] = derived_key
+        elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key
@@ -1317,6 +1355,12 @@ class CoreConfigMixin:
 
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            assist_model_defaults = {
+                key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
+            }
+            assist_model_defaults['SUMMARY_MODEL'] = (
+                assist_profile.get('SUMMARY_MODEL') or assist_profile.get('CONVERSATION_MODEL', '')
+            )
             # URL / Model ID 字段：空值回退到已有配置。
             # API Key 字段：根据用户选择的 provider 决定是否覆盖：
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
@@ -1359,21 +1403,42 @@ class CoreConfigMixin:
                     return resolved_url or core_profile.get('CORE_URL', '')
                 return ''
 
-            def _resolve_game_follow_model_id(prefix: str, provider: str) -> str:
-                if prefix not in ('gameMain', 'gameSummary'):
+            def _resolve_follow_model_id(prefix: str, provider: str) -> str:
+                """Default model of the provider a follow_* slot points at, '' to keep the current value."""
+                profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
+                if not profile_key:
                     return ''
+                is_game_slot = prefix in ('gameMain', 'gameSummary')
                 if provider == 'follow_core':
+                    # URL 和 Key 已换成核心服务商的，模型也必须取核心服务商的；沿用快照里
+                    # 的值（辅助 API 的模型）会把 A 家的模型名发到 B 家的端点。
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
-                        if prefix == 'gameSummary':
-                            return follow_core_profile.get('SUMMARY_MODEL', '') or config.get('SUMMARY_MODEL', '')
-                        return follow_core_profile.get('CONVERSATION_MODEL', '') or config.get('CONVERSATION_MODEL', '')
+                        return (follow_core_profile.get(profile_key, '')
+                                or (follow_core_profile.get('VISION_MODEL', '') if prefix == 'agent' else '')
+                                or follow_core_profile.get('CONVERSATION_MODEL', '')
+                                or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
-                if provider != 'follow_assist':
+                if provider == 'follow_assist' and is_game_slot:
+                    return assist_model_defaults.get(profile_key, '')
+                return ''
+
+            def _resolve_named_provider_model_id(prefix: str, provider: str, slot_url: str) -> str:
+                """Tier default of a named provider slot, '' when the slot has no such default."""
+                profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
+                if not profile_key or not provider or provider == 'custom' or provider.startswith('follow_'):
                     return ''
-                if prefix == 'gameSummary':
-                    return config.get('SUMMARY_MODEL', '')
-                return config.get('CONVERSATION_MODEL', '')
+                named_profile = assist_api_profiles.get(provider)
+                if not isinstance(named_profile, dict):
+                    return ''
+                candidates = self._provider_url_candidates(
+                    named_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                )
+                if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
+                    return ''
+                return str(named_profile.get(profile_key)
+                           or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
+                           or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)
@@ -1433,14 +1498,17 @@ class CoreConfigMixin:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
+                named_model = _resolve_named_provider_model_id(
+                    prefix, provider, str(config.get(url_key) or '').strip()
+                )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
-                    uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
+                    followed_provider = core_api_value if provider == 'follow_core' else assist_api_value
                     if (
-                        not uses_fixed_free_assist_model
+                        not _uses_fixed_models(followed_provider)
                         and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
                         and isinstance(cfg_model, str)
@@ -1448,9 +1516,16 @@ class CoreConfigMixin:
                     ):
                         config[model_key] = cfg_model.strip()
                     else:
-                        followed_model = _resolve_game_follow_model_id(prefix, provider)
+                        followed_model = _resolve_follow_model_id(prefix, provider)
                         if followed_model:
                             config[model_key] = followed_model
+                elif named_model and (
+                    _uses_fixed_models(provider)
+                    or not (isinstance(cfg_model, str) and cfg_model.strip())
+                ):
+                    # 具名服务商槽留空时取该服务商自己的档位默认；custom / 老配置的 '' 没有
+                    # 默认可取，仍走下面的原有回退。
+                    config[model_key] = named_model
                 elif cfg_model is not None:
                     config[model_key] = cfg_model or config.get(model_key, '')
 

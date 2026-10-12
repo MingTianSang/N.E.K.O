@@ -359,7 +359,6 @@ class BrowserUseAdapter:
       - Overlay is maintained by a parallel asyncio task that injects it
         every 2 seconds via CDP Runtime.evaluate, so it persists across
         all page navigations.
-      - Session-aware Agent reuse for multi-turn task execution.
       - Automatic session cleanup on error or explicit close.
     """
 
@@ -374,7 +373,6 @@ class BrowserUseAdapter:
         self._chrome_path: Optional[str] = None
         self._browser_session: Any = None
         self._session_ever_started: bool = False
-        self._agents: Dict[str, Any] = {}
         self._overlay_task: Optional[asyncio.Task] = None
         self._cancelled: bool = False
         try:
@@ -615,17 +613,24 @@ class BrowserUseAdapter:
         provider_type = str(api_cfg.get("provider_type") or "openai_compatible").strip().lower()
 
         if _is_anthropic_endpoint(base_url, provider_type):
-            from browser_use.llm import ChatAnthropic as BUChatAnthropic
+            from brain.browser_use_anthropic import (
+                NekoChatAnthropic,
+                anthropic_rejects_forced_tool_choice,
+            )
 
             default_headers: Dict[str, str] = {}
             if _is_kimi_code_anthropic_base_url(base_url):
                 default_headers["User-Agent"] = "claude-code/0.1.0"
-            return BUChatAnthropic(
+            # No temperature: current Claude models 400 on non-default sampling
+            # params, so the model default decides (see scripts/check_no_temperature.py).
+            # "text" mode mirrors the OpenAI branch's dont_force_structured_output.
+            force_tool = mode != "text" and not anthropic_rejects_forced_tool_choice(model)
+            return NekoChatAnthropic(
                 model=model,
                 api_key=api_cfg.get("api_key"),
                 base_url=_normalize_anthropic_sdk_base_url(base_url),
-                temperature=0.0,
                 default_headers=default_headers or None,
+                structured_output="forced_tool" if force_tool else "auto_tool",
             )
 
         from browser_use.llm import ChatOpenAI as BUChatOpenAI
@@ -654,6 +659,20 @@ class BrowserUseAdapter:
         # agent drives its own multi-step LLM lifecycle, so token budget / timeout
         # are owned by that library and forcing ours here would break its loop.
         return BUChatOpenAI(**kwargs)  # noqa: LLM_OUTPUT_BUDGET
+
+    @staticmethod
+    def _agent_use_thinking(llm: Any) -> bool:
+        """Whether the browser-use agent output should carry a ``thinking`` field.
+
+        Claude models that reject forced tool use also run a reasoning-extraction
+        classifier that declines (stop_reason=refusal) requests asking for the
+        model's reasoning in an output field. They reason natively anyway.
+        """
+        if getattr(llm, "provider", None) != "anthropic":
+            return True
+        from brain.browser_use_anthropic import anthropic_rejects_forced_tool_choice
+
+        return not anthropic_rejects_forced_tool_choice(getattr(llm, "model", ""))
 
     async def _cdp_eval_on_page(self, session: Any, js: str) -> None:
         """Evaluate JS on the currently focused page via CDP Runtime.evaluate.
@@ -721,14 +740,12 @@ class BrowserUseAdapter:
         self,
         instruction: str,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
-        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a browser task.
 
         Args:
             instruction: What to do.
             timeout_s: Max seconds before timeout (default 300s).
-            session_id: Reuse Agent if same session_id (multi-turn).
         """
         self._cancelled = False
 
@@ -793,9 +810,6 @@ class BrowserUseAdapter:
                     try:
                         print(f"[BrowserUse] trying mode={mode}", flush=True)
                         llm = self._build_llm(mode=mode)
-                        if session_id and session_id in self._agents:
-                            del self._agents[session_id]
-
                         # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
                         if ip_info_future is not None:
                             try:
@@ -829,13 +843,11 @@ class BrowserUseAdapter:
                             llm=llm,
                             browser_session=browser_session,
                             max_failures=1 if mode == "schema" else 3,
+                            use_thinking=self._agent_use_thinking(llm),
                             initial_actions=[
                                 {"evaluate": {"code": _OVERLAY_JS}},
                             ],
                         )
-                        if session_id:
-                            self._agents[session_id] = agent
-
                         self._start_overlay(browser_session)
                         _disconnect_errors = 0
                         _content_filter_errors = 0
@@ -990,8 +1002,6 @@ class BrowserUseAdapter:
                             "[BrowserUse] overlay removal during cancel failed: %s",
                             overlay_err,
                         )
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
                 # Re-raise so the dispatch wrapper hits its CancelledError branch
                 # and marks the task as "cancelled" (not "failed"). Swallowing
                 # cancels here caused the HUD to show a cancel as a failure.
@@ -1000,8 +1010,6 @@ class BrowserUseAdapter:
                 logger.warning("[BrowserUse] Task timed out after %ss", timeout_s)
                 if browser_session:
                     await self._remove_overlay(browser_session)
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
                 return {"success": False, "error": f"timed out after {timeout_s}s"}
             except Exception as e:
                 if (
@@ -1020,8 +1028,6 @@ class BrowserUseAdapter:
                     continue
                 if browser_session:
                     await self._remove_overlay(browser_session)
-                if session_id and session_id in self._agents:
-                    del self._agents[session_id]
                 if self._is_browser_disconnected_error(e):
                     logger.warning("[BrowserUse] Browser disconnected, task aborted: %s", e)
                     return {"success": False, "error": "Browser disconnected - browser window was closed"}
@@ -1050,10 +1056,6 @@ class BrowserUseAdapter:
                     ip_info_future = None
         return {"success": False, "error": "browser-use execution failed"}
 
-    async def close_session(self, session_id: str) -> None:
-        """Close and discard a specific session's Agent."""
-        self._agents.pop(session_id, None)
-
     async def _close_browser(self) -> None:
         self._stop_overlay()
         if self._browser_session is not None:
@@ -1078,7 +1080,6 @@ class BrowserUseAdapter:
 
             self._browser_session = None
         self._session_ever_started = False
-        self._agents.clear()
 
     @staticmethod
     def _force_kill_browser(browser_pid: Optional[int]) -> None:

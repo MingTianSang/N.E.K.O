@@ -30,6 +30,7 @@ from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
     CONVERSATION_SETTINGS_RESET_KEY,
+    INDEPENDENT_ASR_PROVIDER_PREFERENCES as _INDEPENDENT_ASR_PROVIDER_PREFERENCES,
     MAX_SAFE_ASR_WRITE_ID,
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
@@ -404,6 +405,8 @@ class ConversationSettingsWriteResult:
     success: bool
     conflict: bool
     snapshot: ConversationSettingsSnapshot
+    # 同一把锁里读到的保存前快照（只有成功写入时才有），供调用方判断某个开关的前后转换
+    previous: Optional[ConversationSettingsSnapshot] = None
 
 
 def _normalize_conversation_settings_revision(value: Any) -> int:
@@ -516,8 +519,11 @@ def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     int_interval_fields = {'proactiveChatInterval', 'proactiveVisionInterval'}
     string_fields = {'userLanguage'}
     int_limit_fields = {'textGuardMaxLength'}
+    choice_fields = {
+        'independentAsrProviderPreference': _INDEPENDENT_ASR_PROVIDER_PREFERENCES,
+    }
     bool_fields = _ALLOWED_CONVERSATION_SETTINGS - (
-        int_interval_fields | string_fields | int_limit_fields
+        int_interval_fields | string_fields | int_limit_fields | set(choice_fields)
     )
 
     validated = {}
@@ -533,6 +539,9 @@ def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
                 validated[key] = value
         elif key in int_limit_fields:
             if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2000:
+                validated[key] = value
+        elif key in choice_fields:
+            if isinstance(value, str) and value in choice_fields[key]:
                 validated[key] = value
     return validated
 
@@ -667,6 +676,72 @@ async def asave_ui_language_override(language: Optional[str]) -> bool:
 async def aload_ui_language_override() -> Optional[str]:
     """Async wrapper for ``load_ui_language_override``."""
     return await asyncio.to_thread(load_ui_language_override)
+
+
+def load_global_entry_flags() -> Dict[str, Any]:
+    """Read every raw field stored beside the global conversation entry in one file read.
+
+    Small UI switches live next to ``model_path`` rather than inside the validated
+    conversation payload, so loading them must not pay one file read per key.
+    """
+
+    try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = _get_active_preferences_path()
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for pref in data:
+                    if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                        return {k: v for k, v in pref.items() if k != "model_path"}
+    except Exception as e:
+        print(f"加载全局开关集合失败: {e}")
+    return {}
+
+
+def save_global_entry_flags(values: Dict[str, Any]) -> bool:
+    """Merge the given flags into the global conversation entry in a single locked write."""
+
+    try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+        _config_manager.ensure_config_directory()
+        with _locked_preferences_store():
+            data = _load_preferences_data_for_write_unlocked()
+            global_index = -1
+            for index, pref in enumerate(data):
+                if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                    global_index = index
+                    break
+            global_pref = data[global_index].copy() if global_index >= 0 else {"model_path": GLOBAL_CONVERSATION_KEY}
+            for key, value in values.items():
+                if value is None:
+                    global_pref.pop(key, None)
+                else:
+                    global_pref[key] = value
+            if global_index >= 0:
+                data[global_index] = global_pref
+            else:
+                data.append(global_pref)
+            _save_user_preferences_unlocked(data)
+        return True
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        print(f"保存全局开关集合失败: {e}")
+        return False
+
+
+async def aload_global_entry_flags() -> Dict[str, Any]:
+    """Async wrapper for ``load_global_entry_flags``."""
+
+    return await asyncio.to_thread(load_global_entry_flags)
+
+
+async def asave_global_entry_flags(values: Dict[str, Any]) -> bool:
+    """Async wrapper for ``save_global_entry_flags``."""
+
+    return await asyncio.to_thread(save_global_entry_flags, values)
 
 
 def is_privacy_mode_enabled() -> bool:
@@ -813,7 +888,7 @@ def save_global_conversation_settings_versioned(
 
             snapshot = _snapshot_from_preferences_data(data) if changed else current
             return ConversationSettingsWriteResult(
-                success=True, conflict=False, snapshot=snapshot
+                success=True, conflict=False, snapshot=snapshot, previous=current
             )
     except MaintenanceModeError:
         raise

@@ -58,6 +58,25 @@ function getAvatarNavigationWindowFeatures(finalUrl) {
     return undefined;
 }
 
+// 声纹运行模式在进程启动时固定；拿不到状态时保留入口，由后端拒绝写操作。
+// off 模式下仍有已存声纹或过滤请求时保留入口，让用户能关闭过滤或删除声纹。
+function hideAvatarVoiceIdentityEntryWhenDisabled(menuItem) {
+    if (!menuItem || typeof fetch !== 'function') return;
+    fetch('/api/voice-identity/status', { cache: 'no-store' })
+        .then(response => (response.ok ? response.json() : null))
+        .then(status => {
+            if (
+                status
+                && status.runtime_mode === 'off'
+                && status.has_profile !== true
+                && status.requested_enabled !== true
+            ) {
+                menuItem.style.display = 'none';
+            }
+        })
+        .catch(() => { });
+}
+
 function clearAvatarSidePanelHoverState(panel) {
     if (!panel) return;
     if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
@@ -75,6 +94,8 @@ function applyAvatarSidePanelTransform(panel, motion = 'none') {
 }
 
 function getAvatarSidePanelExitMotion(panel) {
+    if (panel && panel.dataset && panel.dataset.placement === 'above') return 'translateY(6px)';
+    if (panel && panel.dataset && panel.dataset.placement === 'compact') return 'none';
     if (panel && panel.dataset && panel.dataset.goDown === 'true') return 'translateY(-6px)';
     return panel && panel.dataset && panel.dataset.goLeft === 'true'
         ? 'translateX(6px)'
@@ -320,6 +341,25 @@ function injectPopupStyles(prefix) {
             min-height: 20px;
             text-align: center;
         }
+        /* 间隔输入框：隐藏 number 自带的上下步进按钮，避免遮挡数字 */
+        .${prefix}-interval-input::-webkit-inner-spin-button,
+        .${prefix}-interval-input::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .${prefix}-interval-input {
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
+        /* 间隔输入框：抑制获得焦点时浏览器自带的粗边框/外圈；焦点态下划线用
+           强调色，给键盘用户可见的焦点指示（常态保持灰色细下划线） */
+        .${prefix}-interval-input:focus,
+        .${prefix}-interval-input:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-bottom: 1px solid var(--neko-popup-accent, #44b7fe) !important;
+        }
         /* 拖动模型期间禁用弹窗和侧面板及其所有子元素的 pointer-events */
         body.neko-model-dragging .${prefix}-popup,
         body.neko-model-dragging .${prefix}-popup *,
@@ -376,7 +416,8 @@ function createPopup(manager, prefix, buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
-        popup.style.minWidth = '400px';
+        // The audio renderer owns the voice menu's width, including callers
+        // that create the popup without this shared factory.
         popup.style.maxHeight = '420px';
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
@@ -445,6 +486,24 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._anchorElement = animSettingsBtn;
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
+
+    // 2.5 串门设置（docs/design/visit-infrastructure.md §5 PR-13）：入口默认隐藏，
+    // static/visit/visit-settings.js 探到 NEKO_VISIT_ENABLED 总闸开着才显示
+    const visitSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
+        labelKey: 'visit.settings.groupTitle'
+    });
+    visitSettingsBtn.style.display = 'none';
+    visitSettingsBtn.setAttribute('data-neko-visit-settings-entry', '');
+    popup.appendChild(visitSettingsBtn);
+
+    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
+    visitSidePanel._anchorElement = visitSettingsBtn;
+    visitSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(visitSettingsBtn, visitSidePanel);
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
+        void window.nekoVisitSettings.revealEntries();
+    }
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
@@ -718,6 +777,41 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
     const textGuardContainer = manager._createTextGuardSlider();
     textGuardContainer.style.marginTop = '12px';
     container.appendChild(textGuardContainer);
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建串门设置侧边面板：两个开关（visitEnabled / visitVoiceEnabled）+ 构图 / 档位 / 人设入口。
+ * 串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
+ */
+function createVisitSettingsSidePanel(manager, prefix, popup) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'visit-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '0';
+    container.style.width = '220px';
+    container.style.minWidth = '0';
+    container.style.padding = '4px 4px';
+
+    const visitToggles = [
+        { id: 'visit-enabled', label: window.t ? window.t('visit.settings.enabled') : '允许串门', labelKey: 'visit.settings.enabled', tooltipKey: 'visit.settings.enabledTooltip', storageKey: 'visitEnabled', alwaysTinted: true },
+        { id: 'visit-voice', label: window.t ? window.t('visit.settings.voice') : '串门时出声', labelKey: 'visit.settings.voice', tooltipKey: 'visit.settings.voiceTooltip', storageKey: 'visitVoiceEnabled', alwaysTinted: true },
+    ];
+
+    visitToggles.forEach(toggle => {
+        const toggleItem = manager._createSettingsToggleItem(toggle);
+        container.appendChild(toggleItem);
+        if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+            toggleItem._nekoUpdateSettingsToggleStyle();
+        }
+    });
+
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.appendPanelExtras === 'function') {
+        window.nekoVisitSettings.appendPanelExtras(container);
+    }
 
     document.body.appendChild(container);
     return container;
@@ -1020,6 +1114,12 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 isOpening = true;
                 dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'sidepanel-navigate');
+                if (finalUrl.startsWith('/voice_identity') && window.nekoVoiceEnrollment) {
+                    Promise.resolve().then(() => window.nekoVoiceEnrollment.open({ operationId: window.crypto.randomUUID() })).catch(() => {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t ? window.t('voiceIdentity.inputReason_capture_owner_unavailable') : 'Unable to contact the microphone window.', 5000);
+                    }).finally(() => { isOpening = false; });
+                    return;
+                }
                 if (typeof window.openOrFocusWindow === 'function') {
                     window.openOrFocusWindow(finalUrl, windowName, features);
                 } else {
@@ -1833,6 +1933,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
+            'visit-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2034,42 +2135,122 @@ function createIntervalControl(manager, prefix, toggle) {
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined' ? window[toggle.intervalKey] : toggle.defaultInterval;
     // 后端契约接受 1..3600 秒（utils/preferences.py），预设也会写入低于 UI 默认
     // 下限的合法值（如 frequent 预设 5s，见 main_routers/proactive_router.py）。
-    // 持久化值越出滑条默认边界时，按契约放宽边界如实显示，绝不钳制或改写运行时/
-    // 持久化配置——否则打开设置面板就会把服务端配置的值静默改回 UI 边界。
-    const numericValue = Number(currentValue);
-    if (Number.isFinite(numericValue)) {
-        if (numericValue < minVal) slider.min = Math.max(1, numericValue);
-        if (numericValue > 120) slider.max = Math.min(3600, numericValue);
+    // 滑条边界始终由当前值重新推导而非单向放宽：值超出默认边界时按契约放宽如实
+    // 显示，绝不钳制或改写运行时/持久化配置——否则打开设置面板就会把服务端配
+    // 置的值静默改回 UI 边界；值回到默认边界内则收回默认边界——否则先填 600 再
+    // 改回 100，滑条会一直停在 [10,600]。
+    const syncSliderToValue = (numericValue) => {
+        if (!Number.isFinite(numericValue)) return;
+        slider.min = String(Math.max(1, Math.min(minVal, numericValue)));
+        slider.max = String(Math.max(120, Math.min(3600, numericValue)));
         // 契约接受任意 1..3600 整数，值不在 5s 步进格点上（如 121、47）时浏览器
         // 会把 slider.value 吸附到最近格点，显示与滑块再度分叉；此时改用 1s 步进
         // 让该值可被精确表示。按格点值正常保持 5s 拖动手感。
         const sliderShownValue = Math.min(Math.max(numericValue, Number(slider.min)), Number(slider.max));
-        if ((sliderShownValue - Number(slider.min)) % 5 !== 0) slider.step = '1';
-    }
+        slider.step = (sliderShownValue - Number(slider.min)) % 5 === 0 ? '5' : '1';
+        slider.value = String(numericValue);
+    };
+    const numericValue = Number(currentValue);
+    if (Number.isFinite(numericValue)) syncSliderToValue(numericValue);
     slider.value = currentValue;
     Object.assign(slider.style, { width: '60px', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' });
 
-    const valueDisplay = document.createElement('span');
-    valueDisplay.textContent = `${currentValue}s`;
-    Object.assign(valueDisplay.style, { minWidth: '26px', textAlign: 'right', fontFamily: 'monospace', fontSize: '12px', flexShrink: '0' });
+    // 主动搭话间隔的数值改为可输入框：滑条上限 120s，允许直接键入更大的值
+    // （后端契约上限 3600s，见 utils/preferences.py），但不允许低于 10s。
+    // 感知间隔保持只读数值展示。
+    const intervalEditable = toggle.id === 'proactive-chat';
+    const valueDisplay = document.createElement(intervalEditable ? 'input' : 'span');
+    if (intervalEditable) {
+        valueDisplay.type = 'number';
+        valueDisplay.className = `${prefix}-interval-input`;
+        valueDisplay.id = `${prefix}-${toggle.id}-interval-input`;
+        valueDisplay.min = String(minVal);
+        valueDisplay.max = '3600';
+        valueDisplay.step = '1';
+        valueDisplay.value = currentValue;
+        Object.assign(valueDisplay.style, {
+            width: '36px',
+            textAlign: 'left',
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            flexShrink: '0',
+            padding: '0 2px',
+            color: 'inherit',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: '1px solid rgba(128,128,128,0.4)',
+            outline: 'none'
+        });
+    } else {
+        valueDisplay.textContent = `${currentValue}s`;
+        Object.assign(valueDisplay.style, { minWidth: '26px', textAlign: 'right', fontFamily: 'monospace', fontSize: '12px', flexShrink: '0' });
+    }
+    const valueSuffix = intervalEditable ? document.createElement('span') : null;
+    if (valueSuffix) {
+        valueSuffix.textContent = 's';
+        Object.assign(valueSuffix.style, { fontSize: '12px', flexShrink: '0' });
+    }
 
-    slider.addEventListener('input', () => { valueDisplay.textContent = `${parseInt(slider.value, 10)}s`; });
-    slider.addEventListener('change', () => {
-        const value = parseInt(slider.value, 10);
+    const applyIntervalValue = (value) => {
         window[toggle.intervalKey] = value;
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
         console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
-        // 滑块变更后立即重排定时器，让新间隔马上生效
+        // 间隔变更后立即重排定时器，让新间隔马上生效
         if (toggle.id === 'proactive-chat' && typeof window.resetProactiveChatBackoff === 'function') {
             window.resetProactiveChatBackoff();
         }
+    };
+
+    const commitIntervalInput = () => {
+        // 用 valueAsNumber + 整数校验而非 parseInt：type=number 允许 1e2 这类
+        // 指数输入（parseInt 会解析成 1），12.5 这类小数也不该被静默截断
+        const parsed = valueDisplay.valueAsNumber;
+        let value;
+        if (Number.isInteger(parsed)) {
+            // 用户主动键入的数值：按需求钳到 [下限 10s, 契约上限 3600s]
+            value = Math.min(3600, Math.max(minVal, parsed));
+        } else {
+            // 非法/清空/小数输入：回退为当前生效值并原样显示，不走过界钳制——
+            // 当前值可能是低于 UI 下限的合法预设值（如 frequent 预设 5s），回退
+            // 后与当前值相等走下方 no-op，不会把预设改写并持久化
+            value = Number(window[toggle.intervalKey]);
+            if (!Number.isFinite(value)) value = minVal;
+        }
+        valueDisplay.value = String(value);
+        if (Number(value) === Number(window[toggle.intervalKey])) return;
+        syncSliderToValue(value);
+        applyIntervalValue(value);
+    };
+
+    slider.addEventListener('input', () => {
+        const text = `${parseInt(slider.value, 10)}`;
+        if (intervalEditable) valueDisplay.value = text;
+        else valueDisplay.textContent = `${text}s`;
     });
+    slider.addEventListener('change', () => {
+        const value = parseInt(slider.value, 10);
+        // 松手后同样按当前值重推滑条边界，拖回 120 以内时 max 收回默认值
+        syncSliderToValue(value);
+        applyIntervalValue(value);
+    });
+    if (intervalEditable) {
+        valueDisplay.addEventListener('change', commitIntervalInput);
+        valueDisplay.addEventListener('keydown', (e) => {
+            // 输入框获得焦点时拦截按键冒泡，避免触发全局快捷键
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+                commitIntervalInput();
+                valueDisplay.blur();
+            }
+        });
+    }
     slider.addEventListener('click', (e) => e.stopPropagation());
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
 
     sliderRow.appendChild(labelText);
     sliderRow.appendChild(slider);
     sliderRow.appendChild(valueDisplay);
+    if (valueSuffix) sliderRow.appendChild(valueSuffix);
     container.appendChild(sliderRow);
 
     if (toggle.id === 'proactive-chat') {
@@ -2414,6 +2595,10 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.focusCognitionEnabled;
     } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
         checkbox.checked = window.slopFilterEnabled;
+    } else if (toggle.id === 'visit-enabled' && typeof window.visitEnabled !== 'undefined') {
+        checkbox.checked = window.visitEnabled;
+    } else if (toggle.id === 'visit-voice' && typeof window.visitVoiceEnabled !== 'undefined') {
+        checkbox.checked = window.visitVoiceEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2574,6 +2759,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
             // 不影响用户看到的原文。
             window.slopFilterEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'visit-enabled') {
+            window.visitEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            if (window.nekoVisitSettings && typeof window.nekoVisitSettings.onVisitEnabledChanged === 'function') {
+                window.nekoVisitSettings.onVisitEnabledChanged(isChecked);
+            }
+        } else if (toggle.id === 'visit-voice') {
+            window.visitVoiceEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
@@ -2761,6 +2959,10 @@ const AvatarPopupMixin = {
             return createChatSettingsSidePanel(this, prefix, popup);
         };
 
+        ManagerProto._createVisitSettingsSidePanel = function (popup) {
+            return createVisitSettingsSidePanel(this, prefix, popup);
+        };
+
         ManagerProto._createAnimationSettingsSidePanel = function () {
             return createAnimationSettingsSidePanel(this, prefix);
         };
@@ -2911,6 +3113,12 @@ const AvatarPopupMixin = {
 
                         isOpening = true;
                         dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'settings-navigate');
+                        if (finalUrl.startsWith('/voice_identity') && window.nekoVoiceEnrollment) {
+                            Promise.resolve().then(() => window.nekoVoiceEnrollment.open({ operationId: window.crypto.randomUUID() })).catch(() => {
+                                if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t ? window.t('voiceIdentity.inputReason_capture_owner_unavailable') : 'Unable to contact the microphone window.', 5000);
+                            }).finally(() => { isOpening = false; });
+                            return;
+                        }
                         if (typeof window.openOrFocusWindow === 'function') {
                             window.openOrFocusWindow(finalUrl, windowName, features);
                         } else {
@@ -3147,6 +3355,9 @@ const AvatarPopupMixin = {
             settingsItems.forEach(item => {
                 const menuItem = this._createMenuItem(item);
                 popup.appendChild(menuItem);
+                if (item.id === 'voice-identity') {
+                    hideAvatarVoiceIdentityEntryWhenDisabled(menuItem);
+                }
             });
         };
 
@@ -3258,7 +3469,12 @@ const AvatarPopupMixin = {
                         option.addEventListener('click', (e) => {
                             e.stopPropagation();
                             if (typeof window.selectScreenSource === 'function') {
-                                window.selectScreenSource(source.id, source.name, displayName);
+                                window.selectScreenSource(
+                                    source.id,
+                                    source.name,
+                                    displayName,
+                                    source.id.startsWith('screen:') ? index : null
+                                );
                             }
                         });
 

@@ -67,11 +67,13 @@ class _FakeOmniOffline(OmniOfflineClient):
         self._raise = raise_exc
         self.called_with: list[str] = []
 
-    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
         self.called_with.append(instruction)
         if self._raise is not None:
             raise self._raise
         if self._delivered and on_committed:
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
         return self._delivered
 
@@ -90,10 +92,13 @@ class _CapturingImageOmniOffline(_FakeOmniOffline):
         *,
         images=None,
         on_committed=None,
+        on_committed_text=None,
     ) -> bool:
         self.called_with.append(instruction)
         self.image_batches.append(list(images or []))
         if on_committed:
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
         return True
 
@@ -737,7 +742,7 @@ async def test_callback_external_description_prefix_has_item_id():
     assert delivered is True
     assert len(sess.injected_events) == 1
     visual_event = sess.injected_events[0][0]
-    assert visual_event["item"]["id"].startswith("item_neko_callback_visual_")
+    assert visual_event["item"]["id"].startswith("neko_cbvis_")
 
 
 async def test_external_callback_rechecks_independent_asr_turn_after_visual_analysis():
@@ -1162,10 +1167,12 @@ async def test_trigger_releases_inflight_when_callback_expires_during_claim():
 
 async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
     class _FlushCancellingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             assert not future.done()
             assert on_committed is not None
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
             assert future.done()
             assert future.result() is True
@@ -1244,9 +1251,11 @@ async def test_text_mode_retraction_after_claim_purges_paired_extra():
 
 async def test_text_mode_committed_then_flush_exception_does_not_requeue_callback():
     class _CommittedThenFailSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             assert on_committed is not None
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
             raise RuntimeError("completion flush failed after committed output")
 
@@ -1272,9 +1281,11 @@ async def test_text_mode_committed_then_flush_exception_does_not_requeue_callbac
 
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             if on_committed:
+                if on_committed_text:
+                    on_committed_text("shown")
                 on_committed()
             mgr.pending_agent_callbacks.append(late_cb)
             mgr.pending_extra_replies.append(late_extra)
@@ -1313,15 +1324,22 @@ def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
         "summary": "cancelled",
     }
     active_extra = {"_callback_delivery_id": "id-active-drain", "origin": "task_result", "summary": "shown"}
+    # Neither retracted nor delivered: proves the prunes below are targeted
+    # rather than a blanket clear of the queue.
+    survivor_extra = {"_callback_delivery_id": "id-survivor-drain", "origin": "task_result", "summary": "pending"}
     mgr.pending_agent_callbacks = [retracted_cb, active_cb]
-    mgr.pending_extra_replies = [retracted_extra, active_extra]
+    mgr.pending_extra_replies = [retracted_extra, active_extra, survivor_extra]
 
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
     assert "shown" in rendered
     assert "cancelled" not in rendered
     assert mgr.pending_agent_callbacks == []
-    assert mgr.pending_extra_replies == [active_extra]
+    # Both halves go: the retracted pair is purged, and active_cb was rendered
+    # so its voice mirror is delivered too. Leaving the mirror behind lets the
+    # next hot swap re-prime it, re-announcing what the model just said — the
+    # same paired prune trigger_agent_callbacks already does on the voice path.
+    assert mgr.pending_extra_replies == [survivor_extra]
 
 
 async def test_drain_agent_callbacks_resolves_delivery_ack():
@@ -1775,8 +1793,14 @@ async def test_drain_agent_callbacks_rechecks_topic_release_gate():
         "origin": "task_result",
         "summary": "regular callback",
     }
+    # Untouched by either prune: neither retracted nor delivered.
+    survivor_extra = {
+        "_callback_delivery_id": "id-survivor-gate",
+        "origin": "task_result",
+        "summary": "still pending",
+    }
     mgr.pending_agent_callbacks = [topic_cb, normal_cb]
-    mgr.pending_extra_replies = [topic_extra, normal_extra]
+    mgr.pending_extra_replies = [topic_extra, normal_extra, survivor_extra]
 
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
@@ -1787,7 +1811,10 @@ async def test_drain_agent_callbacks_rechecks_topic_release_gate():
     assert normal_future.done()
     assert normal_future.result() is True
     assert mgr.pending_agent_callbacks == []
-    assert mgr.pending_extra_replies == [normal_extra]
+    # normal_cb was delivered, so its voice mirror leaves with it; the topic
+    # pair is cleared by the gate. See the paired-prune note in
+    # test_drain_agent_callbacks_purges_retracted_callbacks_and_extras.
+    assert mgr.pending_extra_replies == [survivor_extra]
 
 
 async def test_voice_mode_reject_during_await_not_pruned():
@@ -2934,6 +2961,50 @@ def test_topic_hook_delivery_allowed_in_text_session():
     assert core_module.LLMSessionManager.topic_hook_delivery_allowed(mgr) is True
 
 
+@pytest.mark.parametrize("transition", ["text", "voice_start", "voice_active", "voice_teardown"])
+async def test_drained_callback_restore_rechecks_current_voice_gate(transition):
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    for kind, summary in [("topic", "topic restore notice"), ("agent", "ordinary restore notice")]:
+        callback = {
+            "origin": "event", "source_kind": kind,
+            "summary": summary, "delivery_mode": "proactive",
+        }
+        if kind == "topic":
+            callback["channel"] = "topic_hook"
+        mgr.enqueue_agent_callback(callback)
+    callbacks = list(mgr.pending_agent_callbacks)
+    extras = list(mgr.pending_extra_replies)
+    assert len(callbacks) == len(extras) == 2
+    rendered = mgr.drain_agent_callbacks_for_llm()
+    assert "topic restore notice" in rendered
+    assert not mgr.pending_agent_callbacks
+    assert not mgr.pending_extra_replies
+
+    if transition == "voice_start":
+        mgr._starting_session_count = 1
+        mgr._starting_input_mode = "audio"
+    elif transition == "voice_active":
+        mgr.is_active = True
+        mgr.input_mode = "audio"
+    elif transition == "voice_teardown":
+        mgr.session = _make_voice_sess()
+        mgr.is_active = True
+        mgr.input_mode = "text"
+    if transition != "text":
+        # The start sweep runs while this text turn owns the drained snapshot.
+        mgr._drop_pending_topic_hooks_for_voice()
+        assert not callbacks[0].get(DELIVERY_RETRACTED_KEY)
+
+    mgr._requeue_undelivered_callbacks(callbacks, extras)
+    expected_callbacks = callbacks if transition == "text" else callbacks[1:]
+    expected_extras = extras if transition == "text" else extras[1:]
+    assert mgr.pending_agent_callbacks == expected_callbacks
+    assert mgr.pending_extra_replies == expected_extras
+    assert bool(callbacks[0].get(DELIVERY_RETRACTED_KEY)) == (transition != "text")
+    assert "ordinary restore notice" in mgr.drain_agent_callbacks_for_llm()
+
+
 def test_topic_hook_delivery_blocked_when_unfinished_thread_open():
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     mgr._activity_tracker = MagicMock()
@@ -3352,7 +3423,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
         def __init__(self):
             pass
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
             await sess_wait.wait()
             return True
 
@@ -3402,7 +3473,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         def __init__(self):
             pass  # 跳过父类初始化
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
             # 模拟 LLM 耗时，期间 user input 抢占
             await sess_wait.wait()
             return True
@@ -4036,3 +4107,32 @@ async def test_staging_stops_where_the_drain_stops():
     assert "proactive cue" not in rendered
     # 它仍在队列里等 proactive 那条路。
     assert proactive_media in mgr.pending_agent_callbacks
+
+
+class _ToolOnlyOmniOffline(_FakeOmniOffline):
+    """Delivered by a tool call alone: committed, but no text said."""
+
+    async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
+        self.called_with.append(instruction)
+        if on_committed:
+            on_committed()
+        return True
+
+
+@pytest.mark.parametrize("said_something", [False, True])
+async def test_a_topic_teaser_is_retracted_when_only_a_tool_answered_it(said_something):
+    """The callback counts as delivered either way (its tool already ran, so
+    it is never requeued), but with nothing said nothing fills the teaser."""
+    sess = _FakeOmniOffline(delivered=True) if said_something else _ToolOnlyOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    topic = {"_callback_delivery_id": "id-topic", "status": "completed", "summary": "cue topic",
+             "channel": "topic_hook", "source_kind": "topic"}
+    mgr.pending_agent_callbacks = [topic]
+
+    assert await core_module.LLMSessionManager.trigger_agent_callbacks(mgr) is True
+    mgr.send_topic_hint.assert_awaited_once()
+    assert mgr.send_cancel_topic_hint.await_count == (0 if said_something else 1)
+    assert mgr.pending_agent_callbacks == []

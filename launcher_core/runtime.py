@@ -25,6 +25,7 @@ from .bootstrap import (
     _configure_stdio_utf8,
     _get_project_venv_python,
     _maybe_reexec_into_project_venv,
+    _pin_project_root_first,
 )
 
 # Runtime helpers historically resolved __file__ to the repository launcher.
@@ -48,22 +49,17 @@ from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 
-# ``plugin/`` is also used as an import root for user-plugin processes and it
-# contains a sibling ``config`` package.  Keep the repository root first here,
+# Keep the repository root first before the top-level ``config`` import below,
 # otherwise a long-lived test process (or an embedded plugin host) can resolve
-# the launcher's top-level ``config`` imports to ``plugin.config`` instead.
-_PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
-while _PROJECT_ROOT in sys.path:
-    sys.path.remove(_PROJECT_ROOT)
-sys.path.insert(0, _PROJECT_ROOT)
+# it to ``plugin.config`` instead.
+_pin_project_root_first()
 
 import config as config_module
+from utils.deployment import uvicorn_proxy_options
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
 from utils.port_utils import (
     probe_neko_health,
-    acquire_startup_lock,
-    release_startup_lock,
     get_hyperv_excluded_ranges,
     is_port_in_excluded_range,
     set_port_probe_reuse,
@@ -110,6 +106,23 @@ INSTANCE_ID = ""
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
 _cleanup_done = False
+# Descendants of the servers, taken by cleanup_servers before its first
+# teardown step; read only to decide whether a migration restart is safe.
+# None means they could not be determined.
+_teardown_descendants: list | None = None
+_teardown_snapshot_taken = False
+# The latest snapshot taken while every server still ran, refreshed by the
+# monitoring loop: in multiprocess mode a migration restart begins with Main
+# shutting itself down, before any teardown snapshot can see its children.
+_running_descendants: list = []
+# False while the latest refresh could not inspect a running server: what
+# was seen before may then miss a newer descendant.
+_running_descendants_known = True
+# Servers that were running when a refresh could not inspect them. The
+# uncertainty ends only once each is inspected again while alive; one that
+# exits first may have left an orphan no later snapshot can reach.
+_uninspected_servers: set = set()
+_UNTRACKED_SCAN = "<launcher>"
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -120,13 +133,12 @@ DEFAULT_PORTS = {
 }
 INTERNAL_DEFAULT_PORTS = {
     "USER_PLUGIN_SERVER_PORT": 48916,
-    "AGENT_MQ_PORT": 48917,
-    "MAIN_AGENT_EVENT_PORT": 48918,
     "ZMQ_SESSION_PUB_PORT": 48961,
     "ZMQ_AGENT_PUSH_PORT": 48962,
     "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
+# 48917/48918 已退役，仍保留：本机可能还跑着占用它们的旧版本。
 AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
 
 # 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
@@ -282,8 +294,6 @@ def _reload_runtime_config_from_env() -> None:
         },
         {
             "USER_PLUGIN_SERVER_PORT": int(reloaded.USER_PLUGIN_SERVER_PORT),
-            "AGENT_MQ_PORT": int(reloaded.AGENT_MQ_PORT),
-            "MAIN_AGENT_EVENT_PORT": int(reloaded.MAIN_AGENT_EVENT_PORT),
         },
     )
 
@@ -564,7 +574,11 @@ def _is_expected_launcher_shutdown() -> bool:
 STARTUP_WAIT_RESULT_STORAGE_RESTART = "storage_restart_requested"
 
 
-def _is_pending_storage_restart_request() -> bool:
+def _is_pending_storage_restart_request(*, unreadable_counts: bool = False) -> bool:
+    """Whether Main recorded a storage restart before shutting itself down.
+
+    ``unreadable_counts`` is what to answer when root_state cannot be read.
+    """
     try:
         config_manager = get_config_manager(APP_NAME, migrate=False)
         load_root_state = getattr(config_manager, "load_root_state", None)
@@ -583,7 +597,7 @@ def _is_pending_storage_restart_request() -> bool:
         return last_migration_result.startswith(("restart_pending:", "restart_rebind:"))
     except Exception as exc:
         print(f"[Launcher] Warning: failed to inspect storage restart intent: {exc}", flush=True)
-        return False
+        return unreadable_counts
 
 
 def _maybe_schedule_storage_restart() -> bool:
@@ -1192,10 +1206,7 @@ def run_merged_servers() -> int:
         except Exception:
             pass
 
-    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
-    _proxy_kw: dict = {}
-    if _behind_proxy:
-        _proxy_kw = {"proxy_headers": True, "forwarded_allow_ips": "*"}
+    _proxy_kw = uvicorn_proxy_options()
 
     # 分步 import（控制峰值内存 & 提供进度反馈），逐段计时：三段 import 串行坐在
     # 端口就绪关键路径上，回归过一次没人发现（#1496 优化后被 openai 2.x 静默吃回
@@ -1370,6 +1381,9 @@ def run_merged_servers() -> int:
                     unexpected_exit = _completed_merged_server(tasks) or "unknown server exit"
                     _begin_merged_shutdown(reason="server_exit")
 
+            # The plugin hosts are still running here; the ordered shutdown
+            # below stops them before cleanup_servers is ever reached.
+            _take_teardown_snapshot_once()
             failures = await _shutdown_merged_servers_in_order(servers_by_name, tasks)
             if startup_error is not None:
                 raise startup_error
@@ -1441,15 +1455,13 @@ def run_memory_server(
 
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
 
-        _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
         # 使用 Server 对象，在启动后通知父进程
         config = uvicorn.Config(
             app=memory_server.app,
             host="127.0.0.1",
             port=MEMORY_SERVER_PORT,
             log_level="error",
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1465,7 +1477,7 @@ def run_memory_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Memory Server] Shutdown lifecycle complete")
 
-            memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            memory_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1504,7 +1516,7 @@ def run_memory_server(
                 ready_event.set()
 
             # 将 startup 添加到服务器的启动事件
-            server.config.app.add_event_handler("startup", startup)
+            server.config.app.router.add_event_handler("startup", startup)
 
             # 运行服务器
             loop.run_until_complete(server.serve())
@@ -1558,14 +1570,12 @@ def run_agent_server(
         # Agent Server 不需要等待，立即通知就绪
         ready_event.set()
 
-        _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
         config = uvicorn.Config(
             app=agent_server.app,
             host="127.0.0.1",
             port=TOOL_SERVER_PORT,
             log_level="error",
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1581,7 +1591,7 @@ def run_agent_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Agent Server] Shutdown lifecycle complete")
 
-            agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            agent_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1637,7 +1647,6 @@ def run_main_server(
 
         print(f"[Main Server] Starting on port {MAIN_SERVER_PORT}")
 
-        _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
         # 直接运行 FastAPI app，不依赖 main_server 的 __main__ 块
         config = uvicorn.Config(
             app=main_server.app,
@@ -1646,8 +1655,7 @@ def run_main_server(
             log_level="error",
             loop="asyncio",
             reload=False,
-            proxy_headers=_behind_proxy,
-            forwarded_allow_ips="*" if _behind_proxy else None,
+            **uvicorn_proxy_options(),
         )
         server = uvicorn.Server(config)
         # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
@@ -1675,7 +1683,7 @@ def run_main_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Main Server] Shutdown lifecycle complete")
 
-            main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            main_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1701,7 +1709,7 @@ def run_main_server(
             ready_event.set()
 
         # 将 startup 添加到服务器的启动事件
-        main_server.app.add_event_handler("startup", startup)
+        main_server.app.router.add_event_handler("startup", startup)
 
         # 运行服务器
         server.run()
@@ -2160,6 +2168,11 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
 
     # 第一步：等待所有端口就绪
     while time.time() - start_time < timeout:
+        # Servers can start plugin hosts while still getting ready, and a
+        # storage restart may end Main at any point here: refresh before
+        # checking for an exited server (snapshots accumulate, so a refresh
+        # after Main is gone loses nothing).
+        _refresh_running_descendants()
         # 若某个子进程提前退出，立即报错而不是等到超时
         for server in SERVERS:
             proc = server.get('process')
@@ -2234,6 +2247,270 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         return False
 
 
+def _process_exe(process) -> str:
+    try:
+        return os.path.normcase(process.exe())
+    except Exception:
+        return ""
+
+
+def _snapshot_server_descendants(servers) -> list | None:
+    """Every live descendant of the tracked servers, as ``(process, own)``.
+
+    Taken before teardown: a server can exit while a non-daemon child (a
+    plugin host) lives on, and once the server is gone its children can no
+    longer be found through it. ``own`` marks N.E.K.O's own processes: direct
+    children of a server running the same executable, which is what a
+    multiprocessing plugin host is. Anything further down -- a program a
+    plugin started, even through ``sys.executable`` -- and anything running
+    another executable (an app or file manager opened for the user) is not.
+
+    ``None`` when the tree cannot be determined -- no psutil, or a running
+    server that cannot be inspected. A server that already exited is
+    skipped: in multiprocessing mode that is how every migration restart
+    begins (Main exits on its own first), and its orphans could not be found
+    through it anyway.
+
+    Known limit, accepted: a descendant a server starts after the latest
+    periodic refresh and leaves behind as it exits is in no snapshot, so it
+    does not block the restart. Treating every exited server as unknown
+    instead would block every multiprocessing restart; closing the gap needs
+    the server to hand over its own list as it shuts down.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        launcher_exe = _process_exe(psutil.Process())
+    except psutil.Error:
+        launcher_exe = ""
+    own_exes = {
+        launcher_exe,
+        os.path.normcase(sys.executable),
+        os.path.normcase(getattr(sys, "_base_executable", "") or sys.executable),
+    }
+    server_pids: set[int] = set()
+    descendants = []
+    if not any(server.get('process') for server in servers):
+        # Merged mode: the servers run inside the launcher, so its plugin
+        # hosts -- direct children running its own executable -- and what
+        # they started are what to check. Nothing else the launcher has
+        # running counts: on Windows its console host (conhost.exe) is its
+        # child for as long as it lives, and would block every restart.
+        try:
+            launcher = psutil.Process()
+            server_pids.add(launcher.pid)
+            launcher_children = launcher.children()
+        except (psutil.Error, OSError, ValueError):
+            return None
+        host_vanished = False
+        for child in launcher_children:
+            try:
+                child_exe = os.path.normcase(child.exe())
+            except psutil.NoSuchProcess:
+                # Exited during the lookup: it may have been a host, and what
+                # it started is out of reach now -- as for one vanishing below.
+                host_vanished = True
+                continue
+            except (psutil.Error, OSError, ValueError):
+                # Unreadable (access denied): whether it is a host cannot be
+                # told, so neither can whether the result is complete.
+                return None
+            if child_exe not in own_exes:
+                continue
+            try:
+                host_descendants = child.children(recursive=True)
+            except psutil.NoSuchProcess:
+                # This host exited mid-scan: what it started is reparented
+                # and out of reach now. Keep scanning the others, but the
+                # result cannot be complete.
+                host_vanished = True
+                continue
+            except (psutil.Error, OSError, ValueError):
+                return None
+            descendants.append(child)
+            descendants.extend(host_descendants)
+        if host_vanished:
+            return None
+        servers = []
+    for server in servers:
+        proc = server.get('process')
+        pid = getattr(proc, 'pid', None) if proc else None
+        if not pid:
+            continue
+        try:
+            if not proc.is_alive():
+                continue
+            server_process = psutil.Process(pid)
+            own_exes.add(_process_exe(server_process))
+            server_pids.add(pid)
+            descendants.extend(server_process.children(recursive=True))
+        except psutil.NoSuchProcess:
+            # Exited between the check and the lookup.
+            continue
+        except (psutil.Error, OSError, ValueError):
+            return None
+    own_exes.discard("")
+
+    def _is_own(process) -> bool:
+        try:
+            parent_pid = process.ppid()
+        except psutil.Error:
+            return False
+        return parent_pid in server_pids and _process_exe(process) in own_exes
+
+    return [(process, _is_own(process)) for process in descendants]
+
+
+def _settle_surviving_descendants(descendants) -> bool:
+    """Stop N.E.K.O's own descendants that outlived their server; True if any
+    descendant is still alive.
+
+    Only our own processes are stopped (terminate first, kill if they do not
+    exit); a program opened for the user is never touched, it only keeps the
+    migration restart from going ahead. ``psutil.Process`` remembers each
+    process's creation time, so a recycled PID is never mistaken for one of
+    these.
+    """
+    if not descendants:
+        return False
+    import psutil
+
+    def _alive(process) -> bool:
+        try:
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+
+    def _signal(processes, method) -> None:
+        for process in processes:
+            try:
+                getattr(process, method)()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Gone already, or not ours to signal: whether it is still
+                # alive is checked below either way.
+                continue
+
+    own = [process for process, is_own in descendants if is_own and _alive(process)]
+    _signal(own, "terminate")
+    if own:
+        psutil.wait_procs(own, timeout=3)
+    own = [process for process in own if _alive(process)]
+    _signal(own, "kill")
+    if own:
+        psutil.wait_procs(own, timeout=3)
+
+    survivors = [process for process, _is_own in descendants if _alive(process)]
+    for process in survivors:
+        try:
+            name = process.name()
+        except psutil.Error:
+            name = "?"
+        print(f"[Launcher] 子进程 {name}(pid {process.pid}) 仍在运行，不安排存储迁移重启", flush=True)
+    return bool(survivors)
+
+
+def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
+    """Whether a server descendant keeps a migration restart from going ahead.
+
+    Only consulted for a migration restart: an ordinary exit leaves every
+    descendant alone. Descendants that could not be determined block it.
+    """
+    if not allow_storage_restart:
+        return False
+    if _teardown_descendants is None:
+        print("[Launcher] 无法确认服务进程的子进程是否都已退出，不安排存储迁移重启", flush=True)
+        return True
+    return _settle_surviving_descendants(_teardown_descendants)
+
+
+def _still_running(process) -> bool:
+    """False only once the process is known to be gone."""
+    import psutil
+
+    try:
+        return bool(process.is_running())
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:
+        # Not inspectable right now (access denied): no proof it stopped,
+        # so it stays among what the teardown checks.
+        return True
+
+
+def _live_server_names() -> set:
+    names = set()
+    for server in SERVERS:
+        proc = server.get('process')
+        try:
+            if proc is not None and proc.is_alive():
+                names.add(server.get('name'))
+        except Exception:
+            continue
+    return names
+
+
+def _refresh_running_descendants() -> None:
+    """Add what the servers have running now to what was seen before.
+
+    Earlier entries stay while their process still runs: Main shuts itself
+    down for a migration while this loop sleeps, and the next snapshot can
+    no longer reach the children it left behind. Exited ones are dropped
+    (psutil compares creation times, so a recycled PID never matches).
+    """
+    global _running_descendants, _running_descendants_known, _uninspected_servers
+    live_before = _live_server_names()
+    try:
+        snapshot = _snapshot_server_descendants(SERVERS)
+    except Exception:
+        snapshot = None
+    if snapshot is None:
+        # With no tracked server process (merged mode), the scan itself was
+        # rooted at the launcher: nothing can be "seen alive again" to end the
+        # uncertainty, so it stays until teardown.
+        _uninspected_servers |= live_before or {_UNTRACKED_SCAN}
+        _running_descendants_known = False
+        return
+    live_after = _live_server_names()
+    if _uninspected_servers <= (live_before & live_after):
+        # Every server a failed refresh missed was inspected alive this time.
+        _uninspected_servers = set()
+        _running_descendants_known = True
+    earlier = [(process, own) for process, own in _running_descendants if _still_running(process)]
+    _running_descendants = _merge_descendant_snapshots(snapshot, earlier)
+
+
+def _merge_descendant_snapshots(current: list | None, earlier: list) -> list | None:
+    """The teardown snapshot plus processes only an earlier snapshot still saw."""
+    if current is None:
+        return None
+    seen = {process for process, _own in current}
+    return current + [(process, own) for process, own in earlier if process not in seen]
+
+
+def _take_teardown_snapshot_once() -> None:
+    """Record the servers' descendants before the first teardown step.
+
+    Called by whichever teardown starts first -- merged mode's ordered
+    shutdown stops the plugin hosts before cleanup_servers runs, and a
+    subprocess a host started is no longer found through it afterwards.
+    """
+    global _teardown_descendants, _teardown_snapshot_taken
+    if _teardown_snapshot_taken:
+        return
+    _teardown_snapshot_taken = True
+    try:
+        current = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
+    except Exception:
+        current = None
+    if not _running_descendants_known:
+        current = None
+    _teardown_descendants = _merge_descendant_snapshots(current, _running_descendants)
+
+
 def cleanup_servers():
     """Clean up all server processes"""
     global _cleanup_done
@@ -2243,6 +2520,10 @@ def cleanup_servers():
         _cleanup_done = True
 
     try:
+        # Before the first teardown step, while every server still runs --
+        # but inside the try, so an interruption here cannot skip teardown
+        # or leave _cleanup_complete unset.
+        _take_teardown_snapshot_once()
         _teardown_print("\n正在关闭服务器...")
         for server in _iter_servers_for_shutdown():
             proc = server.get('process')
@@ -2873,9 +3154,13 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
         reason="launcher_phase0_bootstrap",
     ):
         bootstrap_result = bootstrap_local_cloudsave_environment(config_manager)
+        from main_logic.cloudsave_visit_retire import removed_characters_recorder
+
         import_result = get_cloudsave_manager(config_manager).import_if_needed(
             reason="launcher_phase0_prelaunch_import",
             fence_already_active=True,
+            # 导入删掉的本地角色记成串门退役项，由主服务启动对账补完退役
+            on_characters_removed=removed_characters_recorder(config_manager),
         )
 
     # 同上：判定和写不能被别的线程插进来，整段进锁。
@@ -3061,6 +3346,10 @@ def main():
                 remaining = import_timeout
                 import_ok = False
                 while remaining > 0:
+                    # Servers started earlier already run (Main before Agent)
+                    # and may end themselves for a storage restart during
+                    # this wait: what they started is seen while they live.
+                    _refresh_running_descendants()
                     if evt.wait(timeout=min(poll_interval, remaining)):
                         import_ok = True
                         break
@@ -3133,6 +3422,9 @@ def main():
         _CRITICAL_MODULES = {"memory_server", "main_server"}
         _reported_exits: set[str] = set()
         while True:
+            # Before the sleep, so the first refresh runs as soon as the
+            # loop starts rather than five seconds later.
+            _refresh_running_descendants()
             time.sleep(5)
             started = [s for s in SERVERS if s.get('process') is not None]
             any_critical_dead = False
@@ -3246,8 +3538,24 @@ def main():
                 for server in SERVERS
             )
 
+        # The teardown above only reaches a server's process tree while the
+        # server itself is alive. Only a storage restart Main asked for (it
+        # records the request before ending itself) needs proof that nothing
+        # outlived it; an ordinary exit or Ctrl+C leaves descendants alone and
+        # does not wait on them. An unreadable request counts as made: the
+        # descendants are then settled, the safe side.
+        storage_restart_requested = allow_storage_restart and _is_pending_storage_restart_request(
+            unreadable_counts=True
+        )
+        descendants_alive = _descendants_block_storage_restart(storage_restart_requested)
+
         print("\n清理完成", flush=True)
-        if allow_storage_restart:
+        # A migration restart is only safe after every old server process --
+        # and every process they started -- is proven dead: a stuck Main or
+        # an orphaned plugin host could otherwise keep writing to the source
+        # root while the next launch copies it. File locks are defence in
+        # depth, not evidence that the old process has stopped.
+        if storage_restart_requested and not has_alive and not descendants_alive:
             try:
                 restart_scheduled = _maybe_schedule_storage_restart()
             except Exception as e:

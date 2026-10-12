@@ -452,6 +452,7 @@
             I.clearMessages();
         });
 
+        window.addEventListener('chat-avatar-display-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-cleared', I.refreshAssistantAvatarUrls);
         window.addEventListener('neko:tutorial-chat-identity-changed', I.refreshAssistantAvatarUrls);
@@ -753,7 +754,13 @@
         });
 
         window.addEventListener('localechange', function () {
-            I.state.viewProps = I.createBaseViewProps();
+            var currentProps = I.ensureViewProps();
+            I.state.viewProps = Object.assign({}, currentProps, I.createBaseViewProps());
+            if (currentProps.theaterPresentation && currentProps.theaterPresentation.active === true) {
+                // Refresh translated labels without dropping the active theater
+                // projection or unlocking an evaluating/ending turn.
+                I.state.viewProps.composerDisabled = currentProps.composerDisabled;
+            }
             I.renderWindow();
         });
 
@@ -962,6 +969,17 @@
         },
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
+        },
+        setOnTheaterSubmit: function (handler) {
+            I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterSuggestedInputSelect: function (handler) {
+            I.state.onTheaterSuggestedInputSelect = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterEnd: function (handler) {
+            I.state.onTheaterEnd = typeof handler === 'function' ? handler : null;
         },
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {

@@ -30,7 +30,8 @@ import time
 import pickle
 import aiohttp
 from config import (
-    MONITOR_SERVER_PORT,
+    MONITOR_SYNC_URL,
+    MONITOR_TOKEN,
     MEMORY_SERVER_PORT,
     COMMENTER_SERVER_PORT,
     AVATAR_INTERACTION_DEDUPE_WINDOW_MS,
@@ -43,6 +44,7 @@ import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import is_supported_language_code
+from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -141,6 +143,30 @@ def normalize_text(text):  # 对文本进行基本预处理
     if is_only_punctuation(text):
         return ""
     return text
+
+
+# The time stamp ``run_sync_connector`` starts every reply buffer with
+# (``strftime('[%Y%m%d %a %H:%M] ')``; the weekday may be localized).
+_REPLY_STAMP_RE = re.compile(r"\[\d{8} [^\]\s]+ \d{2}:\d{2}\] ")
+
+
+def normalize_assistant_text(text, tool_names=None):
+    """``normalize_text`` for a reply, with any tool call it spoke as text cut.
+
+    A model that stops calling a tool natively writes the call into its reply
+    (``asynccall:name{...}``, ``name(param=...)``). Stored, that line is shown
+    to every later session as an example to copy, so it is cut before memory
+    sees it. ``tool_names`` are the registered tools, which also lets a bare
+    ``name(param=...)`` count. A reply that was nothing but such a call comes
+    back empty rather than as its bare time stamp.
+    """
+    stamp = _REPLY_STAMP_RE.match(text)
+    head = stamp.group(0) if stamp else ""
+    body = text[len(head):]
+    stripped = strip_tool_call_leaks(body, tool_names=tool_names)
+    if stripped != body and not normalize_text(stripped):
+        return ""
+    return normalize_text(head + stripped)
 
 
 # Mirror schema + detection now lives in main_logic.mirror_meta;
@@ -545,6 +571,7 @@ async def _slot_maintainer(
     *,
     backoff_min: float = 0.25,
     backoff_max: float = 1.5,
+    auth_retry: float = 30.0,
 ) -> None:
     """Per-slot reconnect loop, event-driven + exponential backoff.
 
@@ -560,6 +587,7 @@ async def _slot_maintainer(
     failure can take ~4s (TCP SYN timeout); without wait_for this guarantee would break.
     """
     backoff = backoff_min
+    auth_warned = False
     while True:
         await slot.dead_event.wait()
 
@@ -584,13 +612,23 @@ async def _slot_maintainer(
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            # 失败的 session 立即后台收，避免 lingering
+            asyncio.create_task(_safe_close(new_session))
+            slot.session = None
+            if isinstance(e, aiohttp.WSServerHandshakeError) and e.status in (401, 403):
+                # token 不一致快速重试也好不了：只提示一次，并放慢重试，别每 1.5s 刷 Monitor
+                if not auth_warned:
+                    logger.warning(
+                        f"[{slot.lanlan_name}] {slot.name} Monitor 拒绝认证 (HTTP {e.status})，"
+                        f"请检查主服务与 Monitor 的 NEKO_MONITOR_TOKEN 是否一致；{auth_retry:.0f}s 后重试"
+                    )
+                    auth_warned = True
+                await asyncio.sleep(auth_retry)
+                continue
             logger.debug(
                 f"[{slot.lanlan_name}] {slot.name} ws_connect 失败: "
                 f"{type(e).__name__}: {e} (backoff {backoff:.2f}s)"
             )
-            # 失败的 session 立即后台收，避免 lingering
-            asyncio.create_task(_safe_close(new_session))
-            slot.session = None
             # 拉到 backoff 周期：fast-fail (refused, ms 级) 时补 sleep；
             # timeout 到点失败时基本不 sleep 直接进下一轮
             elapsed = time.monotonic() - cycle_start
@@ -602,6 +640,7 @@ async def _slot_maintainer(
         # 顺序很重要：先把 ws 装上 + 清 dead_event，再创建 reader。
         # 否则 reader 可能在 clear() 之前就 mark_dead，clear 会把这个信号擦掉。
         slot.ws = new_ws
+        auth_warned = False
         slot.dead_event.clear()
         slot.reader = asyncio.create_task(
             _slot_reader(slot, new_ws),
@@ -768,11 +807,13 @@ async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) 
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
-    sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
+    sync_server_url=MONITOR_SYNC_URL,
     config=None,
     status_callback=None,
     user_language_provider=None,
     render_language_provider=None,
+    monitor_auth_token: str | None = MONITOR_TOKEN or None,
+    tool_names_provider=None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -797,6 +838,12 @@ async def run_sync_connector(
         user_language_provider: optional callable returning the live session locale.
         render_language_provider: optional callable returning the current renderer
             locale when the session has no explicit language preference.
+        monitor_auth_token: Monitor bearer token, defaulting to the configured
+            ``MONITOR_TOKEN``. When set it is sent as an Authorization header on
+            Monitor sync WebSocket connections.
+        tool_names_provider: optional callable returning the session's registered
+            tool names, used to cut tool calls a reply spoke as text
+            (``normalize_assistant_text``) before it is stored.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
@@ -823,6 +870,15 @@ async def run_sync_connector(
             logger.debug("[%s] render language provider failed: %s", lanlan_name, exc)
             return None
         return selected if is_supported_language_code(selected) else None
+
+    def _normalized_reply(text: str) -> str:
+        tool_names = None
+        if callable(tool_names_provider):
+            try:
+                tool_names = tool_names_provider()
+            except Exception as exc:
+                logger.debug("[%s] tool names provider failed: %s", lanlan_name, exc)
+        return normalize_assistant_text(text, tool_names)
 
     def _current_memory_languages() -> tuple[str | None, str | None]:
         """Snapshot mutually exclusive durable and render-only memory hints."""
@@ -852,17 +908,22 @@ async def run_sync_connector(
     binary_slot: _WSSlot | None = None
     bullet_slot: _WSSlot | None = None
     if config['monitor']:
+        monitor_ws_kwargs = {'heartbeat': 10}
+        if monitor_auth_token:
+            monitor_ws_kwargs['headers'] = {
+                'Authorization': f'Bearer {monitor_auth_token}',
+            }
         sync_slot = _WSSlot(
             'sync',
             f"{sync_server_url}/sync/{lanlan_name}",
             lanlan_name,
-            ws_kwargs={'heartbeat': 10},
+            ws_kwargs=monitor_ws_kwargs,
         )
         binary_slot = _WSSlot(
             'binary',
             f"{sync_server_url}/sync_binary/{lanlan_name}",
             lanlan_name,
-            ws_kwargs={'heartbeat': 10},
+            ws_kwargs=monitor_ws_kwargs.copy(),
         )
     if config['bullet']:
         bullet_slot = _WSSlot(
@@ -1024,7 +1085,7 @@ async def run_sync_connector(
                                 
                                 # 再处理未完成的输出缓存（如果有）
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
@@ -1122,7 +1183,7 @@ async def run_sync_connector(
                                     logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
@@ -1339,7 +1400,7 @@ async def run_sync_connector(
                                 
                                 # 再处理未完成的输出缓存（如果有）
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})

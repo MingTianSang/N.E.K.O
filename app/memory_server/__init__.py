@@ -224,11 +224,18 @@ from .post_turn import (  # noqa: F401
     _spawn_outbox_post_turn_signals,
 )
 
+from . import knowledge_routes  # noqa: F401
+# Public knowledge is a separate subsystem that only shares the process (and
+# its middleware / storage gate) with memory; see knowledge_routes.
+runtime.app.include_router(knowledge_routes.router)
+
 from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,
     HistoryRequest,
     PromptLocalePreferenceRequest,
+    TheaterEpisodeRetractRequest,
+    TheaterMemoryForgetRequest,
     NEW_DIALOG_QPS_FLUSH_INTERVAL,
     QueryMemoryRequest,
     _format_legacy_settings_as_text,
@@ -246,12 +253,14 @@ from .routes import (  # noqa: F401
     get_prompt_locale_preference,
     get_recent_history,
     get_settings,
+    forget_theater_memory,
     import_external_markdown,
     last_conversation_gap,
     new_dialog,
     process_conversation,
     process_conversation_for_renew,
     query_memory,
+    retract_theater_episode,
     settle_conversation,
     set_prompt_locale_preference,
 )

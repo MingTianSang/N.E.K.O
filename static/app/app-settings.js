@@ -552,9 +552,12 @@
         'focusCognitionEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
+        'independentAsrProviderPreference',
         'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
+        'visitEnabled',
+        'visitVoiceEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
         'subtitleEnabled',
@@ -564,6 +567,15 @@
         'targetFrameRate',
         'forgeDropEffectsEnabled'
     ];
+
+    function _normalizeIndependentAsrProviderPreference(value) {
+        // Accepted values mirror INDEPENDENT_ASR_PROVIDER_PREFERENCES in
+        // utils/conversation_settings_constants.py; anything else follows the
+        // Core route.
+        return ['auto', 'faster_whisper'].indexOf(value) !== -1
+            ? value
+            : 'auto';
+    }
 
     function _defaultConversationSettingsForReset() {
         return {
@@ -582,9 +594,12 @@
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
             independentAsrEnabled: false,
+            independentAsrProviderPreference: 'auto',
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
+            visitEnabled: false,
+            visitVoiceEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
                 ? C.DEFAULT_PROACTIVE_CHAT_INTERVAL
                 : 15,
@@ -642,9 +657,14 @@
             focusCognitionEnabled: S.focusCognitionEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            independentAsrProviderPreference: _normalizeIndependentAsrProviderPreference(
+                S.independentAsrProviderPreference
+            ),
             voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
+            visitEnabled: S.visitEnabled,
+            visitVoiceEnabled: S.visitVoiceEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled,
@@ -1174,9 +1194,14 @@
             console.warn('[app-settings] 停止语音主动视觉失败:', error);
         }
 
+        // 隐私模式不关手动分享：进行中的手动启动（授权对话框还开着、按钮还
+        // 不是 active）也算手动分享，不能在这里把它的流停掉。
         if (isManualScreenShareActive()) return;
+        if (typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending()) return;
 
         try {
+            // 这里停的是主动视觉的发送，不是收尾，不取消任何分享启动。
             if (typeof window.stopScreening === 'function') {
                 window.stopScreening();
             }
@@ -1307,6 +1332,9 @@
             if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
             if (_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')) {
                 S.voiceInputResourceOptimizationAuthoritative = true;
+            }
+            if (_dirtySettingsKeys.has('independentAsrProviderPreference')) {
+                S.independentAsrProviderPreferenceAuthoritative = true;
             }
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
@@ -1609,6 +1637,10 @@
         const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentVoiceResourceOptimization =
             S.voiceInputResourceOptimizationEnabled !== false;
+        const currentIndependentAsrProviderPreference =
+            _normalizeIndependentAsrProviderPreference(
+                S.independentAsrProviderPreference
+            );
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -1633,6 +1665,12 @@
         const currentSlopFilter = typeof window.slopFilterEnabled !== 'undefined'
             ? window.slopFilterEnabled
             : S.slopFilterEnabled;
+        const currentVisitEnabled = typeof window.visitEnabled !== 'undefined'
+            ? window.visitEnabled
+            : S.visitEnabled;
+        const currentVisitVoiceEnabled = typeof window.visitVoiceEnabled !== 'undefined'
+            ? window.visitVoiceEnabled
+            : S.visitVoiceEnabled;
         const currentTextGuardMaxLength = typeof window.textGuardMaxLength !== 'undefined'
             ? window.textGuardMaxLength
             : S.textGuardMaxLength;
@@ -1686,9 +1724,12 @@
             focusCognitionEnabled: currentFocusCognition,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
+            independentAsrProviderPreference: currentIndependentAsrProviderPreference,
             voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
+            visitEnabled: currentVisitEnabled,
+            visitVoiceEnabled: currentVisitVoiceEnabled,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
             textGuardMaxLength: currentTextGuardMaxLength,
@@ -1730,9 +1771,12 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.independentAsrProviderPreference = currentIndependentAsrProviderPreference;
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
+        S.visitEnabled = currentVisitEnabled;
+        S.visitVoiceEnabled = currentVisitVoiceEnabled;
         S.proactiveChatInterval = currentProactiveChatInterval;
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.textGuardMaxLength = currentTextGuardMaxLength;
@@ -1914,8 +1958,14 @@
                 S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.voiceInputResourceOptimizationEnabled =
                     settings.voiceInputResourceOptimizationEnabled ?? true;
+                S.independentAsrProviderPreference =
+                    _normalizeIndependentAsrProviderPreference(
+                        settings.independentAsrProviderPreference
+                    );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
+                S.visitEnabled = settings.visitEnabled ?? false;
+                S.visitVoiceEnabled = settings.visitVoiceEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
                 S.proactiveVisionInterval = settings.proactiveVisionInterval ?? C.DEFAULT_PROACTIVE_VISION_INTERVAL;
                 // 回复 token 上限（默认 300 tiktoken tokens；0 = 无限制）
@@ -2051,6 +2101,8 @@
         window.focusCognitionEnabled = S.focusCognitionEnabled;
         // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
+        window.visitEnabled = S.visitEnabled;
+        window.visitVoiceEnabled = S.visitVoiceEnabled;
 
         // 加载字幕设置（统一从 subtitle-shared store 读取）
         const subtitleStore = window.nekoSubtitleShared;
@@ -2090,6 +2142,7 @@
                 // merge preserved — authoritative for the handshake either way.
                 S.independentAsrAuthoritative = true;
                 S.voiceInputResourceOptimizationAuthoritative = true;
+                S.independentAsrProviderPreferenceAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -2263,6 +2316,8 @@
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.slopFilterEnabled = S.slopFilterEnabled;
+                    window.visitEnabled = S.visitEnabled;
+                    window.visitVoiceEnabled = S.visitVoiceEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;
@@ -2280,6 +2335,13 @@
                         window.scheduleProactiveChat();
                     }
                 }
+
+                // An open voice panel decided its local-ASR switch from the boot
+                // default; let it re-decide now that every server value is merged
+                // into S (dispatching earlier would still show the boot default).
+                try {
+                    window.dispatchEvent(new CustomEvent('neko:conversation-settings-hydrated'));
+                } catch (_) {}
 
                 // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播 settings-ready
                 // 信号——必须放在所有设置合并（server merge + saveSettings）之后。否则被缓存的
@@ -2411,6 +2473,47 @@
             if (optimizationSyncAcknowledgesLocalDecision) {
                 _optimizationDecisionPendingSync = false;
             }
+            // The provider choice also rides the start_session handshake, and
+            // every save copies it along. Only an explicit change from another
+            // window may move it here; an incidental copy (possibly another
+            // window's boot default) must not replace this window's value.
+            const providerPreferenceKey = 'independentAsrProviderPreference';
+            const providerPreferenceValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, providerPreferenceKey)
+                && S[providerPreferenceKey] !== settings[providerPreferenceKey];
+            const providerPreferenceMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf(providerPreferenceKey) !== -1;
+            const providerPreferenceWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (
+                    meta.writeId === _lastAppliedSharedWriteId
+                    && providerPreferenceMarkedExplicit
+                );
+            const providerPreferenceChangedByOtherWindow = meta
+                ? (
+                    providerPreferenceValueDiffers
+                    && providerPreferenceMarkedExplicit
+                    && providerPreferenceWriteIsNewer
+                )
+                : providerPreferenceValueDiffers;
+            // A peer's server merge (e.g. another device changed the persisted
+            // provider) lists the key as server-authoritative without marking
+            // it explicit. Leave such a value to the server-revision check
+            // below instead of discarding it here as a stale boot default.
+            const providerPreferenceServerAuthoritative = !!meta
+                && Number.isInteger(meta.serverRevision)
+                && Array.isArray(meta.serverAuthoritativeKeys)
+                && meta.serverAuthoritativeKeys.indexOf(providerPreferenceKey) !== -1;
+            const providerPreferenceValueIsStale = !!meta
+                && providerPreferenceValueDiffers
+                && !providerPreferenceChangedByOtherWindow
+                && !providerPreferenceServerAuthoritative;
+            // A peer's server-merge value may still be dropped by the revision
+            // checks below; whether it was adopted is decided after them.
+            const providerPreferenceServerCandidate =
+                providerPreferenceValueDiffers
+                && providerPreferenceServerAuthoritative
+                && !providerPreferenceChangedByOtherWindow;
             const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
                 ? (
                     S.independentAsrActive === true
@@ -2441,10 +2544,17 @@
                 _lastAppliedSharedWriteId = meta.writeId;
             }
             let incoming = settings;
-            if (asrValueIsStale || optimizationValueIsStale) {
+            if (
+                asrValueIsStale
+                || optimizationValueIsStale
+                || providerPreferenceValueIsStale
+            ) {
                 incoming = Object.assign({}, settings);
                 if (asrValueIsStale) delete incoming.independentAsrEnabled;
                 if (optimizationValueIsStale) delete incoming[optimizationKey];
+                if (providerPreferenceValueIsStale) {
+                    delete incoming[providerPreferenceKey];
+                }
             }
             if (meta) {
                 for (const key of meta.changedKeys) {
@@ -2580,6 +2690,13 @@
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
+            // Adopted = survived every stale / revision check and was applied.
+            // Not this window's handshake authority, but an open voice panel
+            // must still reconcile the local-ASR toggle with it. An older
+            // snapshot that was dropped must not report a pending change.
+            const providerPreferenceAdoptedFromServer =
+                providerPreferenceServerCandidate
+                && Object.prototype.hasOwnProperty.call(incoming, providerPreferenceKey);
             if (meta) {
                 _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
                 _rememberServerKeyRevisions(
@@ -2692,7 +2809,19 @@
                     );
                 }
             }
-            if (asrChangedByOtherWindow || optimizationChangedByOtherWindow) {
+            if (providerPreferenceChangedByOtherWindow) {
+                // A real cross-window provider choice: authoritative for this
+                // window's next handshake, and preserved across its pending GET.
+                S.settingsHydrated = true;
+                S.independentAsrProviderPreferenceAuthoritative = true;
+                _dirtySettingsKeys.add(providerPreferenceKey);
+            }
+            if (
+                asrChangedByOtherWindow
+                || optimizationChangedByOtherWindow
+                || providerPreferenceChangedByOtherWindow
+                || providerPreferenceAdoptedFromServer
+            ) {
                 const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
                 if (
                     asrChangedByOtherWindow

@@ -10,6 +10,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="UTF-8">
     <title data-i18n="viewer.title">Viewer - Project N.E.K.O.</title>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <style>
@@ -314,6 +315,7 @@
             }
         }
     </style>
+    <link rel="stylesheet" href="/static/css/edge-peek.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
 </head>
@@ -468,14 +470,17 @@
                     '/static/live2d/live2d-core.js',
                     '/static/live2d/live2d-emotion.js',
                     '/static/live2d/live2d-model.js',
+                    '/static/avatar/avatar-touch-gestures.js',
                     '/static/live2d/live2d-interaction.js',
                     '/static/avatar/avatar-popup-common.js',
                     '/static/avatar/avatar-ui-popup.js',
                     '/static/avatar/avatar-ui-popup-config.js',
+                    '/static/avatar/avatar-ui-buttons/cat-resource-registry.js?v={{ static_asset_version }}',
                     '/static/avatar/avatar-ui-buttons/core.js',
                     '/static/avatar/avatar-ui-buttons/idle-assets-and-question.js',
                     '/static/avatar/avatar-ui-buttons/idle-playground.js',
                     '/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js',
+                    '/static/avatar/avatar-ui-buttons/edge-peek-controller.js',
                     '/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js',
                     '/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
                     '/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js',
@@ -585,6 +590,8 @@
         let lipSyncActive = false;
         let animationFrameId = null;
         let globalAnalyser = null;
+        let lipSyncSession = null;
+        let audioPlaybackEpoch = 0;
 
         function initAudioContext() {
             if (!audioContext) {
@@ -635,12 +642,15 @@
         }
 
         async function playAudioChunk(audioData) {
+            const epoch = audioPlaybackEpoch;
+            let owner;
             initAudioContext();
 
             try {
                 // 将原始 PCM16 数据转换为 WAV 格式
                 const wavData = pcm16ToWav(audioData);
                 const audioBuffer = await audioContext.decodeAudioData(wavData);
+                if (epoch !== audioPlaybackEpoch) return;
                 const source = audioContext.createBufferSource();
                 source.buffer = audioBuffer;
 
@@ -650,30 +660,44 @@
                 // 启动口型同步（只在第一次启动）
                 if (!lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
                     startLipSync(window.LanLan1.live2dModel, globalAnalyser);
-                    lipSyncActive = true;
+                    lipSyncActive = !!lipSyncSession;
                 }
+                owner = lipSyncSession && lipSyncSession.owner;
 
-                return new Promise((resolve) => {
+                return await new Promise((resolve) => {
                     source.onended = () => {
                         // 检查是否还有音频在播放
-                        if (audioQueue.length === 0) {
-                            stopLipSync();
-                            lipSyncActive = false;
+                        if (epoch === audioPlaybackEpoch && audioQueue.length === 0) {
+                            stopLipSync(owner);
                         }
                         resolve();
                     };
                     source.start(0);
                 });
             } catch (error) {
+                if (epoch === audioPlaybackEpoch && owner) stopLipSync(owner);
                 console.error('音频播放错误:', error);
             }
         }
 
         function startLipSync(model, analyser) {
+            stopLipSync();
+            const bridge = window.LanLan1;
+            const owner = {};
+            if (!bridge || !bridge.beginLipSync(owner)) return;
+            const session = { owner, bridge };
+            lipSyncSession = session;
             const dataArray = new Uint8Array(analyser.fftSize);
 
             function animate() {
-                analyser.getByteTimeDomainData(dataArray);
+                if (lipSyncSession !== session) return;
+                try {
+                    analyser.getByteTimeDomainData(dataArray);
+                } catch (error) {
+                    stopLipSync(owner);
+                    console.warn('音频采样失败，释放口型控制:', error);
+                    return;
+                }
                 // 简单求音量（RMS）
                 let sum = 0;
                 for (let i = 0; i < dataArray.length; i++) {
@@ -684,8 +708,9 @@
                 // 映射到嘴巴开合度 0~1
                 const mouthOpen = Math.min(1, rms * 8);
 
-                if (window.LanLan1 && window.LanLan1.live2dModel) {
-                    window.LanLan1.setMouth(mouthOpen);
+                if (bridge.setMouth(mouthOpen, owner) === false) {
+                    stopLipSync(owner);
+                    return;
                 }
 
                 animationFrameId = requestAnimationFrame(animate);
@@ -694,28 +719,33 @@
             animate();
         }
 
-        function stopLipSync() {
+        function stopLipSync(owner) {
+            if (owner !== undefined && (!lipSyncSession || lipSyncSession.owner !== owner)) return;
+            const session = lipSyncSession;
+            lipSyncSession = null;
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
                 animationFrameId = null;
             }
-            if (window.LanLan1 && window.LanLan1.live2dModel) {
-                window.LanLan1.setMouth(0);
-            }
+            if (session) session.bridge.endLipSync(session.owner);
+            lipSyncActive = false;
         }
 
         async function processAudioQueue() {
             if (isPlaying || audioQueue.length === 0) return;
 
             isPlaying = true;
+            const epoch = audioPlaybackEpoch;
             while (audioQueue.length > 0) {
                 const chunk = audioQueue.shift();
                 await playAudioChunk(chunk);
+                if (epoch !== audioPlaybackEpoch) return;
             }
             isPlaying = false;
         }
 
         function clearAudioQueue() {
+            audioPlaybackEpoch++;
             audioQueue = [];
             if (audioContext) {
                 audioContext.close();
@@ -795,9 +825,29 @@
                 console.error('WebSocket 错误:', error);
             };
 
-            ws.onclose = () => {
+            ws.onclose = async () => {
                 console.log('WebSocket 已断开');
                 ws = null;
+
+                // 握手被 Monitor 以 403 拒绝时浏览器只看到 close。会话过期或更换 token 后
+                // 探一次接口：401 就刷新页面，让认证失败直接显示出来，而不是静默重连到放弃。
+                // 探测限时 3 秒：代理或网络挂住请求时不能拖住下面的重连。
+                const probeAbort = new AbortController();
+                const probeTimer = setTimeout(() => probeAbort.abort(), 3000);
+                try {
+                    const probe = await fetch('/api/config/page_config', {
+                        cache: 'no-store',
+                        signal: probeAbort.signal,
+                    });
+                    if (probe.status === 401) {
+                        window.location.reload();
+                        return;
+                    }
+                } catch (_) {
+                    // 网络不可达或探测超时时按原逻辑重连
+                } finally {
+                    clearTimeout(probeTimer);
+                }
 
                 if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;

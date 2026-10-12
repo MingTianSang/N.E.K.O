@@ -444,38 +444,55 @@ def test_a_script_that_merely_runs_long_still_fails_its_deadline(runner):
     )
 
 
-def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling(
-    monkeypatch,
-):
-    """The deadline is measured from node start, not from when the watchdog arms.
+def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling():
+    """The deadline is measured from script start, not from the end of the top level.
 
-    The watchdog is appended, so it arms only after the script's synchronous top
-    level finishes - but the outer ceiling has been running since the spawn. Arm
-    for the full deadline and the two clocks drift apart by exactly that top
-    level; any top level heavier than the slack and the ceiling fires first,
+    A timer cannot fire until the script's synchronous top level finishes. Arm
+    the watchdog only then and the deadline drifts by exactly that top level;
+    any top level heavier than the slack and the outer ceiling fires first,
     taking the diagnosis with it.
 
-    Driven with a shrunken slack so the case costs ~2s instead of ~9s.
+    Timed inside node, from the first statement to exit, not against the outer
+    ceiling. The ceiling also covers node bootstrap, which the budget leaves out
+    on purpose, and a Windows runner under ``-n auto`` can spend over a second
+    there: an earlier version shrank the slack to 1s and was killed by the
+    ceiling while the code under test was correct. With the real slack absorbing
+    bootstrap, the difference is in-process: ~2.0s to exit when correct, ~3.5s
+    when armed after the top level.
     """
     node_path = _node_or_skip()
-    monkeypatch.setattr(node_harness, "_SPAWN_SLACK_SECONDS", 1.0)
 
-    # 2s of synchronous top level - twice the slack - and then a leaked timer.
+    # 2s of synchronous top level, longer than the 1.5s budget, then a leaked
+    # timer. The exit hook reports how long after the first statement node left.
     script = (
+        "var t0 = process.hrtime.bigint();\n"
+        "process.on('exit', function () {\n"
+        "  var ms = Number((process.hrtime.bigint() - t0) / 1000000n);\n"
+        "  require('fs').writeSync(1, '\\nelapsed_ms=' + ms + '\\n');\n"
+        "});\n"
         "var until = Date.now() + 2000;\n"
         "while (Date.now() < until) {}\n"
         "setInterval(function () {}, 1000);\n"
         "process.stdout.write('started');\n"
     )
     result = run_node_script(
-        node_path, script, capture_output=True, check=False, timeout=2
+        node_path, script, capture_output=True, check=False, timeout=1.5
     )
 
     assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
-        "同步 top-level 吃掉的时间必须算进 deadline，否则 watchdog 会被外层 ceiling "
-        f"抢先杀掉、诊断全丢：rc={result.returncode} stderr={result.stderr!r}"
+        f"泄漏的 setInterval 应由 watchdog 判死：rc={result.returncode} "
+        f"stderr={result.stderr!r}"
     )
     assert "[node_harness]" in result.stderr
+    match = re.search(r"elapsed_ms=(\d+)", result.stdout)
+    assert match, f"脚本的 exit 钩子没跑到：stdout={result.stdout!r}"
+    elapsed_ms = int(match.group(1))
+    # Correct: top level 2000ms, then the overdue watchdog fires at once.
+    # Arming after the top level: 2000 + 1500ms. The bound sits midway.
+    assert elapsed_ms < 2750, (
+        "同步 top-level 吃掉的时间必须算进 deadline，否则 watchdog 要等 top-level "
+        f"跑完再计满一整个 deadline，会被外层 ceiling 抢先杀掉、诊断全丢：elapsed_ms={elapsed_ms}"
+    )
 
 
 def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
@@ -557,12 +574,43 @@ def test_a_spawn_that_stalls_once_is_retried():
     assert calls[0][-1] != calls[1][-1], "重试要用新的临时脚本，别继承上一次被 kill 时的残留"
 
 
-def test_a_spawn_that_keeps_stalling_reports_both_attempts():
+def test_a_spawn_that_stalls_twice_in_a_row_still_gets_its_third_attempt():
+    """Two back-to-back stalls have happened on a Windows runner.
+
+    ``test_badminton_deferred_character_resolution_starts_only_active_requests``
+    came back red after two 35s ceilings in which node never reached the
+    script: nothing had been tested, yet the retry budget was already spent.
+    """
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) <= 2:
+            raise subprocess.TimeoutExpired(
+                argv, kwargs.get("timeout"), output="", stderr=""
+            )
+        return ok
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        result = run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert node_harness._SPAWN_ATTEMPTS >= 3, "连续两次 spawn 卡死在 runner 上真实出现过"
+    assert result is ok
+    assert len(calls) == 3
+    assert len(set(map(tuple, calls))) == 3, "每次重试都要用新的临时脚本"
+
+
+def test_a_spawn_that_keeps_stalling_reports_every_attempt():
     """The dual: retrying must not become a way to hide a reproducible stall.
 
-    A stall only earns a retry when it was completely silent, so a two-attempt
-    run is by construction two silent attempts - and the error has to say that
-    twice over rather than collapsing it into one line.
+    A stall only earns a retry when node never reached the script, so a run
+    that spends every attempt is by construction that many silent attempts -
+    and the error has to list each one rather than collapsing them into a line.
     """
     calls = []
 
@@ -578,13 +626,13 @@ def test_a_spawn_that_keeps_stalling_reports_both_attempts():
     finally:
         node_harness.subprocess.run = original
 
-    assert len(calls) == 2, "重试次数必须有界"
+    attempts = node_harness._SPAWN_ATTEMPTS
+    assert len(calls) == attempts, "重试次数必须有界"
     assert isinstance(excinfo.value, NodeHarnessSpawnTimeout)
     message = str(excinfo.value)
-    assert "attempt 1:" in message and "attempt 2:" in message, (
-        f"两次尝试都得各自列出来：{message}"
-    )
-    assert message.count("stdout=") == 2 and message.count("stderr=") == 2, (
+    for index in range(1, attempts + 1):
+        assert f"attempt {index}:" in message, f"每次尝试都得各自列出来：{message}"
+    assert message.count("stdout=") == attempts and message.count("stderr=") == attempts, (
         f"每次尝试各自吐了什么必须跟着错误一起报出来：{message}"
     )
 
@@ -758,12 +806,13 @@ def test_output_from_a_pre_main_preload_does_not_count_as_started():
     )
 
 
-def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
-    """With two attempts, ``.stdout`` must be the retry's, not the first try's.
+def test_the_wrapped_error_reports_the_last_attempt_not_the_first():
+    """With several attempts, ``.stdout`` must be the last retry's, not the first's.
 
-    Reachable and distinguishing: attempt 1 stalls silently (so it earns the
-    retry), attempt 2 stalls with output. Picking ``attempts[0]`` would hand the
-    caller the empty one and hide the only evidence in the run.
+    Reachable and distinguishing: attempt 1 stalls silently, the later ones
+    stall with output that comes from before the script (no marker), so every
+    one of them earns the retry. Picking ``attempts[0]`` would hand the caller
+    the empty one and hide the only evidence in the run.
     """
     calls = []
 
@@ -772,7 +821,10 @@ def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
         if len(calls) == 1:
             raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
         raise subprocess.TimeoutExpired(
-            argv, kwargs.get("timeout"), output="second-out", stderr="second-err"
+            argv,
+            kwargs.get("timeout"),
+            output=f"out-{len(calls)}",
+            stderr=f"err-{len(calls)}",
         )
 
     original = node_harness.subprocess.run
@@ -785,14 +837,15 @@ def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
     finally:
         node_harness.subprocess.run = original
 
-    assert len(calls) == 2
-    assert excinfo.value.stdout == "second-out"
-    assert excinfo.value.stderr == "second-err"
+    attempts = node_harness._SPAWN_ATTEMPTS
+    assert len(calls) == attempts
+    assert excinfo.value.stdout == f"out-{attempts}"
+    assert excinfo.value.stderr == f"err-{attempts}"
     # Both are still listed; only the exception's own fields follow the last one.
     # Count the per-attempt lines, not the word: the diagnosis prose says
     # "the attempt was repeated" and would inflate a bare substring count.
     listed = [l for l in str(excinfo.value).splitlines() if l.startswith("  attempt ")]
-    assert len(listed) == 2, listed
+    assert len(listed) == attempts, listed
 
 
 def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
