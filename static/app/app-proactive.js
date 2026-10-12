@@ -2554,6 +2554,7 @@
      * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
+        if (isHomeTutorialFeatureSuppressed()) return false;
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2563,10 +2564,12 @@
                 return false;
             }
         }
+        if (isHomeTutorialFeatureSuppressed()) return false;
 
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
+            if (isHomeTutorialFeatureSuppressed()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2575,6 +2578,12 @@
 
         // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
+        // 采集授权/原生流创建期间教程可能开始，开始时的释放看不到晚到的流。
+        // 在统一入口复查并释放，覆盖开麦、换麦和视觉开关的所有调用方。
+        if (isHomeTutorialFeatureSuppressed()) {
+            releaseProactiveVisionStream();
+            return false;
+        }
         if (stream) {
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && typeof rememberedWindowCapture.isCurrent === 'function'

@@ -6,6 +6,64 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app/app-proactive.js'), 'utf8');
 
+test('tutorial suppression rejects late vision acquisition at every async boundary', async () => {
+    for (const stage of ['prepare', 'backend', 'stream', 'manual-stream']) {
+        const acquiresStream = stage === 'stream' || stage === 'manual-stream';
+        const listeners = new Map();
+        let settle;
+        let enterStage;
+        const entered = new Promise((resolve) => { enterStage = resolve; });
+        const gate = new Promise((resolve) => { settle = resolve; });
+        let stopped = 0;
+        let promptCalls = 0;
+        const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); },
+            prepareRememberedWindowCapture: async () => {
+                if (stage === 'prepare') { enterStage(); await gate; }
+                return { required: false, allowed: true };
+            },
+            appScreen: {
+                fetchBackendScreenshot: async () => {
+                    if (stage === 'backend') { enterStage(); await gate; }
+                    return { dataUrl: null };
+                },
+                acquireOrReuseCachedStream: async () => {
+                    promptCalls += 1;
+                    enterStage();
+                    await gate;
+                    state.screenCaptureStream = stream;
+                    return stream;
+                }
+            }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: {
+                addEventListener() {},
+                getElementById() {
+                    return stage === 'manual-stream' ? { classList: { contains() { return true; } } } : null;
+                }
+            },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() {}
+        });
+        const pending = window.acquireProactiveVisionStream();
+        await entered;
+        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+        window.releaseProactiveVisionStream(); // Begin-time release has no late stream yet.
+        settle();
+        assert.equal(await pending, false, stage);
+        assert.equal(promptCalls, acquiresStream ? 1 : 0, 'no prompt after earlier suppression');
+        assert.equal(stopped, stage === 'stream' ? 1 : 0, 'release the late cached track');
+        assert.equal(state.screenCaptureStream == null, stage !== 'manual-stream', 'manual sharing remains protected');
+        await window.acquireProactiveVisionStream();
+        assert.equal(promptCalls, acquiresStream ? 1 : 0, 'already suppressed calls never acquire');
+    }
+});
+
 test('click-guide release restores chat after its timer expires while suppressed', async () => {
     const listeners = new Map();
     const timers = new Map();

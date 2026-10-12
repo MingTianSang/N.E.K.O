@@ -1409,6 +1409,8 @@ def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window()
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     script = """
 const results = { backendCalls: 0, streamCalls: 0 };
+const isHomeTutorialFeatureSuppressed = () => false;
+const releaseProactiveVisionStream = () => {};
 const window = {
   prepareRememberedWindowCapture: async () => ({
     required: true,
