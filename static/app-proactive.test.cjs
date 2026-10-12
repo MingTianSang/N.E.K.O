@@ -64,6 +64,38 @@ test('tutorial suppression rejects late vision acquisition at every async bounda
     }
 });
 
+test('click-guide activation stops vision and releases only automatic capture', () => {
+    for (const manualSharing of [false, true]) {
+        const listeners = new Map();
+        let stopped = 0;
+        let cleared = 0;
+        const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
+        const state = {
+            isRecording: true, proactiveVisionEnabled: true,
+            screenCaptureStream: stream, proactiveVisionFrameTimer: 1
+        };
+        const window = {
+            appState: state, appConst: {},
+            addEventListener(type, listener) { listeners.set(type, listener); }
+        };
+        vm.runInNewContext(source, {
+            window,
+            document: {
+                addEventListener() {},
+                getElementById() { return { classList: { contains() { return manualSharing; } } }; }
+            },
+            localStorage: { getItem() { return null; } },
+            console, clearTimeout() {}, clearInterval() { cleared += 1; }
+        });
+        window.isNekoClickGuideActive = true;
+        listeners.get('neko:click-guide-active')({ detail: { active: true } });
+        assert.equal(state.proactiveVisionFrameTimer, null);
+        assert.equal(cleared, 1);
+        assert.equal(stopped, manualSharing ? 0 : 1);
+        assert.equal(state.screenCaptureStream == null, !manualSharing);
+    }
+});
+
 test('click-guide release restores chat after its timer expires while suppressed', async () => {
     const listeners = new Map();
     const timers = new Map();

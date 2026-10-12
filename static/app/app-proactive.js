@@ -2685,6 +2685,11 @@
     // 释放时也必须重排；调度器尚未初始化时由初始化器负责首次排程。
     window.addEventListener('neko:click-guide-active', function (event) {
         var detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            stopProactiveVisionDuringSpeech();
+            releaseProactiveVisionStream();
+            return;
+        }
         if (detail.active !== false) return;
         if (S._proactiveSchedulerInitialized === true && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
             scheduleProactiveChat();
