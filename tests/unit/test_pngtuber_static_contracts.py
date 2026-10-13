@@ -97,6 +97,12 @@ def test_pngtuber_save_dedup_key_write_binds_to_load_generation():
     assert save_block.index("const saveGeneration = this._loadGeneration;") < save_block.index(
         "if (this._loadGeneration === saveGeneration) {"
     )
+    # 世代校验必须在 fetch 之前拒绝过期任务（Codex P1）：同角色重载后旧快照
+    # 整对象替换会还原刚选的新配置，不能只在键写回处兜底
+    assert "if (this._loadGeneration !== saveGeneration) {" in save_block
+    assert save_block.index("if (this._loadGeneration !== saveGeneration) {") < save_block.index(
+        "const response = await fetch("
+    )
 
 
 def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
@@ -120,6 +126,216 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     # 执行路径不得再惰性读 config 或以重新解析的名字作为 PUT 身份
     assert "Object.assign({}, this.config)" not in run_save_block
     assert "encodeURIComponent(currentName)" not in run_save_block
+
+
+def test_pngtuber_save_pipeline_timing_guards():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber save timing tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const source = __SOURCE_JSON__;
+
+class StubElement {
+  constructor(tag) {
+    this.tagName = tag;
+    this.style = {};
+    this.dataset = {};
+    this.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
+    this.children = [];
+  }
+  appendChild(child) { this.children.push(child); return child; }
+  remove() {}
+  addEventListener() {}
+  removeEventListener() {}
+  setAttribute() {}
+  removeAttribute() {}
+  getAttribute() { return null; }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
+  contains() { return false; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; }
+}
+
+function makeContext() {
+  const state = { fetches: [] };
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  let fetchCallCount = 0;
+  const window = {
+    location: { pathname: '/' },
+    innerWidth: 1000,
+    innerHeight: 800,
+    lanlan_config: { model_type: 'pngtuber', lanlan_name: 'neko' },
+  };
+  const document = {
+    body: Object.assign(new StubElement('body'), { classList: { contains() { return false; }, toggle() {}, add() {}, remove() {} } }),
+    head: new StubElement('head'),
+    documentElement: new StubElement('html'),
+    getElementById() { return null; },
+    querySelectorAll() { return []; },
+    createElement: (tag) => new StubElement(tag),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const context = {
+    console,
+    performance: { now: () => 0 },
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: () => {},
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    Image: class { constructor() { this.style = {}; } },
+    Audio: class { constructor() {} addEventListener() {} },
+    CustomEvent: class { constructor(type, opts) { this.type = type; this.detail = opts && opts.detail; } },
+    fetch: async (url, options) => {
+      fetchCallCount += 1;
+      if (fetchCallCount === 1) {
+        await gate; // 首笔 PUT 挂在在途，供各场景控制收尾时机
+      }
+      state.fetches.push({ url, body: options ? JSON.parse(options.body) : null });
+      return { ok: true, json: async () => ({ success: true }) };
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() { return true; },
+    window,
+    document,
+  };
+  window.addEventListener = context.addEventListener;
+  window.removeEventListener = context.removeEventListener;
+  window.dispatchEvent = context.dispatchEvent;
+  window.CustomEvent = context.CustomEvent;
+  window.Image = context.Image;
+  window.setTimeout = context.setTimeout;
+  window.clearTimeout = context.clearTimeout;
+  document.addEventListener = context.addEventListener;
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: 'pngtuber-core.js' });
+  return { context, state, releaseGate, window };
+}
+
+const placement = (offsetX) => ({
+  offset_x: offsetX,
+  offset_y: 0,
+  scale: 1,
+  mobile_scale: 1,
+  mobile_offset_x: 0,
+  mobile_offset_y: 0,
+  position_anchor: 'center',
+  mirror: false,
+});
+
+(async () => {
+  // 跨类型热切换：排队的保存不得落到切换后的 Live2D 角色记录上
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    window.lanlan_config.model_type = 'live2d';
+    window.lanlan_config.lanlan_name = 'miku';
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'only the in-flight A save PUTs');
+    assert.ok(state.fetches[0].url.includes('/l2d/neko'), 'in-flight save goes to A');
+    assert.ok(!state.fetches.some((f) => f.url.includes('miku')),
+      'queued save must not reach the switched-to live2d character');
+  }
+
+  // 同类型换角色：排队的保存同样中止
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    window.lanlan_config.lanlan_name = 'bocchi';
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'only the in-flight A save PUTs');
+    assert.ok(!state.fetches.some((f) => f.url.includes('bocchi')),
+      'queued save must not reach the switched-to pngtuber character');
+  }
+
+  // 同角色重载推进世代：排队保存的旧快照不得整对象替换还原新配置
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    // 模型管理页保存新包后 handleModelReload → load()：世代推进、配置换新
+    const loaded = await manager.load(Object.assign(placement(0), {
+      idle_image: 'assets/neko-new-package.png',
+      talking_image: 'assets/neko-new-package.png',
+    }), {});
+    assert.equal(loaded, true, 'same-character reload succeeded');
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'stale queued save must not PUT after reload');
+    assert.equal(manager._lastSavedPositionKey, '',
+      'stale completion must not record its pre-reload key');
+    console.log('timing guards: cross-type / cross-character / stale-generation OK');
+  }
+
+  // 无切换的正常排队：两笔快照都按入队时刻落盘
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 2, 'both queued saves persist for the same character');
+    assert.equal(state.fetches[0].body.pngtuber.offset_x, 0, 'first save snapshot');
+    assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'second save snapshot');
+  }
+
+  // 摆放相同的两个角色包：load 清键 + 复位后仍要持久化（去重键不得跨 load 泄漏）
+  {
+    const { context, state } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    await manager.saveCurrentConfig();
+    assert.equal(state.fetches.length, 1, 'A save issued');
+    const loaded = await manager.load(Object.assign(placement(0), {
+      idle_image: 'assets/character-b.png',
+      talking_image: 'assets/character-b-talk.png',
+    }), {});
+    assert.equal(loaded, true, 'B loaded');
+    await manager.resetModelPosition();
+    assert.equal(state.fetches.length, 2,
+      'B reset must persist even though saveKey matches the previous package');
+    assert.equal(state.fetches[1].body.pngtuber.idle_image, 'assets/character-b.png',
+      'B reset payload carries the loaded package');
+    console.log('timing guards: normal queue / dedup-key isolation OK');
+  }
+})().catch((error) => {
+  console.error('RUNTIME_CHECK_FAILED', error);
+  process.exit(1);
+});
+"""
+    script = script.replace("__SOURCE_JSON__", json.dumps(source))
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():

@@ -3921,9 +3921,10 @@
                 this.config.mirror
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
-            // 键写回绑定加载世代：在途保存横跨 load()（_saveInFlight 链不清），
-            // 换模型后完成的旧保存不得恢复已被 load() 清空的键，否则新模型
-            // 摆放相同的保存（复位恰是规范化摆放）会被去重跳过
+            // 保存绑定加载世代：在途保存横跨 load()（_saveInFlight 链不清）。
+            // runSave 开头先拒过期世代——同角色重载后旧快照整对象替换会还原
+            // 刚选的新配置；成功后的键写回也校验世代，防止旧保存恢复已被
+            // load() 清空的键（否则新模型摆放相同的保存会被去重跳过）
             const saveGeneration = this._loadGeneration;
             // 身份与载荷入队时捕获、执行时复审：保存排队期间可能已热切走
             // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
@@ -3940,6 +3941,9 @@
                 apply_runtime: false
             };
             const runSave = async () => {
+                if (this._loadGeneration !== saveGeneration) {
+                    return false;
+                }
                 if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                     return false;
                 }
