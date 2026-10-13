@@ -3972,6 +3972,15 @@
                         return false;
                     }
                 }
+                // 兜底名字解析是真实网络请求：解析期间 load() 可能已推进世代
+                // 并换上新配置，出请求前复核世代与类型，防止旧快照越过开头
+                // 的检查落在刚加载的配置上
+                if (this._loadGeneration !== saveGeneration) {
+                    return false;
+                }
+                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                    return false;
+                }
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(putName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },

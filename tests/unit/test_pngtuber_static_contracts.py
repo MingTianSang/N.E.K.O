@@ -142,6 +142,12 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     assert save_block.index("const runSave = async () => {") < save_block.index(
         "await this.resolveCurrentLanlanName()"
     )
+    # 兜底名字解析是真实网络 await：解析与 PUT 之间 load() 可推进世代，
+    # 出请求前必须复核世代与类型（Codex P1）
+    first_name_await = save_block.index("await this.resolveCurrentLanlanName()")
+    post_await_guard = save_block.index("if (this._loadGeneration !== saveGeneration) {", first_name_await)
+    assert post_await_guard < save_block.index("const response = await fetch(")
+    assert save_block.count("if (this._loadGeneration !== saveGeneration) {") >= 2
     run_save_block = save_block[save_block.index("const runSave = async () => {"):]
     assert "encodeURIComponent(putName)" in run_save_block
     assert "JSON.stringify(queuedPayload)" in run_save_block
@@ -433,8 +439,30 @@ const placement = (offsetX) => ({
     assert.equal(state.fetches[0].body.pngtuber.offset_x, 0, 'older snapshot persists first');
     assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'newer snapshot persists last');
     assert.ok(state.fetches.every((f) => f.url.includes('/l2d/neko')), 'fallback-resolved name used');
+  }
+
+  // 兜底名字解析期间同角色重载推进世代：解析完必须复核，旧快照不得出请求
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    window.lanlan_config = { model_type: 'pngtuber' }; // 无直读名 → 名字解析走 /api/config
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const staleSave = manager.saveCurrentConfig(); // 名字解析 = 首笔 fetch，被门拦住
+    // 让出事件循环，等 runSave 真正启动并挂到名字解析的 await 上——
+    // 否则 load() 的同步段先推进世代，开头守卫就把它拦下了，测不到缺口
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 重载窗口内模型管理页保存新包 → handleModelReload → load() 推进世代
+    const loaded = await manager.load(Object.assign(placement(0), {
+      idle_image: 'assets/neko-new-package.png',
+      talking_image: 'assets/neko-new-package.png',
+    }), {});
+    assert.equal(loaded, true, 'same-character reload succeeded');
+    releaseGate();
+    await staleSave;
+    assert.equal(state.fetches.length, 0, 'stale fallback save must not PUT after reload');
+    assert.equal(manager._lastSavedPositionKey, '', 'no key recorded for aborted save');
     finished = true;
-    console.log('timing guards: fallback-name ordering OK — all scenarios finished');
+    console.log('timing guards: fallback-generation recheck OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);
