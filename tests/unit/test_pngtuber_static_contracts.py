@@ -57,6 +57,10 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     ]
 
     assert "if (this._dragState || this._touchZoomState) return;" in block
+    assert "window.appState.isSwitchingCatgirl" in block
+    assert block.index("window.appState.isSwitchingCatgirl") < block.index(
+        "if (this._dragState || this._touchZoomState) return;"
+    )
     assert "this._dragSequence += 1;" in block
     assert "this.cancelEdgeSnapAnimation();" in block
     assert "this.setActiveOffsets(0, 0);" in block
@@ -140,6 +144,17 @@ const vm = require('node:vm');
 
 const source = __SOURCE_JSON__;
 
+// 完成哨兵：未完成的 Promise 不 удерж node 事件循环，进程会以退出码 0
+// 提前退出，让尾部场景的断言静默变成死代码（Codex P2 / CodeRabbit）。
+// 场景全部跑完后才置位，提前退出在此大声失败。
+let finished = false;
+process.on('beforeExit', () => {
+  if (!finished) {
+    console.error('COMPLETION_SENTINEL: script exited before all scenarios finished');
+    process.exitCode = 1;
+  }
+});
+
 class StubElement {
   constructor(tag) {
     this.tagName = tag;
@@ -170,6 +185,7 @@ function makeContext() {
     location: { pathname: '/' },
     innerWidth: 1000,
     innerHeight: 800,
+    appState: { isSwitchingCatgirl: false },
     lanlan_config: { model_type: 'pngtuber', lanlan_name: 'neko' },
   };
   const document = {
@@ -312,7 +328,8 @@ const placement = (offsetX) => ({
 
   // 摆放相同的两个角色包：load 清键 + 复位后仍要持久化（去重键不得跨 load 泄漏）
   {
-    const { context, state } = makeContext();
+    const { context, state, releaseGate } = makeContext();
+    releaseGate(); // 本场景首笔 fetch 即受门控制，先放行再等待
     const manager = new context.window.PNGTuberManager();
     manager.config = placement(0);
     await manager.saveCurrentConfig();
@@ -327,7 +344,24 @@ const placement = (offsetX) => ({
       'B reset must persist even though saveKey matches the previous package');
     assert.equal(state.fetches[1].body.pngtuber.idle_image, 'assets/character-b.png',
       'B reset payload carries the loaded package');
-    console.log('timing guards: normal queue / dedup-key isolation OK');
+  }
+
+  // 切换进行中（isSwitchingCatgirl）：托盘复位整体跳过，不改动配置也不出请求
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    releaseGate(); // 场景末段的复位会发首笔 fetch，先放行
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window.appState.isSwitchingCatgirl = true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'switching: config untouched');
+    assert.equal(state.fetches.length, 0, 'switching: no save issued');
+    window.appState.isSwitchingCatgirl = false;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, 0, 'after switch completes: reset works');
+    assert.equal(state.fetches.length, 1, 'after switch completes: save issued');
+    finished = true;
+    console.log('timing guards: switching-entry guard OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);

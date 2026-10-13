@@ -3293,6 +3293,12 @@
         // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
         // 不属于被拖走的位置，复位时不改动。
         async resetModelPosition() {
+            // 角色切换进行中不复位：切换先改 lanlan_name、延迟才 load()
+            // （app-character.js 切换序列），窗口内复位会以新角色名入队保存，
+            // 类型/名字/世代三道检查全过，把隐藏中管理器的旧配置整对象
+            // PUT 到新角色记录上。拖拽/缩放不可达（模型已 hide），托盘是
+            // 唯一入口
+            if (window.appState && window.appState.isSwitchingCatgirl) return;
             // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
             // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
             // （与 handleWheelZoom 的入口守卫同模式）。
