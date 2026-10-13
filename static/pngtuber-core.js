@@ -3921,6 +3921,10 @@
                 this.config.mirror
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
+            // 键写回绑定加载世代：在途保存横跨 load()（_saveInFlight 链不清），
+            // 换模型后完成的旧保存不得恢复已被 load() 清空的键，否则新模型
+            // 摆放相同的保存（复位恰是规范化摆放）会被去重跳过
+            const saveGeneration = this._loadGeneration;
             const runSave = async () => {
                 const name = await this.resolveCurrentLanlanName();
                 if (!name) {
@@ -3942,7 +3946,9 @@
                     console.warn('[PNGTuber] 保存位置失败:', result.error || response.statusText);
                     return false;
                 }
-                this._lastSavedPositionKey = saveKey;
+                if (this._loadGeneration === saveGeneration) {
+                    this._lastSavedPositionKey = saveKey;
+                }
                 return true;
             };
             this._saveInFlight = (this._saveInFlight || Promise.resolve()).then(runSave, runSave);

@@ -83,6 +83,22 @@ def test_pngtuber_load_invalidates_save_dedup_key_for_new_model():
     )
 
 
+def test_pngtuber_save_dedup_key_write_binds_to_load_generation():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    save_block = source[
+        source.index("        async saveCurrentConfig()"):
+        source.index("        scheduleSaveCurrentConfig")
+    ]
+
+    # 在途保存横跨 load() 完成时不得恢复已清空的键（Codex P2 / CodeRabbit
+    # Data Integrity）：键写回必须被加载世代守卫包住
+    assert "const saveGeneration = this._loadGeneration;" in save_block
+    assert "if (this._loadGeneration === saveGeneration) {" in save_block
+    assert save_block.index("const saveGeneration = this._loadGeneration;") < save_block.index(
+        "if (this._loadGeneration === saveGeneration) {"
+    )
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[
