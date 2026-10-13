@@ -331,11 +331,10 @@
                             <button id="open-state-stage-btn" class="primary-button pack-editor-button" type="button" data-i18n="emoteMaker.stageOpen">打开状态表演台</button>
                         </div>
 
-                        <label class="select-row" for="pack-name"><span data-i18n="emoteMaker.packNameLabel">形象包名称</span><input id="pack-name" type="text" maxlength="48" autocomplete="off" spellcheck="false"></label><button type="button" class="tip-help" data-tip-key="emoteMaker.packNameHint" data-i18n-aria="emoteMaker.packNameHint" aria-label="提示">?</button>
+                        <label class="select-row" for="pack-name"><span data-i18n="emoteMaker.packNameLabel">形象包名称</span><button type="button" class="tip-help" data-tip-key="emoteMaker.packNameHint" data-i18n-aria="emoteMaker.packNameHint" aria-label="提示">?</button><input id="pack-name" type="text" maxlength="48" autocomplete="off" spellcheck="false"></label>
                         
                         <label class="select-row" for="pack-format"><span data-i18n="emoteMaker.packFormatLabel">包格式</span><select id="pack-format"><option value="flat" data-i18n="emoteMaker.packFormatFlat">平铺（GIF，通用兼容）</option><option value="layered" data-i18n="emoteMaker.packFormatLayered">分层（多状态，可驱动）</option></select></label>
-                        <label class="select-row" for="pack-priority"><span data-i18n="emoteMaker.packPriorityLabel">状态优先级</span><select id="pack-priority"><option value="talking" data-i18n="emoteMaker.packPriorityTalking">说话优先（情绪等话说完）</option><option value="emotion" data-i18n="emoteMaker.packPriorityEmotion">情绪优先（说话不覆盖）</option></select></label>
-                        <button type="button" class="tip-help" data-tip-key="emoteMaker.packPriorityHint" data-i18n-aria="emoteMaker.packPriorityHint" aria-label="提示">?</button>
+                        <label class="select-row" for="pack-priority"><span data-i18n="emoteMaker.packPriorityLabel">状态优先级</span><select id="pack-priority"><option value="talking" data-i18n="emoteMaker.packPriorityTalking">说话优先（情绪等话说完）</option><option value="emotion" data-i18n="emoteMaker.packPriorityEmotion">情绪优先（说话不覆盖）</option></select><button type="button" class="tip-help" data-tip-key="emoteMaker.packPriorityHint" data-i18n-aria="emoteMaker.packPriorityHint" aria-label="提示">?</button></label>
                         <p class="panel-note" id="pack-status" role="status" aria-live="polite"></p>
                         <div class="pack-actions">
                             <button id="pack-export-btn" class="tool-button" type="button" data-i18n="emoteMaker.packExportZip">导出形象包</button>

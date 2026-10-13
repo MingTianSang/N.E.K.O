@@ -4198,6 +4198,22 @@
         return templateLibraryModule.entryKeyFor(templatePackage);
     }
 
+    /**
+     * 当前模板的显示名：库条目在就用库的裁决（用户改名 > 来源名 > 包名 > 自报名），
+     * 库还没提交（导入的同一拍）就按同一条链就地算一遍 —— 两处顺序不能反，
+     * 否则标题会比卡片晚一拍才对上。
+     */
+    function currentTemplateLabel() {
+        if (!templateLibraryModule || !templatePackage) return '';
+        const entry = templateLibraryModule.find(templateLibraryState, currentTemplateKey());
+        if (entry) return templateLibraryModule.entryLabel(entry);
+        const pkgName = String(templatePackage.source?.packageName || '')
+            .replace(/\.zip$/i, '');
+        return pkgName && pkgName !== 'template-directory'
+            ? pkgName
+            : (templatePackage.model?.displayName || '');
+    }
+
     /** 注册表里还活着的 store 不能释放：清字节是不可逆的，切回去就得重新读盘。 */
     function holdsTemplateStore(store) {
         if (!store) return false;
@@ -5248,7 +5264,7 @@
         const workspaceTitle = $('#workspace-title');
         if (workspaceTitle) {
             workspaceTitle.textContent = templatePackage
-                ? (templatePackage.model?.displayName || t('emoteMaker.templateSceneList'))
+                ? (currentTemplateLabel() || t('emoteMaker.templateSceneList'))
                 : t('emoteMaker.emptyLibraryHint');
         }
         const titleSubtitle = document.querySelector('.title-brand p');

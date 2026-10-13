@@ -351,7 +351,7 @@ def test_reopens_from_the_local_copy_after_reload(library_page: Page) -> None:
     library_page.wait_for_function(
         "() => document.body.classList.contains('editor-has-template')", timeout=25000)
     assert choosers == [], f"重开走的是本地副本，不该再要用户定位文件: {choosers}"
-    assert "第一个" in library_page.evaluate(
+    assert "first" in library_page.evaluate(
         "() => document.querySelector('#workspace-title').textContent")
     # 恢复必须落回同一个库身份（同键）：起个 template.zip 的新名字就会分裂成
     # 两条 —— 旧条目的取景/组随之全丢。这条就是防它的。
@@ -446,6 +446,8 @@ def test_supplemented_textures_survive_a_reload(library_page: Page) -> None:
         "() => document.querySelector('#asset-grid .template-lib-card .template-lib-open').click()")
     library_page.wait_for_function(
         "() => document.body.classList.contains('editor-has-template')", timeout=25000)
+    assert "tex" in library_page.evaluate(
+        "() => document.querySelector('#workspace-title').textContent")
     assert "1" in library_page.evaluate(
         "() => document.querySelector('#template-texture-cache-filename').textContent"), \
         "补充的贴图没随副本回来"
@@ -559,5 +561,5 @@ def test_double_click_renames_the_card_and_survives_a_reload(library_page: Page)
         "() => Boolean(document.querySelector('#asset-grid .template-lib-rename'))",
         timeout=10000)
     title = library_page.evaluate("() => document.querySelector('#workspace-title').textContent")
-    assert "第二个" in title, f"双击改名前的那两下 click 把模板切过去了: {title!r}"
+    assert "second" in title, f"双击改名前的那两下 click 把模板切过去了: {title!r}"
     library_page.keyboard.press("Enter")
