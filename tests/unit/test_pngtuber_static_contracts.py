@@ -49,6 +49,24 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     assert "centerPreview ? 0" not in normalize_block
 
 
+def test_pngtuber_reset_model_position_restores_default_placement():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    block = source[
+        source.index("async resetModelPosition()"):
+        source.index("async checkAndSwitchDisplayAfterDrag(state)")
+    ]
+
+    assert "this._dragSequence += 1;" in block
+    assert "this.cancelEdgeSnapAnimation();" in block
+    assert "this.setActiveOffsets(0, 0);" in block
+    assert "this.setActiveScale(1);" in block
+    assert "this.applyTransform();" in block
+    assert "this.syncGlobalConfig();" in block
+    assert "await this.saveOrStageCurrentConfig();" in block
+    # position_anchor 是摆放偏好（居中/右下），不属于被拖走的位置，复位不改动
+    assert "position_anchor" not in block
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[
@@ -137,10 +155,16 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
     assert "helper.markDisplaySwitchSuccess('pngtuber');" in drag_block
     assert "await this.snapModelIntoScreen({ animate: true });" in drag_block
-    assert drag_block.index("await this.recordDragHintPointerEdgeRelease(state);") < drag_block.index(
+    # endDrag 内部的顺序契约单独切片锚定，避免被块内其他方法的同名调用干扰
+    end_drag_block = source[
+        source.index("        async endDrag(event) {"):
+        source.index("        handleClick(event) {")
+    ]
+    assert "await this.recordDragHintPointerEdgeRelease(state);" in end_drag_block
+    assert end_drag_block.index("await this.recordDragHintPointerEdgeRelease(state);") < end_drag_block.index(
         "await this.snapModelIntoScreen({ animate: true });"
     )
-    assert drag_block.index("await this.snapModelIntoScreen({ animate: true });") < drag_block.index(
+    assert end_drag_block.index("await this.snapModelIntoScreen({ animate: true });") < end_drag_block.index(
         "await this.saveOrStageCurrentConfig();"
     )
     touch_end_block = source[

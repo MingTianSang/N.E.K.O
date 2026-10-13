@@ -3289,6 +3289,24 @@
             });
         }
 
+        // 托盘“重置角色位置”入口。与 Live2D/VRM/MMD 的同名方法对齐：
+        // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
+        // 不属于被拖走的位置，复位时不改动。
+        async resetModelPosition() {
+            this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
+            this.setActiveOffsets(0, 0);
+            this.setActiveScale(1);
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+            await this.saveOrStageCurrentConfig();
+        }
+
         async checkAndSwitchDisplayAfterDrag(state) {
             const bridge = window.electronScreen;
             if (isModelManagerPage() || !bridge
