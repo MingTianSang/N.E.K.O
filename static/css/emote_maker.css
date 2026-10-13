@@ -1981,7 +1981,8 @@ body {
        基础布局真正生效的那条，两条 10px 手柄轨道必须写在生效的那条上，否则
        DOM 里 5 个网格项会掉进隐式行 —— 表现就是面板塌成一列。 */
     grid-template-columns: var(--col-left) 10px minmax(var(--center-min), 1fr) 10px var(--col-right);
-    gap: 14px;
+    /* 可拖拽不等于要留大缝：手柄轨道 10px + 两侧 6px 就是板块间的全部空隙 */
+    gap: 6px;
 }
 
 .panel-surface {

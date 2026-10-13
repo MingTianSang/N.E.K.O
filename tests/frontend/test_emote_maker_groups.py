@@ -576,7 +576,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
 def test_tip_help_buttons_sit_next_to_their_label_text(group_page: Page) -> None:
     """问号要接在所属文字后面，不能被 .select-row 的两列 grid 排到下一行。"""
     places = group_page.evaluate("""() => {
-        const rows = ['#export-format', '#pack-name', '#pack-priority'].map((id) => {
+        const rows = ['#pack-name', '#pack-priority'].map((id) => {
             const control = document.querySelector(id);
             const label = control.closest('label');
             const wrap = label.querySelector('.select-row-label');

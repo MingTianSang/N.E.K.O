@@ -73,29 +73,17 @@
                     <img src="/static/icons/expression_chosen.png" alt="" aria-hidden="true">
                 </div>
 
-                <section class="template-import-card" aria-labelledby="template-import-title">
-                    <div class="template-import-heading">
-                        <div>
-                            <span class="eyebrow">TEMPLATE</span>
-                            <h3 id="template-import-title" data-i18n="emoteMaker.importTemplate">添加模板</h3>
-                        </div>
+                <section class="template-import-card">
+                    <!-- 标题删了：卡里第一排就是按钮，标题只是复述。运行徽章留着，
+                         它报的是"能不能渲染"，这信息别处没有。 -->
+                    <div class="template-import-actions">
+                        <button id="select-emotelab-template-btn" class="icon-text-button" type="button" data-i18n="emoteMaker.selectTemplateFile">选择模板文件</button>
+                        <button id="select-emotelab-template-directory-btn" class="icon-text-button template-directory-button" type="button" data-i18n="emoteMaker.selectTemplateFolder">选择模板目录</button>
                         <span id="template-runtime-badge" class="template-runtime-badge" data-i18n="emoteMaker.templateNoRuntime">预览暂不可用</span>
                     </div>
                     <input id="emotelab-template-file" class="visually-hidden" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
                     <input id="emotelab-template-directory" class="visually-hidden" type="file" webkitdirectory directory multiple tabindex="-1" aria-hidden="true">
-                    <div class="template-import-actions">
-                        <button id="select-emotelab-template-btn" class="icon-text-button" type="button" data-i18n="emoteMaker.selectTemplateFile">选择模板文件</button>
-                        <button id="select-emotelab-template-directory-btn" class="icon-text-button template-directory-button" type="button" data-i18n="emoteMaker.selectTemplateFolder">选择模板目录</button>
-                        <span id="template-import-filename" class="template-import-filename" data-i18n="emoteMaker.emptyLibraryHint">模板库暂为空，等待添加新模板</span>
-                    </div>
-                    <input id="emotelab-texture-cache-input" class="visually-hidden" type="file" accept=".png,image/png" multiple webkitdirectory directory tabindex="-1" aria-hidden="true">
-                    <div class="template-import-actions template-cache-actions">
-                        <button id="select-emotelab-texture-cache-btn" class="icon-text-button" type="button" data-i18n="emoteMaker.selectTextureCache">补全模板缺失的贴图</button>
-                        <button type="button" class="tip-help" data-tip-key="emoteMaker.textureCacheHint" data-i18n-aria="emoteMaker.textureCacheHint" aria-label="提示">?</button>
-                        <span id="template-texture-cache-filename" class="template-import-filename" data-i18n="emoteMaker.textureCacheNotSelected">未补充缺失贴图</span>
-                    </div>
                     <p id="template-import-status" class="template-import-status">支持模板文件或本地素材目录，系统会自动识别可用格式。</p>
-                    <p id="template-import-stats" class="template-import-stats" hidden></p>
                 </section>
                 <label class="asset-search" for="asset-search-input">
                     <span aria-hidden="true">⌕</span>
@@ -137,11 +125,10 @@
 
             <div class="resize-handle resize-handle-col" id="resize-left" role="separator" aria-orientation="vertical" tabindex="0" data-i18n-aria="emoteMaker.resizeLibraryAria" aria-label="调整素材库宽度"></div>
 
-            <section class="workspace-panel panel-surface" aria-labelledby="workspace-title">
+            <section class="workspace-panel panel-surface" aria-label="预览">
                 <div class="workspace-heading">
                     <div>
                         <span class="eyebrow" data-i18n="emoteMaker.previewTitle">表情包制作</span>
-                        <h2 id="workspace-title" data-i18n="emoteMaker.emptyLibraryHint">模板库暂为空，等待添加新模板</h2>
                     </div>
                     <div class="workspace-tools" aria-label="画布工具">
                         <button id="undo-btn" class="tool-button" type="button" data-i18n="emoteMaker.undo">撤销</button>
@@ -223,14 +210,6 @@
                 </div>
 
                 <div id="inspector-panel-parts" class="inspector-tab-panel is-active" role="tabpanel" aria-labelledby="inspector-tab-parts" data-inspector-panel="parts">
-                    <section class="inspector-section selected-part-section">
-                        <div class="section-label" data-i18n="emoteMaker.selectedPart">当前部件</div>
-                        <div id="selected-part-card" class="selected-part-card">
-                            <img id="selected-part-image" src="/static/icons/expression_chosen.png" alt="">
-                            <span id="selected-part-name">模板暂未添加</span>
-                        </div>
-                    </section>
-
                     <section class="inspector-section part-groups-section">
                         <div class="section-label-row">
                             <span class="section-label" data-i18n="emoteMaker.chooseParts">选择部件</span>
@@ -287,7 +266,7 @@
 
                 <div id="inspector-panel-export" class="inspector-tab-panel" role="tabpanel" aria-labelledby="inspector-tab-export" data-inspector-panel="export" hidden>
                                         <section class="inspector-section export-section">
-                        <label class="select-row"><span class="select-row-label"><span data-i18n="emoteMaker.exportFormat">格式</span><button type="button" class="tip-help" data-tip-key="emoteMaker.exportHint" data-i18n-aria="emoteMaker.exportHint" aria-label="提示">?</button></span><select id="export-format"><option value="png" data-i18n="emoteMaker.exportStatic">静态 PNG</option><option value="gif" data-i18n="emoteMaker.exportAnimated">动画 GIF</option></select></label>
+                        <label class="select-row"><span data-i18n="emoteMaker.exportFormat">格式</span><select id="export-format"><option value="png" data-i18n="emoteMaker.exportStatic">静态 PNG</option><option value="gif" data-i18n="emoteMaker.exportAnimated">动画 GIF</option></select></label>
                         <label class="select-row" for="export-resolution"><span data-i18n="emoteMaker.exportResolution">分辨率</span><select id="export-resolution"><option value="128">128 × 128</option><option value="240" selected>240 × 240</option><option value="320">320 × 320</option><option value="480">480 × 480</option><option value="512">512 × 512</option><option id="export-resolution-1024" value="1024">1024 × 1024</option></select></label>
                         <label class="select-row" for="export-fps"><span data-i18n="emoteMaker.exportFps">帧率</span><select id="export-fps"><option value="8">8 fps</option><option value="10">10 fps</option><option value="12">12 fps</option><option value="15">15 fps</option><option value="20" selected>20 fps</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="48">48 fps</option><option value="60">60 fps</option></select></label>
                         <label class="select-row"><span data-i18n="emoteMaker.transparentBackground">透明背景</span><input id="transparent-background" type="checkbox" checked></label>

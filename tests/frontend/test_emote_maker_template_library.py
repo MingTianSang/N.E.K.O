@@ -117,11 +117,9 @@ def test_two_imports_make_two_entries_and_the_newest_is_in_use(library_page: Pag
     assert cards == {"first": False, "second": True}, f"「使用中」标错了: {cards}"
     # 自报名（meta 里的 DisplayName「第一个」）不许再漏到任何界面上：
     # 标题、形象包名称的占位符都走同一条来源名裁决
-    surfaces = library_page.evaluate("""() => ({
-        title: document.querySelector('#workspace-title').textContent,
-        placeholder: document.querySelector('#pack-name').placeholder,
-    })""")
-    assert surfaces == {"title": "second", "placeholder": "second"}, surfaces
+    surfaces = library_page.evaluate(
+        "() => document.querySelector('#pack-name').placeholder")
+    assert surfaces == "second", surfaces
     # 只查可见文本：身份键（data-template-key）里带内部名是应该的，那不是展示
     assert "第一个" not in library_page.evaluate(
         "() => document.body.innerText"), "自报名还漏在界面上"
@@ -361,8 +359,9 @@ def test_reopens_from_the_local_copy_after_reload(library_page: Page) -> None:
     library_page.wait_for_function(
         "() => document.body.classList.contains('editor-has-template')", timeout=25000)
     assert choosers == [], f"重开走的是本地副本，不该再要用户定位文件: {choosers}"
-    assert "first" in library_page.evaluate(
-        "() => document.querySelector('#workspace-title').textContent")
+    assert library_page.evaluate(
+        """() => document.querySelector('#asset-grid .template-lib-card.is-selected')
+            .dataset.templateKey.startsWith('first.zip::')""")
     # 恢复必须落回同一个库身份（同键）：起个 template.zip 的新名字就会分裂成
     # 两条 —— 旧条目的取景/组随之全丢。这条就是防它的。
     identities = library_page.evaluate("""() => (JSON.parse(
@@ -406,61 +405,6 @@ def test_removing_a_template_frees_its_local_copy(library_page: Page) -> None:
         .then((d) => !d.entries.some((e) => e.key === key))""", arg=my_key, timeout=15000)
     toast = library_page.evaluate("() => document.querySelector('#emote-toast').textContent")
     assert "已释放" in toast, f"删了副本却没报释放了多少: {toast!r}"
-
-
-_PNG_1PX = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
-    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
-
-
-def test_supplemented_textures_survive_a_reload(library_page: Page) -> None:
-    """导入后补的贴图要合并进副本：重开随副本一起回来，不再只活一次会话。"""
-    _import(library_page, "tex.zip", "带贴图", "T", scenes=1)
-    library_page.wait_for_function(
-        "() => Boolean(document.querySelector('.template-lib-size'))", timeout=20000)
-    # webkitdirectory 的 input 塞不进单个文件（Playwright 只收目录路径），
-    # 直接构造 File 挂到 input 上再派 change —— 与真选择器走同一条处理函数
-    library_page.evaluate("""(png) => {
-        const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
-        const file = new File([bytes], 'Custom.png', { type: 'image/png' });
-        Object.defineProperty(file, 'webkitRelativePath', {
-            value: 'Texture Cache/Custom Textures/Custom.png',
-        });
-        const input = document.querySelector('#emotelab-texture-cache-input');
-        const transfer = new DataTransfer();
-        transfer.items.add(file);
-        input.files = transfer.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    }""", __import__("base64").b64encode(_PNG_1PX).decode("ascii"))
-    library_page.wait_for_function(
-        "() => document.querySelector('#template-texture-cache-filename').textContent.includes('1')",
-        timeout=10000)
-    # 副本里真有这张贴图，而不是只叠在当前会话的内存里
-    library_page.wait_for_function("""() => {
-        const key = document.querySelector('#asset-grid .template-lib-card').dataset.templateKey;
-        return fetch(`/api/emote-maker/library/textures?key=${encodeURIComponent(key)}`)
-            .then((r) => r.json())
-            .then((d) => (d.paths || []).includes('Texture Cache/Custom Textures/Custom.png'));
-    }""", timeout=15000)
-
-    library_page.reload(wait_until="networkidle")
-    library_page.wait_for_function(
-        """() => {
-            const grid = document.querySelector('#asset-grid');
-            const card = grid && grid.querySelector('.template-lib-card');
-            return Boolean(card) && getComputedStyle(grid).display !== 'none';
-        }""", timeout=20000)
-    library_page.evaluate(
-        "() => document.querySelector('#asset-grid .template-lib-card .template-lib-open').click()")
-    library_page.wait_for_function(
-        "() => document.body.classList.contains('editor-has-template')", timeout=25000)
-    assert "tex" in library_page.evaluate(
-        "() => document.querySelector('#workspace-title').textContent")
-    assert "1" in library_page.evaluate(
-        "() => document.querySelector('#template-texture-cache-filename').textContent"), \
-        "补充的贴图没随副本回来"
 
 
 def _write_template_directory(root, display_name: str, slot: str) -> None:
@@ -570,6 +514,8 @@ def test_double_click_renames_the_card_and_survives_a_reload(library_page: Page)
     library_page.wait_for_function(
         "() => Boolean(document.querySelector('#asset-grid .template-lib-rename'))",
         timeout=10000)
-    title = library_page.evaluate("() => document.querySelector('#workspace-title').textContent")
-    assert "second" in title, f"双击改名前的那两下 click 把模板切过去了: {title!r}"
+    current = library_page.evaluate(
+        """() => document.querySelector('#asset-grid .template-lib-card.is-selected')
+            ?.dataset.templateKey || ''""")
+    assert current.startswith("second.zip::"), f"双击改名前的那两下 click 把模板切过去了: {current!r}"
     library_page.keyboard.press("Enter")

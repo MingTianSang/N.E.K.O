@@ -171,8 +171,6 @@
     const layerList = $('#layer-list');
     const colorSwatches = $('#color-swatches');
     const templateSlotControls = $('#template-slot-controls');
-    const selectedPartImage = $('#selected-part-image');
-    const selectedPartName = $('#selected-part-name');
     const zoomValue = $('#zoom-value');
     const toast = $('#emote-toast');
     const partGroupList = $('#part-group-list');
@@ -185,9 +183,7 @@
     const templateDirectoryInput = $('#emotelab-template-directory');
     const templateImportButton = $('#select-emotelab-template-btn');
     const templateDirectoryButton = $('#select-emotelab-template-directory-btn');
-    const templateImportFilename = $('#template-import-filename');
     const templateImportStatus = $('#template-import-status');
-    const templateImportStats = $('#template-import-stats');
     const templateRuntimeBadge = $('#template-runtime-badge');
     const templateCanvasStatus = $('#template-canvas-status');
     const templateCanvasStatusText = $('#template-canvas-status-text');
@@ -196,9 +192,6 @@
     const templateSceneListSelect = $('#template-scene-list-select');
     const templateSkinControls = $('#template-skin-controls');
     const templateSliderControls = $('#template-slider-controls');
-    const textureCacheInput = $('#emotelab-texture-cache-input');
-    const textureCacheButton = $('#select-emotelab-texture-cache-btn');
-    const textureCacheFilename = $('#template-texture-cache-filename');
     const assetSearchInput = $('#asset-search-input');
 
     const fallbackText = {
@@ -215,7 +208,6 @@
         'emoteMaker.basicTemplates': '模板',
         'emoteMaker.noTemplates': '模板暂未添加',
         'emoteMaker.emptyLibraryHint': '模板库暂为空，等待添加新模板',
-        'emoteMaker.importTemplate': '添加模板',
         'emoteMaker.selectTemplateFile': '选择模板文件',
         'emoteMaker.selectTemplateFolder': '选择模板目录',
         'emoteMaker.importingTemplate': '正在读取模板…',
@@ -231,11 +223,7 @@
         'emoteMaker.renameTemplateHint': '双击可改名',
         'emoteMaker.templateFolderIncomplete': '目录内容不完整，请选择包含场景和角色素材的完整素材目录。',
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
-        'emoteMaker.templateStats': '{{scenes}} 个场景 · {{animations}} 个动画 · {{skins}} 个皮肤组 · {{sliders}} 个滑杆',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
-        'emoteMaker.selectTextureCache': "补全模板缺失的贴图",
-        'emoteMaker.textureCacheNotSelected': "未补充缺失贴图",
-        'emoteMaker.textureCacheSelected': "已补充 {{count}} 张贴图",
         'emoteMaker.templateLibrary': "模板库",
         'emoteMaker.libraryUsage': "本地副本 {{size}}",
         'emoteMaker.libraryFreed': "已释放 {{size}} 本地副本",
@@ -244,7 +232,6 @@
         'emoteMaker.templateInUse': "使用中",
         'emoteMaker.removeTemplate': "移除",
         'emoteMaker.templateSwitched': "已切换模板",
-        'emoteMaker.textureCacheHint': "图集引用了但没打进模板包的 PNG：选它所在的文件夹补上，只在本机用于预览，不会上传。",
         'emoteMaker.templateImportHint': '支持模板文件或本地素材目录，系统会自动识别可用格式。',
         'emoteMaker.moodTemplates': '情绪模板',
         'emoteMaker.actionTemplates': '动作模板',
@@ -340,7 +327,6 @@
         'emoteMaker.exportPngFailed': 'PNG 导出失败，请重试。',
         'emoteMaker.exportResolution': '分辨率',
         'emoteMaker.exportFps': '帧率',
-        'emoteMaker.exportHint': '尺寸越大，动画 GIF 越可能被自动降帧或缩小。',
         'emoteMaker.exportGifSizeWarn': '动画 GIF 编码耗时随尺寸平方增长，超过 512 会被自动降帧或缩小，因此 1024 不可选。',
         'emoteMaker.saveCharacterFailed': '保存角色失败，可能是浏览器存储不可用。',
         'emoteMaker.packTitle': '形象包（PNGTuber）',
@@ -482,7 +468,6 @@
         'emoteMaker.fitWindow': '适应窗口',
         'emoteMaker.expressionPreview': '表情预览',
         'emoteMaker.partSettings': '模板设置',
-        'emoteMaker.selectedPart': '当前模板',
         'emoteMaker.color': '颜色',
         'emoteMaker.recentColors': '最近使用',
         'emoteMaker.layers': '图层顺序',
@@ -663,48 +648,6 @@
             return path.endsWith('.png');
         });
     }
-
-    function setTextureCacheFiles(files, { refresh = true } = {}) {
-        textureCacheFiles = normalizeTextureCacheFiles(files);
-        if (textureCacheFilename) {
-            textureCacheFilename.textContent = textureCacheFiles.length
-                ? interpolate(t('emoteMaker.textureCacheSelected'), { count: textureCacheFiles.length })
-                : t('emoteMaker.textureCacheNotSelected');
-        }
-        if (!refresh || !templatePackage || !templateAssetStore) return;
-        const Overlay = window.NekoEmoteClientZipStore?.ClientFileOverlayStore;
-        if (typeof Overlay === 'function' && templateAssetStore instanceof Overlay) {
-            templateAssetStore.setFiles(textureCacheFiles);
-        } else if (textureCacheFiles.length && typeof Overlay === 'function') {
-            templateAssetStore = new Overlay(templateAssetStore, textureCacheFiles);
-        }
-        templatePackage.character = {
-            ...(templatePackage.character || {}),
-            customTextureCache: {
-                ...(templatePackage.character?.customTextureCache || {}),
-                provided: textureCacheFiles.length > 0,
-            },
-        };
-        templatePackage.model = {
-            ...(templatePackage.model || {}),
-            customTextureCache: {
-                ...(templatePackage.model?.customTextureCache || {}),
-                provided: textureCacheFiles.length > 0,
-            },
-        };
-        spineRendererGeneration += 1;
-        disposeSpineRenderer();
-        renderAll();
-        // 补充的贴图合并进本地副本（重开时随副本一起回来）。
-        // 静默失败等于让"已补充 N 张"变成一句只管当前会话的谎话，所以失败要说。
-        const textureArchiveKey = currentTemplateKey();
-        if (textureArchiveKey) {
-            void persistArchiveTextures(textureArchiveKey, textureCacheFiles)
-                .catch(() => showToast(t('emoteMaker.archiveSaveFailed')));
-        }
-        void activateNativeSpineRenderer();
-    }
-
     function importFailureMessage(error) {
         if (isIncompleteTemplateError(error)) {
             return t('emoteMaker.templateFolderIncomplete');
@@ -713,9 +656,6 @@
     }
 
     function reportImportFailure(error, options = {}) {
-        if (templateImportFilename && Object.prototype.hasOwnProperty.call(options, 'restoreFilename')) {
-            templateImportFilename.textContent = options.restoreFilename || t('emoteMaker.emptyLibraryHint');
-        }
         const message = importFailureMessage(error);
         setTemplateImportStatus(
             message,
@@ -965,37 +905,6 @@
                 'warning',
             );
             renderAll();
-        }
-    }
-
-    function renderTemplateSummary() {
-        const counts = templatePackage?.counts;
-        if (!counts) {
-            if (templateImportStats) templateImportStats.hidden = true;
-            if (templateRuntimeBadge) {
-                // 没有模板时这张徽章就是噪音：它写的是「选择模板文件」，而正下方就是
-                // 一个同名主按钮。空态不收着它没损失；它真正的价值是报运行状态，
-                // 而那只有读进模板之后才谈得上。
-                templateRuntimeBadge.hidden = !templatePackage;
-                templateRuntimeBadge.textContent = t('emoteMaker.templateMetadataOnly');
-                templateRuntimeBadge.dataset.tone = 'warning';
-            }
-            return;
-        }
-        if (templateImportStats) {
-            templateImportStats.hidden = false;
-            templateImportStats.textContent = interpolate(t('emoteMaker.templateStats'), {
-                ...counts,
-                skins: counts.skinGroups,
-            });
-        }
-        if (templateRuntimeBadge) {
-            // 读进来之后才轮到它说话：这时候写的是运行状态，别处看不到
-            templateRuntimeBadge.hidden = false;
-            templateRuntimeBadge.textContent = templatePackage.capabilities?.spineRender
-                ? t('emoteMaker.importSuccess')
-                : t('emoteMaker.templateNoRuntime');
-            templateRuntimeBadge.dataset.tone = templatePackage.capabilities?.spineRender ? 'success' : 'warning';
         }
     }
 
@@ -2823,21 +2732,6 @@
             children.push(note);
         }
         templateSlotControls.replaceChildren(...children);
-    }
-
-    function renderSelectedPart() {
-        if (!selectedPartImage || !selectedPartName) return;
-        if (templatePackage) {
-            const scene = getImportedScenes().find((item) => item.id === state.selectedSceneId);
-            selectedPartName.textContent = scene?.name || t('emoteMaker.templateSceneList');
-            selectedPartImage.src = `${ICON_ROOT}motion_play_icon.png`;
-            selectedPartImage.alt = scene?.animation?.id || t('emoteMaker.templateSceneList');
-            return;
-        }
-        const selectedAsset = state.selectedLayer === 'accessory' ? getAccessory() : getExpression();
-        selectedPartName.textContent = getAssetLabel(selectedAsset);
-        selectedPartImage.src = selectedAsset.src || `${ICON_ROOT}expression_chosen.png`;
-        selectedPartImage.alt = getAssetLabel(selectedAsset);
     }
 
     function layerLabel(layerId) {
@@ -5229,6 +5123,17 @@
         if (assetTip) assetTip.hidden = true;
         if (inspectorEmptyState) inspectorEmptyState.hidden = hasEditorContent;
         if (animationDock) animationDock.hidden = !hasEditorContent;
+        if (templateRuntimeBadge) {
+            // 徽章只报一件事：能不能渲染。renderTemplateSummary 是死函数
+            // （零调用方），徽章的显隐以前根本没人管。
+            templateRuntimeBadge.hidden = !templatePackage;
+            if (templatePackage) {
+                templateRuntimeBadge.textContent = hasSpineRenderer()
+                    ? t('emoteMaker.importSuccess')
+                    : t('emoteMaker.templateNoRuntime');
+                templateRuntimeBadge.dataset.tone = hasSpineRenderer() ? 'success' : 'warning';
+            }
+        }
         bindTipKeys();
         renderCategoryTabs();
         renderInspectorTabs();
@@ -5238,7 +5143,6 @@
         renderGroupBar();
         renderAssetGrid();
         renderPartGroups();
-        renderSelectedPart();
         renderColorSwatches();
         renderColorMode();
         renderAdjustments();
@@ -5262,12 +5166,6 @@
                 ? t('emoteMaker.templateNoRuntime')
                 : t('emoteMaker.exportCurrent');
         }
-        const workspaceTitle = $('#workspace-title');
-        if (workspaceTitle) {
-            workspaceTitle.textContent = templatePackage
-                ? (currentTemplateLabel() || t('emoteMaker.templateSceneList'))
-                : t('emoteMaker.emptyLibraryHint');
-        }
         const titleSubtitle = document.querySelector('.title-brand p');
         if (titleSubtitle) {
             titleSubtitle.textContent = templatePackage
@@ -5286,7 +5184,6 @@
             if (canvasImportButton) canvasImportButton.hidden = hasEditorContent;
             templateCanvasStatus.hidden = nativePreview;
         }
-        renderTemplateSummary();
         updateHistoryButtons();
         void renderCanvas();
     }
@@ -6059,7 +5956,6 @@
     async function importTemplateDirectoryFromHost() {
         const bridge = window.nekoHost;
         if (!bridge || typeof bridge.pickTemplateDirectory !== 'function') return false;
-        const previousFilename = templateImportFilename?.textContent || '';
         if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
@@ -6090,7 +5986,7 @@
             });
             return true;
         } catch (error) {
-            reportImportFailure(error, { restoreFilename: previousFilename });
+            reportImportFailure(error);
             return true;
         } finally {
             if (templateImportButton) templateImportButton.disabled = false;
@@ -6107,17 +6003,11 @@
     } = {}) {
         if (!file) return false;
         lastImportKind = kind === 'directory' ? 'directory' : 'file';
-        const previousFilename = templateImportFilename?.textContent || '';
         const nextTextureFiles = normalizeTextureCacheFiles(
             textureFiles === undefined ? textureCacheFiles : textureFiles,
         );
         if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
-        if (templateImportFilename) {
-            templateImportFilename.textContent = displayName
-                || file.name
-                || t('emoteMaker.selectTemplateFile');
-        }
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         let nextAssetStore = null;
         let committed = false;
@@ -6200,11 +6090,6 @@
             templateAssetStore = nextAssetStore;
             textureCacheFiles = nextTextureFiles;
             committed = true;
-            if (textureCacheFilename) {
-                textureCacheFilename.textContent = textureCacheFiles.length
-                    ? interpolate(t('emoteMaker.textureCacheSelected'), { count: textureCacheFiles.length })
-                    : t('emoteMaker.textureCacheNotSelected');
-            }
             if (nextAssetStore) {
                 templatePackage.capabilities = {
                     ...(templatePackage.capabilities || {}),
@@ -6287,7 +6172,7 @@
             if (committed) {
                 setTemplateImportStatus(t('emoteMaker.importSuccess'), 'success');
             } else {
-                reportImportFailure(error, { restoreFilename: previousFilename });
+                reportImportFailure(error);
                 renderAll();
             }
             return committed;
@@ -6314,7 +6199,6 @@
             reportImportFailure(new Error(t('emoteMaker.importFailed')));
             return;
         }
-        const previousFilename = templateImportFilename?.textContent || '';
         if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
@@ -6336,7 +6220,7 @@
                 sourceName: folderNameFromFiles(selectedFiles),
             });
         } catch (error) {
-            reportImportFailure(error, { restoreFilename: previousFilename });
+            reportImportFailure(error);
         } finally {
             if (templateDirectoryInput) templateDirectoryInput.value = '';
             if (templateImportButton) templateImportButton.disabled = false;
@@ -6452,11 +6336,6 @@
         });
         templateDirectoryInput?.addEventListener('change', (event) => {
             void importTemplateDirectory(event.target.files || []);
-        });
-        textureCacheButton?.addEventListener('click', () => textureCacheInput?.click());
-        textureCacheInput?.addEventListener('change', (event) => {
-            setTextureCacheFiles(event.target.files || []);
-            if (textureCacheInput) textureCacheInput.value = '';
         });
         $('#undo-btn')?.addEventListener('click', undo);
         $('#redo-btn')?.addEventListener('click', redo);
