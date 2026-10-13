@@ -3293,6 +3293,10 @@
         // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
         // 不属于被拖走的位置，复位时不改动。
         async resetModelPosition() {
+            // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
+            // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
+            // （与 handleWheelZoom 的入口守卫同模式）。
+            if (this._dragState || this._touchZoomState) return;
             this._dragSequence += 1;
             this.cancelEdgeSnapAnimation();
             this.setActiveOffsets(0, 0);

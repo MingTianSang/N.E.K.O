@@ -56,6 +56,7 @@ def test_pngtuber_reset_model_position_restores_default_placement():
         source.index("async checkAndSwitchDisplayAfterDrag(state)")
     ]
 
+    assert "if (this._dragState || this._touchZoomState) return;" in block
     assert "this._dragSequence += 1;" in block
     assert "this.cancelEdgeSnapAnimation();" in block
     assert "this.setActiveOffsets(0, 0);" in block
