@@ -61,12 +61,22 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     assert block.index("window.appState.isSwitchingCatgirl") < block.index(
         "if (this._dragState || this._touchZoomState) return;"
     )
+    # 同角色重载窗口（_modelReloadInFlight 置位到 load() 之间）同样要跳过
+    assert "window._modelReloadInFlight" in block
+    assert block.index("window._modelReloadInFlight") < block.index(
+        "if (this._dragState || this._touchZoomState) return;"
+    )
     assert "this._dragSequence += 1;" in block
     assert "this.cancelEdgeSnapAnimation();" in block
     assert "this.setActiveOffsets(0, 0);" in block
     assert "this.setActiveScale(1);" in block
     assert "this.applyTransform();" in block
     assert "this.syncGlobalConfig();" in block
+    # 复位强制持久化：默认键与上次完成保存相同时不得被去重早退吞掉
+    assert "this._lastSavedPositionKey = '';" in block
+    assert block.index("this._lastSavedPositionKey = '';") < block.index(
+        "await this.saveOrStageCurrentConfig();"
+    )
     assert "await this.saveOrStageCurrentConfig();" in block
     # position_anchor 是摆放偏好（居中/右下），不属于被拖走的位置，复位不改动
     assert "position_anchor" not in block
@@ -121,6 +131,10 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     # 记录上（后端照写 model_type 保留字段）
     assert "const queuedName = await this.resolveCurrentLanlanName();" in save_block
     assert "const queuedPayload = {" in save_block
+    # 载荷必须在同步段捕获（先于任何 await），否则排队后的同步改动会渗入快照
+    assert save_block.index("const queuedPayload = {") < save_block.index(
+        "const queuedName = await this.resolveCurrentLanlanName();"
+    )
     assert save_block.index("const queuedPayload = {") < save_block.index("const runSave = async () => {")
     run_save_block = save_block[save_block.index("const runSave = async () => {"):]
     assert "encodeURIComponent(queuedName)" in run_save_block
@@ -360,8 +374,37 @@ const placement = (offsetX) => ({
     await manager.resetModelPosition();
     assert.equal(manager.config.offset_x, 0, 'after switch completes: reset works');
     assert.equal(state.fetches.length, 1, 'after switch completes: save issued');
+  }
+
+  // 同角色重载进行中（_modelReloadInFlight）：托盘复位跳过，不改配置不出请求
+  {
+    const { context, state, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window._modelReloadInFlight = true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'reload window: config untouched');
+    assert.equal(state.fetches.length, 0, 'reload window: no save issued');
+  }
+
+  // 复位遇在途拖拽保存：默认键与上次完成保存相同时不得被去重早退吞掉
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const resetBaseline = manager.saveCurrentConfig();
+    releaseGate(); // 基线保存的首笔 fetch 放行，得到 key = 默认摆放
+    await resetBaseline;
+    manager.config = placement(-5);
+    const dragSave = manager.saveCurrentConfig(); // 拖拽保存排队/在途
+    await manager.resetModelPosition();           // 同步段内完成去重判定
+    await dragSave;
+    assert.equal(state.fetches.length, 3, 'reset must persist despite matching dedup key');
+    assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'drag placement was queued');
+    assert.equal(state.fetches[2].body.pngtuber.offset_x, 0, 'reset placement persisted last');
+    assert.equal(manager.config.offset_x, 0, 'ui stays reset');
     finished = true;
-    console.log('timing guards: switching-entry guard OK — all scenarios finished');
+    console.log('timing guards: reload-window guard / reset force-persist OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);

@@ -3293,12 +3293,12 @@
         // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
         // 不属于被拖走的位置，复位时不改动。
         async resetModelPosition() {
-            // 角色切换进行中不复位：切换先改 lanlan_name、延迟才 load()
-            // （app-character.js 切换序列），窗口内复位会以新角色名入队保存，
-            // 类型/名字/世代三道检查全过，把隐藏中管理器的旧配置整对象
-            // PUT 到新角色记录上。拖拽/缩放不可达（模型已 hide），托盘是
-            // 唯一入口
-            if (window.appState && window.appState.isSwitchingCatgirl) return;
+            // 转场进行中不复位：角色切换先改 lanlan_name、同角色模型重载先改
+            // 服务器状态，两者都延迟到 load() 才推进世代，窗口内复位会带着
+            // 旧配置通过类型/名字/世代三道检查，整对象 PUT 覆盖新角色记录或
+            // 刚选的新包。拖拽/缩放不可达（模型已 hide），托盘是唯一入口
+            if ((window.appState && window.appState.isSwitchingCatgirl)
+                || window._modelReloadInFlight) return;
             // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
             // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
             // （与 handleWheelZoom 的入口守卫同模式）。
@@ -3314,6 +3314,10 @@
                 this.updateFloatingButtonsPosition();
             }
             this.updateLockIconPosition();
+            // 复位是显式动作，强制持久化：默认摆放若恰好等于上次已完成的保存键，
+            // 去重早退会让在途的拖拽 PUT 成为最终持久值——UI 看似已复位，
+            // 重载后弹回拖拽位置
+            this._lastSavedPositionKey = '';
             await this.saveOrStageCurrentConfig();
         }
 
@@ -3936,16 +3940,19 @@
             // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
             // 管理器的旧配置 PUT 到当前角色的记录上，后端照写 model_type
             // 保留字段，目标角色整个被换掉
-            const queuedName = await this.resolveCurrentLanlanName();
-            if (!queuedName) {
-                console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
-                return false;
-            }
+            // 载荷在同步段捕获（先于任何 await）：放 await 之后的续延里，
+            // 调用者排队后的同步改动（如紧随的复位改写 config）会渗入快照，
+            // 载荷与 saveKey 描述不同时刻的配置
             const queuedPayload = {
                 model_type: 'pngtuber',
                 pngtuber: Object.assign({}, this.config),
                 apply_runtime: false
             };
+            const queuedName = await this.resolveCurrentLanlanName();
+            if (!queuedName) {
+                console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
+                return false;
+            }
             const runSave = async () => {
                 if (this._loadGeneration !== saveGeneration) {
                     return false;
