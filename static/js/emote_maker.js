@@ -6240,10 +6240,12 @@
                 warningCount ? 'warning' : 'success'
             );
             showToast(t('emoteMaker.importSuccess'));
-            renderAll();
+            // 库条目要先落进 templateLibraryState 再 renderAll：网格画的是那份状态，
+            // 顺序反了就会出现"模板已载入、卡片却还没画出来"的窗口（自动化和手快都会撞上）
             persistTemplateSession();
             rememberLoadedTemplate();
             persistTemplateToLibrary({ withThumb: true, sourceName });
+            renderAll();
             // 导入即拷副本：在后台拷，别把界面卡住；失败要说话，不然用户会以为
             // 下次打开还能免定位。从副本恢复进来的那份不必再拷自己一遍。
             if (!fromArchive) {
