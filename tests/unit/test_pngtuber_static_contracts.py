@@ -49,6 +49,19 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     assert "centerPreview ? 0" not in normalize_block
 
 
+def test_pngtuber_transition_guard_predicate_covers_known_transitions():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    block = source[
+        source.index("isTransitionBlockingPlacementSave() {"):
+        source.index("async resetModelPosition()")
+    ]
+
+    # 谓词必须覆盖全部已知转场信号；新转场在此补信号而不是再造散落守卫
+    assert "window.appState.isSwitchingCatgirl" in block
+    assert "window._modelReloadInFlight" in block
+    assert "isMainUIHiddenByModelManager" in block
+
+
 def test_pngtuber_reset_model_position_restores_default_placement():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     block = source[
@@ -57,18 +70,10 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     ]
 
     assert "if (this._dragState || this._touchZoomState) return;" in block
-    assert "window.appState.isSwitchingCatgirl" in block
-    assert block.index("window.appState.isSwitchingCatgirl") < block.index(
-        "if (this._dragState || this._touchZoomState) return;"
-    )
-    # 同角色重载窗口（_modelReloadInFlight 置位到 load() 之间）同样要跳过
-    assert "window._modelReloadInFlight" in block
-    assert block.index("window._modelReloadInFlight") < block.index(
-        "if (this._dragState || this._touchZoomState) return;"
-    )
-    # 模型管理页保存后的卡面决定弹窗期间重载尚未置位，需按"管理页持有 UI"跳过
-    assert "isMainUIHiddenByModelManager" in block
-    assert block.index("isMainUIHiddenByModelManager") < block.index(
+    # 转场守卫收敛为共享谓词：复位入口与保存出请求前用同一套判定
+    # （角色切换 / 同角色重载 / 模型管理页持有 UI——卡面弹窗期间重载未置位）
+    assert "if (this.isTransitionBlockingPlacementSave()) return;" in block
+    assert block.index("if (this.isTransitionBlockingPlacementSave()) return;") < block.index(
         "if (this._dragState || this._touchZoomState) return;"
     )
     assert "this._dragSequence += 1;" in block
@@ -158,6 +163,12 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     assert "JSON.stringify(queuedPayload)" in run_save_block
     assert "(window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber'" in run_save_block
     assert "this.resolveDirectLanlanName() !== queuedName" in run_save_block
+    # 出请求前复核转场状态：转场开始于入队之后（如复位排队期间打开模型
+    # 管理页并保存新包）也必须取消该笔保存
+    assert "this.isTransitionBlockingPlacementSave()" in run_save_block
+    assert run_save_block.index("this.isTransitionBlockingPlacementSave()") < run_save_block.index(
+        "const response = await fetch("
+    )
     # 执行路径不得再惰性读 config 或以重新解析的名字作为 PUT 身份
     assert "Object.assign({}, this.config)" not in run_save_block
 
@@ -482,8 +493,30 @@ const placement = (offsetX) => ({
     await manager.resetModelPosition();
     assert.equal(manager.config.offset_x, 0, 'after manager closes: reset works');
     assert.equal(state.fetches.length, 1, 'after manager closes: save issued');
+  }
+
+  // 复位入队后、执行前模型管理页取得界面并保存新包：出请求前复核转场，取消排队保存
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = Object.assign(placement(-5), { idle_image: 'assets/old-package.png' });
+    const priorSave = manager.saveCurrentConfig(); // 在途保存（首笔 fetch 被门拦住）
+    manager.config = Object.assign(placement(-5), { idle_image: 'assets/old-package.png' });
+    const queuedReset = manager.resetModelPosition(); // 复位保存入队，排在在途保存后
+    // 让出事件循环：在途保存已通过全部检查、挂到首笔 fetch 上——真实场景里
+    // 转场发生在它发起之后
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 复位入队与执行之间：模型管理页取得界面并保存了新包（持有 UI，
+    // 卡面弹窗期间 _modelReloadInFlight 未置位）
+    window.isMainUIHiddenByModelManager = () => true;
+    releaseGate();
+    await priorSave;
+    await queuedReset;
+    assert.equal(state.fetches.length, 1, 'queued reset must not PUT once the manager owns the ui');
+    assert.ok(state.fetches[0].body.pngtuber.idle_image === 'assets/old-package.png',
+      'only the pre-reset drag save reaches the endpoint');
     finished = true;
-    console.log('timing guards: model-manager-owns-ui guard OK — all scenarios finished');
+    console.log('timing guards: queued-reset transition recheck OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);

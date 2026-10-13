@@ -3292,17 +3292,22 @@
         // 托盘“重置角色位置”入口。与 Live2D/VRM/MMD 的同名方法对齐：
         // 位置和缩放一起回默认值；position_anchor 是摆放偏好（居中/右下），
         // 不属于被拖走的位置，复位时不改动。
+        // 转场守卫的共享谓词：复位入口与保存出请求前用同一套判定。已知的
+        // 转场（角色切换 / 同角色重载 / 模型管理页持有 UI）都有同步可读的
+        // 状态信号；已完成的重载由世代号兜底（load 永久推进不回落）
+        isTransitionBlockingPlacementSave() {
+            if (window.appState && window.appState.isSwitchingCatgirl) return true;
+            if (window._modelReloadInFlight) return true;
+            if (typeof window.isMainUIHiddenByModelManager === 'function'
+                && window.isMainUIHiddenByModelManager()) return true;
+            return false;
+        }
+
         async resetModelPosition() {
-            // 转场进行中不复位：角色切换先改 lanlan_name、同角色模型重载先改
-            // 服务器状态，两者都延迟到 load() 才推进世代；模型管理页保存后
-            // 的卡面决定弹窗期间重载尚未置位（_modelReloadInFlight 仍为
-            // false），主页面持有旧包配置。窗口内复位会带着旧配置通过类型/
-            // 名字/世代三道检查，整对象 PUT 覆盖新角色记录或刚保存的新包。
-            // 拖拽/缩放不可达（模型已 hide），托盘是唯一入口
-            if ((window.appState && window.appState.isSwitchingCatgirl)
-                || window._modelReloadInFlight
-                || (typeof window.isMainUIHiddenByModelManager === 'function'
-                    && window.isMainUIHiddenByModelManager())) return;
+            // 转场进行中不复位：窗口内复位会带着旧配置通过类型/名字/世代
+            // 三道检查，整对象 PUT 覆盖新角色记录或刚保存的新包。拖拽/缩放
+            // 不可达（模型已 hide），托盘是唯一入口
+            if (this.isTransitionBlockingPlacementSave()) return;
             // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
             // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
             // （与 handleWheelZoom 的入口守卫同模式）。
@@ -3983,6 +3988,13 @@
                     return false;
                 }
                 if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                    return false;
+                }
+                // 入队到执行之间也可能进入转场（切换 / 同角色重载未完成 /
+                // 模型管理页取得界面——卡面弹窗期间 _modelReloadInFlight 未
+                // 置位）：出请求前复核，入队时捕获的旧快照不得越过刚保存的
+                // 新配置
+                if (this.isTransitionBlockingPlacementSave()) {
                     return false;
                 }
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(putName)}`, {
