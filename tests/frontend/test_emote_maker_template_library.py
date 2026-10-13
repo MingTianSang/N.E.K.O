@@ -115,6 +115,16 @@ def test_two_imports_make_two_entries_and_the_newest_is_in_use(library_page: Pag
     # 同一作者的整套模型往往全叫一个名字，一排「YUI 道具风格版」没法认
     cards = {card["label"]: card["inUse"] for card in _cards(library_page)}
     assert cards == {"first": False, "second": True}, f"「使用中」标错了: {cards}"
+    # 自报名（meta 里的 DisplayName「第一个」）不许再漏到任何界面上：
+    # 标题、形象包名称的占位符都走同一条来源名裁决
+    surfaces = library_page.evaluate("""() => ({
+        title: document.querySelector('#workspace-title').textContent,
+        placeholder: document.querySelector('#pack-name').placeholder,
+    })""")
+    assert surfaces == {"title": "second", "placeholder": "second"}, surfaces
+    # 只查可见文本：身份键（data-template-key）里带内部名是应该的，那不是展示
+    assert "第一个" not in library_page.evaluate(
+        "() => document.body.innerText"), "自报名还漏在界面上"
     assert library_page.evaluate("() => document.querySelector('.template-lib-badge').textContent") == "使用中"
 
 

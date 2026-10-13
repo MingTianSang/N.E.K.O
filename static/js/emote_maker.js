@@ -3545,7 +3545,7 @@
             context.textAlign = 'center';
             context.textBaseline = 'middle';
             context.font = '700 34px "Microsoft YaHei", sans-serif';
-            context.fillText(templatePackage.model?.displayName || t('emoteMaker.title'), CANVAS_SIZE / 2, 402);
+            context.fillText(currentTemplateLabel() || t('emoteMaker.title'), CANVAS_SIZE / 2, 402);
             context.font = '600 24px "Microsoft YaHei", sans-serif';
             context.fillStyle = '#6d8eae';
             context.fillText(scene?.name || t('emoteMaker.templateSceneList'), CANVAS_SIZE / 2, 470);
@@ -4416,7 +4416,7 @@
             const fileName = rawName ? decodeURIComponent(rawName) : 'template.zip';
             const file = new File([blob], fileName, { type: 'application/zip' });
             return await importTemplateFile(file, {
-                displayName: entry?.displayName || '',
+                displayName: templateLibraryModule.entryLabel(entry) || '',
                 textureFiles,
                 kind: entry?.importKind === 'directory' ? 'directory' : 'file',
                 fromArchive: true,
@@ -4946,7 +4946,7 @@
         const nameInput = $('#pack-name');
         if (nameInput) {
             nameInput.value = state.packName || '';
-            nameInput.placeholder = templatePackage?.model?.displayName || t('emoteMaker.title');
+            nameInput.placeholder = currentTemplateLabel() || t('emoteMaker.title');
         }
         const formatSelect = $('#pack-format');
         if (formatSelect) formatSelect.value = state.packFormat === 'layered' ? 'layered' : 'flat';
@@ -5044,7 +5044,7 @@
         }));
     }
 
-    async function layeredStates(baked) {
+    async function layeredStates(baked, displayName) {
         const sheet = window.NekoEmoteSheet;
         const layeredModule = window.NekoEmotePngtuberLayered;
         const packModule = window.NekoEmotePngtuberPack;
@@ -5096,8 +5096,8 @@
         );
         const flat = flatStates([{ ...idleJob, frames: idleJob.frames.slice(0, 1) }]);
         const assembled = packModule.buildPackageFiles({
-            displayName: idleJob.displayName,
-            description: idleJob.description,
+            displayName,
+            description: `${t('emoteMaker.title')} · ${displayName}`,
             placement: packPlacement(),
             statePriority: state.packPriority,
             // 回落图只给 idle：其余槽位空着，运行时会回落到 idle 而不是 404
@@ -5162,6 +5162,7 @@
         const fps = state.exportFps || GIF_EXPORT_FPS;
         // 优先用用户起的名字；没起才跟随模板名，否则每次导出都是同一个目录
         const displayName = String(state.packName || '').trim()
+            || currentTemplateLabel()
             || templatePackage?.model?.displayName
             || t('emoteMaker.title');
         const jobs = usable.map((output) => {
@@ -5198,7 +5199,7 @@
             if (state.packFormat === 'layered') {
                 baked[0].displayName = displayName;
                 baked[0].description = `${t('emoteMaker.title')} · ${displayName}`;
-                const result = await layeredStates(baked);
+                const result = await layeredStates(baked, displayName);
                 return result.assembled;
             }
             return packModule.buildPackageFiles({
