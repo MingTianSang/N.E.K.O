@@ -104,6 +104,9 @@
         };
     }
 
+    // 库卡片显示名与用户改名的长度上限：再长就被省略号吃掉了
+    const MAX_LABEL_CHARS = 60;
+
     function makeEntry(input) {
         const src = input || {};
         const key = text(src.key) || entryKeyFor(src.pkg);
@@ -113,12 +116,38 @@
             key,
             packageName: text(src.pkg?.source?.packageName) || text(src.packageName),
             displayName: text(src.pkg?.model?.displayName) || text(src.displayName) || text(src.pkg?.source?.sharedModelKey),
+            // sourceName = 来源名（目录导入＝文件夹名，zip 导入＝文件名去 .zip）：
+            // 卡片默认按它显示 —— 用户的心智是"我从哪拿来的这份模板"，不是作者写在
+            // model.meta.json 里的内部名。alias 是用户双击卡片改名后的结果，优先级最高。
+            sourceName: text(src.sourceName).slice(0, MAX_LABEL_CHARS),
+            alias: text(src.alias).slice(0, MAX_LABEL_CHARS),
             importKind: src.importKind === 'directory' ? 'directory' : 'file',
             thumb: thumb.length <= MAX_THUMB_CHARS ? thumb : '',
             addedAt: Number(src.addedAt) || Date.now(),
             lastUsedAt: Number(src.lastUsedAt) || Date.now(),
             session: normalizeSession(src.session),
         };
+    }
+
+    /**
+     * 卡片显示名的唯一裁决处：用户改的名 > 来源名 > 模板自报名 > 包名。
+     * 页面上任何要印模板名的地方都从这里拿，别再各写一份 || 链。
+     */
+    function entryLabel(entry) {
+        if (!entry) return '';
+        return text(entry.alias)
+            || text(entry.sourceName)
+            || text(entry.displayName)
+            || text(entry.packageName);
+    }
+
+    function renameEntry(store, key, alias) {
+        const next = { ...emptyStore(), ...store };
+        const entry = find(next, key);
+        if (!entry) return next;
+        // 改成空 = 回到默认名；键不动 —— 改名只是外观，不是身份
+        entry.alias = text(alias).slice(0, MAX_LABEL_CHARS);
+        return next;
     }
 
     function findIndex(store, key) {
@@ -271,8 +300,11 @@
         MAX_ENTRIES,
         MAX_THUMB_CHARS,
         BUDGET_CHARS,
+        MAX_LABEL_CHARS,
         TemplateLibraryError,
         entryKeyFor,
+        entryLabel,
+        renameEntry,
         formatBytes,
         emptyStore,
         makeEntry,

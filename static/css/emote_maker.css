@@ -4166,7 +4166,8 @@ body.is-pack-dragging * {
     cursor: pointer;
 }
 
-.template-lib-open:disabled {
+.template-lib-open:disabled,
+.template-lib-open[aria-disabled="true"] {
     cursor: default;
 }
 
@@ -4743,4 +4744,23 @@ body.is-pack-dragging * {
     color: var(--emote-muted);
     font-size: 10px;
     white-space: nowrap;
+}
+
+/* ── 库卡片改名与来源名 ───────────────────────────────────────────────────── */
+.template-lib-rename {
+    width: 100%;
+    min-height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--emote-accent);
+    border-radius: 9px;
+    background: #ffffff;
+    color: var(--emote-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.template-lib-rename:focus-visible {
+    outline: 2px solid var(--emote-accent);
+    outline-offset: -2px;
 }

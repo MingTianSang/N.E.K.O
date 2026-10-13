@@ -227,7 +227,8 @@
         'emoteMaker.templateCapabilityWarning': '部分预览功能暂不可用，仍可继续编辑模板。',
         'emoteMaker.templateCompatibilityWarning': '部分模板数据与当前素材不一致，已保留可用设置。',
         'emoteMaker.templatePendingPreview': '待预览',
-        'emoteMaker.templateFolderSelected': '已选择模板目录',
+        'emoteMaker.renameTemplate': '重命名模板',
+        'emoteMaker.renameTemplateHint': '双击可改名',
         'emoteMaker.templateFolderIncomplete': '目录内容不完整，请选择包含场景和角色素材的完整素材目录。',
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateStats': '{{scenes}} 个场景 · {{animations}} 个动画 · {{skins}} 个皮肤组 · {{sliders}} 个滑杆',
@@ -1156,8 +1157,20 @@
         }
         const label = document.createElement('span');
         label.className = 'asset-card-label';
-        label.textContent = entry.displayName || entry.packageName || t('emoteMaker.templateSceneList');
+        // 显示名的裁决在库里（用户改的名 > 来源名 > 模板自报名 > 包名），别在这再写一条链
+        label.textContent = templateLibraryModule.entryLabel(entry)
+            || t('emoteMaker.templateSceneList');
+        // 双击改名是暗手，得留个线索：跟着光标的那条说明正适合干这个
+        label.dataset.tip = t('emoteMaker.renameTemplateHint');
         open.append(imageBox, label);
+        // 单击=装回模板，双击=改名：不延迟的话，双击的头一下已经把模板切过去了。
+        // 240ms 的延迟对一次重导入级的操作无感。当前使用中的那条点了没去处，就地挡住。
+        let openTimer = 0;
+        open.addEventListener('click', () => {
+            if (isCurrent) return;
+            clearTimeout(openTimer);
+            openTimer = setTimeout(() => { void switchTemplate(entry.key); }, 240);
+        });
         // 副本占多少就写多少：真实数字（后端 stat 来的），不是估的
         const archiveBytes = templateArchiveBytes.get(entry.key) || 0;
         if (archiveBytes > 0) {
@@ -1166,9 +1179,12 @@
             size.textContent = formatTemplateBytes(archiveBytes);
             open.append(size);
         }
+        // 不能用 disabled 挡"当前使用中"：禁用按钮连同后代根本不派发指针事件，
+        // 双击改名就永远落不到卡片上（当场踩过）。视觉用 aria-disabled 走同一套样式，
+        // 行为在 click 处理器里挡。
         open.setAttribute('aria-label', `${label.textContent}${isCurrent ? ` · ${t('emoteMaker.templateInUse')}` : ''}`);
-        open.disabled = isCurrent || packBusy;
-        open.addEventListener('click', () => { void switchTemplate(entry.key); });
+        open.disabled = packBusy;
+        if (isCurrent) open.setAttribute('aria-disabled', 'true');
 
         const removeButton = document.createElement('button');
         removeButton.type = 'button';
@@ -1179,6 +1195,15 @@
         removeButton.addEventListener('click', (event) => {
             event.stopPropagation();
             removeTemplate(entry.key);
+        });
+
+        // 双击（整张卡都行，当前使用中的那条打开按钮是灰的也要能改名）= 就地改名；
+        // 点在移除上不算。双击要先取消那个"单击切换"的定时器。
+        card.addEventListener('dblclick', (event) => {
+            if (event.target.closest('.template-lib-remove')) return;
+            event.preventDefault();
+            clearTimeout(openTimer);
+            beginTemplateRename(entry.key, card);
         });
 
         // 完整名字给 title：一行装不下时鼠标悬停还能看全
@@ -1192,6 +1217,56 @@
         }
         card.append(removeButton);
         return card;
+    }
+
+    /**
+     * 双击卡片就地改名：整张卡换成一个输入框（input 不能住在 button 里——
+     * 点它定位光标会触发"打开模板"），Enter/失焦提交，Esc 放弃。
+     * 改成空 = 回到默认名。只动 alias，键不动 —— 改名是外观，不是身份，
+     * 本地副本、会话、组都不跟着挪。
+     */
+    function beginTemplateRename(key, card) {
+        const current = templateLibraryModule
+            ? templateLibraryModule.entryLabel(
+                templateLibraryModule.find(templateLibraryState, key)) : '';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'template-lib-rename';
+        input.value = current;
+        input.maxLength = templateLibraryModule?.MAX_LABEL_CHARS || 60;
+        input.setAttribute('aria-label', t('emoteMaker.renameTemplate'));
+        input.dataset.key = key;
+        card.replaceChildren(input);
+        input.focus();
+        input.select();
+        let done = false;
+        const finish = (commit) => {
+            if (done) return;
+            done = true;
+            const value = commit ? input.value : '';
+            if (commit && value.trim() !== current.trim()) {
+                templateLibraryState = templateLibraryModule.renameEntry(
+                    templateLibraryState, key, value);
+                try {
+                    templateLibraryModule.save(localStorage, templateLibraryState);
+                } catch (_) { /* 存不下只丢这一次改名 */ }
+                renderAll();
+                return;
+            }
+            renderTemplateLibraryGrid();
+        };
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                finish(false);
+            }
+            event.stopPropagation();
+        });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('dblclick', (event) => event.stopPropagation());
     }
 
     function renderTemplateLibraryGrid() {
@@ -4146,7 +4221,7 @@
         }
     }
 
-    function persistTemplateToLibrary({ withThumb = false } = {}) {
+    function persistTemplateToLibrary({ withThumb = false, sourceName = '' } = {}) {
         if (!templateLibraryModule || !templatePackage) return;
         const key = currentTemplateKey();
         const snapshot = key ? snapshotTemplateSession() : null;
@@ -4163,6 +4238,11 @@
                 key,
                 pkg: templatePackage,
                 importKind: lastImportKind,
+                // 来源名：这次导入带来了就用这次的（目录改名后再导一次，名字跟着走），
+                // 没带来（切回/重绘触发的保存）沿用库里那份。alias 只有双击改名才写，
+                // 这里永远沿用，别把用户改的名冲掉
+                sourceName: sourceName || (existing && existing.sourceName) || '',
+                alias: (existing && existing.alias) || '',
                 thumb: thumb || (existing && existing.thumb) || '',
                 addedAt: existing && existing.addedAt,
                 session: {
@@ -5982,9 +6062,9 @@
                 nextTextureFiles = await normalizeHostTextureFiles(result.textureFiles || result.textures);
             }
             await importTemplateFile(file, {
-                displayName: result.displayName || t('emoteMaker.templateFolderSelected'),
                 textureFiles: nextTextureFiles,
                 kind: 'directory',
+                sourceName: result.folderName || '',
             });
             return true;
         } catch (error) {
@@ -6001,7 +6081,7 @@
      * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
      */
     async function importTemplateFile(file, {
-        displayName = '', textureFiles, kind = 'file', fromArchive = false,
+        displayName = '', textureFiles, kind = 'file', fromArchive = false, sourceName = '',
     } = {}) {
         if (!file) return false;
         lastImportKind = kind === 'directory' ? 'directory' : 'file';
@@ -6163,7 +6243,7 @@
             renderAll();
             persistTemplateSession();
             rememberLoadedTemplate();
-            persistTemplateToLibrary({ withThumb: true });
+            persistTemplateToLibrary({ withThumb: true, sourceName });
             // 导入即拷副本：在后台拷，别把界面卡住；失败要说话，不然用户会以为
             // 下次打开还能免定位。从副本恢复进来的那份不必再拷自己一遍。
             if (!fromArchive) {
@@ -6194,6 +6274,16 @@
         }
     }
 
+    /** 目录导入的默认名＝文件夹名：来源是每个文件的 webkitRelativePath 第一段。 */
+    function folderNameFromFiles(files) {
+        for (const file of Array.from(files || [])) {
+            const relative = String(file?.webkitRelativePath || '');
+            const first = relative.split('/')[0];
+            if (first) return first;
+        }
+        return '';
+    }
+
     async function importTemplateDirectory(files) {
         const directoryApi = window.NekoEmoteTemplateDirectory;
         if (!directoryApi || typeof directoryApi.pack !== 'function' || typeof directoryApi.toFile !== 'function') {
@@ -6217,9 +6307,9 @@
             // them into the temporary ZIP and exceeding the package limit.
             const file = directoryApi.toFile(packed);
             await importTemplateFile(file, {
-                displayName: t('emoteMaker.templateFolderSelected'),
                 textureFiles: packed.textureFiles || [],
                 kind: 'directory',
+                sourceName: folderNameFromFiles(selectedFiles),
             });
         } catch (error) {
             reportImportFailure(error, { restoreFilename: previousFilename });

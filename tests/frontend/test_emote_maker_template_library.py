@@ -445,3 +445,115 @@ def test_supplemented_textures_survive_a_reload(library_page: Page) -> None:
     assert "1" in library_page.evaluate(
         "() => document.querySelector('#template-texture-cache-filename').textContent"), \
         "补充的贴图没随副本回来"
+
+
+def _write_template_directory(root, display_name: str, slot: str) -> None:
+    """摊开的 EmoteLab 目录（选模板目录那条入口的输入）。"""
+    import json as _json
+    model = f"Model{slot}"
+    base = root / "wrapper" / "EmoteLab"
+    (base / "SpineModels" / model / "DisplayInfo").mkdir(parents=True)
+    (base / "Characters" / model).mkdir(parents=True)
+    (base / "SceneLists" / model).mkdir(parents=True)
+    (base / "SpineModels" / model / "model.meta.json").write_text(
+        _json.dumps({"DisplayName": display_name, "SharedModelKey": model}), encoding="utf-8")
+    (base / "SpineModels" / model / f"{model}.skel.bytes").write_bytes(b"4.3.23")
+    (base / "SpineModels" / model / f"{model}.atlas.txt").write_text("Page.png\nsize: 2, 3\n",
+                                                                     encoding="utf-8")
+    (base / "SpineModels" / model / "Page.png").write_bytes(b"not-a-png")
+    (base / "SpineModels" / model / "DisplayInfo" / "Animations.csv").write_text(
+        "AnimationName,DisplayName,en\nANIM/A,Demo,Demo\n", encoding="utf-8")
+    (base / "Characters" / model / f"{model}.json").write_text(_json.dumps({
+        "SharedModelKey": model, "ActiveSkins": {"Items": []},
+        "SliderConstraints": [], "SlotGroups": [],
+    }), encoding="utf-8")
+    (base / "SceneLists" / model / f"{model}.json").write_text(_json.dumps({
+        "sharedModelKey": model,
+        "scenes": [{"name": f"场景{i}", "animationName": "ANIM/A",
+                    "cameraPosition": {"x": i, "y": 2, "z": 3}, "model": {}, "texts": []}
+                   for i in range(2)],
+    }), encoding="utf-8")
+
+
+def test_directory_import_names_the_card_by_folder(page: Page, running_server: str, tmp_path) -> None:
+    """目录导入的默认名＝文件夹名，不是模板 meta 里的内部名，更不是「已选择模板目录」。"""
+    folder = tmp_path / "YUI_道具风格版_改"
+    _write_template_directory(folder, "内部作者名", "A")
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.set_input_files("#emotelab-template-directory", str(folder))
+    page.wait_for_function("() => document.body.classList.contains('editor-has-template')",
+                           timeout=25000)
+    label = page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card .asset-card-label')"
+        ".textContent.trim()")
+    assert label == "YUI_道具风格版_改", f"卡片默认名该是文件夹名: {label!r}"
+    stored = page.evaluate("""() => (JSON.parse(localStorage.getItem(
+        'neko-emote-maker-template-library') || '{}').entries || [])[0] || {}""")
+    assert stored.get("sourceName") == "YUI_道具风格版_改", stored
+    assert stored.get("displayName") == "内部作者名", "自报名留着当兜底，别丢"
+
+
+def test_double_click_renames_the_card_and_survives_a_reload(library_page: Page) -> None:
+    """双击卡片名就地改名：Enter 提交、Esc 放弃、跨重启还在，且库身份（键）不变。"""
+    _import(library_page, "first.zip", "第一个", "A", scenes=2)
+    card = library_page.locator("#asset-grid .template-lib-card")
+    before = library_page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card').dataset.templateKey")
+
+    card.dblclick()
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('#asset-grid .template-lib-rename'))",
+        timeout=10000)
+    library_page.evaluate("""() => {
+        const input = document.querySelector('#asset-grid .template-lib-rename');
+        input.value = '我的 YUI';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    }""")
+    library_page.wait_for_function(
+        """() => document.querySelector('#asset-grid .template-lib-card .asset-card-label')
+            .textContent.trim() === '我的 YUI'""", timeout=10000)
+    stored = library_page.evaluate("""() => (JSON.parse(localStorage.getItem(
+        'neko-emote-maker-template-library') || '{}').entries || [])[0] || {}""")
+    assert stored.get("alias") == "我的 YUI", stored
+
+    # Esc 放弃不改名
+    card.dblclick()
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('#asset-grid .template-lib-rename'))",
+        timeout=10000)
+    library_page.evaluate("""() => {
+        const input = document.querySelector('#asset-grid .template-lib-rename');
+        input.value = '不该生效';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    }""")
+    library_page.wait_for_function(
+        """() => document.querySelector('#asset-grid .template-lib-card .asset-card-label')
+            .textContent.trim() === '我的 YUI'""", timeout=10000)
+
+    # 改名跨重启还在，且只是外观：键没动，副本/会话都还认得
+    library_page.reload(wait_until="networkidle")
+    library_page.wait_for_function(
+        """() => {
+            const grid = document.querySelector('#asset-grid');
+            const label = grid && grid.querySelector('.asset-card-label');
+            return Boolean(label) && getComputedStyle(grid).display !== 'none'
+                && label.textContent.trim() === '我的 YUI';
+        }""", timeout=20000)
+    after = library_page.evaluate(
+        "() => document.querySelector('#asset-grid .template-lib-card').dataset.templateKey")
+    assert after == before, f"改名不该动库身份: {before} → {after}"
+
+    # 双击"非当前"的卡片：改名要发生，而双击的头两下 click 不能把模板切过去
+    # （判别点是工作区标题：要是被切过去，它会变成 first 那条的名字）
+    _import(library_page, "second.zip", "第二个", "B", scenes=2)
+    other = library_page.evaluate("""() => {
+        const cards = [...document.querySelectorAll('#asset-grid .template-lib-card')];
+        return cards.find((c) => c.dataset.templateKey.startsWith('first.zip::')).dataset.templateKey;
+    }""")
+    library_page.locator(f'#asset-grid .template-lib-card[data-template-key="{other}"]').dblclick()
+    library_page.wait_for_function(
+        "() => Boolean(document.querySelector('#asset-grid .template-lib-rename'))",
+        timeout=10000)
+    title = library_page.evaluate("() => document.querySelector('#workspace-title').textContent")
+    assert "第二个" in title, f"双击改名前的那两下 click 把模板切过去了: {title!r}"
+    library_page.keyboard.press("Enter")

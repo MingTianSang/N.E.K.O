@@ -191,3 +191,37 @@ test('副本占用讲成人话：KB/MB，不用 0 KB 糊弄', () => {
     assert.equal(library.formatBytes(3.14 * 1024 * 1024), '3.1 MB', '百兆以下保留一位小数');
     assert.equal(library.formatBytes(1234 * 1024 * 1024), '1234 MB', '往上取整，别显示 1234.0');
 });
+
+test('卡片名按 用户改名 > 来源名 > 模板自报名 > 包名 裁决', () => {
+    const base = { key: 'k', packageName: 'pkg.zip' };
+    assert.equal(library.entryLabel({ ...base, displayName: '演示', sourceName: 'YUI 道具风格' }),
+        'YUI 道具风格', '目录名优先于作者写的内部名 —— 用户的心智是"从哪拿来的"');
+    assert.equal(library.entryLabel({ ...base, alias: '我的份', sourceName: '目录' }), '我的份');
+    assert.equal(library.entryLabel({ ...base, displayName: '演示' }), '演示');
+    assert.equal(library.entryLabel({ ...base }), 'pkg.zip');
+    assert.equal(library.entryLabel(null), '');
+});
+
+test('renameEntry 只动 alias，键与来源保持原样；改成空等于回到默认', () => {
+    let store = library.emptyStore();
+    store = library.upsert(store, library.makeEntry({
+        key: 'k', sourceName: '原始目录', displayName: '演示',
+    }));
+    store = library.renameEntry(store, 'k', '我的份 ');
+    assert.equal(store.entries[0].alias, '我的份');
+    assert.equal(store.entries[0].sourceName, '原始目录');
+    assert.equal(store.entries[0].key, 'k');
+    assert.equal(library.entryLabel(store.entries[0]), '我的份');
+    store = library.renameEntry(store, 'k', '');
+    assert.equal(store.entries[0].alias, '');
+    assert.equal(library.entryLabel(store.entries[0]), '原始目录');
+    // 不存在的键：安静返回，别炸
+    assert.equal(library.renameEntry(store, 'nope', 'x').entries.length, 1);
+});
+
+test('超过长度上限的来源名/改名被截断，不是报错', () => {
+    const long = '长'.repeat(80);
+    const entry = library.makeEntry({ key: 'k', sourceName: long, alias: long });
+    assert.equal(entry.sourceName.length, library.MAX_LABEL_CHARS);
+    assert.equal(entry.alias.length, library.MAX_LABEL_CHARS);
+});
