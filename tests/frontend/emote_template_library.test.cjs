@@ -192,13 +192,18 @@ test('副本占用讲成人话：KB/MB，不用 0 KB 糊弄', () => {
     assert.equal(library.formatBytes(1234 * 1024 * 1024), '1234 MB', '往上取整，别显示 1234.0');
 });
 
-test('卡片名按 用户改名 > 来源名 > 模板自报名 > 包名 裁决', () => {
+test('卡片名按 用户改名 > 来源名 > 包名(去.zip) > 模板自报名 裁决', () => {
     const base = { key: 'k', packageName: 'pkg.zip' };
     assert.equal(library.entryLabel({ ...base, displayName: '演示', sourceName: 'YUI 道具风格' }),
-        'YUI 道具风格', '目录名优先于作者写的内部名 —— 用户的心智是"从哪拿来的"');
+        'YUI 道具风格', '来源名优先 —— 用户的心智是"从哪拿来的"');
     assert.equal(library.entryLabel({ ...base, alias: '我的份', sourceName: '目录' }), '我的份');
-    assert.equal(library.entryLabel({ ...base, displayName: '演示' }), '演示');
-    assert.equal(library.entryLabel({ ...base }), 'pkg.zip');
+    // zip 导入没有来源名：用包名，而不是作者写在 meta 里的内部名
+    //（同一作者的整套模型往往全叫一个名字，一排「YUI 道具风格版」没法认）
+    assert.equal(library.entryLabel({ ...base, displayName: '演示' }), 'pkg');
+    assert.equal(library.entryLabel({ ...base }), 'pkg');
+    // 网页目录导入的临时包名没有信息量，视同没有，退到自报名
+    assert.equal(library.entryLabel(
+        { key: 'k', packageName: 'template-directory.zip', displayName: '演示' }), '演示');
     assert.equal(library.entryLabel(null), '');
 });
 

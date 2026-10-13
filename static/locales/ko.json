@@ -3971,8 +3971,6 @@
         "nodeNoOutput": "사용할 수 있는 출력 노드가 없습니다(장면을 선택하세요).",
         "nodeSideBehind": "글자를 뒤로",
         "nodeSideFront": "글자를 앞으로",
-        "nodeSummaryActive": "노드 그림이 {count}개 상태를 만듭니다. 내보내기 그림을 따릅니다.",
-        "nodeSummaryEmpty": "노드 그림이 없어 기본 설정으로 내보냅니다.",
         "packBasicFollowRoot": "대기를 따름",
         "packFormatLabel": "패키지 형식",
         "packFormatFlat": "평면(GIF, 범용)",

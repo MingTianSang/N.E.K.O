@@ -130,15 +130,19 @@
     }
 
     /**
-     * 卡片显示名的唯一裁决处：用户改的名 > 来源名 > 模板自报名 > 包名。
-     * 页面上任何要印模板名的地方都从这里拿，别再各写一份 || 链。
+     * 卡片显示名的唯一裁决处：用户改的名 > 来源名 > 包名（去 .zip）> 模板自报名。
+     * 自报名（model.meta.json 里的 DisplayName）垫底是有意的：同一作者的整套模型
+     * 往往全叫同一个名字（一排「YUI 道具风格版」没法认），来源才是用户区分它们的依据。
+     * 网页目录导入的临时包名 template-directory 没有信息量，视同没有。
      */
     function entryLabel(entry) {
         if (!entry) return '';
+        const pkg = text(entry.packageName).replace(/\.zip$/i, '');
+        const generic = pkg === '' || pkg === 'template-directory';
         return text(entry.alias)
             || text(entry.sourceName)
-            || text(entry.displayName)
-            || text(entry.packageName);
+            || (generic ? '' : pkg)
+            || text(entry.displayName);
     }
 
     function renameEntry(store, key, alias) {

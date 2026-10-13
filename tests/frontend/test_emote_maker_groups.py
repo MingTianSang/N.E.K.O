@@ -342,8 +342,9 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
     assert box["outlineOffset"].startswith('-'), f"焦点环画在盒子外面，会被面板裁掉: {box}"
 
 
-def test_help_speaks_next_to_the_cursor_not_at_the_page_bottom(group_page: Page) -> None:
-    """问号：鼠标一放上去就在指针旁边说明，不是等半秒的 title，更不是点一下甩到页面底部。"""
+def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
+    """问号：悬停即出、钉在控件上方带尖角的气泡里——不是等半秒的 title，
+    不跟鼠标乱飘，更不是点一下甩到页面底部。"""
     anchor = group_page.evaluate("""() => {
         const el = document.querySelector('#new-group-help');
         const r = el.getBoundingClientRect();
@@ -365,7 +366,14 @@ def test_help_speaks_next_to_the_cursor_not_at_the_page_bottom(group_page: Page)
     }""")
     assert shown["display"] != "none" and shown["text"], f"悬停没出说明: {shown}"
     assert shown["top"] < shown["viewH"] - 120, f"说明跑到页面底部去了: {shown}"
-    assert abs(shown["top"] - anchor["y"]) < 120, f"说明离光标太远: {shown}"
+    assert abs(shown["top"] - anchor["y"]) < 120, f"说明离控件太远: {shown}"
+    # 钉在控件上方，不跟鼠标：气泡的位置只由控件决定
+    group_page.mouse.move(anchor["x"] + 3, anchor["y"] + 2)
+    again = group_page.evaluate("""() => {
+        const box = document.querySelector('#emote-cursor-tip').getBoundingClientRect();
+        return { top: box.top, left: box.left };
+    }""")
+    assert abs(again["top"] - shown["top"]) < 1 and abs(again["left"] - shown["left"]) < 1,         f"气泡跟着鼠标动了: {shown} → {again}"
     assert shown["described"] == "emote-cursor-tip", "读屏拿不到这条说明"
     # 点击不该再产生第二条 toast（眼睛在问号上，字却出现在脚边）
     group_page.evaluate("() => document.querySelector('#new-group-help').click()")

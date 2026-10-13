@@ -108,9 +108,13 @@ def test_left_panel_is_the_library_and_the_dock_stops_duping_it(library_page: Pa
 def test_two_imports_make_two_entries_and_the_newest_is_in_use(library_page: Page) -> None:
     _import(library_page, "first.zip", "第一个")
     _import(library_page, "second.zip", "第二个")
-    assert sorted(_keys(library_page)) == ["第一个", "第二个"], _keys(library_page)
+    assert sorted(library_page.evaluate("""() => (JSON.parse(localStorage.getItem(
+        'neko-emote-maker-template-library') || '{}').entries || []).map((entry) => entry.key)"""
+    )) == ["first.zip::第一个::1::1", "second.zip::第二个::1::1"]
+    # 卡名默认是来源名（zip 名去 .zip），不是 meta 里的内部名 ——
+    # 同一作者的整套模型往往全叫一个名字，一排「YUI 道具风格版」没法认
     cards = {card["label"]: card["inUse"] for card in _cards(library_page)}
-    assert cards == {"第一个": False, "第二个": True}, f"「使用中」标错了: {cards}"
+    assert cards == {"first": False, "second": True}, f"「使用中」标错了: {cards}"
     assert library_page.evaluate("() => document.querySelector('.template-lib-badge').textContent") == "使用中"
 
 

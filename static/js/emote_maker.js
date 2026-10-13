@@ -472,8 +472,6 @@
         'emoteMaker.nodeParam.y': '偏移 Y',
         'emoteMaker.nodeParam.scale': '缩放',
         'emoteMaker.nodeParam.mirror': '镜像',
-        'emoteMaker.nodeSummaryActive': '节点图将产出 {count} 个状态，导出按图走。',
-        'emoteMaker.nodeSummaryEmpty': '尚未建立节点图，导出走上面的快速映射。',
         'emoteMaker.nodeSummary': '节点 {nodes} · 连线 {links} · 输出 {outputs}',
         'emoteMaker.nodeCycleWarning': '节点之间存在环，无法求值。',
         'emoteMaker.nodeNoOutput': '节点图里没有一个可用的输出（检查场景是否已选）。',
@@ -2157,31 +2155,45 @@
         }));
     }
 
-    // ── 跟着光标的说明 ────────────────────────────────────────────────────────
-    // 原生 title 要悬停半秒才出、位置也不受控；而"点一下把说明甩到页面底部"更糟 ——
-    // 眼睛还在那个问号上，字却出现在脚边。所以 [data-tip] 统一做成随光标的一句话。
+    // ── 锚定在控件上的说明气泡 ────────────────────────────────────────────────
+    // 原生 title 要悬停半秒才出、位置也不受控；跟着光标跑的框又显得毛躁。
+    // [data-tip] 统一做成钉在触发控件上方（放不下就翻到下方）的带尖角气泡，
+    // 位置只跟控件走，不跟鼠标。
     function bindCursorTips() {
         const tip = $('#emote-cursor-tip');
         if (!tip || tip.dataset.bound === '1') return;
         tip.dataset.bound = '1';
         let owner = null;
 
-        const place = (x, y, above) => {
+        const place = (target) => {
             const margin = 10;
+            const gap = 10;
             const box = tip.getBoundingClientRect();
-            let left = x + 14;
-            let top = above ? y - box.height - 10 : y + 18;
-            if (left + box.width > window.innerWidth - margin) left = x - box.width - 14;
-            if (top + box.height > window.innerHeight - margin) top = y - box.height - 12;
-            tip.style.left = `${Math.round(Math.max(margin, left))}px`;
-            tip.style.top = `${Math.round(Math.max(margin, top))}px`;
+            const rect = target.getBoundingClientRect();
+            const centered = rect.left + rect.width / 2 - box.width / 2;
+            const left = Math.min(
+                Math.max(margin, centered),
+                window.innerWidth - box.width - margin,
+            );
+            // 默认在控件上方；上方放不下翻到下方，箭头跟着换边。
+            const below = rect.top - box.height - gap < margin;
+            const top = below ? rect.bottom + gap : rect.top - box.height - gap;
+            // 箭头横向钉在触发控件中心（气泡被屏幕边夹住时也不跑偏）。
+            const arrowX = Math.min(
+                Math.max(rect.left + rect.width / 2 - left, 14),
+                box.width - 14,
+            );
+            tip.style.setProperty('--tip-arrow-x', `${Math.round(arrowX)}px`);
+            tip.classList.toggle('is-below', below);
+            tip.style.left = `${Math.round(left)}px`;
+            tip.style.top = `${Math.round(top)}px`;
         };
-        const show = (target, x, y, above) => {
+        const show = (target) => {
             owner = target;
             tip.textContent = target.dataset.tip || '';
             // 先显示再定位：hidden 的元素量出来是 0×0，会算出贴到左上角的位置
             tip.hidden = false;
-            place(x, y, above);
+            place(target);
             target.setAttribute('aria-describedby', tip.id);
         };
         const hide = () => {
@@ -2195,26 +2207,28 @@
             if (event.pointerType && event.pointerType !== 'mouse') return;
             const target = tipHost(event.target);
             if (!target || target === owner || !target.dataset.tip) return;
-            show(target, event.clientX, event.clientY, false);
-        });
-        document.addEventListener('pointermove', (event) => {
-            if (!owner) return;
-            if (tipHost(event.target) !== owner) hide();
-            else place(event.clientX, event.clientY, false);
+            show(target);
         });
         document.addEventListener('pointerout', (event) => {
             if (owner && !owner.contains(event.relatedTarget)) hide();
         });
-        // 键盘用户没有光标可跟：聚焦时把说明摆在控件上方
+        // 键盘用户也能拿到：聚焦即出，同一套锚定位置
         document.addEventListener('focusin', (event) => {
             const target = tipHost(event.target);
             if (!target || target === owner || !target.dataset.tip) return;
-            const rect = target.getBoundingClientRect();
-            show(target, rect.left, rect.top, true);
+            show(target);
         });
         document.addEventListener('focusout', hide);
-        // 滚动会让锚点跑掉，直接收掉比留着一个假位置好
+        // 滚动/换行会让锚点跑掉，直接收掉比留着一个假位置好
         window.addEventListener('scroll', hide, true);
+        window.addEventListener('resize', hide);
+    }
+
+    /** [data-tip-key] 的问号按钮：把键翻译成 [data-tip]，气泡那套就能接管。 */
+    function bindTipKeys() {
+        document.querySelectorAll('[data-tip-key]').forEach((el) => {
+            el.dataset.tip = t(el.dataset.tipKey);
+        });
     }
 
     function bindGroupPanelToggle() {
@@ -4931,16 +4945,6 @@
                 ? t('emoteMaker.packBasicMouthOn')
                 : t('emoteMaker.packBasicMouthOff');
         }
-        const graphSummary = $('#pack-graph-summary-text');
-        if (graphSummary) {
-            const model = window.NekoEmoteNodeGraph;
-            const outputs = state.nodeGraph && model
-                ? state.nodeGraph.nodes.filter((n) => model.typeOf(n) && model.typeOf(n).category === 'output').length
-                : 0;
-            graphSummary.textContent = outputs
-                ? t('emoteMaker.nodeSummaryActive').replace('{count}', String(outputs))
-                : t('emoteMaker.nodeSummaryEmpty');
-        }
         ['#pack-export-btn', '#pack-import-btn'].forEach((selector) => {
             const button = $(selector);
             if (button && !packBusy) button.disabled = !available;
@@ -5208,6 +5212,7 @@
         if (assetTip) assetTip.hidden = true;
         if (inspectorEmptyState) inspectorEmptyState.hidden = hasEditorContent;
         if (animationDock) animationDock.hidden = !hasEditorContent;
+        bindTipKeys();
         renderCategoryTabs();
         renderInspectorTabs();
         syncExportControls();

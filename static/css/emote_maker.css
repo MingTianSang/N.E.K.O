@@ -556,20 +556,6 @@ button {
     background: rgba(247, 252, 255, 0.88);
 }
 
-.canvas-badge {
-    position: absolute;
-    left: 14px;
-    top: 14px;
-    z-index: 2;
-    padding: 7px 10px;
-    border: 1px solid var(--emote-line);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.9);
-    color: var(--emote-accent-strong);
-    font-size: 11px;
-    font-weight: 700;
-}
-
 .template-canvas-status {
     position: absolute;
     left: 50%;
@@ -1829,7 +1815,6 @@ body.is-resizing * {
 [data-theme="dark"] .tool-button,
 [data-theme="dark"] .selected-part-card,
 [data-theme="dark"] .layer-item,
-[data-theme="dark"] .canvas-badge,
 [data-theme="dark"] .canvas-zoom,
 [data-theme="dark"] .custom-color-row input {
     background: #1b3b58;
@@ -2147,11 +2132,6 @@ body {
     box-shadow: 0 10px 24px rgba(40, 117, 163, 0.10);
 }
 
-.canvas-badge {
-    left: 12px;
-    top: 12px;
-    font-size: 10px;
-}
 .animation-dock {
     min-height: 0;
     display: flex;
@@ -4763,4 +4743,68 @@ body.is-pack-dragging * {
 .template-lib-rename:focus-visible {
     outline: 2px solid var(--emote-accent);
     outline-offset: -2px;
+}
+
+/* ── 行内问号 + 锚定气泡 ─────────────────────────────────────────────────── */
+/* 行内说明改成控件旁的问号：一整行灰字比控件本身还占地。 */
+.tip-help {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--emote-line-strong);
+    border-radius: 50%;
+    background: #ffffff;
+    color: var(--emote-muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 16px;
+    cursor: help;
+}
+
+.tip-help:hover {
+    border-color: var(--emote-accent);
+    color: var(--emote-accent-strong);
+}
+
+.tip-help:focus-visible {
+    outline: 2px solid var(--emote-accent);
+    outline-offset: -2px;
+}
+
+/* 气泡钉在触发控件上方（放不下翻下方），尖角指向它；不跟鼠标走。 */
+.emote-cursor-tip::after,
+.emote-cursor-tip::before {
+    content: '';
+    position: absolute;
+    left: var(--tip-arrow-x, 50%);
+    width: 10px;
+    height: 10px;
+    transform: translateX(-50%) rotate(45deg);
+}
+
+.emote-cursor-tip::after {
+    bottom: -5px;
+    background: #ffffff;
+    border-right: 1px solid var(--emote-line-strong);
+    border-bottom: 1px solid var(--emote-line-strong);
+}
+
+.emote-cursor-tip::before {
+    bottom: -6px;
+    background: #ffffff;
+}
+
+.emote-cursor-tip.is-below::after {
+    bottom: auto;
+    top: -5px;
+    background: #ffffff;
+    border: 0;
+    border-left: 1px solid var(--emote-line-strong);
+    border-top: 1px solid var(--emote-line-strong);
+}
+
+.emote-cursor-tip.is-below::before {
+    bottom: auto;
+    top: -6px;
 }
