@@ -4808,3 +4808,12 @@ body.is-pack-dragging * {
     bottom: auto;
     top: -6px;
 }
+
+/* 问号要接在所属文字后面：.select-row 是两列 grid，问号当第三个格子会被排到
+   下一行。外面套一层 inline-flex 文字格，问号就贴着字走。 */
+.select-row-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}

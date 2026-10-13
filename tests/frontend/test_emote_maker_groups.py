@@ -571,3 +571,25 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
     after = group_page.evaluate(
         "() => document.querySelectorAll('#group-members .group-member').length")
     assert after == before + 1 - 1 or after < before + 2, f"移出没生效: {before} → {after}"
+
+
+def test_tip_help_buttons_sit_next_to_their_label_text(group_page: Page) -> None:
+    """问号要接在所属文字后面，不能被 .select-row 的两列 grid 排到下一行。"""
+    places = group_page.evaluate("""() => {
+        const rows = ['#export-format', '#pack-name', '#pack-priority'].map((id) => {
+            const control = document.querySelector(id);
+            const label = control.closest('label');
+            const wrap = label.querySelector('.select-row-label');
+            const help = label.querySelector('.tip-help');
+            // 量的是纯文字那层（data-i18n 的 span），wrapper 的右缘已经是问号右缘
+            const text = wrap && wrap.querySelector('[data-i18n]');
+            if (!text || !help) return { id, ok: false };
+            const t = text.getBoundingClientRect();
+            const b = help.getBoundingClientRect();
+            // 同一行 + 紧跟在文字右侧（间距不超过一个字符位）
+            return { id, ok: Math.abs(b.top - t.top) < 3 && (b.left - t.right) < 14
+                     && (b.left - t.right) >= -2 };
+        });
+        return rows;
+    }""")
+    assert all(row["ok"] for row in places), f"问号没接在文字后面: {places}"
