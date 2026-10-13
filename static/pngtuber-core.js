@@ -3953,15 +3953,21 @@
             // 身份与载荷入队时同步捕获、执行时复审：保存排队期间可能已热切走
             // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
             // 管理器的旧配置 PUT 到当前角色的记录上，后端照写 model_type
-            // 保留字段，目标角色整个被换掉。链槽位必须同步预留（append 先于
-            // 任何 await）：/api/config 兜底配置下两次保存的名字解析可能乱序
-            // 完成，先 await 后入队会让新摆放先落盘、旧快照反而最后写入
+            // 保留字段，目标角色整个被换掉。直读名不可用（需 /api/config
+            // 兜底）的配置里客户端无法在入队时刻绑定角色身份——解析窗口内
+            // 的角色变更会让旧快照写到新角色记录，因此直接不入队：无法安全
+            // 绑定就不发送。链槽位同步预留（append 先于任何 await），runSave
+            // 从检查到出请求全程无 await，不存在重排与检查后漂移窗口
             const queuedPayload = {
                 model_type: 'pngtuber',
                 pngtuber: Object.assign({}, this.config),
                 apply_runtime: false
             };
             const queuedName = this.resolveDirectLanlanName();
+            if (!queuedName) {
+                console.warn('[PNGTuber] 无法从直读字段解析当前角色名，跳过位置保存');
+                return false;
+            }
             const runSave = async () => {
                 if (this._loadGeneration !== saveGeneration) {
                     return false;
@@ -3969,25 +3975,7 @@
                 if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                     return false;
                 }
-                let putName = queuedName;
-                if (putName) {
-                    if (this.resolveDirectLanlanName() !== queuedName) {
-                        return false;
-                    }
-                } else {
-                    putName = await this.resolveCurrentLanlanName();
-                    if (!putName) {
-                        console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
-                        return false;
-                    }
-                }
-                // 兜底名字解析是真实网络请求：解析期间 load() 可能已推进世代
-                // 并换上新配置，出请求前复核世代与类型，防止旧快照越过开头
-                // 的检查落在刚加载的配置上
-                if (this._loadGeneration !== saveGeneration) {
-                    return false;
-                }
-                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
+                if (this.resolveDirectLanlanName() !== queuedName) {
                     return false;
                 }
                 // 入队到执行之间也可能进入转场（切换 / 同角色重载未完成 /
@@ -3997,7 +3985,7 @@
                 if (this.isTransitionBlockingPlacementSave()) {
                     return false;
                 }
-                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(putName)}`, {
+                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(queuedName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(queuedPayload)
