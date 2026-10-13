@@ -129,21 +129,26 @@ def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
     # 身份与载荷必须入队时捕获、执行时复审（Codex P1）：跨类型热切换只
     # hide() 不清保存链，惰性读名会把 A 的 pngtuber 配置 PUT 到当前角色
     # 记录上（后端照写 model_type 保留字段）
-    assert "const queuedName = await this.resolveCurrentLanlanName();" in save_block
+    assert "const queuedName = this.resolveDirectLanlanName();" in save_block
     assert "const queuedPayload = {" in save_block
-    # 载荷必须在同步段捕获（先于任何 await），否则排队后的同步改动会渗入快照
+    # 身份与载荷必须在同步段捕获、链槽位同步预留（append 先于任何 await）：
+    # 兜底配置的名字解析乱序完成时，先 await 后入队会让保存顺序颠倒
     assert save_block.index("const queuedPayload = {") < save_block.index(
-        "const queuedName = await this.resolveCurrentLanlanName();"
+        "const queuedName = this.resolveDirectLanlanName();"
     )
-    assert save_block.index("const queuedPayload = {") < save_block.index("const runSave = async () => {")
+    assert save_block.index("const queuedName = this.resolveDirectLanlanName();") < save_block.index(
+        "const runSave = async () => {"
+    )
+    assert save_block.index("const runSave = async () => {") < save_block.index(
+        "await this.resolveCurrentLanlanName()"
+    )
     run_save_block = save_block[save_block.index("const runSave = async () => {"):]
-    assert "encodeURIComponent(queuedName)" in run_save_block
+    assert "encodeURIComponent(putName)" in run_save_block
     assert "JSON.stringify(queuedPayload)" in run_save_block
     assert "(window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber'" in run_save_block
-    assert "currentName !== queuedName" in run_save_block
+    assert "this.resolveDirectLanlanName() !== queuedName" in run_save_block
     # 执行路径不得再惰性读 config 或以重新解析的名字作为 PUT 身份
     assert "Object.assign({}, this.config)" not in run_save_block
-    assert "encodeURIComponent(currentName)" not in run_save_block
 
 
 def test_pngtuber_save_pipeline_timing_guards():
@@ -191,7 +196,7 @@ class StubElement {
 }
 
 function makeContext() {
-  const state = { fetches: [] };
+  const state = { fetches: [], configApiName: 'neko' };
   let releaseGate;
   const gate = new Promise((resolve) => { releaseGate = resolve; });
   let fetchCallCount = 0;
@@ -223,9 +228,17 @@ function makeContext() {
     Audio: class { constructor() {} addEventListener() {} },
     CustomEvent: class { constructor(type, opts) { this.type = type; this.detail = opts && opts.detail; } },
     fetch: async (url, options) => {
+      if (String(url) === '/api/config') {
+        // 名字兜底解析：受同一计数门控制（首笔 fetch 仍被拦），不计入 PUT 记录
+        fetchCallCount += 1;
+        if (fetchCallCount === 1) {
+          await gate;
+        }
+        return { ok: true, json: async () => ({ lanlan_name: state.configApiName }) };
+      }
       fetchCallCount += 1;
       if (fetchCallCount === 1) {
-        await gate; // 首笔 PUT 挂在在途，供各场景控制收尾时机
+        await gate;
       }
       state.fetches.push({ url, body: options ? JSON.parse(options.body) : null });
       return { ok: true, json: async () => ({ success: true }) };
@@ -403,8 +416,25 @@ const placement = (offsetX) => ({
     assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'drag placement was queued');
     assert.equal(state.fetches[2].body.pngtuber.offset_x, 0, 'reset placement persisted last');
     assert.equal(manager.config.offset_x, 0, 'ui stays reset');
+  }
+
+  // 兜底配置（无直读名）：名字解析乱序完成也不得颠倒保存落盘顺序
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    window.lanlan_config = { model_type: 'pngtuber' }; // 无直读名 → 走 /api/config 兜底
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig(); // 名字解析 = 首笔 fetch，被门拦住
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig(); // 名字解析立即完成，链位本会先被它抢占
+    releaseGate();
+    await Promise.all([save1, save2]);
+    assert.equal(state.fetches.length, 2, 'both saves persist exactly once');
+    assert.equal(state.fetches[0].body.pngtuber.offset_x, 0, 'older snapshot persists first');
+    assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'newer snapshot persists last');
+    assert.ok(state.fetches.every((f) => f.url.includes('/l2d/neko')), 'fallback-resolved name used');
     finished = true;
-    console.log('timing guards: reload-window guard / reset force-persist OK — all scenarios finished');
+    console.log('timing guards: fallback-name ordering OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);

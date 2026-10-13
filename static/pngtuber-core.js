@@ -3887,13 +3887,18 @@
             lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
-        async resolveCurrentLanlanName() {
+        resolveDirectLanlanName() {
             const direct = window.lanlan_config?.lanlan_name
                 || window.lanlan_config?.name
                 || window.current_lanlan_name
                 || window.currentLanlanName
                 || window.lanlanName;
-            if (direct) return String(direct);
+            return direct ? String(direct) : '';
+        }
+
+        async resolveCurrentLanlanName() {
+            const direct = this.resolveDirectLanlanName();
+            if (direct) return direct;
             try {
                 const response = await fetch('/api/config');
                 if (!response.ok) return '';
@@ -3936,23 +3941,18 @@
             // 刚选的新配置；成功后的键写回也校验世代，防止旧保存恢复已被
             // load() 清空的键（否则新模型摆放相同的保存会被去重跳过）
             const saveGeneration = this._loadGeneration;
-            // 身份与载荷入队时捕获、执行时复审：保存排队期间可能已热切走
+            // 身份与载荷入队时同步捕获、执行时复审：保存排队期间可能已热切走
             // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
             // 管理器的旧配置 PUT 到当前角色的记录上，后端照写 model_type
-            // 保留字段，目标角色整个被换掉
-            // 载荷在同步段捕获（先于任何 await）：放 await 之后的续延里，
-            // 调用者排队后的同步改动（如紧随的复位改写 config）会渗入快照，
-            // 载荷与 saveKey 描述不同时刻的配置
+            // 保留字段，目标角色整个被换掉。链槽位必须同步预留（append 先于
+            // 任何 await）：/api/config 兜底配置下两次保存的名字解析可能乱序
+            // 完成，先 await 后入队会让新摆放先落盘、旧快照反而最后写入
             const queuedPayload = {
                 model_type: 'pngtuber',
                 pngtuber: Object.assign({}, this.config),
                 apply_runtime: false
             };
-            const queuedName = await this.resolveCurrentLanlanName();
-            if (!queuedName) {
-                console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
-                return false;
-            }
+            const queuedName = this.resolveDirectLanlanName();
             const runSave = async () => {
                 if (this._loadGeneration !== saveGeneration) {
                     return false;
@@ -3960,11 +3960,19 @@
                 if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                     return false;
                 }
-                const currentName = await this.resolveCurrentLanlanName();
-                if (currentName !== queuedName) {
-                    return false;
+                let putName = queuedName;
+                if (putName) {
+                    if (this.resolveDirectLanlanName() !== queuedName) {
+                        return false;
+                    }
+                } else {
+                    putName = await this.resolveCurrentLanlanName();
+                    if (!putName) {
+                        console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
+                        return false;
+                    }
                 }
-                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(queuedName)}`, {
+                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(putName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(queuedPayload)
