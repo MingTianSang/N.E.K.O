@@ -66,6 +66,11 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     assert block.index("window._modelReloadInFlight") < block.index(
         "if (this._dragState || this._touchZoomState) return;"
     )
+    # 模型管理页保存后的卡面决定弹窗期间重载尚未置位，需按"管理页持有 UI"跳过
+    assert "isMainUIHiddenByModelManager" in block
+    assert block.index("isMainUIHiddenByModelManager") < block.index(
+        "if (this._dragState || this._touchZoomState) return;"
+    )
     assert "this._dragSequence += 1;" in block
     assert "this.cancelEdgeSnapAnimation();" in block
     assert "this.setActiveOffsets(0, 0);" in block
@@ -461,8 +466,24 @@ const placement = (offsetX) => ({
     await staleSave;
     assert.equal(state.fetches.length, 0, 'stale fallback save must not PUT after reload');
     assert.equal(manager._lastSavedPositionKey, '', 'no key recorded for aborted save');
+  }
+
+  // 模型管理页持有 UI（保存后卡面决定弹窗期间，重载未置位）：托盘复位跳过
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    releaseGate(); // 场景末段管理页关闭后的复位会发首笔 fetch，先放行
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window.isMainUIHiddenByModelManager = () => true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'manager owns ui: config untouched');
+    assert.equal(state.fetches.length, 0, 'manager owns ui: no save issued');
+    window.isMainUIHiddenByModelManager = () => false;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, 0, 'after manager closes: reset works');
+    assert.equal(state.fetches.length, 1, 'after manager closes: save issued');
     finished = true;
-    console.log('timing guards: fallback-generation recheck OK — all scenarios finished');
+    console.log('timing guards: model-manager-owns-ui guard OK — all scenarios finished');
   }
 })().catch((error) => {
   console.error('RUNTIME_CHECK_FAILED', error);

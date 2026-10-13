@@ -3294,11 +3294,15 @@
         // 不属于被拖走的位置，复位时不改动。
         async resetModelPosition() {
             // 转场进行中不复位：角色切换先改 lanlan_name、同角色模型重载先改
-            // 服务器状态，两者都延迟到 load() 才推进世代，窗口内复位会带着
-            // 旧配置通过类型/名字/世代三道检查，整对象 PUT 覆盖新角色记录或
-            // 刚选的新包。拖拽/缩放不可达（模型已 hide），托盘是唯一入口
+            // 服务器状态，两者都延迟到 load() 才推进世代；模型管理页保存后
+            // 的卡面决定弹窗期间重载尚未置位（_modelReloadInFlight 仍为
+            // false），主页面持有旧包配置。窗口内复位会带着旧配置通过类型/
+            // 名字/世代三道检查，整对象 PUT 覆盖新角色记录或刚保存的新包。
+            // 拖拽/缩放不可达（模型已 hide），托盘是唯一入口
             if ((window.appState && window.appState.isSwitchingCatgirl)
-                || window._modelReloadInFlight) return;
+                || window._modelReloadInFlight
+                || (typeof window.isMainUIHiddenByModelManager === 'function'
+                    && window.isMainUIHiddenByModelManager())) return;
             // 拖拽/双指缩放进行中不复位：活写入者会用复位前状态继续覆盖，
             // 且世代号作废会让该次交互跳过保存，可见摆放与已存摆放分叉
             // （与 handleWheelZoom 的入口守卫同模式）。
