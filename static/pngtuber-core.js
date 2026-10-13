@@ -3925,21 +3925,32 @@
             // 换模型后完成的旧保存不得恢复已被 load() 清空的键，否则新模型
             // 摆放相同的保存（复位恰是规范化摆放）会被去重跳过
             const saveGeneration = this._loadGeneration;
+            // 身份与载荷入队时捕获、执行时复审：保存排队期间可能已热切走
+            // （切换只 hide()，不清链也不推进世代号），惰性读名会把隐藏中
+            // 管理器的旧配置 PUT 到当前角色的记录上，后端照写 model_type
+            // 保留字段，目标角色整个被换掉
+            const queuedName = await this.resolveCurrentLanlanName();
+            if (!queuedName) {
+                console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
+                return false;
+            }
+            const queuedPayload = {
+                model_type: 'pngtuber',
+                pngtuber: Object.assign({}, this.config),
+                apply_runtime: false
+            };
             const runSave = async () => {
-                const name = await this.resolveCurrentLanlanName();
-                if (!name) {
-                    console.warn('[PNGTuber] 无法解析当前角色名，跳过位置保存');
+                if ((window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber') {
                     return false;
                 }
-                const payload = {
-                    model_type: 'pngtuber',
-                    pngtuber: Object.assign({}, this.config),
-                    apply_runtime: false
-                };
-                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(name)}`, {
+                const currentName = await this.resolveCurrentLanlanName();
+                if (currentName !== queuedName) {
+                    return false;
+                }
+                const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(queuedName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(queuedPayload)
                 });
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok || !result.success) {

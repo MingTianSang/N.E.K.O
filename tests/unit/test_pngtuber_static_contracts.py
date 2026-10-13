@@ -99,6 +99,29 @@ def test_pngtuber_save_dedup_key_write_binds_to_load_generation():
     )
 
 
+def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    save_block = source[
+        source.index("        async saveCurrentConfig()"):
+        source.index("        scheduleSaveCurrentConfig")
+    ]
+
+    # 身份与载荷必须入队时捕获、执行时复审（Codex P1）：跨类型热切换只
+    # hide() 不清保存链，惰性读名会把 A 的 pngtuber 配置 PUT 到当前角色
+    # 记录上（后端照写 model_type 保留字段）
+    assert "const queuedName = await this.resolveCurrentLanlanName();" in save_block
+    assert "const queuedPayload = {" in save_block
+    assert save_block.index("const queuedPayload = {") < save_block.index("const runSave = async () => {")
+    run_save_block = save_block[save_block.index("const runSave = async () => {"):]
+    assert "encodeURIComponent(queuedName)" in run_save_block
+    assert "JSON.stringify(queuedPayload)" in run_save_block
+    assert "(window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber'" in run_save_block
+    assert "currentName !== queuedName" in run_save_block
+    # 执行路径不得再惰性读 config 或以重新解析的名字作为 PUT 身份
+    assert "Object.assign({}, this.config)" not in run_save_block
+    assert "encodeURIComponent(currentName)" not in run_save_block
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[
