@@ -3991,6 +3991,9 @@
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
+            // 去重键只记摆放字段不记角色，管理器单例跨角色复用：不清会让上个
+            // 角色的末次保存键挡掉新角色摆放相同的保存（复位恰是规范化摆放）
+            this._lastSavedPositionKey = '';
             const normalizedConfig = normalizeConfig(config || {});
             this.config = normalizedConfig;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {

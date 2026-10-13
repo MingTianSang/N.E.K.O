@@ -68,6 +68,21 @@ def test_pngtuber_reset_model_position_restores_default_placement():
     assert "position_anchor" not in block
 
 
+def test_pngtuber_load_invalidates_save_dedup_key_for_new_model():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    load_head = source[
+        source.index("        async load(config, options = {}) {"):
+        source.index("pngtuber-model-loading")
+    ]
+
+    # 去重键只记摆放字段不记角色，管理器单例跨角色复用：换模型必须清键，
+    # 否则上个角色末次保存的键会挡掉新角色摆放相同的保存（复位恰是规范化摆放）
+    assert "this._lastSavedPositionKey = '';" in load_head
+    assert load_head.index("this._lastSavedPositionKey = '';") < load_head.index(
+        "this.config = normalizedConfig;"
+    )
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[
