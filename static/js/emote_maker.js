@@ -197,8 +197,6 @@
     const fallbackText = {
         'emoteMaker.title': '表情包制作',
         'emoteMaker.subtitle': '选择二次元反应模板，再调整颜色与位置',
-        'emoteMaker.breadcrumbSettings': '设置',
-        'emoteMaker.breadcrumbGeneral': '通用设置',
         'emoteMaker.assetLibrary': '素材库',
         'emoteMaker.categoryTemplate': '模板',
         'emoteMaker.categoryMood': '情绪',
@@ -220,15 +218,14 @@
         'emoteMaker.templateCompatibilityWarning': '部分模板数据与当前素材不一致，已保留可用设置。',
         'emoteMaker.templatePendingPreview': '待预览',
         'emoteMaker.renameTemplate': '重命名模板',
-        'emoteMaker.renameTemplateHint': '双击可改名',
         'emoteMaker.templateFolderIncomplete': '目录内容不完整，请选择包含场景和角色素材的完整素材目录。',
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
-        'emoteMaker.templateLibrary': "模板库",
+        'emoteMaker.templateLibrary': "已有模板",
+        'emoteMaker.removeTemplateConfirm': "删除「{name}」？它的本地副本也会一起删掉。",
         'emoteMaker.libraryUsage': "本地副本 {{size}}",
-        'emoteMaker.libraryFreed': "已释放 {{size}} 本地副本",
         'emoteMaker.archiveSaveFailed': "本地副本没存上：下次打开这个模板可能要重新选一次文件",
-        'emoteMaker.templateLibraryEmpty': "这里只有当前这一个模板；再导入一个就会并排留在库里。",
+        'emoteMaker.templateLibraryEmpty': "这里只有当前这一个模板；再导入一个就会并排留在这里。",
         'emoteMaker.templateInUse': "使用中",
         'emoteMaker.removeTemplate': "移除",
         'emoteMaker.templateSwitched': "已切换模板",
@@ -1054,22 +1051,12 @@
         const open = document.createElement('button');
         open.type = 'button';
         open.className = 'template-lib-open';
-        const imageBox = document.createElement('span');
-        imageBox.className = 'asset-card-image' + (entry.thumb ? '' : ' is-empty');
-        if (entry.thumb) {
-            const image = document.createElement('img');
-            image.src = entry.thumb;
-            image.alt = '';
-            imageBox.appendChild(image);
-        }
         const label = document.createElement('span');
         label.className = 'asset-card-label';
         // 显示名的裁决在库里（用户改的名 > 来源名 > 模板自报名 > 包名），别在这再写一条链
         label.textContent = templateLibraryModule.entryLabel(entry)
             || t('emoteMaker.templateSceneList');
-        // 双击改名是暗手，得留个线索：跟着光标的那条说明正适合干这个
-        label.dataset.tip = t('emoteMaker.renameTemplateHint');
-        open.append(imageBox, label);
+        open.append(label);
         // 单击=装回模板，双击=改名：不延迟的话，双击的头一下已经把模板切过去了。
         // 240ms 的延迟对一次重导入级的操作无感。当前使用中的那条点了没去处，就地挡住。
         let openTimer = 0;
@@ -4415,6 +4402,12 @@
 
     function removeTemplate(key) {
         if (!templateLibraryModule || !key) return;
+        // 删的是用户攒的模板 + 它的本地副本，得先问一句；名字用卡片上那个
+        const entry = templateLibraryModule.find(templateLibraryState, key);
+        const label = templateLibraryModule.entryLabel(entry) || key;
+        if (!window.confirm(interpolate(t('emoteMaker.removeTemplateConfirm'), { name: label }))) {
+            return;
+        }
         const held = loadedTemplates.get(key);
         const isCurrent = key === currentTemplateKey();
         loadedTemplates.delete(key);
@@ -4424,13 +4417,8 @@
         try {
             templateLibraryModule.save(localStorage, templateLibraryState);
         } catch (_) { /* 存不下就只丢这一次的记忆 */ }
-        // 库条目删了，磁盘上的副本也要真的删掉并如实报出释放了多少 —— 占用显示
-        // 和实际占用必须对得上，否则"删了还占着"比不显示更糟
-        void deleteTemplateArchive(key).then((freed) => {
-            if (freed > 0) showToast(interpolate(t('emoteMaker.libraryFreed'), {
-                size: formatTemplateBytes(freed) || String(freed),
-            }));
-        });
+        // 库条目删了，磁盘上的副本跟着删（确认框里已经说过会删）
+        void deleteTemplateArchive(key);
         if (isCurrent) {
             spineRendererGeneration += 1;
             disposeSpineRenderer();
@@ -6146,7 +6134,6 @@
                     : t('emoteMaker.templateMetadataOnly'),
                 warningCount ? 'warning' : 'success'
             );
-            showToast(t('emoteMaker.importSuccess'));
             // 库条目要先落进 templateLibraryState 再 renderAll：网格画的是那份状态，
             // 顺序反了就会出现"模板已载入、卡片却还没画出来"的窗口（自动化和手快都会撞上）
             persistTemplateSession();

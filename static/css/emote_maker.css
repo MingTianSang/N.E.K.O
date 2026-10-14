@@ -131,25 +131,6 @@ button {
     padding: 14px 18px 18px;
 }
 
-.breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    min-height: 28px;
-    padding: 0 6px;
-    color: var(--emote-muted);
-    font-size: 13px;
-}
-
-.breadcrumb strong {
-    color: var(--emote-text);
-    font-weight: 700;
-}
-
-.breadcrumb-separator {
-    color: #9fcde5;
-}
-
 .maker-grid {
     min-height: 0;
     flex: 1 1 auto;
@@ -1968,12 +1949,6 @@ body {
 .emote-maker-page {
     gap: 8px;
     padding: 10px 16px 14px;
-}
-
-.breadcrumb {
-    min-height: 22px;
-    padding-inline: 4px;
-    font-size: 12px;
 }
 
 .maker-grid {

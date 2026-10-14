@@ -425,7 +425,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "b2a72d86fd9d990455a89853cf113abb91e86c9d60ef981410962f41b381f968"
+LOCALE_KEY_SIGNATURE = "9c89b5317b2e07b73f567076184f7930d081cf27505cdcb8b5b8841b9f847ebe"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

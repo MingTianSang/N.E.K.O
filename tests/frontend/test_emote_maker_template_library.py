@@ -262,6 +262,8 @@ def test_registry_switch_does_not_reparse_or_refetch(library_page: Page) -> None
 def test_remove_takes_the_entry_away(library_page: Page) -> None:
     _import(library_page, "first.zip", "第一个")
     _import(library_page, "second.zip", "第二个")
+    # 删除有确认框：测试里一律同意
+    library_page.on("dialog", lambda dialog: dialog.accept())
     library_page.evaluate("""() => {
         const card = [...document.querySelectorAll('#asset-grid .template-lib-card')]
             .find((c) => !c.querySelector('.template-lib-badge'));
@@ -399,12 +401,29 @@ def test_removing_a_template_frees_its_local_copy(library_page: Page) -> None:
         .then((d) => d.entries.find((e) => e.key === key))""", my_key)
     assert before and before["bytes"] > 0
 
+    # 删除要先过确认框：拒绝就什么都不动
+    answers = []
+
+    def dismiss_first(dialog):
+        answers.append(dialog.type)
+        dialog.dismiss()
+
+    library_page.on("dialog", dismiss_first)
+    library_page.evaluate("() => document.querySelector('.template-lib-remove').click()")
+    library_page.wait_for_timeout(600)
+    assert answers and answers[0] == "confirm", f"删除没先确认: {answers}"
+    still = library_page.evaluate("""(key) => fetch('/api/emote-maker/library')
+        .then((r) => r.json())
+        .then((d) => d.entries.some((e) => e.key === key))""", my_key)
+    assert still is True, "拒绝确认后条目还在删"
+
+    # 同意才真删（磁盘副本跟着走）
+    library_page.remove_listener("dialog", dismiss_first)
+    library_page.on("dialog", lambda dialog: dialog.accept())
     library_page.evaluate("() => document.querySelector('.template-lib-remove').click()")
     library_page.wait_for_function("""(key) => fetch('/api/emote-maker/library')
         .then((r) => r.json())
         .then((d) => !d.entries.some((e) => e.key === key))""", arg=my_key, timeout=15000)
-    toast = library_page.evaluate("() => document.querySelector('#emote-toast').textContent")
-    assert "已释放" in toast, f"删了副本却没报释放了多少: {toast!r}"
 
 
 def _write_template_directory(root, display_name: str, slot: str) -> None:
