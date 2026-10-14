@@ -27,6 +27,7 @@ PANEL = """() => ({
     idleBlankLabel: document.querySelector('#pack-scene-idle')?.options[0]?.textContent || '',
     talkingBlankLabel: document.querySelector('#pack-scene-talking')?.options[0]?.textContent || '',
     summary: document.querySelector('#pack-basic-summary')?.textContent || '',
+    summaryHidden: document.querySelector('#pack-basic-summary')?.hidden ?? true,
     editorButton: !!document.querySelector('#open-state-stage-btn'),
     // The deleted tree must stay deleted.
     leftoverCards: document.querySelectorAll('.pack-node').length,
@@ -59,14 +60,20 @@ def test_the_old_card_tree_is_really_gone(page: Page, running_server: str) -> No
     assert not panel["leftoverTreeHost"], "#pack-states 容器应当已移除"
 
 
-def test_empty_talking_scene_says_so_instead_of_lying(page: Page, running_server: str) -> None:
-    """留空的说话场景必须写明"不做口型交替"，否则用户会以为说话时会有口型。"""
+def test_empty_talking_scene_stays_quiet_instead_of_lying(page: Page, running_server: str) -> None:
+    """留空的说话场景不再解释"继续播待机"——那行说明已按要求退役，宁可不说也不含糊。
+    用户能看出来的部分：摘要行收起（隐藏/空），别处也不许再出现那两句。"""
     panel = _open(page, running_server)
-    # 留空的非必填槽位在运行时会回落，所以文案要点明"跟随"，而不是含糊的"不导出"
+    # 留空的非必填槽位在运行时会回落，所以槽位标签仍要点明"跟随"
     assert "跟随" in panel["talkingBlankLabel"] or "回落" in panel["talkingBlankLabel"],         panel["talkingBlankLabel"]
-    assert "不做口型交替" in panel["summary"] or "继续播待机" in panel["summary"], panel["summary"]
-
-
+    summary_hidden = panel.get("summaryHidden")
+    if summary_hidden is None:
+        # PANEL 没量 hidden 时退回看文本：空文本视为收起
+        assert not panel["summary"], panel["summary"]
+    else:
+        assert summary_hidden or not panel["summary"], panel["summary"]
+    page_text = page.evaluate("() => document.body.innerText")
+    assert "不做口型交替" not in page_text and "继续播待机" not in page_text
 def test_switching_to_advanced_reveals_the_graph_panel(page: Page, running_server: str) -> None:
     _open(page, running_server)
     page.evaluate("()=>document.querySelector('[data-pack-mode=\"graph\"]').click()")

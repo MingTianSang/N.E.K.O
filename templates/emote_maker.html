@@ -259,11 +259,10 @@
                 <div id="inspector-panel-export" class="inspector-tab-panel" role="tabpanel" aria-labelledby="inspector-tab-export" data-inspector-panel="export" hidden>
                                         <section class="inspector-section export-section">
                         <label class="select-row"><span data-i18n="emoteMaker.exportFormat">格式</span><select id="export-format"><option value="png" data-i18n="emoteMaker.exportStatic">静态 PNG</option><option value="gif" data-i18n="emoteMaker.exportAnimated">动画 GIF</option></select></label>
-                        <label class="select-row" for="export-resolution"><span data-i18n="emoteMaker.exportResolution">分辨率</span><select id="export-resolution"><option value="128">128 × 128</option><option value="240" selected>240 × 240</option><option value="320">320 × 320</option><option value="480">480 × 480</option><option value="512">512 × 512</option><option id="export-resolution-1024" value="1024">1024 × 1024</option></select></label>
+                        <label class="select-row" for="export-resolution"><span data-i18n="emoteMaker.exportResolution">分辨率</span><select id="export-resolution"><option value="128">128 × 128</option><option value="240" selected>240 × 240</option><option value="320">320 × 320</option><option value="480">480 × 480</option><option value="512">512 × 512</option><option id="export-resolution-1024" value="1024" hidden>1024 × 1024</option></select></label>
                         <label class="select-row" for="export-fps"><span data-i18n="emoteMaker.exportFps">帧率</span><select id="export-fps"><option value="8">8 fps</option><option value="10">10 fps</option><option value="12">12 fps</option><option value="15">15 fps</option><option value="20" selected>20 fps</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="48">48 fps</option><option value="60">60 fps</option></select></label>
                         <label class="select-row"><span data-i18n="emoteMaker.transparentBackground">透明背景</span><input id="transparent-background" type="checkbox" checked></label>
                         
-                        <p class="panel-note" id="export-gif-size-warn" data-i18n="emoteMaker.exportGifSizeWarn" hidden></p>
                     </section>
 
                     <!-- 批量导出：攒"要导出的那几张"并一次出 zip。平时收起，别长期占着一整栏。 -->
@@ -274,15 +273,13 @@
                         </summary>
                         <div class="group-body">
                             <div class="group-picker-row">
-                                <select id="template-scene-list-select" class="template-scene-list-select" data-i18n-aria="emoteMaker.allGroups" aria-label="组"></select>
+                                <select id="template-scene-list-select" class="template-scene-list-select" data-i18n-aria="emoteMaker.batchExportPicker" aria-label="组"></select>
                                 <button id="new-group-btn" class="group-create-btn" type="button" data-i18n="emoteMaker.newGroupFromCurrent">按当前配置创建组</button>
                                 <button id="new-group-help" class="group-help" type="button" aria-label="按当前配置创建组是什么意思">?</button>
-                                <button id="add-scene-to-group-btn" class="group-chip-btn" type="button" data-i18n="emoteMaker.addToGroup">加入本组</button>
                                 <button id="save-shot-btn" class="group-chip-btn" type="button" data-i18n="emoteMaker.saveShot">存为取景</button>
                             </div>
                             <div id="group-members" class="group-members" role="list"></div>
                             <p class="group-export-status" id="group-export-status"></p>
-                            <p class="panel-note" data-i18n="emoteMaker.groupHint">组就是"要导出的那几张"。导入模板自带的组只能看；要改就先建一个。</p>
                         </div>
                     </details>
 
@@ -342,6 +339,15 @@
     </main>
 
     <div id="emote-toast" class="emote-toast" role="status" aria-live="polite"></div>
+    <div id="emote-confirm" class="emote-confirm" hidden>
+        <div class="emote-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="emote-confirm-text">
+            <p id="emote-confirm-text"></p>
+            <div class="emote-confirm-actions">
+                <button id="emote-confirm-cancel" class="emote-confirm-cancel" type="button" data-i18n="emoteMaker.confirmCancel">取消</button>
+                <button id="emote-confirm-ok" class="emote-confirm-ok" type="button" data-i18n="emoteMaker.confirmDelete">删除</button>
+            </div>
+        </div>
+    </div>
     <!-- 跟着光标的说明：原生 title 要悬停半秒才出、位置也不受控，而这类一句话解释
          属于"看见就懂"的东西，不该把它做成点击后落在页面底部的 toast。 -->
     <div id="emote-cursor-tip" class="emote-cursor-tip" role="tooltip" hidden></div>

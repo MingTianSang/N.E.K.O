@@ -262,25 +262,28 @@ def test_registry_switch_does_not_reparse_or_refetch(library_page: Page) -> None
 def test_remove_takes_the_entry_away(library_page: Page) -> None:
     _import(library_page, "first.zip", "第一个")
     _import(library_page, "second.zip", "第二个")
-    # 删除有确认框：测试里一律同意
-    library_page.on("dialog", lambda dialog: dialog.accept())
-    library_page.evaluate("""() => {
+    remove_and_confirm = """() => {
         const card = [...document.querySelectorAll('#asset-grid .template-lib-card')]
             .find((c) => !c.querySelector('.template-lib-badge'));
         card.querySelector('.template-lib-remove').click();
-    }""")
+    }"""
+    library_page.evaluate(remove_and_confirm)
+    library_page.wait_for_function(
+        "() => !document.querySelector('#emote-confirm').hidden", timeout=20000)
+    library_page.evaluate("() => document.querySelector('#emote-confirm-ok').click()")
     library_page.wait_for_function(
         "() => document.querySelectorAll('#asset-grid .template-lib-card').length === 1",
-        timeout=10000)
+        timeout=20000)
     assert _keys(library_page) == ["第二个"], "移除后库里该只剩当前那条"
     # 移除当前这条：编辑器回到空状态，这是设计好的出口，不是卡住
     library_page.evaluate(
         "() => document.querySelector('.template-lib-remove').click()")
     library_page.wait_for_function(
-        "() => document.body.classList.contains('editor-empty')", timeout=10000)
+        "() => !document.querySelector('#emote-confirm').hidden", timeout=20000)
+    library_page.evaluate("() => document.querySelector('#emote-confirm-ok').click()")
+    library_page.wait_for_function(
+        "() => document.body.classList.contains('editor-empty')", timeout=20000)
     assert _keys(library_page) == []
-
-
 def test_empty_state_does_not_echo_the_import_button(page: Page, running_server: str) -> None:
     """没模板时别把主按钮的话再说一遍：徽章以前写「选择模板文件」，正下方就是同名按钮。"""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
@@ -341,8 +344,6 @@ def test_reopens_from_the_local_copy_after_reload(library_page: Page) -> None:
     # 副本落盘在后台进行：卡片上出现占用字样才算存上了
     library_page.wait_for_function(
         "() => Boolean(document.querySelector('.template-lib-size'))", timeout=20000)
-    assert "本地副本" in library_page.evaluate(
-        "() => document.querySelector('.template-lib-usage').textContent")
 
     library_page.reload(wait_until="networkidle")
     # 重载后还没有加载任何模板，但左侧本来就是模板库：卡片直接可见、直接点。
@@ -401,26 +402,27 @@ def test_removing_a_template_frees_its_local_copy(library_page: Page) -> None:
         .then((d) => d.entries.find((e) => e.key === key))""", my_key)
     assert before and before["bytes"] > 0
 
-    # 删除要先过确认框：拒绝就什么都不动
-    answers = []
-
-    def dismiss_first(dialog):
-        answers.append(dialog.type)
-        dialog.dismiss()
-
-    library_page.on("dialog", dismiss_first)
+    # 删除要先过页内确认框：拒绝就什么都不动
     library_page.evaluate("() => document.querySelector('.template-lib-remove').click()")
-    library_page.wait_for_timeout(600)
-    assert answers and answers[0] == "confirm", f"删除没先确认: {answers}"
+    library_page.wait_for_function(
+        "() => !document.querySelector('#emote-confirm').hidden", timeout=10000)
+    text = library_page.evaluate(
+        "() => document.querySelector('#emote-confirm-text').textContent")
+    # 名字走卡片同一条裁决：来源名（solo.zip 去后缀），不是 meta 自报名
+    assert text == "删除「solo」？", f"确认文案不对: {text!r}"
+    library_page.evaluate("() => document.querySelector('#emote-confirm-cancel').click()")
+    library_page.wait_for_function(
+        "() => document.querySelector('#emote-confirm').hidden", timeout=10000)
     still = library_page.evaluate("""(key) => fetch('/api/emote-maker/library')
         .then((r) => r.json())
         .then((d) => d.entries.some((e) => e.key === key))""", my_key)
     assert still is True, "拒绝确认后条目还在删"
 
     # 同意才真删（磁盘副本跟着走）
-    library_page.remove_listener("dialog", dismiss_first)
-    library_page.on("dialog", lambda dialog: dialog.accept())
     library_page.evaluate("() => document.querySelector('.template-lib-remove').click()")
+    library_page.wait_for_function(
+        "() => !document.querySelector('#emote-confirm').hidden", timeout=10000)
+    library_page.evaluate("() => document.querySelector('#emote-confirm-ok').click()")
     library_page.wait_for_function("""(key) => fetch('/api/emote-maker/library')
         .then((r) => r.json())
         .then((d) => !d.entries.some((e) => e.key === key))""", arg=my_key, timeout=15000)

@@ -221,8 +221,10 @@
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
         'emoteMaker.templateLibrary': "已有模板",
-        'emoteMaker.removeTemplateConfirm': "删除「{name}」？它的本地副本也会一起删掉。",
-        'emoteMaker.libraryUsage': "本地副本 {{size}}",
+        'emoteMaker.removeTemplateConfirm': "删除「{{name}}」？",
+        'emoteMaker.groupEmptyList': "暂无组",
+        'emoteMaker.confirmCancel': "取消",
+        'emoteMaker.confirmDelete': "删除",
         'emoteMaker.archiveSaveFailed': "本地副本没存上：下次打开这个模板可能要重新选一次文件",
         'emoteMaker.templateLibraryEmpty': "这里只有当前这一个模板；再导入一个就会并排留在这里。",
         'emoteMaker.templateInUse': "使用中",
@@ -241,7 +243,6 @@
         'emoteMaker.modelNight': 'N.E.K.O. 夜色',
         'emoteMaker.saveCharacter': '保存角色',
         'emoteMaker.searchParts': '搜索模板',
-        'emoteMaker.allGroups': "全部场景",
         'emoteMaker.addToGroup': "加入本组",
         'emoteMaker.saveShot': "存为取景",
         'emoteMaker.groupExportCancel': "停止导出",
@@ -258,9 +259,7 @@
         'emoteMaker.groupExportFailed': "{{count}} 项没能烘出来",
         'emoteMaker.groupExportTruncated': "一次最多导出 {{count}} 张，多余的没导",
         'emoteMaker.groupSection': "组",
-        'emoteMaker.groupHint': "组就是\"要导出的那几张\"。导入模板自带的组只能看；要改就先新建一个。",
-        'emoteMaker.groupEmpty': "这一组还是空的：选一个画面，按「加入本组」或「存为取景」。",
-        'emoteMaker.groupPickFirst': "从上面挑一个组，或用「按当前配置创建组」开始攒一套。",
+        'emoteMaker.groupPickFirst': "组内暂无动作，去添加？",
         'emoteMaker.groupMemberShot': "取景",
         'emoteMaker.groupMemberMissing': "来源已不在当前模板里",
         'emoteMaker.groupRemoveMember': "移出",
@@ -323,7 +322,6 @@
         'emoteMaker.exportPngFailed': 'PNG 导出失败，请重试。',
         'emoteMaker.exportResolution': '分辨率',
         'emoteMaker.exportFps': '帧率',
-        'emoteMaker.exportGifSizeWarn': '动画 GIF 编码耗时随尺寸平方增长，超过 512 会被自动降帧或缩小，因此 1024 不可选。',
         'emoteMaker.saveCharacterFailed': '保存角色失败，可能是浏览器存储不可用。',
         'emoteMaker.packTitle': '形象包（PNGTuber）',
         'emoteMaker.packHint': '为每个状态挑一个场景（也可从列表长按拖进来）；未挑选的状态会回落到待机。',
@@ -378,7 +376,6 @@
         'emoteMaker.packBasicTalkingScene': '说话场景（可留空）',
         'emoteMaker.packBasicTalkingFollow': '跟随待机（不做口型交替）',
         'emoteMaker.packBasicMouthOn': "说话时切给你绑在「说话」上的那个动作。",
-        'emoteMaker.packBasicMouthOff': '未填说话场景：说话时继续播待机动画，不做口型交替。',
         'emoteMaker.nodeEditorUnavailable': '节点编辑器未加载。',
         'emoteMaker.packModeGraph': "进阶 · 表演台",
         'emoteMaker.stageOpen': "打开状态表演台",
@@ -404,9 +401,9 @@
         'emoteMaker.stageSearch': "搜索动作",
         'emoteMaker.packPlanSkipped': "已跳过未设置的槽位",
         'emoteMaker.packPriorityLabel': "状态优先级",
-        'emoteMaker.packPriorityHint': "决定桌宠说话时来了情绪该谁让位，写进模型配置、运行时生效。分层包里说话、拖动、点击都会占用状态槽，同样按这个优先级仲裁。",
-        'emoteMaker.packPriorityTalking': "说话优先（情绪等话说完）",
-        'emoteMaker.packPriorityEmotion': "情绪优先（说话不覆盖）",
+        'emoteMaker.packPriorityHint': "说话优先时情绪在说话后播放，情绪优先时说话期间触发情绪会覆盖说话动画",
+        'emoteMaker.packPriorityTalking': "说话优先",
+        'emoteMaker.packPriorityEmotion': "情绪优先",
         'emoteMaker.packPlanUnassigned': "未选动作",
         'emoteMaker.packPlanDuplicate': "同一槽位重复",
         'emoteMaker.graphCollapsedNotice': "已合并重复的槽位，保留你选过的动作",
@@ -1164,19 +1161,6 @@
         if (!assetSectionTitle || !assetGrid) return;
         assetGrid.classList.add('is-template-library');
         assetSectionTitle.textContent = t('emoteMaker.templateLibrary');
-        // 库的占用总数：有副本才写，没有就别挂一个"0 MB"
-        let usage = $('.template-lib-usage');
-        if (!usage) {
-            usage = document.createElement('small');
-            usage.className = 'template-lib-usage';
-            const actions = $('.asset-section-actions');
-            (actions || assetSectionTitle.parentElement)?.append(usage);
-        }
-        usage.textContent = templateArchiveTotalBytes > 0
-            ? interpolate(t('emoteMaker.libraryUsage'), {
-                size: formatTemplateBytes(templateArchiveTotalBytes),
-            })
-            : '';
         const randomize = $('#randomize-btn');
         if (randomize) randomize.hidden = true;
         const entries = templateLibraryModule && templateLibraryState
@@ -1234,7 +1218,9 @@
         }
         // 预览下方那份动画列表不再跟组联动：组只管"导出哪几张"，看动作归看动作
         const groups = allGroups();
-        const options = [new Option(t('emoteMaker.allGroups'), '')];
+        const options = groups.length
+            ? []
+            : [new Option(t('emoteMaker.groupEmptyList'), '')];
         groups.forEach((group) => {
             options.push(new Option(
                 group.readOnly && group.count ? `${group.name} · ${group.count}` : group.name,
@@ -1988,7 +1974,18 @@
         if (!items.length) {
             const empty = document.createElement('p');
             empty.className = 'group-members-empty';
-            empty.textContent = group ? t('emoteMaker.groupEmpty') : t('emoteMaker.groupPickFirst');
+            // 有组但没动作：一句去添加？加一个加号（顶替删掉的「加入本组」按钮）。
+            // 连组都没有（下拉显示「暂无组」的那种）：组员区就别再指挥人做事了。
+            empty.textContent = group ? t('emoteMaker.groupPickFirst') : t('emoteMaker.groupEmptyList');
+            if (group && writable) {
+                const add = document.createElement('button');
+                add.type = 'button';
+                add.id = 'add-scene-to-group-btn';
+                add.className = 'group-add-btn';
+                add.textContent = '+';
+                add.setAttribute('aria-label', t('emoteMaker.addToGroup'));
+                empty.appendChild(add);
+            }
             host.replaceChildren(empty);
             return;
         }
@@ -2225,12 +2222,10 @@
         renderSceneListFilter();
         const active = activeGroup();
         const writable = Boolean(active && !active.readOnly);
-        ['#add-scene-to-group-btn', '#save-shot-btn'].forEach((selector) => {
-            const button = $(selector);
-            // 选中的是导入的组时这两个动作无处可写，收着比按了弹一句"不能改"更好；
-            // 还没选组时它们会顺手新建一个组，所以照样能按。
-            if (button) button.hidden = Boolean(active && active.readOnly);
-        });
+        const saveShot = $('#save-shot-btn');
+        // 选中的是导入的组时无处可写，收着比按了弹一句"不能改"更好；
+        // 还没选组时它会顺手新建一个组，所以照样能按。
+        if (saveShot) saveShot.hidden = Boolean(active && active.readOnly);
         const summary = $('#group-summary-state');
         if (summary) {
             // 收起时也要看得见"现在攒的是哪一组、几张"，否则收起就等于信息没了
@@ -4343,6 +4338,10 @@
             fingerprint: templateFingerprint(held.pkg),
         };
         applyTemplateSession(held.pkg);
+        if (!state.groupId) {
+            const first = allGroups()[0];
+            if (first) selectGroup(first.id);
+        }
         if (entry.session.packName) state.packName = entry.session.packName;
         state.packFormat = entry.session.packFormat === 'layered' ? 'layered' : 'flat';
         state.packPriority = entry.session.packPriority === 'emotion' ? 'emotion' : 'talking';
@@ -4397,12 +4396,49 @@
         }
     }
 
-    function removeTemplate(key) {
+    /** 页内确认框：window.confirm 的默认样式和这一页毫不相干，插值也归这里管。 */
+    function confirmModal(text) {
+        return new Promise((resolve) => {
+            const box = $('#emote-confirm');
+            if (!box) {
+                resolve(window.confirm(text));
+                return;
+            }
+            $('#emote-confirm-text').textContent = text;
+            box.hidden = false;
+            const ok = $('#emote-confirm-ok');
+            const cancel = $('#emote-confirm-cancel');
+            const done = (value) => {
+                box.hidden = true;
+                ok.removeEventListener('click', onOk);
+                cancel.removeEventListener('click', onCancel);
+                document.removeEventListener('keydown', onKey, true);
+                resolve(value);
+            };
+            const onOk = () => done(true);
+            const onCancel = () => done(false);
+            const onKey = (event) => {
+                if (event.key === 'Escape') {
+                    event.stopPropagation();
+                    done(false);
+                } else if (event.key === 'Enter') {
+                    event.stopPropagation();
+                    done(true);
+                }
+            };
+            ok.addEventListener('click', onOk);
+            cancel.addEventListener('click', onCancel);
+            document.addEventListener('keydown', onKey, true);
+            ok.focus();
+        });
+    }
+
+    async function removeTemplate(key) {
         if (!templateLibraryModule || !key) return;
         // 删的是用户攒的模板 + 它的本地副本，得先问一句；名字用卡片上那个
         const entry = templateLibraryModule.find(templateLibraryState, key);
         const label = templateLibraryModule.entryLabel(entry) || key;
-        if (!window.confirm(interpolate(t('emoteMaker.removeTemplateConfirm'), { name: label }))) {
+        if (!(await confirmModal(interpolate(t('emoteMaker.removeTemplateConfirm'), { name: label })))) {
             return;
         }
         const held = loadedTemplates.get(key);
@@ -4836,9 +4872,10 @@
 
         const summary = $('#pack-basic-summary');
         if (summary) {
-            summary.textContent = state.packSceneIds.talking_image
-                ? t('emoteMaker.packBasicMouthOn')
-                : t('emoteMaker.packBasicMouthOff');
+            // 未绑说话场景的那句"继续播待机动画"没人需要读：收掉，绑了才说
+            const bound = Boolean(state.packSceneIds.talking_image);
+            summary.hidden = !bound;
+            summary.textContent = bound ? t('emoteMaker.packBasicMouthOn') : '';
         }
         ['#pack-export-btn', '#pack-import-btn'].forEach((selector) => {
             const button = $(selector);
@@ -5564,7 +5601,7 @@
         if (format) format.value = state.exportFormat;
         const resolution = $('#export-resolution');
         const resolutionMax = $('#export-resolution-1024');
-        if (resolutionMax) resolutionMax.disabled = isGif;
+        if (resolutionMax) resolutionMax.hidden = isGif;
         if (resolution) resolution.value = String(state.exportResolution);
         // 帧率刻意不再按格式禁用：它同时驱动动画 GIF 和形象包的每个状态，
         // 一个"看不见却在影响另一条路径"的置灰控件比常开的更容易误判。
@@ -5572,9 +5609,6 @@
         if (fps) fps.value = String(state.exportFps);
         const transparent = $('#transparent-background');
         if (transparent) transparent.checked = state.exportTransparent !== false;
-        const warn = $('#export-gif-size-warn');
-        if (warn) warn.hidden = !isGif;
-
         const scale = $('#pack-scale');
         if (scale) scale.value = String(state.packScale);
         const scaleValue = $('#pack-scale-value');
@@ -6115,6 +6149,10 @@
             // 多选集合里是上一个模板的动画 id，留着会把旧动作一起加进新模板的组
             setPickedAnimations([]);
             applyTemplateSession(nextPackage);
+            if (!state.groupId) {
+                const first = allGroups()[0];
+                if (first) selectGroup(first.id);
+            }
             state.animationPlaying = false;
             history.length = 0;
             future.length = 0;
@@ -6280,7 +6318,10 @@
             hideGroupContextMenu();
             closeGroupPicker();
         });
-        $('#add-scene-to-group-btn')?.addEventListener('click', () => addCurrentSceneToGroup());
+        $('#group-members')?.addEventListener('click', (event) => {
+            // 加号在每次重绘里重建，监听挂委托：点在它或它里面的东西都算
+            if (event.target.closest('#add-scene-to-group-btn')) addCurrentSceneToGroup();
+        });
         $('#save-shot-btn')?.addEventListener('click', () => saveCurrentAsShot());
         $('#export-group-open-btn')?.addEventListener('click', () => {
             if (groupExportBusy) {

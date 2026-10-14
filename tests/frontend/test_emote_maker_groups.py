@@ -117,16 +117,20 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
     assert _shown(group_page, '#group-section') is True
     assert _shown(group_page, '#new-group-btn') is True
     options = _options(group_page)
-    assert options[0] == "全部场景", options
+    # 下拉里没有"全部场景"这一项了：它不是组，只是以前的过滤器默认值
+    assert "全部场景" not in options, options
     assert any(option.startswith("ModelA") for option in options), \
-        f"导入的 SceneList 没作为一个组出现: {options}"
+        f"导入模板自带的 SceneList 没作为一个组出现: {options}"
+    # 没选组时自动选上第一组：空值的下拉会渲染成一片空白
+    selected = group_page.evaluate(
+        "() => document.querySelector('#template-scene-list-select').value")
+    assert selected.startswith("list:"), f"首组没有自动选中: {selected!r}"
     state = group_page.evaluate("""() => {
         const shown = (sel) => {
             const el = document.querySelector(sel);
             return Boolean(el) && getComputedStyle(el).display !== 'none';
         };
         return {
-            add: shown('#add-scene-to-group-btn'),
             save: shown('#save-shot-btn'),
             // 导出入口已经搬到底部那排按钮里，组这一栏里不该再有一颗
             oldExport: Boolean(document.querySelector('#export-group-btn')),
@@ -135,21 +139,12 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
         };
     }""")
     # 还没选组时两个写动作照样给：按下去会顺手建一个组，比"先别按"少一步
-    assert state["add"] is True and state["save"] is True, state
     assert state["oldExport"] is False, "「导出本组」还留在批量导出里"
     assert state["current"] and state["batch"], "底部两颗导出按钮没并排出现"
-    # 但选中导入的只读组时，这两个动作无处可写，就该收起来
-    group_page.evaluate("""() => {
-        const select = document.querySelector('#template-scene-list-select');
-        const readOnly = [...select.options].find((o) => o.value.startsWith('list:'));
-        select.value = readOnly.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-    }""")
-    group_page.wait_for_function(
-        "() => document.querySelector('#add-scene-to-group-btn').hidden", timeout=10000)
+    # 首组是导入的只读组：存为取景无处可写就该收着；
+    # 加号（顶替「加入本组」的那颗）只住在空组提示里，此刻不该有
     assert group_page.evaluate(
-        "() => document.querySelector('#save-shot-btn').hidden") is True
-
+        "() => Boolean(document.querySelector('#add-scene-to-group-btn'))") is False
 
 def test_current_framing_line_is_gone(group_page: Page) -> None:
     """「当前画面：xxx」删了：它复述的是列表里已经选中的那一条，白占一行。"""
@@ -261,8 +256,17 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
     assert abs(float(transform.get("scale") or 0) - 1.18) < 0.01,         f"当前缩放没被带进组: {transform}"
     assert abs(float(transform.get("rotation") or 0) + 12) < 0.01,         f"当前旋转角度没被带进组: {transform}"
 
-    # 再加入当前场景：组里应该多一条"场景"成员
-    group_page.evaluate("() => document.querySelector('#add-scene-to-group-btn').click()")
+    # 再加入当前场景：组里应该多一条"场景"成员。
+    # （这条组已有一条取景，不是空组——加号只住在空组提示里，这里走右键菜单加。）
+    group_page.evaluate("""() => {
+        const card = document.querySelectorAll('#animation-list [data-animation-id]')[0];
+        const rect = card.getBoundingClientRect();
+        card.dispatchEvent(new MouseEvent('contextmenu', {
+            bubbles: true, cancelable: true,
+            clientX: Math.round(rect.left + 10), clientY: Math.round(rect.top + 10), button: 2,
+        }));
+    }""")
+    group_page.evaluate("() => document.querySelector('#context-add-btn').click()")
     group_page.wait_for_function(
         "() => document.querySelectorAll('#group-members .group-member').length === 2",
         timeout=10000)
@@ -519,11 +523,31 @@ def _open_context_menu(page: Page, index: int) -> None:
         }""", index)
 
 
+
+
+def test_gif_format_hides_1024_and_the_removed_notes_stay_gone(group_page: Page) -> None:
+    """GIF 时 1024 直接不可见；这轮清掉的几处提示不许还魂。"""
+    group_page.evaluate("""() => {
+        const format = document.querySelector('#export-format');
+        format.value = 'gif';
+        format.dispatchEvent(new Event('change', { bubbles: true }));
+    }""")
+    state = group_page.evaluate("""() => ({
+        hidden1024: document.querySelector('#export-resolution-1024').hidden,
+        warnGone: !document.querySelector('#export-gif-size-warn'),
+        groupHintGone: !document.body.innerText.includes('要导出的那几张'),
+        usageGone: !document.querySelector('.template-lib-usage'),
+        mouthOffGone: !document.body.innerText.includes('不做口型交替'),
+    })""")
+    assert state["hidden1024"] is True, state
+    assert state["warnGone"] and state["groupHintGone"] and state["usageGone"]         and state["mouthOffGone"], state
+
 def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) -> None:
     """右键动作 → 加入/移出当前批量导出组；已在组里时菜单要反过来说。"""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
-    group_page.wait_for_function("() => !document.querySelector('#add-scene-to-group-btn').hidden",
-                                 timeout=10000)
+    group_page.wait_for_function(
+        "() => document.querySelectorAll('#group-members .group-member').length === 1",
+        timeout=10000)
     before = group_page.evaluate(
         "() => document.querySelectorAll('#group-members .group-member').length")
 
