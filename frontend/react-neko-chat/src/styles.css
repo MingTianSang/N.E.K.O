@@ -3694,6 +3694,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   position: relative;
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
   min-width: 0;
+  /* anywhere 会继承给全部文本块：无空格长串（URL / 连续字母数字）必须在气泡内断行，
+     否则画出气泡背景外（紧凑气泡与全聊天面 .message-bubble 不同类，保护不会自动继承过来）。 */
+  word-break: normal;
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   border: 1.5px solid transparent;
   border-radius: 8px 16px 16px 16px;
@@ -4668,6 +4672,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 .compact-export-preview-bubble {
   max-width: var(--compact-export-preview-bubble-max-ratio);
   min-width: 0;
+  /* 同 .compact-export-history-bubble：无空格长串在气泡内断行，不画出框外。 */
+  word-break: normal;
+  overflow-wrap: anywhere;
   padding: 7px 9px;
   border-radius: 8px 14px 14px 14px;
   background: rgba(255, 255, 255, 0.68);
