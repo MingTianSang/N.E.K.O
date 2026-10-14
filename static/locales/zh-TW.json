@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "選擇範本檔案",
         "selectTemplateFolder": "選擇範本資料夾",
         "importingTemplate": "正在讀取範本…",
-        "importSuccess": "範本已讀取",
         "importFailed": "範本新增失敗",
         "importFailedKeepCurrent": "範本讀取失敗，目前範本未變更。",
         "templateMetadataOnly": "已讀取範本，正在準備預覽。",

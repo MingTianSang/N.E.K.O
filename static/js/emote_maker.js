@@ -209,7 +209,6 @@
         'emoteMaker.selectTemplateFile': '选择模板文件',
         'emoteMaker.selectTemplateFolder': '选择模板目录',
         'emoteMaker.importingTemplate': '正在读取模板…',
-        'emoteMaker.importSuccess': '模板已读取',
         'emoteMaker.importFailed': '模板添加失败',
         'emoteMaker.importFailedKeepCurrent': '模板读取失败，当前模板未更改。',
         'emoteMaker.templateMetadataOnly': '已读取模板，正在准备预览。',
@@ -886,9 +885,7 @@
                 return true;
             });
             setTemplateImportStatus(
-                warnings.length
-                    ? `${t('emoteMaker.importSuccess')} · ${presentTemplateWarning(warnings[0])}`
-                    : t('emoteMaker.importSuccess'),
+                warnings.length ? presentTemplateWarning(warnings[0]) : '',
                 warnings.length ? 'warning' : 'success',
             );
             setCanvasMode(true);
@@ -5112,14 +5109,11 @@
         if (inspectorEmptyState) inspectorEmptyState.hidden = hasEditorContent;
         if (animationDock) animationDock.hidden = !hasEditorContent;
         if (templateRuntimeBadge) {
-            // 徽章只报一件事：能不能渲染。renderTemplateSummary 是死函数
-            // （零调用方），徽章的显隐以前根本没人管。
-            templateRuntimeBadge.hidden = !templatePackage;
-            if (templatePackage) {
-                templateRuntimeBadge.textContent = hasSpineRenderer()
-                    ? t('emoteMaker.importSuccess')
-                    : t('emoteMaker.templateNoRuntime');
-                templateRuntimeBadge.dataset.tone = hasSpineRenderer() ? 'success' : 'warning';
+            // 徽章只报忧：跑不起预览才现身。一切正常时它就是第三个"模板已读取"。
+            templateRuntimeBadge.hidden = !templatePackage || hasSpineRenderer();
+            if (!templateRuntimeBadge.hidden) {
+                templateRuntimeBadge.textContent = t('emoteMaker.templateNoRuntime');
+                templateRuntimeBadge.dataset.tone = 'warning';
             }
         }
         bindTipKeys();
@@ -5157,7 +5151,7 @@
         const titleSubtitle = document.querySelector('.title-brand p');
         if (titleSubtitle) {
             titleSubtitle.textContent = templatePackage
-                ? (hasSpineRenderer() ? t('emoteMaker.importSuccess') : t('emoteMaker.templateMetadataOnly'))
+                ? (hasSpineRenderer() ? '' : t('emoteMaker.templateMetadataOnly'))
                 : t('emoteMaker.emptyLibraryHint');
         }
         if (templateCanvasStatus) {
@@ -6128,11 +6122,10 @@
                 ? templatePackage.warnings.filter((warning) => !String(warning).includes('已忽略'))
                 : [];
             const warningCount = warnings.length;
+            // 成功不需要庆祝——只有警告值得占这一行，而且不带"模板已读取"前缀
             setTemplateImportStatus(
-                warningCount
-                    ? `${t('emoteMaker.importSuccess')} · ${presentTemplateWarning(warnings[0])}`
-                    : t('emoteMaker.templateMetadataOnly'),
-                warningCount ? 'warning' : 'success'
+                warningCount ? presentTemplateWarning(warnings[0]) : '',
+                warningCount ? 'warning' : 'success',
             );
             // 库条目要先落进 templateLibraryState 再 renderAll：网格画的是那份状态，
             // 顺序反了就会出现"模板已载入、卡片却还没画出来"的窗口（自动化和手快都会撞上）
@@ -6157,7 +6150,7 @@
             // active package/renderer remains untouched when validation fails.
             if (!committed && nextAssetStore) releaseAssetStore(nextAssetStore);
             if (committed) {
-                setTemplateImportStatus(t('emoteMaker.importSuccess'), 'success');
+                // 成功不走嘴：激活渲染器的那条状态行随后会说话（或带着警告说）
             } else {
                 reportImportFailure(error);
                 renderAll();

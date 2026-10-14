@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "Choose template file",
         "selectTemplateFolder": "Choose template folder",
         "importingTemplate": "Reading template…",
-        "importSuccess": "Template added",
         "importFailed": "Could not add template",
         "importFailedKeepCurrent": "Template could not be read; the current template was kept.",
         "templateMetadataOnly": "Template loaded; preparing preview.",

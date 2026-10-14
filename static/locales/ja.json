@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "テンプレートファイルを選択",
         "selectTemplateFolder": "テンプレートフォルダーを選択",
         "importingTemplate": "テンプレートを読み込み中…",
-        "importSuccess": "テンプレートを追加しました",
         "importFailed": "テンプレートを追加できませんでした",
         "importFailedKeepCurrent": "テンプレートを読み込めませんでした。現在のテンプレートはそのままです。",
         "templateMetadataOnly": "テンプレートを読み込みました。プレビューを準備しています。",

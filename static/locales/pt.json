@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "Escolher arquivo de modelo",
         "selectTemplateFolder": "Escolher pasta de modelo",
         "importingTemplate": "Lendo o modelo…",
-        "importSuccess": "Modelo adicionado",
         "importFailed": "Não foi possível adicionar o modelo",
         "importFailedKeepCurrent": "Não foi possível ler o modelo; o modelo atual foi mantido.",
         "templateMetadataOnly": "Modelo carregado; preparando a pré-visualização.",

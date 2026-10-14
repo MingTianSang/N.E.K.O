@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "Выбрать файл шаблона",
         "selectTemplateFolder": "Выбрать папку шаблона",
         "importingTemplate": "Читаем шаблон…",
-        "importSuccess": "Шаблон добавлен",
         "importFailed": "Не удалось добавить шаблон",
         "importFailedKeepCurrent": "Не удалось прочитать шаблон; текущий шаблон сохранён.",
         "templateMetadataOnly": "Шаблон загружен; готовим предпросмотр.",

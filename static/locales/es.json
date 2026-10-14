@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "Elegir archivo de plantilla",
         "selectTemplateFolder": "Elegir carpeta de plantilla",
         "importingTemplate": "Leyendo la plantilla…",
-        "importSuccess": "Plantilla añadida",
         "importFailed": "No se pudo añadir la plantilla",
         "importFailedKeepCurrent": "No se pudo leer la plantilla; se conservó la plantilla actual.",
         "templateMetadataOnly": "Plantilla cargada; preparando la vista previa.",

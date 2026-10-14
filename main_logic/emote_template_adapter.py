@@ -368,7 +368,7 @@ def _normalize_archive(
     custom_texture_required = bool(character.get("customTexture"))
     if custom_texture_required:
         warnings.append(
-            "部分贴图未随模板提供；可补充贴图后继续预览"
+            "部分贴图未随模板提供，预览可能不完整"
         )
 
     catalogs = _read_catalogs(archive, entries, model_root)

@@ -4103,7 +4103,6 @@
         "selectTemplateFile": "选择模板文件",
         "selectTemplateFolder": "选择模板目录",
         "importingTemplate": "正在读取模板…",
-        "importSuccess": "模板已读取",
         "importFailed": "模板添加失败",
         "importFailedKeepCurrent": "模板读取失败，当前模板未更改。",
         "templateMetadataOnly": "已读取模板，正在准备预览。",
