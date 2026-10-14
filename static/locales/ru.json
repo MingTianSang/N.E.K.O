@@ -4111,6 +4111,7 @@
         "templateNoRuntime": "Предпросмотр недоступен",
         "templateLibrary": "Сохранённые шаблоны",
         "removeTemplateConfirm": "Удалить «{{name}}»?",
+        "panelToggle": "Свернуть или развернуть боковую панель",
         "confirmCancel": "Отмена",
         "confirmDelete": "Удалить",
         "groupEmptyList": "Нет групп",

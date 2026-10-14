@@ -4111,6 +4111,7 @@
         "templateNoRuntime": "Vista previa no disponible",
         "templateLibrary": "Plantillas guardadas",
         "removeTemplateConfirm": "¿Eliminar «{{name}}»?",
+        "panelToggle": "Contraer o expandir un panel lateral",
         "confirmCancel": "Cancelar",
         "confirmDelete": "Eliminar",
         "groupEmptyList": "Sin grupos",

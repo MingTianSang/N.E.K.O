@@ -4111,6 +4111,7 @@
         "templateNoRuntime": "미리보기를 사용할 수 없음",
         "templateLibrary": "저장된 템플릿",
         "removeTemplateConfirm": "\"{{name}}\"을(를) 삭제할까요?",
+        "panelToggle": "측면 패널 접기/펼치기",
         "confirmCancel": "취소",
         "confirmDelete": "삭제",
         "groupEmptyList": "그룹 없음",

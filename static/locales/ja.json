@@ -4111,6 +4111,7 @@
         "templateNoRuntime": "プレビューを利用できません",
         "templateLibrary": "保存済みテンプレート",
         "removeTemplateConfirm": "「{{name}}」を削除しますか？",
+        "panelToggle": "サイドパネルの折りたたみ／展開",
         "confirmCancel": "キャンセル",
         "confirmDelete": "削除",
         "groupEmptyList": "グループなし",

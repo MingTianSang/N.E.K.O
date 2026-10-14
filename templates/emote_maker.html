@@ -327,6 +327,15 @@
                     </div>
                 </div>
             </aside>
+
+            <!-- 两侧面板的收起/展开钮：占在面板列的贴边一角，悬停浮现；
+                 折叠后挪到窗口边缘继续当展开钮（fixed，脱离网格不影响布局） -->
+            <button id="panel-toggle-left" class="panel-toggle" type="button" aria-expanded="true" aria-controls="asset-panel" data-i18n-aria="emoteMaker.panelToggle" aria-label="收起或展开素材库">
+                <span class="panel-toggle-chevron" aria-hidden="true"></span>
+            </button>
+            <button id="panel-toggle-right" class="panel-toggle" type="button" aria-expanded="true" aria-controls="inspector-panel" data-i18n-aria="emoteMaker.panelToggle" aria-label="收起或展开模板设置">
+                <span class="panel-toggle-chevron" aria-hidden="true"></span>
+            </button>
         </div>
         <!-- 右键动作卡片的快捷菜单：就地加进/移出当前批量导出组，
              不用先切到导出设置再找下拉。 -->

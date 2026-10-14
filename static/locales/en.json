@@ -4111,6 +4111,7 @@
         "templateNoRuntime": "Preview unavailable",
         "templateLibrary": "Saved templates",
         "removeTemplateConfirm": "Delete “{{name}}”?",
+        "panelToggle": "Collapse or expand a side panel",
         "confirmCancel": "Cancel",
         "confirmDelete": "Delete",
         "groupEmptyList": "No groups",
