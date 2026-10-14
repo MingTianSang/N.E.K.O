@@ -7905,11 +7905,12 @@ describe('App', () => {
   it('wraps long unbroken text inside compact bubbles', () => {
     // 紧凑气泡与全聊天面 .message-bubble 不同类，overflow-wrap 不会从它继承；
     // 缺了 anywhere，无空格长串（URL / 连续字母数字）会画出气泡背景外。
+    // 正则用 [^}]* 限定在各自规则块内（跨块匹配会在声明被挪走时假通过）。
     expect(compactChatStyles).toMatch(
-      /\.compact-export-history-bubble\s*\{[\s\S]*?min-width: 0;[\s\S]*?word-break: normal;[\s\S]*?overflow-wrap: anywhere;/,
+      /\.compact-export-history-bubble\s*\{[^}]*min-width: 0;[^}]*word-break: normal;[^}]*overflow-wrap: anywhere;[^}]*\}/,
     );
     expect(compactChatStyles).toMatch(
-      /\.compact-export-preview-bubble\s*\{[\s\S]*?min-width: 0;[\s\S]*?word-break: normal;[\s\S]*?overflow-wrap: anywhere;/,
+      /\.compact-export-preview-bubble\s*\{[^}]*min-width: 0;[^}]*word-break: normal;[^}]*overflow-wrap: anywhere;[^}]*\}/,
     );
   });
 
