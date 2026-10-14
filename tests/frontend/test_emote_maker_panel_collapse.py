@@ -85,6 +85,15 @@ def test_panels_are_flush_with_square_corners(page: Page, running_server: str) -
     }""")
     assert edges["leftGap"] == 0 and edges["rightGap"] == 0, f"面板没贴到窗口边缘: {edges}"
     assert edges["assetRadius"] == "0px" and edges["inspectorRadius"] == "0px", edges
+    # 只有贴窗那侧是直角，内侧保持圆角
+    corners = page.evaluate("""() => ({
+        assetOuter: getComputedStyle(document.querySelector('.asset-panel')).borderTopLeftRadius,
+        assetInner: getComputedStyle(document.querySelector('.asset-panel')).borderTopRightRadius,
+        inspectorOuter: getComputedStyle(document.querySelector('.inspector-panel')).borderTopRightRadius,
+        inspectorInner: getComputedStyle(document.querySelector('.inspector-panel')).borderTopLeftRadius,
+    })""")
+    assert corners == {"assetOuter": "0px", "assetInner": "16px",
+                       "inspectorOuter": "0px", "inspectorInner": "16px"}, corners
 
 
 def test_hover_reveals_and_click_collapses_and_expands(page: Page, running_server: str) -> None:
@@ -99,15 +108,24 @@ def test_hover_reveals_and_click_collapses_and_expands(page: Page, running_serve
 
     before = _panel_state(page, "left")
     assert before["visible"] and not before["collapsed"], before
-    # 未悬停时按钮隐身
-    assert _toggle_state(page, "left")["opacity"] == 0
 
+    # 把手默认缩进去只露一点，悬停面板后滑出来（左缘贴到面板右缘）
+    tucked = page.evaluate("""() => {
+        const btn = document.querySelector('#panel-toggle-left').getBoundingClientRect();
+        const panel = document.querySelector('.asset-panel').getBoundingClientRect();
+        return { btnLeft: Math.round(btn.left), panelRight: Math.round(panel.right), top: Math.round(btn.top - panel.top) };
+    }""")
+    assert tucked["btnLeft"] < tucked["panelRight"], f"把手默认该缩着: {tucked}"
+    assert tucked["top"] < 30, f"把手该在面板顶部: {tucked}"
     page.hover(".asset-panel")
-    page.wait_for_function(
-        "() => getComputedStyle(document.querySelector('#panel-toggle-left')).opacity === '1'",
-        timeout=3000)
+    # 滑出来 = 左缘挪到面板右缘上（-8% 位移 ≈ 20px 露在外头），不是右缘对齐
+    page.wait_for_function("""() => {
+        const btn = document.querySelector('#panel-toggle-left').getBoundingClientRect();
+        const panel = document.querySelector('.asset-panel').getBoundingClientRect();
+        return btn.left > panel.right - 14;
+    }""", timeout=3000)
     shown = _toggle_state(page, "left")
-    assert shown["opacity"] == 1, f"悬停面板后收起钮没浮现: {shown}"
+    assert shown["opacity"] == 1, f"悬停面板后把手没滑出来: {shown}"
 
     page.click("#panel-toggle-left")
     page.wait_for_function(
@@ -117,16 +135,24 @@ def test_hover_reveals_and_click_collapses_and_expands(page: Page, running_serve
     assert collapsed_panel["collapsed"] and not collapsed_panel["visible"], collapsed_panel
     assert collapsed_panel["width"] == 0, collapsed_panel
     collapsed_btn = _toggle_state(page, "left")
-    assert collapsed_btn["left"] == 0, f"展开钮没钉在窗口左缘: {collapsed_btn}"
+    # 折叠态把手钉在窗口左缘、默认缩在外面只露一点（悬停才滑进来）
+    assert collapsed_btn["left"] < 0, f"展开钮没钉在窗口左缘: {collapsed_btn}"
+    assert collapsed_btn["left"] > -30, f"缩得太深，露不出来: {collapsed_btn}"
     assert collapsed_btn["expanded"] == "false"
     # 展开钮默认隐身，靠近才现身（点击后指针还压在钮上，先挪开再量）
     page.mouse.move(600, 300)
+    tucked_at_edge = _toggle_state(page, "left")
+    assert tucked_at_edge["left"] < 0, f"折叠后把手该缩在边缘外只露一点: {tucked_at_edge}"
+    # 把手缩在窗口外只露 6px，Playwright 的 hover 会瞄向盒中心（视口外）：
+    # 直接把鼠标挪到露出来的那一条上
+    sliver = page.evaluate(
+        "() => { const r = document.querySelector('#panel-toggle-left').getBoundingClientRect();"
+        "          return { x: Math.max(1, r.right - 3), y: Math.round(r.top + r.height / 2) }; }")
+    page.mouse.move(sliver["x"], sliver["y"])
     page.wait_for_function(
-        "() => getComputedStyle(document.querySelector('#panel-toggle-left')).opacity === '0'",
-        timeout=3000)
-    page.hover("#panel-toggle-left")
-    page.wait_for_function(
-        "() => getComputedStyle(document.querySelector('#panel-toggle-left')).opacity === '1'",
+        "() => { const el = document.querySelector('#panel-toggle-left');"
+        "          return Math.abs(el.getBoundingClientRect().left) < 3"
+        "              && getComputedStyle(el).opacity === '1'; }",
         timeout=3000)
     assert _toggle_state(page, "left")["opacity"] == 1
 
@@ -146,7 +172,9 @@ def test_hover_reveals_and_click_collapses_and_expands(page: Page, running_serve
         timeout=10000)
     right_collapsed = _panel_state(page, "right")
     assert right_collapsed["collapsed"] and right_collapsed["width"] == 0, right_collapsed
-    assert _toggle_state(page, "right")["right"] == 0, "右侧展开钮没钉在窗口右缘"
+    right_btn = _toggle_state(page, "right")
+    # 同左侧：钉在窗口右缘、默认缩着只露一点
+    assert right_btn["right"] < 0 and right_btn["right"] > -30,         f"右侧展开钮没钉在窗口右缘: {right_btn}"
     page.click("#panel-toggle-right")
     page.wait_for_function(
         "() => !document.querySelector('.maker-grid').classList.contains('right-collapsed')",

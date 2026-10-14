@@ -5111,3 +5111,123 @@ body.is-pack-dragging * {
 .maker-grid.right-collapsed #panel-toggle-right {
     margin: 0;
 }
+
+/* ── 贴边设计定稿：只有贴窗那一侧是直角，内侧保持圆角；收起钮是钉在
+      面板内侧顶部的"把手"，默认缩进去只露一点圆头，靠近才滑出来 ─────── */
+.asset-panel {
+    border-radius: 0 var(--emote-radius-lg) var(--emote-radius-lg) 0;
+}
+
+.inspector-panel {
+    border-radius: var(--emote-radius-lg) 0 0 var(--emote-radius-lg);
+}
+
+.panel-toggle {
+    top: 14px;
+    transform: none;
+    width: 22px;
+    height: 30px;
+    opacity: 1;
+    border-radius: 0;
+    padding: 0;
+}
+
+/* 左钮钉在素材库右缘：默认缩进 3/4，只露一个圆头；靠近滑出来 */
+#panel-toggle-left {
+    transform: translateX(-72%);
+    border-radius: 0 10px 10px 0;
+}
+
+#panel-toggle-left:hover,
+#panel-toggle-left:focus-visible {
+    transform: translateX(-8%);
+}
+
+/* 右钮镜像：钉在模板设置左缘 */
+#panel-toggle-right {
+    transform: translateX(72%);
+    border-radius: 10px 0 0 10px;
+}
+
+#panel-toggle-right:hover,
+#panel-toggle-right:focus-visible {
+    transform: translateX(-8%);
+}
+
+.asset-panel:hover ~ #panel-toggle-left {
+    transform: translateX(-8%);
+}
+
+.inspector-panel:hover ~ #panel-toggle-right {
+    transform: translateX(-8%);
+}
+
+/* 折叠态：钉在窗口边缘，同样默认只露一点，靠近滑进窗口 */
+.maker-grid.left-collapsed #panel-toggle-left {
+    top: 14px;
+    left: 0;
+    transform: translateX(-72%);
+    border-radius: 0 10px 10px 0;
+    width: 22px;
+    height: 30px;
+}
+
+.maker-grid.left-collapsed #panel-toggle-left:hover,
+.maker-grid.left-collapsed #panel-toggle-left:focus-visible {
+    transform: translateX(0);
+}
+
+.maker-grid.right-collapsed #panel-toggle-right {
+    top: 14px;
+    right: 0;
+    transform: translateX(72%);
+    border-radius: 10px 0 0 10px;
+    width: 22px;
+    height: 30px;
+}
+
+.maker-grid.right-collapsed #panel-toggle-right:hover,
+.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
+    transform: translateX(0);
+}
+
+/* 折叠态把钮改矮后，早期"居中在 120px 高命中区"的箭头边距要退回去 */
+.maker-grid.left-collapsed #panel-toggle-left .panel-toggle-chevron,
+.maker-grid.right-collapsed #panel-toggle-right .panel-toggle-chevron {
+    margin: 7px auto 0;
+}
+
+/* fixed 以视口定位，折叠把手会钻到页头底下：改回 absolute——网格本身贴边，
+   以它为锚的 top:14px 就是面板顶那一排 */
+.maker-grid.left-collapsed #panel-toggle-left,
+.maker-grid.right-collapsed #panel-toggle-right {
+    position: absolute;
+    top: 14px;
+    transform: none;
+}
+
+.maker-grid.left-collapsed #panel-toggle-left {
+    left: -14px;
+}
+
+.maker-grid.right-collapsed #panel-toggle-right {
+    right: -14px;
+}
+
+.maker-grid.left-collapsed #panel-toggle-left:hover,
+.maker-grid.left-collapsed #panel-toggle-left:focus-visible,
+.maker-grid.right-collapsed #panel-toggle-right:hover,
+.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
+    transform: none;
+}
+
+/* 滑出动作落在 left/right 上（absolute 后 translate 只管装饰） */
+.maker-grid.left-collapsed #panel-toggle-left:hover,
+.maker-grid.left-collapsed #panel-toggle-left:focus-visible {
+    left: 0;
+}
+
+.maker-grid.right-collapsed #panel-toggle-right:hover,
+.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
+    right: 0;
+}
