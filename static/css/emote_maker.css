@@ -4914,72 +4914,27 @@ body.is-pack-dragging * {
 }
 
 /* 两颗收起/展开钮：占在面板列贴边的一角，默认透明，悬停面板或按钮时浮现 */
-.panel-toggle {
-    grid-row: 1;
-    align-self: center;
-    z-index: 30;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: 1px solid var(--emote-line-strong);
-    border-radius: 7px;
-    background: #ffffff;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 140ms ease, background-color 140ms ease;
+
+
+/* ── 两侧面板贴边 + 把手（合并版：此前多代 .panel-toggle 覆盖全部废弃）────── */
+.asset-panel {
+    border-radius: 0 var(--emote-radius-lg) var(--emote-radius-lg) 0;
 }
 
-.panel-toggle-chevron {
-    display: block;
-    width: 12px;
-    height: 12px;
-    margin: 2px auto;
-    background-color: var(--emote-muted);
-    -webkit-mask: var(--group-chevron) center / 12px 12px no-repeat;
-    mask: var(--group-chevron) center / 12px 12px no-repeat;
-    transform: rotate(180deg);
-    transition: transform 140ms ease;
+.inspector-panel {
+    border-radius: var(--emote-radius-lg) 0 0 var(--emote-radius-lg);
 }
 
-#panel-toggle-left {
-    grid-column: 1 / 2;
-    justify-self: end;
-    margin-right: -10px;
+.emote-maker-page {
+    padding-inline: 0;
 }
 
-#panel-toggle-right {
-    grid-column: 5 / 6;
-    justify-self: start;
-    margin-left: -10px;
+.maker-grid {
+    position: relative;
 }
 
-#panel-toggle-right .panel-toggle-chevron {
-    transform: none;
-}
-
-#panel-toggle-left:hover,
-#panel-toggle-right:hover,
-#panel-toggle-left:focus-visible,
-#panel-toggle-right:focus-visible {
-    opacity: 1;
-    border-color: var(--emote-accent);
-}
-
-#panel-toggle-left:hover .panel-toggle-chevron,
-#panel-toggle-right:hover .panel-toggle-chevron,
-#panel-toggle-left:focus-visible .panel-toggle-chevron,
-#panel-toggle-right:focus-visible .panel-toggle-chevron {
-    background-color: var(--emote-accent-strong);
-}
-
-/* 悬停面板本体也算"靠近边缘" */
-.maker-grid:has(.asset-panel:hover) #panel-toggle-left,
-.maker-grid:has(.inspector-panel:hover) #panel-toggle-right {
-    opacity: 1;
-}
-
-/* 折叠态：轨道归零、面板隐身（visibility 保住网格槽位，display:none 会串列），
-   按钮改钉在窗口边缘，靠近才现身；命中区放宽到整条边缘带 */
+/* 折叠态：该侧两条网格轨道归零，面板 visibility 隐藏（display:none 会串列），
+   盒子的 padding/border 一并归零，否则 0 轨道里还会撑出 30px 残条 */
 .maker-grid.left-collapsed {
     grid-template-columns: 0px 0px minmax(var(--center-min), 1fr) 10px var(--col-right);
 }
@@ -4989,116 +4944,12 @@ body.is-pack-dragging * {
 }
 
 .maker-grid.left-collapsed .asset-panel,
-.maker-grid.left-collapsed #resize-left {
-    visibility: hidden;
-}
-
+.maker-grid.left-collapsed #resize-left,
 .maker-grid.right-collapsed .inspector-panel,
 .maker-grid.right-collapsed #resize-right {
     visibility: hidden;
 }
 
-.maker-grid.left-collapsed #panel-toggle-left,
-.maker-grid.right-collapsed #panel-toggle-right {
-    position: fixed;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 16px;
-    height: 120px;
-    padding: 0;
-    border: 0;
-    border-radius: 0 10px 10px 0;
-    background: transparent;
-    opacity: 0;
-}
-
-.maker-grid.right-collapsed #panel-toggle-right {
-    left: auto;
-    right: 0;
-    border-radius: 10px 0 0 10px;
-}
-
-.maker-grid.left-collapsed #panel-toggle-left {
-    left: 0;
-}
-
-.maker-grid.left-collapsed #panel-toggle-left .panel-toggle-chevron,
-.maker-grid.right-collapsed #panel-toggle-right .panel-toggle-chevron {
-    transform: rotate(180deg);
-    margin: 54px auto 0;
-}
-
-.maker-grid.right-collapsed #panel-toggle-right .panel-toggle-chevron {
-    transform: none;
-    margin: 54px auto 0;
-}
-
-.maker-grid.left-collapsed #panel-toggle-left:hover,
-.maker-grid.left-collapsed #panel-toggle-left:focus-visible,
-.maker-grid.right-collapsed #panel-toggle-right:hover,
-.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
-    opacity: 1;
-    background: #ffffff;
-    border: 1px solid var(--emote-line-strong);
-}
-
-/* 折叠覆盖窄窗单列布局：窄窗下面板本来就竖排，折叠无意义 */
-@media (max-width: 880px) {
-    .maker-grid.left-collapsed,
-    .maker-grid.right-collapsed {
-        grid-template-columns: 1fr;
-    }
-
-    .panel-toggle {
-        display: none;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .panel-toggle,
-    .panel-toggle-chevron {
-        transition: none;
-    }
-}
-
-/* ── 收起/展开钮改为绝对定位（前一段把它们当网格项，抢了自动布局的格子，
-      面板被挤到第二列去了——这就是本段覆盖的原因）──────────────────────── */
-.maker-grid {
-    position: relative;
-}
-
-.panel-toggle {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    grid-row: auto;
-    grid-column: auto;
-    align-self: auto;
-    justify-self: auto;
-    margin: 0;
-}
-
-#panel-toggle-left {
-    left: var(--col-left, 300px);
-    margin-left: -10px;
-    margin-right: 0;
-}
-
-#panel-toggle-right {
-    right: var(--col-right, 360px);
-    margin-right: -10px;
-    margin-left: 0;
-}
-
-/* 悬停浮现走兄弟选择器：按钮在面板之后，~ 即可，不依赖 :has 的支持度 */
-.asset-panel:hover ~ #panel-toggle-left,
-.inspector-panel:hover ~ #panel-toggle-right,
-.asset-panel:focus-within ~ #panel-toggle-left,
-.inspector-panel:focus-within ~ #panel-toggle-right {
-    opacity: 1;
-}
-
-/* 折叠到 0 时，面板的 padding+border 还会撑出 30px 的残条：一并归零 */
 .maker-grid.left-collapsed .asset-panel,
 .maker-grid.right-collapsed .inspector-panel {
     padding: 0;
@@ -5106,128 +4957,108 @@ body.is-pack-dragging * {
     overflow: hidden;
 }
 
-/* 折叠态按钮上残留的 ±10px 外边距会把贴边钮推出窗口外 */
-.maker-grid.left-collapsed #panel-toggle-left,
-.maker-grid.right-collapsed #panel-toggle-right {
-    margin: 0;
-}
-
-/* ── 贴边设计定稿：只有贴窗那一侧是直角，内侧保持圆角；收起钮是钉在
-      面板内侧顶部的"把手"，默认缩进去只露一点圆头，靠近才滑出来 ─────── */
-.asset-panel {
-    border-radius: 0 var(--emote-radius-lg) var(--emote-radius-lg) 0;
-}
-
-.inspector-panel {
-    border-radius: var(--emote-radius-lg) 0 0 var(--emote-radius-lg);
-}
-
-.panel-toggle {
+/* 裁剪条：边界就是面板边缘。缩进去的部分被它真裁掉，露出来的只有外面一点。
+   pointer-events none——它只当窗口用，命中的始终是把手本身 */
+.panel-toggle-clip {
+    position: absolute;
     top: 14px;
-    transform: none;
+    width: 24px;
+    height: 30px;
+    overflow: hidden;
+    z-index: 30;
+    pointer-events: none;
+}
+
+.panel-toggle-clip.left {
+    left: var(--col-left, 300px);
+}
+
+.panel-toggle-clip.right {
+    right: var(--col-right, 360px);
+}
+
+/* 把手：id 声明（老规则里有同 id 的 left: var(--col-left)，class 特异性压不过）。
+   缩放方向各自朝所属面板：左侧 -72%、右侧 +72%（镜像），露出的都是外侧 ~6px 圆头 */
+#panel-toggle-left,
+#panel-toggle-right {
+    position: absolute;
+    top: 0;
     width: 22px;
     height: 30px;
+    margin: 0;
     opacity: 1;
-    border-radius: 0;
-    padding: 0;
+    border: 1px solid var(--emote-line-strong);
+    background: #ffffff;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-/* 左钮钉在素材库右缘：默认缩进 3/4，只露一个圆头；靠近滑出来 */
 #panel-toggle-left {
-    transform: translateX(-72%);
-    border-radius: 0 10px 10px 0;
-}
-
-#panel-toggle-left:hover,
-#panel-toggle-left:focus-visible {
-    transform: translateX(-8%);
-}
-
-/* 右钮镜像：钉在模板设置左缘 */
-#panel-toggle-right {
-    transform: translateX(72%);
-    border-radius: 10px 0 0 10px;
-}
-
-#panel-toggle-right:hover,
-#panel-toggle-right:focus-visible {
-    transform: translateX(-8%);
-}
-
-.asset-panel:hover ~ #panel-toggle-left {
-    transform: translateX(-8%);
-}
-
-.inspector-panel:hover ~ #panel-toggle-right {
-    transform: translateX(-8%);
-}
-
-/* 折叠态：钉在窗口边缘，同样默认只露一点，靠近滑进窗口 */
-.maker-grid.left-collapsed #panel-toggle-left {
-    top: 14px;
     left: 0;
     transform: translateX(-72%);
     border-radius: 0 10px 10px 0;
-    width: 22px;
-    height: 30px;
 }
 
-.maker-grid.left-collapsed #panel-toggle-left:hover,
-.maker-grid.left-collapsed #panel-toggle-left:focus-visible {
-    transform: translateX(0);
-}
-
-.maker-grid.right-collapsed #panel-toggle-right {
-    top: 14px;
+#panel-toggle-right {
     right: 0;
     transform: translateX(72%);
     border-radius: 10px 0 0 10px;
-    width: 22px;
-    height: 30px;
 }
 
-.maker-grid.right-collapsed #panel-toggle-right:hover,
-.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
-    transform: translateX(0);
+#panel-toggle-right .panel-toggle-chevron {
+    transform: none;
 }
 
-/* 折叠态把钮改矮后，早期"居中在 120px 高命中区"的箭头边距要退回去 */
-.maker-grid.left-collapsed #panel-toggle-left .panel-toggle-chevron,
-.maker-grid.right-collapsed #panel-toggle-right .panel-toggle-chevron {
+#panel-toggle-left .panel-toggle-chevron,
+#panel-toggle-right .panel-toggle-chevron {
     margin: 7px auto 0;
 }
 
-/* fixed 以视口定位，折叠把手会钻到页头底下：改回 absolute——网格本身贴边，
-   以它为锚的 top:14px 就是面板顶那一排 */
-.maker-grid.left-collapsed #panel-toggle-left,
-.maker-grid.right-collapsed #panel-toggle-right {
-    position: absolute;
-    top: 14px;
-    transform: none;
+/* 悬停面板/把手/聚焦 = 靠近：滑出来（必须带 id，压过上面的 -72%） */
+.asset-panel:hover ~ .panel-toggle-clip.left #panel-toggle-left,
+.inspector-panel:hover ~ .panel-toggle-clip.right #panel-toggle-right,
+.asset-panel:focus-within ~ .panel-toggle-clip.left #panel-toggle-left,
+.inspector-panel:focus-within ~ .panel-toggle-clip.right #panel-toggle-right,
+#panel-toggle-left:hover,
+#panel-toggle-right:hover,
+#panel-toggle-left:focus-visible,
+#panel-toggle-right:focus-visible {
+    transform: translateX(0);
+    border-color: var(--emote-accent);
 }
 
-.maker-grid.left-collapsed #panel-toggle-left {
-    left: -14px;
+#panel-toggle-left:hover .panel-toggle-chevron,
+#panel-toggle-left:focus-visible .panel-toggle-chevron,
+#panel-toggle-right:hover .panel-toggle-chevron,
+#panel-toggle-right:focus-visible .panel-toggle-chevron {
+    background-color: var(--emote-accent-strong);
 }
 
-.maker-grid.right-collapsed #panel-toggle-right {
-    right: -14px;
-}
-
-.maker-grid.left-collapsed #panel-toggle-left:hover,
-.maker-grid.left-collapsed #panel-toggle-left:focus-visible,
-.maker-grid.right-collapsed #panel-toggle-right:hover,
-.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
-    transform: none;
-}
-
-/* 滑出动作落在 left/right 上（absolute 后 translate 只管装饰） */
-.maker-grid.left-collapsed #panel-toggle-left:hover,
-.maker-grid.left-collapsed #panel-toggle-left:focus-visible {
+/* 折叠态：裁剪条挪到窗口边缘，把手仍默认只露一点，靠近滑进窗口 */
+.maker-grid.left-collapsed .panel-toggle-clip.left {
     left: 0;
 }
 
-.maker-grid.right-collapsed #panel-toggle-right:hover,
-.maker-grid.right-collapsed #panel-toggle-right:focus-visible {
+.maker-grid.right-collapsed .panel-toggle-clip.right {
     right: 0;
+}
+
+/* 窄窗单列布局没有折叠意义 */
+@media (max-width: 880px) {
+    .maker-grid.left-collapsed,
+    .maker-grid.right-collapsed {
+        grid-template-columns: 1fr;
+    }
+
+    .panel-toggle-clip {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #panel-toggle-left,
+    #panel-toggle-right {
+        transition: none;
+    }
 }

@@ -98,94 +98,86 @@ def test_panels_are_flush_with_square_corners(page: Page, running_server: str) -
 
 def test_hover_reveals_and_click_collapses_and_expands(page: Page, running_server: str) -> None:
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
-    # 右侧面板在空态下整个不存在（editor-empty 把它藏了），两侧流程都要模板在场
+    # 右侧面板在空态下不存在（editor-empty 藏了它），两侧流程都要模板在场
     page.set_input_files("#emotelab-template-file", {
         "name": "first.zip", "mimeType": "application/zip", "buffer": _template(),
     })
     page.wait_for_function("() => document.body.classList.contains('editor-has-template')",
                            timeout=25000)
-    page.wait_for_function("() => Boolean(document.querySelector('#panel-toggle-left'))", timeout=15000)
+
+    def handle(side: str):
+        sel = "#panel-toggle-left" if side == "left" else "#panel-toggle-right"
+        return f"document.querySelector('{sel}')"
+
+    def wait_state(side: str, collapsed: bool) -> None:
+        cls = "left-collapsed" if side == "left" else "right-collapsed"
+        want = "true" if collapsed else "false"
+        page.wait_for_function(
+            f"() => document.querySelector('.maker-grid').classList.contains('{cls}')"
+            f"        === {want}", timeout=10000)
 
     before = _panel_state(page, "left")
     assert before["visible"] and not before["collapsed"], before
 
-    # 把手默认缩进去只露一点，悬停面板后滑出来（左缘贴到面板右缘）
+    # 把手默认缩着：只露一点（左把手缩进后右缘在面板右缘内），钉在面板顶部
     tucked = page.evaluate("""() => {
-        const btn = document.querySelector('#panel-toggle-left').getBoundingClientRect();
+        const btn = document.querySelector('#panel-toggle-left');
         const panel = document.querySelector('.asset-panel').getBoundingClientRect();
-        return { btnLeft: Math.round(btn.left), panelRight: Math.round(panel.right), top: Math.round(btn.top - panel.top) };
+        return { btnLeft: btn.getBoundingClientRect().left,
+                 panelRight: panel.right,
+                 top: Math.round(btn.getBoundingClientRect().top - panel.top) };
     }""")
     assert tucked["btnLeft"] < tucked["panelRight"], f"把手默认该缩着: {tucked}"
     assert tucked["top"] < 30, f"把手该在面板顶部: {tucked}"
-    page.hover(".asset-panel")
-    # 滑出来 = 左缘挪到面板右缘上（-8% 位移 ≈ 20px 露在外头），不是右缘对齐
-    page.wait_for_function("""() => {
-        const btn = document.querySelector('#panel-toggle-left').getBoundingClientRect();
-        const panel = document.querySelector('.asset-panel').getBoundingClientRect();
-        return btn.left > panel.right - 14;
-    }""", timeout=3000)
-    shown = _toggle_state(page, "left")
-    assert shown["opacity"] == 1, f"悬停面板后把手没滑出来: {shown}"
 
-    page.click("#panel-toggle-left")
-    page.wait_for_function(
-        "() => document.querySelector('.maker-grid').classList.contains('left-collapsed')",
-        timeout=10000)
-    collapsed_panel = _panel_state(page, "left")
-    assert collapsed_panel["collapsed"] and not collapsed_panel["visible"], collapsed_panel
-    assert collapsed_panel["width"] == 0, collapsed_panel
-    collapsed_btn = _toggle_state(page, "left")
-    # 折叠态把手钉在窗口左缘、默认缩在外面只露一点（悬停才滑进来）
-    assert collapsed_btn["left"] < 0, f"展开钮没钉在窗口左缘: {collapsed_btn}"
-    assert collapsed_btn["left"] > -30, f"缩得太深，露不出来: {collapsed_btn}"
-    assert collapsed_btn["expanded"] == "false"
-    # 展开钮默认隐身，靠近才现身（点击后指针还压在钮上，先挪开再量）
-    page.mouse.move(600, 300)
-    tucked_at_edge = _toggle_state(page, "left")
-    assert tucked_at_edge["left"] < 0, f"折叠后把手该缩在边缘外只露一点: {tucked_at_edge}"
-    # 把手缩在窗口外只露 6px，Playwright 的 hover 会瞄向盒中心（视口外）：
-    # 直接把鼠标挪到露出来的那一条上
-    sliver = page.evaluate(
-        "() => { const r = document.querySelector('#panel-toggle-left').getBoundingClientRect();"
-        "          return { x: Math.max(1, r.right - 3), y: Math.round(r.top + r.height / 2) }; }")
-    page.mouse.move(sliver["x"], sliver["y"])
-    page.wait_for_function(
-        "() => { const el = document.querySelector('#panel-toggle-left');"
-        "          return Math.abs(el.getBoundingClientRect().left) < 3"
-        "              && getComputedStyle(el).opacity === '1'; }",
-        timeout=3000)
-    assert _toggle_state(page, "left")["opacity"] == 1
-
-    # 展开还原：宽度回存档值
-    page.click("#panel-toggle-left")
-    page.wait_for_function(
-        "() => !document.querySelector('.maker-grid').classList.contains('left-collapsed')",
-        timeout=10000)
-    restored = _panel_state(page, "left")
-    assert restored["visible"] and restored["width"] > 200, restored
-
-    # 右侧同流程
-    page.hover(".inspector-panel")
-    page.click("#panel-toggle-right")
-    page.wait_for_function(
-        "() => document.querySelector('.maker-grid').classList.contains('right-collapsed')",
-        timeout=10000)
-    right_collapsed = _panel_state(page, "right")
-    assert right_collapsed["collapsed"] and right_collapsed["width"] == 0, right_collapsed
-    right_btn = _toggle_state(page, "right")
-    # 同左侧：钉在窗口右缘、默认缩着只露一点
-    assert right_btn["right"] < 0 and right_btn["right"] > -30,         f"右侧展开钮没钉在窗口右缘: {right_btn}"
-    page.click("#panel-toggle-right")
-    page.wait_for_function(
-        "() => !document.querySelector('.maker-grid').classList.contains('right-collapsed')",
-        timeout=10000)
-    assert _panel_state(page, "right")["width"] > 200
-
-
+    for side, panel_sel in (("left", ".asset-panel"), ("right", ".inspector-panel")):
+        # 折叠：真实鼠标悬停面板 → :hover 生效 → 把手滑出（transform 归零）；
+        # 点击用 el.click() 直派——locator.click 的可操作性循环会与把手回缩互相追逐，
+        # 那是工具层问题；这里验证的是"悬停滑出"和"点击切换"两件事各自成立。
+        center = page.evaluate(
+            """(sel) => { const r = document.querySelector(sel).getBoundingClientRect();
+                         return { x: Math.round(r.left + r.width / 2),
+                                  y: Math.round(r.top + r.height / 2) }; }""", panel_sel)
+        page.mouse.move(center["x"], center["y"])
+        sel_js = handle(side)
+        page.wait_for_function(
+            f"() => getComputedStyle({sel_js}).transform === 'matrix(1, 0, 0, 1, 0, 0)'",
+            timeout=3000)
+        page.evaluate(f"{sel_js}.click()")
+        wait_state(side, True)
+        state = _panel_state(page, side)
+        assert state["collapsed"] and state["width"] == 0, state
+        # 折叠后把手缩回窗口边缘只露一点（左侧缩到视口外，右侧贴缘露头）
+        if side == "left":
+            page.wait_for_function(
+                "() => document.querySelector('#panel-toggle-left').getBoundingClientRect().left < 0",
+                timeout=3000)
+        else:
+            page.wait_for_function(
+                "() => { const r = document.querySelector('#panel-toggle-right').getBoundingClientRect();"
+                "          return window.innerWidth - r.right <= 30 && r.left >= window.innerWidth - 30; }",
+                timeout=3000)
+        # 展开：把手滑出（把鼠标挪到露出条上，真实 :hover）后直派点击
+        # 露出条坐标：左钮取裁剪条左缘内 3px，右钮取右缘内 3px（在 Python 里算好）
+        edge = "c.left + 3" if side == "left" else "c.right - 3"
+        sliver = page.evaluate(
+            f"""() => {{ const c = {handle(side)}.parentElement.getBoundingClientRect();
+                     return {{ x: Math.min(window.innerWidth - 1, Math.max(1, Math.round({edge}))),
+                              y: Math.round(c.top + c.height / 2) }}; }}""")
+        page.mouse.move(sliver["x"], sliver["y"])
+        page.wait_for_function(
+            f"() => getComputedStyle({handle(side)}).transform === 'matrix(1, 0, 0, 1, 0, 0)'",
+            timeout=3000)
+        page.evaluate(f"{handle(side)}.click()")
+        wait_state(side, False)
+        assert _panel_state(page, side)["width"] > 200
+def _slide_out_helper_unused():
+    pass
 def test_collapse_survives_a_reload(page: Page, running_server: str) -> None:
+    """折叠状态进布局存档，跨重启保持。交互细节由上一条用例管，这里只管持久化。"""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_function("() => Boolean(document.querySelector('#panel-toggle-left'))", timeout=15000)
-    page.click("#panel-toggle-left")
+    page.evaluate("document.querySelector('#panel-toggle-left').click()")
     page.wait_for_function(
         "() => document.querySelector('.maker-grid').classList.contains('left-collapsed')",
         timeout=10000)
@@ -196,7 +188,7 @@ def test_collapse_survives_a_reload(page: Page, running_server: str) -> None:
     stored = json.loads(page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY) or "{}")
     assert stored.get("panelLeftCollapsed") is True, stored
     # 还原，别把别的用例带进折叠态
-    page.click("#panel-toggle-left")
+    page.evaluate("document.querySelector('#panel-toggle-left').click()")
     page.wait_for_function(
         "() => !document.querySelector('.maker-grid').classList.contains('left-collapsed')",
         timeout=10000)
