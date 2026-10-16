@@ -918,6 +918,28 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
         }
         container.appendChild(authorRow);
 
+        // 标签（卡面元数据；Molili 导入会写入 molili导入 标签）
+        const metaTags = Array.isArray(m && m.tags) ? m.tags : [];
+        if (metaTags.length) {
+            const tagsRow = document.createElement('div');
+            tagsRow.className = 'card-meta-row card-meta-tags';
+            const tagsLabel = document.createElement('span');
+            tagsLabel.className = 'card-meta-label';
+            tagsLabel.dataset.i18n = 'character.cardTagsLabel';
+            tagsLabel.textContent = window.t ? window.t('character.cardTagsLabel') : '标签';
+            tagsRow.appendChild(tagsLabel);
+            const chipsWrap = document.createElement('span');
+            chipsWrap.className = 'card-meta-tag-chips';
+            metaTags.forEach(tag => {
+                const chip = document.createElement('span');
+                chip.className = 'card-meta-origin-badge';
+                chip.textContent = tag;
+                chipsWrap.appendChild(chip);
+            });
+            tagsRow.appendChild(chipsWrap);
+            container.appendChild(tagsRow);
+        }
+
         // 创建时间
         if (createdAt) {
             const timeRow = document.createElement('div');
@@ -992,10 +1014,17 @@ async function handleImportCharacterCard(event) {
     if (!file) return;
     event.target.value = '';
 
+    // .zip 走 Molili 停服归档导入（后端按 manifest 嗅探确认，误选普通 zip 会报
+    // "不是 Molili 归档"），PNG / .nekocfg 维持原角色卡流程。
+    if (file.name.toLowerCase().endsWith('.zip')) {
+        await handleMoliliArchiveImport(file);
+        return;
+    }
+
     const isNekoFile = file.name.endsWith('.nekocfg');
     const isPngFile = file.type.startsWith('image/') || file.name.endsWith('.png');
     if (!isNekoFile && !isPngFile) {
-        showMessage(window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件或.nekocfg设定文件', 'warning');
+        showMessage(window.t ? window.t('character.importInvalidFile') : '请选择有效的PNG图片文件、.nekocfg设定文件或 Molili 归档 zip', 'warning');
         return;
     }
 
@@ -1085,6 +1114,511 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', _setupImportCardButton);
 } else {
     _setupImportCardButton();
+}
+
+// ===== Molili 停服归档导入 =====
+// 同一个"导入角色卡"入口：选了 .zip 按 Molili 用户数据归档处理。流程：
+// preview（后端解析 + 注入扫描，不落盘）→ 确认框（新建角色或选现有角色）→
+// 建卡（设定 = role_prompt，走通用字段，随卡可导出）→ 外部记忆导入 commit。
+// 建卡与记忆导入是两个独立接口，失败可分别重试：persona 融合按指纹幂等，
+// 已落盘的 daily fact 由服务端去重，重复 commit 不会翻倍。
+
+function _moliliT(key, fallback, params) {
+    return window.t ? window.t(key, params) : fallback;
+}
+
+// 与解析器 _EMOJI_RE 同范围：emoji/装饰符号清理（旧版整块设定比对用）
+function _moliliStripEmoji(text) {
+    return String(text || '')
+        .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}]/gu, '')
+        .replace(/ {2}/g, ' ')
+        .trim();
+}
+
+function _moliliFileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = String(reader.result || '');
+            const commaIndex = result.indexOf(',');
+            resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+        };
+        reader.onerror = () => reject(new Error('FileReader failed'));
+        reader.readAsDataURL(file);
+    });
+}
+
+async function handleMoliliArchiveImport(file) {
+    const parseNotice = showMessage(_moliliT('character.moliliParsing', '正在解析 Molili 归档...'), 'importing', 0);
+    let archiveB64 = '';
+    let preview;
+    try {
+        archiveB64 = await _moliliFileToBase64(file);
+        // character_name 只是请求校验占位，preview 不写任何数据；真实角色在确认框里定
+        const response = await fetch('/api/memory/external_import/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ character_name: 'Molili', archive_b64: archiveB64, source_format: 'molili' }),
+        });
+        preview = await response.json().catch(() => ({}));
+        if (!response.ok || !preview.success) {
+            throw new Error(preview.error || `HTTP ${response.status}`);
+        }
+    } catch (error) {
+        parseNotice.dismiss();
+        console.error('Molili 归档解析失败:', error);
+        showMessage(_moliliT('character.moliliParseFailed', `Molili 归档解析失败: ${error.message}`, { error: error.message }), 'import-error');
+        return;
+    }
+    parseNotice.dismiss();
+
+    const choice = await _showMoliliImportDialog(preview, archiveB64);
+    if (!choice) return;
+
+    // 主人身份处理：Molili 归档里的身份字段（昵称等）可能与全局主人卡不同。
+    // 默认"角色私有"——身份写进该角色的设定提示词，全局主人档案一字不动；
+    // 只有明确选择"更新全局"才动主人卡。身份必须在建卡/导记忆之前落地，
+    // 这样人格卡同步与融合守卫看到的都是最终值。
+    const masterProfile = preview.master_profile || {};
+    const hasMasterFields = Object.keys(masterProfile).length > 0;
+    // role_prompt 按 ## 标题拆成带 tag 的独立字段：各字段经 persona 同步单独
+    // 成条、卡面分区显示。解析器无标题可拆时回退单一"设定"字段（旧行为）。
+    const moliliSectionFields = {};
+    ((preview.character_card && preview.character_card.sections) || []).forEach(s => {
+        if (s.tag && s.text) moliliSectionFields[s.tag] = s.text;
+    });
+    if (!Object.keys(moliliSectionFields).length) {
+        const fallbackSetting = (preview.character_card && preview.character_card.system_prompt) || '';
+        if (fallbackSetting) moliliSectionFields['设定'] = fallbackSetting;
+    }
+
+    try {
+        let characterName = choice.name;
+        if (choice.masterOverwrite && hasMasterFields) {
+            const listResponse = await fetch('/api/characters');
+            const list = await listResponse.json().catch(() => ({}));
+            const masterFields = (list && list['主人']) || {};
+            const changed = Object.entries(masterProfile).some(([k, v]) => String(masterFields[k] || '') !== String(v));
+            if (changed) {
+                const masterNotice = showMessage(_moliliT('character.moliliUpdatingMaster', '正在更新「我的档案」...'), 'importing', 0);
+                try {
+                    // /api/characters/master 以请求体整卡替换（_reserved 由后端自行保留），
+                    // 必须带上现有字段合并后的全量
+                    const masterResponse = await fetch('/api/characters/master', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ...masterFields, ...masterProfile }),
+                    });
+                    const updated = await masterResponse.json().catch(() => ({}));
+                    if (!masterResponse.ok || !updated.success) {
+                        throw new Error(updated.error || `HTTP ${masterResponse.status}`);
+                    }
+                } catch (error) {
+                    throw new Error(_moliliT('character.moliliMasterUpdateFailed', `更新「我的档案」失败: ${error.message}`, { error: error.message }));
+                } finally {
+                    masterNotice.dismiss();
+                }
+            }
+        }
+        if (choice.mode === 'create') {
+            const cardNotice = showMessage(
+                _moliliT('character.moliliCreatingCard', `正在创建角色「${choice.name}」...`, { name: choice.name }),
+                'importing', 0);
+            let created;
+            try {
+                const createResponse = await fetch('/api/characters/catgirl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        '档案名': choice.name,
+                        '昵称': choice.name,
+                        // role_prompt 按 ## 标题拆成独立字段（各进 persona 记忆、
+                        // 卡面分区显示），主人身份是独立字段而非塞进设定。
+                        // 均随卡可导出、可编辑；molili导入 标签写在卡面元数据。
+                        ...moliliSectionFields,
+                    }),
+                });
+                created = await createResponse.json().catch(() => ({}));
+                if (!createResponse.ok || !created.success) {
+                    throw new Error(created.error || `HTTP ${createResponse.status}`);
+                }
+            } finally {
+                cardNotice.dismiss();
+            }
+            // 重名时后端自动加后缀（如 言叶(1)）：记忆必须导进实际建出的角色
+            characterName = created.character_name || choice.name;
+        } else if (Object.keys(moliliSectionFields).length) {
+            // 导入到现有角色：分节字段 + 主人身份字段合并进该角色档案。
+            // ⚠ PUT /catgirl/{name} 的语义是"未传字段即删除"——必须先 GET 全量
+            // 字段、合并增量后整卡回写，绝不能只发增量（否则角色的其他字段
+            // 会被整批删掉）。旧版整块"设定"若与本次解析全文一致（= 上次导入
+            // 写入的），不传该字段（PUT 会删除它），避免与分节字段重复占
+            // persona 预算；用户改过则原样保留。
+            const listResponse = await fetch('/api/characters');
+            const list = await listResponse.json().catch(() => ({}));
+            const targetCard = (list && list['猫娘'] && list['猫娘'][characterName]) || {};
+            const updates = { ...targetCard, ...moliliSectionFields };
+            // 历史误写在 关键词 里的 molili导入 标签：已迁至卡面元数据，剥离之
+            //（剥离后为空则不传该字段，PUT 会把空字段删除）。
+            const existingTags = Array.isArray(targetCard['关键词']) ? targetCard['关键词'] : [];
+            const keptTags = existingTags.filter(t => t !== 'molili导入');
+            if (keptTags.length) updates['关键词'] = keptTags;
+            const existingSetting = String(targetCard['设定'] || '');
+            const fullText = (preview.character_card && preview.character_card.system_prompt) || '';
+            if (existingSetting && fullText && _moliliStripEmoji(existingSetting) === fullText) {
+                delete updates['设定'];
+            }
+            const settingResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates),
+            });
+            const saved = await settingResponse.json().catch(() => ({}));
+            if (!settingResponse.ok || saved.success === false) {
+                throw new Error(saved.error || `HTTP ${settingResponse.status}`);
+            }
+        }
+
+        // 卡面信息写入 molili导入 标签（卡面元数据 sidecar，与 关键词 字段独立）。
+        // Best-effort：失败只告警，不阻断导入。
+        try {
+            const metaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`);
+            const metaNow = await metaResponse.json().catch(() => ({}));
+            const currentMeta = metaNow.meta || metaNow || {};
+            const metaTags = Array.isArray(currentMeta.tags) ? currentMeta.tags.slice() : [];
+            if (!metaTags.includes('molili导入')) {
+                metaTags.push('molili导入');
+                const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tags: metaTags }),
+                });
+                if (saveMetaResponse.ok) {
+                    const metaSaved = await saveMetaResponse.json().catch(() => ({}));
+                    if (metaSaved.meta && window._cardMetas) window._cardMetas[characterName] = metaSaved.meta;
+                }
+            }
+        } catch (metaError) {
+            console.warn('卡面标签写入失败（不阻断导入）:', metaError);
+        }
+
+        // 进度模态框：与页面弹窗同款覆盖层（保证可见），轮询后端真实计数
+        //（persona 按组、逐日按批）刷新进度条与阶段文案。
+        // 进度面板：底部居中悬浮条（不阻塞页面交互），轮询后端真实计数
+        //（persona 按组、逐日按批）刷新进度条与阶段文案。
+        const progressPanel = document.createElement('div');
+        progressPanel.style.cssText = 'position:fixed;left:50%;top:96px;transform:translateX(-50%);z-index:10002;background:#fff;border:1px solid #d8e2ec;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.18);padding:12px 18px;width:440px;max-width:90vw';
+        const stageLine = document.createElement('div');
+        stageLine.style.cssText = 'font-size:13px;font-weight:600;color:#222;margin-bottom:8px';
+        stageLine.textContent = _moliliT('character.moliliStageFusion', '融合人格中...');
+        const barOuter = document.createElement('div');
+        barOuter.style.cssText = 'height:10px;border-radius:6px;background:#edf1f5;overflow:hidden';
+        const barInner = document.createElement('div');
+        barInner.style.cssText = 'height:100%;width:8%;border-radius:6px;background:linear-gradient(135deg,#40C5F1,#5dd4f7);transition:width 0.4s ease';
+        barOuter.appendChild(barInner);
+        const progressNote = document.createElement('div');
+        progressNote.style.cssText = 'font-size:12px;color:#888;margin-top:8px';
+        progressNote.textContent = _moliliT('character.moliliImporting',
+            `正在为「${characterName}」导入记忆，可能需要几分钟，请勿关闭页面...`,
+            { name: characterName });
+        progressPanel.appendChild(stageLine);
+        progressPanel.appendChild(barOuter);
+        progressPanel.appendChild(progressNote);
+        document.body.appendChild(progressPanel);
+
+        const applyMoliliProgress = (p) => {
+            const personaTotal = Number(p.persona_total) || 0;
+            const personaDone = Number(p.persona_done) || 0;
+            const dailyTotal = Number(p.daily_total) || 0;
+            const dailyDone = Number(p.daily_done) || 0;
+            if (dailyTotal) {
+                const personaFrac = personaTotal ? personaDone / personaTotal : 0;
+                const dailyFrac = dailyDone / dailyTotal;
+                barInner.style.width = Math.round(100 * (0.25 * personaFrac + 0.75 * dailyFrac)) + '%';
+                stageLine.textContent = _moliliT('character.moliliStageDaily',
+                    `整理记忆 ${dailyDone}/${dailyTotal} 天...`, { done: dailyDone, total: dailyTotal });
+            }
+            // daily_total=0 = 还在 persona 阶段：条保持初始宽度，阶段文案不变
+        };
+
+        let moliliPollTimer = null;
+        const stopMoliliProgressPolling = () => {
+            if (moliliPollTimer) { clearInterval(moliliPollTimer); moliliPollTimer = null; }
+            progressPanel.remove();
+        };
+        moliliPollTimer = setInterval(async () => {
+            try {
+                const resp = await fetch(`/api/memory/external_import/progress?character_name=${encodeURIComponent(characterName)}`);
+                const data = await resp.json();
+                console.debug('[Molili] progress poll:', JSON.stringify(data));
+                if (data && data.success) applyMoliliProgress(data);
+            } catch (e) { /* 忽略单次轮询失败，下一轮再试 */ }
+        }, 5000);
+
+        let commit;
+        try {
+            const controller = new AbortController();
+            // 与后端 480s 转发窗口协调：前端留更大余量，保证后端先返回而非前端先断
+            const timeoutId = setTimeout(() => controller.abort(), 540000);
+            try {
+                const commitResponse = await fetch('/api/memory/external_import/commit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        character_name: characterName,
+                        archive_b64: archiveB64,
+                        source_format: 'molili',
+                        acknowledge_warnings: true,
+                    }),
+                    signal: controller.signal,
+                });
+                commit = await commitResponse.json().catch(() => ({}));
+                if (!commitResponse.ok || commit.status !== 'success') {
+                    throw new Error(commit.error || commit.detail || `HTTP ${commitResponse.status}`);
+                }
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        } finally {
+            stopMoliliProgressPolling();
+        }
+
+        showMessage(_moliliT('character.moliliImportDone',
+            `「${characterName}」导入完成`,
+            { name: characterName }),
+            'import-success', 0);
+    } catch (error) {
+        console.error('Molili 导入失败:', error);
+        // 超时类失败 ≠ 失败：记忆服务器会继续把整批跑完，且逐日指纹幂等——
+        // 稍候重跑一次导入即可收尾，已落盘部分全部跳过
+        const message = String((error && error.message) || '');
+        const timedOut = (error && error.name === 'AbortError') || /timed out|timeout|ReadTimeout/i.test(message);
+        if (timedOut) {
+            showMessage(_moliliT('character.moliliCommitTimeout',
+                '本次导入耗时较长，服务端可能仍在后台继续处理。请等待约 1 分钟后重新执行一次导入收尾：已完成的日期会自动跳过，只补剩余部分。'),
+                'import-warning', 0);
+        } else {
+            showMessage(_moliliT('character.moliliImportFailed', `Molili 导入失败: ${error.message}`, { error: error.message }), 'import-error');
+        }
+    }
+    // 无论成败都在收尾时刷新列表：超时/部分失败时服务端往往已建卡并继续
+    // 落盘（实测形态：浏览器报超时，服务端随后跑完）——不刷新的话新角色
+    // 要重开页面才可见。
+    if (typeof loadCharacterCards === 'function') {
+        loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+    }
+}
+
+function _showMoliliImportDialog(preview, archiveB64) {
+    return new Promise(resolve => {
+        const card = preview.character_card || {};
+        const counts = preview.counts || {};
+        const skipped = preview.skipped || {};
+        const suggestedName = card.suggested_name || 'Molili';
+
+        const overlay = document.createElement('div');
+        overlay.className = 'ccm-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10002;display:flex;align-items:center;justify-content:center;animation:ccmFadeIn 0.18s ease';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;width:480px;max-width:92vw;max-height:86vh;overflow:auto;box-shadow:0 14px 40px rgba(0,0,0,0.25);animation:ccmSlideUp 0.22s ease';
+
+        const close = (value) => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            document.removeEventListener('keydown', escHandler);
+            resolve(value);
+        };
+        const escHandler = (e) => {
+            if (e.key === 'Escape') close(null);
+        };
+        document.addEventListener('keydown', escHandler);
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:10px';
+        title.textContent = _moliliT('character.moliliDialogTitle', '导入 Molili 角色');
+        dialog.appendChild(title);
+
+        const summary = document.createElement('div');
+        summary.style.cssText = 'font-size:13px;color:#555;line-height:1.7;margin-bottom:12px;white-space:pre-wrap;word-break:break-word';
+        const summaryLines = [
+            _moliliT('character.moliliDetected',
+                `检测到角色「${suggestedName}」· 记忆 ${counts.daily || 0} 条`,
+                { name: suggestedName, memory: counts.daily || 0 }),
+        ];
+        const attachmentCount = skipped.attachments?.count || 0;
+        if (attachmentCount > 0) {
+            // 用户需要知情：附件（图）不随记忆迁移
+            summaryLines.push(_moliliT('character.moliliAttachmentsNote',
+                `附件 ${attachmentCount} 个与原始聊天不会随记忆迁移，如有需要请提前自行保存`,
+                { count: attachmentCount }));
+        }
+        if ((preview.warning_count || 0) > 0) {
+            summaryLines.push(_moliliT('character.moliliWarnings',
+                `⚠ 检测到 ${preview.warning_count} 条可疑指令模式，确认导入即代表知悉`,
+                { count: preview.warning_count }));
+        }
+        summary.textContent = summaryLines.join('\n');
+        dialog.appendChild(summary);
+
+        // ── 主人身份区：Molili 的身份字段（昵称等）与全局主人卡是两回事。
+        // 用户可选把身份同步进全局「我的档案」（全局生效）；不勾则完全不迁移身份。
+        const masterProfile = preview.master_profile || {};
+        const hasMasterFields = Object.keys(masterProfile).length > 0;
+        let masterOverwrite = false;
+        let masterCurrentLine = null;
+        if (hasMasterFields) {
+            const section = document.createElement('div');
+            section.style.cssText = 'border:1px solid #e3e8ee;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:#333';
+
+            const sectionTitle = document.createElement('div');
+            sectionTitle.style.cssText = 'font-weight:700;margin-bottom:6px';
+            sectionTitle.textContent = _moliliT('character.moliliMasterTitle', '我的身份');
+            section.appendChild(sectionTitle);
+
+            const detectedFields = Object.entries(masterProfile).map(([k, v]) => `${k} ${v}`).join('，');
+            const detected = document.createElement('div');
+            detected.style.cssText = 'color:#555;margin-bottom:4px;line-height:1.5';
+            detected.textContent = _moliliT('character.moliliMasterDetected', `Molili 中的你：${detectedFields}`, { fields: detectedFields });
+            section.appendChild(detected);
+
+            masterCurrentLine = document.createElement('div');
+            masterCurrentLine.style.cssText = 'color:#999;margin-bottom:8px;line-height:1.5';
+            masterCurrentLine.textContent = _moliliT('character.moliliMasterCurrentLoading', '「我的档案」加载中...');
+            section.appendChild(masterCurrentLine);
+
+            const overwriteLabel = document.createElement('label');
+            overwriteLabel.style.cssText = 'display:flex;align-items:flex-start;gap:6px;cursor:pointer;line-height:1.5';
+            const overwriteCheck = document.createElement('input');
+            overwriteCheck.type = 'checkbox';
+            overwriteCheck.addEventListener('change', () => { masterOverwrite = overwriteCheck.checked; });
+            const overwriteText = document.createElement('span');
+            overwriteText.textContent = _moliliT('character.moliliMasterOverwrite',
+                '同步更新「我的档案」为以上身份（注意：我的档案为所有角色共享，此更改会影响它们）');
+            overwriteLabel.append(overwriteCheck, overwriteText);
+            section.appendChild(overwriteLabel);
+
+            dialog.appendChild(section);
+        }
+
+        // 模式选择：新建（默认，预填识别名）或导入现有角色
+        const modeWrap = document.createElement('div');
+        modeWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:12px;font-size:13px;color:#333';
+
+        const createLabel = document.createElement('label');
+        createLabel.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer';
+        const createRadio = document.createElement('input');
+        createRadio.type = 'radio';
+        createRadio.name = 'molili-target-mode';
+        createRadio.checked = true;
+        const createText = document.createElement('span');
+        createText.textContent = _moliliT('character.moliliCreateNew', '新建角色：');
+        createLabel.append(createRadio, createText);
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = suggestedName;
+        nameInput.maxLength = 50;
+        nameInput.style.cssText = 'flex:1;padding:7px 10px;border:1px solid #dde2e8;border-radius:8px;font-size:13px;outline:none';
+        nameInput.addEventListener('focus', () => { createRadio.checked = true; });
+        createLabel.appendChild(nameInput);
+
+        const existingLabel = document.createElement('label');
+        existingLabel.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer';
+        const existingRadio = document.createElement('input');
+        existingRadio.type = 'radio';
+        existingRadio.name = 'molili-target-mode';
+        const existingText = document.createElement('span');
+        existingText.textContent = _moliliT('character.moliliImportExisting', '导入到现有角色：');
+        existingLabel.append(existingRadio, existingText);
+        const existingSelect = document.createElement('select');
+        existingSelect.style.cssText = 'flex:1;padding:7px 10px;border:1px solid #dde2e8;border-radius:8px;font-size:13px;background:#fff;outline:none';
+        existingSelect.disabled = true;
+        existingSelect.appendChild(new Option(_moliliT('character.moliliLoadingCharacters', '加载中...'), ''));
+        existingRadio.addEventListener('change', () => {
+            nameInput.disabled = existingRadio.checked;
+            existingSelect.disabled = !existingRadio.checked;
+        });
+        createRadio.addEventListener('change', () => {
+            nameInput.disabled = existingRadio.checked;
+            existingSelect.disabled = !existingRadio.checked;
+        });
+        existingLabel.appendChild(existingSelect);
+
+        const selectRow = document.createElement('div');
+        selectRow.style.cssText = 'display:flex;gap:6px;padding-left:22px';
+        selectRow.appendChild(existingSelect);
+        modeWrap.append(createLabel, existingLabel, selectRow);
+        dialog.appendChild(modeWrap);
+
+        // 现有角色名单（GET /api/characters 的 猫娘 字典即全部档案）
+        fetch('/api/characters').then(r => r.json()).then(data => {
+            const names = Object.keys((data && data['猫娘']) || {}).sort();
+            existingSelect.innerHTML = '';
+            names.forEach(name => existingSelect.appendChild(new Option(name, name)));
+            if (!names.length) {
+                existingSelect.appendChild(new Option(_moliliT('character.moliliNoCharacters', '（暂无角色）'), ''));
+            }
+            if (masterCurrentLine) {
+                const master = (data && data['主人']) || {};
+                const currentText = [master['档案名'], master['昵称']].filter(Boolean).join(' / ') || '—';
+                masterCurrentLine.textContent = _moliliT('character.moliliMasterCurrent',
+                    `当前「我的档案」：${currentText}`, { current: currentText });
+            }
+        }).catch(() => {
+            existingSelect.innerHTML = '';
+            existingSelect.appendChild(new Option(_moliliT('character.moliliLoadFailed', '（列表加载失败）'), ''));
+        });
+
+        const footer = document.createElement('div');
+        footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:6px';
+        const mkBtn = (label, variant) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            const base = 'padding:8px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:filter 0.15s,transform 0.1s';
+            if (variant === 'primary') {
+                b.style.cssText = base + ';background:linear-gradient(135deg,#40C5F1,#5dd4f7);color:#fff;box-shadow:0 2px 6px rgba(64,197,241,0.3)';
+            } else {
+                b.style.cssText = base + ';background:#f3f5f7;color:#333';
+            }
+            b.onmouseenter = () => { b.style.filter = 'brightness(1.06)'; b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.filter = ''; b.style.transform = ''; };
+            return b;
+        };
+        const cancelBtn = mkBtn(_moliliT('character.moliliCancel', '取消'), 'secondary');
+        cancelBtn.onclick = () => close(null);
+        const confirmBtn = mkBtn(_moliliT('character.moliliConfirm', '创建并导入'), 'primary');
+        confirmBtn.onclick = () => {
+            if (createRadio.checked) {
+                const name = nameInput.value.trim();
+                if (!name) {
+                    showMessage(_moliliT('character.moliliNameRequired', '请填写角色名'), 'warning');
+                    return;
+                }
+                close({ mode: 'create', name, masterOverwrite });
+            } else {
+                const name = existingSelect.value;
+                if (!name) {
+                    showMessage(_moliliT('character.moliliPickExisting', '请选择要导入的现有角色'), 'warning');
+                    return;
+                }
+                close({ mode: 'existing', name, masterOverwrite });
+            }
+        };
+        footer.append(cancelBtn, confirmBtn);
+        dialog.appendChild(footer);
+
+        overlay.appendChild(dialog);
+        overlay.onclick = (e) => { if (e.target === overlay) close(null); };
+        // keyframes 由 _createManagerModal 注入过则复用；没有就补一次
+        if (!document.getElementById('ccm-modal-keyframes')) {
+            const st = document.createElement('style');
+            st.id = 'ccm-modal-keyframes';
+            st.textContent = '@keyframes ccmFadeIn{from{opacity:0}to{opacity:1}}@keyframes ccmSlideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}';
+            document.head.appendChild(st);
+        }
+        document.body.appendChild(overlay);
+        nameInput.focus();
+    });
 }
 
 // ===== API 设置窗口 =====

@@ -744,12 +744,17 @@ EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 # daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
 # 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
-# daily 抽取的并发上限：每天一次 LLM 调用，串行跑 30 天日记 ≈ 300-900s，必撞
-# 上游 commit 转发的 240s 墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。
-# 不设太高：抽取 LLM 共享 provider 配额，且写盘侧由 per-character 锁天然串行。
-EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
+# 免费档礼貌间隔：全局任意两次逐日抽取调用之间的最小秒数（0=关）。并发槽
+# 决定同时在飞的调用数，这个间隔决定起呼频率——两者配合把"突发"摊成
+# "匀速"，才是对免费配额/WAF 真正的温和。付费档可设 0 关闭。
+EXTERNAL_IMPORT_DAILY_CALL_INTERVAL = 1.0
+# daily 抽取的并发上限：串行跑 30 天日记 ≈ 300-900s，必撞上游 commit 转发的
+# 转发墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。5 是免费档 API 的
+# 配额安全位（更高会被 429 拦截；付费档可自行调高），写盘侧由 per-character
+# 锁天然串行。
+EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 5
 # 单次导入允许的「真正要抽取」的日记天数上限（逐日指纹幂等 skip 的不计）：
-# 45 天 / 4 并发 ≈ 12 批 × 单次十几秒，稳落在 240s 窗口内；超限走 too_large
+# 45 天 / 5 并发 ≈ 9 波 × 单次十几秒，稳落在转发窗口内；超限走 too_large
 # 引导拆分导入——已导入的天在下一次会被指纹白嫖 skip，多次导入无重复成本。
 EXTERNAL_IMPORT_DAILY_MAX_FILES = 45
 

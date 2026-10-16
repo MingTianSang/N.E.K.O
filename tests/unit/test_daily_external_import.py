@@ -43,6 +43,7 @@ class _DailyHarness(FactStore):
 
     async def _allm_extract_facts(
         self, lanlan_name, messages, *, treat_malformed_as_failure=False,
+        parse_max_retries: int = 3,
     ):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
@@ -868,3 +869,56 @@ async def test_sidecar_non_utf8_file_degrades_to_empty(tmp_path):
     # 且下一次 record 原子重建文件。
     await harness._arecord_unpersisted_day_fp("Neko", "fp-new")
     assert await harness._aload_imported_day_fps("Neko") == {"fp-new"}
+
+
+@pytest.mark.asyncio
+async def test_daily_truncated_batch_splits_in_half_and_recovers():
+    """批失败（模拟输出截断）→ 按半递归拆分 → 整天成功。
+
+    真实形态：单批 29 片段的输出 JSON 顶到 4096 输出护栏被截断，同批盲试
+    原样再炸；拆半后每半收敛。桩策略：批内 ≥3 行判「过大」返回 None，
+    否则逐片段出 fact——断言整天 4 个片段最终全部落盘。"""
+    def stub(journal):
+        lines = [line for line in journal.splitlines() if line.strip()]
+        if len(lines) >= 3:
+            return None  # 模拟截断：大批必炸
+        return [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily(
+        "memories/2026-09-16.md", "2026-09-16",
+        "event A", "event B", "event C", "event D",
+    )
+
+    result = await harness.aimport_external_daily(
+        "Neko", candidates, "molili", "2026-09-17T00:00:00",
+    )
+
+    assert result["failed_days"] == 0
+    # 拆半后的两个半批各自成功；桩每批出 1 条 fact（批=2 片段的拼接文本）
+    assert result["added"] == 2
+    # 1 次失败批 + 拆半后的 2 次成功批
+    assert len(harness.extract_inputs) == 3
+    all_persisted = [f for batch in harness.persisted for f in batch]
+    assert {f["text"] for f in all_persisted} == {
+        "fact: event A\nevent B", "fact: event C\nevent D",
+    }
+
+
+@pytest.mark.asyncio
+async def test_daily_progress_callback_reports_total_and_done():
+    """on_progress：批总数先报，每完成一批 done+1（进度条数据源契约）。"""
+    updates = []
+
+    def stub(journal):
+        return [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "a", "b", "c")
+
+    await harness.aimport_external_daily(
+        "Neko", candidates, "molili", "t", on_progress=updates.append,
+    )
+
+    assert updates[0] == {"daily_total": 1, "daily_done": 0}
+    assert updates[-1]["daily_done"] == 1

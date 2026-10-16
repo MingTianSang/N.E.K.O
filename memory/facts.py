@@ -30,6 +30,7 @@ import re
 import asyncio
 import secrets
 import threading
+from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    EXTERNAL_IMPORT_DAILY_CALL_INTERVAL,
     EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
@@ -2876,6 +2878,7 @@ class FactStore:
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
         speaker_label: str | None = None,
+        parse_max_retries: int = 3,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2920,6 +2923,7 @@ class FactStore:
             prompt, lanlan_name,
             tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
             call_type="memory_fact_extraction",
+            max_retries=parse_max_retries,
         )
         if extracted is None:
             return None
@@ -5201,6 +5205,7 @@ class FactStore:
     async def aimport_external_daily(
         self, lanlan_name: str, candidates: list[dict], source_format: str,
         imported_at: str,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> dict:
         """LLM-extract facts from imported daily journals (Stage-1, no signals).
 
@@ -5211,7 +5216,9 @@ class FactStore:
         file (one file == one day); each day's fragments are joined into a single
         user turn and extracted independently so the day's ``event_date`` can be
         stamped onto every fact it yields. A day whose joined fragments exceed
-        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` is split into multiple
+        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` — or the per-batch fragment
+        cap in ``batch_daily_fragments`` (dense days otherwise overflow the
+        4096 output guard in a single call) — is split into multiple
         extraction batches (``batch_daily_fragments``) rather than truncated —
         no journal tail is silently dropped (Greptile P1). Days run concurrently
         under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
@@ -5297,8 +5304,9 @@ class FactStore:
 
         # 分批预计算 + cap 按「总抽取调用数」而非天数：单个超大日记文件能拆出
         # 几十批串行调用，len(pending) 拦不住它撞 240s 墙（Codex P2）。tiktoken
-        # 编码是同步 CPU，offload 线程池。
-        batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
+        # 编码是同步 CPU，offload 线程池。批保留片段分组（非拼接文本）：批次
+        # 失败时可按半自适应拆分重试，无需反向解析拼接串。
+        groups_by_file: dict[str, list[list[str]]] = await asyncio.to_thread(
             lambda: {
                 source_file: batch_daily_fragments(
                     [p for p in (str(g.get("text") or "").strip() for g in group) if p],
@@ -5307,7 +5315,10 @@ class FactStore:
                 for source_file, group in pending.items()
             }
         )
-        total_batches = sum(len(b) for b in batches_by_file.values())
+        total_batches = sum(len(b) for b in groups_by_file.values())
+        # 进度上报（外部导入进度条用）：total 先报，之后每完成一批 +1
+        if on_progress is not None:
+            on_progress({'daily_total': total_batches, 'daily_done': 0})
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
             raise ExternalMemoryImportTooLargeError(
                 f"daily import needs {total_batches} extraction calls across "
@@ -5315,18 +5326,39 @@ class FactStore:
                 "split the workspace"
             )
 
+        daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
+
+        # 免费档礼貌间隔：全局（跨天/跨批）任意两次抽取起呼之间的最小间隔，
+        # 把并发突发摊成匀速。并发槽决定同时在飞的调用数，这个间隔决定起呼
+        # 频率——两者配合才是对免费配额/WAF 真正的温和。锁内只做时间计算与
+        # sleep，不罩 LLM 调用本身（不占并发槽的驻留时间）。
+        call_gate = asyncio.Lock()
+        last_call_at = 0.0
+
+        async def _polite_gap() -> None:
+            nonlocal last_call_at
+            if EXTERNAL_IMPORT_DAILY_CALL_INTERVAL <= 0:
+                return
+            async with call_gate:
+                now = asyncio.get_running_loop().time()
+                wait = last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                last_call_at = asyncio.get_running_loop().time()
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
             event_date = day_dates[source_file]
-            batches = batches_by_file[source_file]
-            # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
-            # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
-            # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
-            # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
-            day_extracted: list[dict] = []
-            for batch_text in batches:
+
+            async def _extract_group(fragments: list[str], depth: int) -> list[dict] | None:
+                """One batch's extraction; ``None`` = day-terminal failure.
+
+                批失败最常见的形态是输出 JSON 顶到 4096 输出护栏被截断，同批
+                盲试大概率原样再炸（三连盲试=纯浪费）。按半递归拆分：每半输出
+                规模减半，密集日会收敛到护栏内；单片仍失败才是真失败。失败语义
+                与整天原子性不变——任一叶失败向上传播，整天不落盘、无指纹残留。"""
+                batch_text = "\n".join(fragments)
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
@@ -5334,28 +5366,53 @@ class FactStore:
                 # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
                 # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
                 # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
+                # 「数组但无 object 元素」同理 strict（split 兜底），挡不住会被
+                # checkpoint 成空抽取天、后续导入静默丢该天 facts（Codex P2）。
                 async with llm_slots:
+                    await _polite_gap()
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
+                        # 截断类失败交给 _extract_group 的拆半递归（每半本身就是
+                        # 一次子集重试），同批盲试 3 次是纯浪费——失败 1 次就拆。
+                        parse_max_retries=1,
                     )
-                if extracted is None:
+                if extracted is None or (
+                    extracted and not any(isinstance(f, dict) for f in extracted)
+                ):
+                    if len(fragments) >= 2 and depth < 6:
+                        mid = len(fragments) // 2
+                        logger.warning(
+                            f"[FactStore] {lanlan_name}: 外部 daily 抽取批次失败，"
+                            f"拆半重试（{len(fragments)} 片段 → {mid}+{len(fragments) - mid}）"
+                        )
+                        left = await _extract_group(fragments[:mid], depth + 1)
+                        if left is None:
+                            return None
+                        right = await _extract_group(fragments[mid:], depth + 1)
+                        if right is None:
+                            return None
+                        return left + right
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
                         f"放弃 {source_file}（整天重试重抽）"
                     )
-                    return 0, True
-                batch_facts = [f for f in extracted if isinstance(f, dict)]
-                if extracted and not batch_facts:
-                    # 数组非空但无 object 元素（如 ["Master likes tea"]）= schema 失败、
-                    # 非确认空抽取——treat_malformed_as_failure 只挡「非数组」，挡不住
-                    # 「数组套字符串」。当失败天可重试，否则被 checkpoint 成空抽取天、
-                    # 后续导入 skip LLM 静默丢该天 facts（Codex P2）。
-                    logger.warning(
-                        f"[FactStore] {lanlan_name}: 外部 daily 抽取返回无 object 元素的"
-                        f"数组，放弃 {source_file}（整天重试重抽）"
-                    )
+                    return None
+                return [f for f in extracted if isinstance(f, dict)]
+
+            # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
+            # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
+            # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
+            # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
+            # 批内失败不再盲试——按半拆分递归（见 _extract_group），收敛更快。
+            day_extracted: list[dict] = []
+            for fragments in groups_by_file[source_file]:
+                batch_facts = await _extract_group(fragments, 0)
+                if batch_facts is None:
                     return 0, True
                 day_extracted.extend(batch_facts)
+                daily_progress['done'] += 1
+                if on_progress is not None:
+                    on_progress({'daily_done': daily_progress['done']})
             if not day_extracted:
                 # 空抽取天：LLM 判该日无 fact，无 fact 载体存指纹，只能靠 sidecar，
                 # 否则每次重导都重抽该天并占 cap 配额（Codex P2 follow-up）。

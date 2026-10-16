@@ -1200,6 +1200,7 @@ def _default_card_meta(origin: str = 'self') -> dict:
     return {
         'author': '',
         'origin': origin,  # self / imported / steam
+        'tags': [],
         'created_at': None,
         'updated_at': None,
     }
@@ -1329,7 +1330,7 @@ async def get_card_meta(name: str):
 
 @router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
-    """Update card-face metadata (currently only the author field, and only when origin=self)."""
+    """Update card-face metadata (author / tags; only when origin=self)."""
     _config_manager = get_config_manager()
     name_error = _validate_existing_character_path_name(name)
     if name_error:
@@ -1345,11 +1346,30 @@ async def put_card_meta(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
 
     new_author = data.get('author') if isinstance(data, dict) else None
-    if new_author is None:
-        return JSONResponse({'success': False, 'error': '缺少 author 字段'}, status_code=400)
-    new_author = str(new_author).strip()
-    if len(new_author) > 64:
-        return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
+    new_tags = data.get('tags') if isinstance(data, dict) else None
+    if new_author is None and new_tags is None:
+        return JSONResponse({'success': False, 'error': '缺少 author 或 tags 字段'}, status_code=400)
+
+    cleaned_tags = None
+    if new_tags is not None:
+        if not isinstance(new_tags, list):
+            return JSONResponse({'success': False, 'error': 'tags 必须是字符串数组'}, status_code=400)
+        cleaned_tags = []
+        for tag in new_tags:
+            if not isinstance(tag, str):
+                continue
+            tag = tag.strip()
+            if tag and tag not in cleaned_tags:
+                cleaned_tags.append(tag)
+        if len(cleaned_tags) > 32:
+            return JSONResponse({'success': False, 'error': '标签数量过多（最多32个）'}, status_code=400)
+        if any(len(tag) > 100 for tag in cleaned_tags):
+            return JSONResponse({'success': False, 'error': '单个标签过长（最长100字符）'}, status_code=400)
+
+    if new_author is not None:
+        new_author = str(new_author).strip()
+        if len(new_author) > 64:
+            return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
 
     meta_path = _config_manager.card_face_meta_path(name)
     existing = await asyncio.to_thread(_read_card_meta, meta_path)
@@ -1357,9 +1377,12 @@ async def put_card_meta(name: str, request: Request):
         existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
 
     if existing.get('origin') != 'self':
-        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改作者'}, status_code=403)
+        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改元数据'}, status_code=403)
 
-    existing['author'] = new_author
+    if new_author is not None:
+        existing['author'] = new_author
+    if cleaned_tags is not None:
+        existing['tags'] = cleaned_tags
     now_iso = datetime.now().isoformat(timespec='seconds')
     existing['updated_at'] = now_iso
     if not existing.get('created_at'):
