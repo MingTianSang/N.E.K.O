@@ -145,6 +145,9 @@ def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
 class _MemberReader:
     """Uniform read view over a zip archive or an inline ``files`` list."""
 
+class _MemberReader:
+    """Uniform read view over a zip archive or an inline ``files`` list."""
+
     def __init__(
         self,
         archive_bytes: bytes | None,
@@ -152,6 +155,7 @@ class _MemberReader:
     ) -> None:
         self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes)) if archive_bytes is not None else None
         self._files = list(files or [])
+        self.raw_member_count = 0
         self.skipped_names: list[str] = []
 
     def __enter__(self) -> "_MemberReader":
@@ -165,6 +169,7 @@ class _MemberReader:
         """Safe (path, byte-size) pairs; unsafe paths are skipped, not fatal."""
         entries: list[tuple[str, int]] = []
         if self._archive is not None:
+            self.raw_member_count = len(self._archive.infolist())
             for info in self._archive.infolist():
                 if info.is_dir():
                     continue
@@ -259,6 +264,8 @@ def _flatten_profile(value: object, prefix: str = "") -> list[str]:
     elif isinstance(value, list):
         for item in value:
             lines.extend(_flatten_profile(item, prefix))
+    elif value is None:
+        pass
     else:
         text = str(value).strip()
         if text:
@@ -363,9 +370,9 @@ def build_molili_candidates(
                 raise ExternalMemoryImportError("Molili archive contains too many entries")
 
     with _MemberReader(archive_bytes, files) as reader:
-        names = reader.names()
-        if len(names) > MAX_ARCHIVE_MEMBERS:
+        if reader.raw_member_count > MAX_ARCHIVE_MEMBERS:
             raise ExternalMemoryImportError("Molili archive contains too many files")
+        names = reader.names()
         paths = {path for path, _size in names}
 
         manifest_path = next((p for p in paths if p.lower() == "manifest.json"), None)
