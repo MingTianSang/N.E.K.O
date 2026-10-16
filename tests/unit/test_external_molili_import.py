@@ -14,9 +14,8 @@
 """Molili archive parser: mapping, limits and security-boundary tests.
 
 Fixtures mirror the real export structure (molili-user-data-export schema 1):
-manifest 计数、personality 四件套、long_term.jsonl 的 v1/cache 双格式、
-日记与事件同日合并、attachments 只进 skipped 报告。
-"""
+manifest counts, personality file quadruplet, long_term.jsonl v1/cache dual
+format, diary and event same-day merging, attachments only in skip report."""
 from __future__ import annotations
 
 import asyncio
@@ -269,10 +268,7 @@ def test_molili_identity_falls_back_to_profile_cache():
 
 
 def test_molili_identity_key_is_jichu_not_jiben():
-    """Regression anchor: the identity key uses U+7840, not the lookalike U+672C form (both render as CJK in console).
-
-    The two words are nearly indistinguishable after console escaping; this
-    once made the whole identity split silently fall through."""
+    """Regression anchor: the identity key uses U+7840, not the lookalike U+672C form (both render as CJK in console)."""
     wrong_key = "基" + chr(0x672C) + "信息"
     right_key = "基" + chr(0x7840) + "信息"
     members = _molili_members()

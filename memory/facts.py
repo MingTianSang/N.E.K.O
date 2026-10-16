@@ -5354,10 +5354,13 @@ class FactStore:
             async def _extract_group(fragments: list[str], depth: int) -> list[dict] | None:
                 """One batch's extraction; ``None`` = day-terminal failure.
 
-                批失败最常见的形态是输出 JSON 顶到 4096 输出护栏被截断，同批
-                盲试大概率原样再炸（三连盲试=纯浪费）。按半递归拆分：每半输出
-                规模减半，密集日会收敛到护栏内；单片仍失败才是真失败。失败语义
-                与整天原子性不变——任一叶失败向上传播，整天不落盘、无指纹残留。"""
+                The dominant failure shape is the batch's output JSON hitting
+                the 4096 output guard mid-JSON -- blind retries of the same
+                batch re-truncate. Split in half and retry each half instead:
+                halves halve the output size and dense days converge under the
+                guard; a single fragment that still fails is a real failure.
+                Day-atomic semantics unchanged -- any leaf failure propagates
+                up, nothing persists, no fingerprint residue."""
                 batch_text = "\n".join(fragments)
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]

@@ -591,7 +591,9 @@ _IMPORT_PROGRESS: dict[str, dict] = {}
 
 @app.get("/internal/memory/import_progress/{character_name}")
 async def get_import_progress(character_name: str):
-    """外部导入进度（进度条轮询）：纯内存计数器读取，无 IO、无鉴权外泄面。"""
+    """External import progress for the Molili import progress bar.
+
+    Pure in-memory counter read: no IO."""
     name = validate_lanlan_name(character_name)
     entry = _IMPORT_PROGRESS.get(name)
     if entry is None:

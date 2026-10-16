@@ -2014,8 +2014,8 @@ async def commit_external_memory_import(request: Request):
 async def get_external_import_progress(request: Request):
     """Forward per-character external-import progress counters from memory_server.
 
-    Molili 导入进度条轮询用：memory_server 在内存里维护按批计数的进度登记，
-    这里只做同构转发（与 preview/commit 同一转发惯例）。"""
+    Polled by the Molili import progress modal; same forwarding convention as
+    preview/commit."""
     character_name = request.query_params.get('character_name') or ''
     validation = validate_character_name(
         character_name, allow_dots=True, max_length=50,
