@@ -339,7 +339,7 @@ def build_molili_candidates(
         text = text.strip()
         if not text:
             return
-        key = (target, entity, _normalised_text(text))
+        key = (target, entity, _normalised_text(text), event_date or "")
         if key in seen:
             return
         seen.add(key)
@@ -373,7 +373,12 @@ def build_molili_candidates(
             raise ExternalMemoryImportError(
                 "Not a Molili archive: no manifest.json found"
             )
-        manifest = json.loads(reader.read_text(manifest_path))
+        try:
+            manifest = json.loads(reader.read_text(manifest_path))
+        except json.JSONDecodeError as exc:
+            raise ExternalMemoryImportError(
+                f"Molili archive has a malformed manifest.json: {exc}"
+            ) from exc
         if not isinstance(manifest, dict) or manifest.get("format") != MOLILI_FORMAT:
             raise ExternalMemoryImportError(
                 "Not a Molili archive: manifest format mismatch"
@@ -436,11 +441,19 @@ def build_molili_candidates(
         # 按 markdown 标题拆节：每节一个卡片自定义字段（tag=节标题），替代
         # 一整坨塞进"设定"。正文/标题统一 emoji 清理。无标题的退化输入回退
         # 单一"设定"字段，保持旧行为可用。
+        # 节标题避开角色卡保留字段名（描述/标签/关键词等会被 POST 过滤或覆盖
+        # 系统数据）。碰撞时加前缀 "Molili " 区分。
+        _RESERVED_TAG_NAMES = frozenset({
+            "描述", "标签", "关键词", "原始数据", "文件路径",
+            "description", "tags", "name", "创意工坊物品ID",
+        })
         card_sections: list[dict[str, str]] = []
         master_profile: dict[str, str] = {}
         used_tags: set[str] = set()
         for sec_title, sec_body in _split_markdown_sections(system_prompt):
             tag = (sec_title or "设定").strip()[:60]
+            if tag in _RESERVED_TAG_NAMES:
+                tag = f"Molili {tag}"
             base_tag = tag
             counter = 1
             while tag in used_tags:
@@ -606,7 +619,7 @@ def detect_molili_archive(archive_bytes: bytes) -> bool:
                  if not i.is_dir() and str(i.filename).lower() == "manifest.json"),
                 None,
             )
-            if info is None:
+            if info is None or info.file_size > MAX_FILE_BYTES:
                 return False
             manifest = json.loads(archive.read(info).decode("utf-8-sig"))
     except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, OSError):

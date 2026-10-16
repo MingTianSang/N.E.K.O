@@ -2760,7 +2760,7 @@
         "cardTagsLabel": "タグ",
         "moliliAttachmentsNote": "添付 {{count}} 件とチャット履歴は記憶に移行されません。必要なら事前に保存してください",
         "moliliStageFusion": "人格を融合中...",
-        "moliliStageDaily": "記憶を整理中 {{done}}/{{total}}日...",
+        "moliliStageDaily":  "記憶バッチを整理中 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "上記の身元でプロフィールを更新（注意：プロフィールは全キャラクターで共有され、この変更はすべてに影響します）",
         "moliliParsing": "Moliliアーカイブを解析中...",
         "moliliParseFailed": "Moliliアーカイブの解析に失敗しました: {{error}}",

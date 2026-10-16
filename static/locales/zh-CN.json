@@ -2760,7 +2760,7 @@
         "cardTagsLabel": "标签",
         "moliliAttachmentsNote": "附件 {{count}} 个与原始聊天不会随记忆迁移，如有需要请提前自行保存",
         "moliliStageFusion": "融合人格中...",
-        "moliliStageDaily": "整理记忆 {{done}}/{{total}} 天...",
+        "moliliStageDaily":  "整理记忆批次 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "同步更新「我的档案」为以上身份（注意：我的档案为所有角色共享，此更改会影响它们）",
         "moliliParsing": "正在解析 Molili 归档...",
         "moliliParseFailed": "Molili 归档解析失败: {{error}}",

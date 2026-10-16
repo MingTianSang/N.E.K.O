@@ -1195,8 +1195,11 @@ async function handleMoliliArchiveImport(file) {
     try {
         let characterName = choice.name;
         if (choice.masterOverwrite && hasMasterFields) {
-            const listResponse = await fetch('/api/characters');
-            const list = await listResponse.json().catch(() => ({}));
+            const listResponse = await fetch('/api/characters?language=zh-CN');
+            if (!listResponse.ok) {
+                throw new Error(`HTTP ${listResponse.status}`);
+            }
+            const list = await listResponse.json();
             const masterFields = (list && list['主人']) || {};
             const changed = Object.entries(masterProfile).some(([k, v]) => String(masterFields[k] || '') !== String(v));
             if (changed) {
@@ -1254,8 +1257,11 @@ async function handleMoliliArchiveImport(file) {
             // 会被整批删掉）。旧版整块"设定"若与本次解析全文一致（= 上次导入
             // 写入的），不传该字段（PUT 会删除它），避免与分节字段重复占
             // persona 预算；用户改过则原样保留。
-            const listResponse = await fetch('/api/characters');
-            const list = await listResponse.json().catch(() => ({}));
+            const listResponse = await fetch('/api/characters?language=zh-CN');
+            if (!listResponse.ok) {
+                throw new Error(`HTTP ${listResponse.status}`);
+            }
+            const list = await listResponse.json();
             const targetCard = (list && list['猫娘'] && list['猫娘'][characterName]) || {};
             const updates = { ...targetCard, ...moliliSectionFields };
             // 历史误写在 关键词 里的 molili导入 标签：已迁至卡面元数据，剥离之

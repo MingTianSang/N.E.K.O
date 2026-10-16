@@ -2760,7 +2760,7 @@
         "cardTagsLabel": "Теги",
         "moliliAttachmentsNote": "{{count}} вложений и исходные чаты не переносятся с памятью; при необходимости сохраните их заранее",
         "moliliStageFusion": "Слияние личности...",
-        "moliliStageDaily": "Организация памяти: день {{done}}/{{total}}...",
+        "moliliStageDaily":  "Организация блоков памяти {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Обновить профиль до указанной личности (внимание: профиль общий для всех персонажей, изменение затронет их)",
         "moliliParsing": "Разбор архива Molili...",
         "moliliParseFailed": "Не удалось разобрать архив Molili: {{error}}",

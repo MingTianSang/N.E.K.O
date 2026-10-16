@@ -2760,7 +2760,7 @@
         "cardTagsLabel": "Etiquetas",
         "moliliAttachmentsNote": "{{count}} adjuntos y los chats sin procesar no se migran con la memoria; guárdalos antes si los necesitas",
         "moliliStageFusion": "Fusionando personalidad...",
-        "moliliStageDaily": "Organizando recuerdos, día {{done}}/{{total}}...",
+        "moliliStageDaily":  "Organizando lotes de memoria {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Actualizar el perfil a la identidad anterior (atención: el perfil es compartido por todos los personajes y este cambio les afecta)",
         "moliliParsing": "Analizando archivo de Molili...",
         "moliliParseFailed": "Error al analizar el archivo de Molili: {{error}}",

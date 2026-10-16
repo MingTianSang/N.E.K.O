@@ -2760,7 +2760,7 @@
         "cardTagsLabel": "Tags",
         "moliliAttachmentsNote": "{{count}} attachments and the raw chats are not migrated; save them yourself beforehand if needed",
         "moliliStageFusion": "Fusing personality...",
-        "moliliStageDaily": "Organizing memories, day {{done}}/{{total}}...",
+        "moliliStageDaily":  "Organizing memory batches {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Update your profile to the identity above (note: the profile is shared by all characters and this change affects them)",
         "moliliParsing": "Parsing Molili archive...",
         "moliliParseFailed": "Failed to parse Molili archive: {{error}}",
