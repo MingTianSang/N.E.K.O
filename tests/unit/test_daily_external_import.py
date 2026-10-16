@@ -873,11 +873,13 @@ async def test_sidecar_non_utf8_file_degrades_to_empty(tmp_path):
 
 @pytest.mark.asyncio
 async def test_daily_truncated_batch_splits_in_half_and_recovers():
-    """批失败（模拟输出截断）→ 按半递归拆分 → 整天成功。
+    """Batch failure (simulated output truncation) -> split in half recursively -> the day still succeeds.
 
-    真实形态：单批 29 片段的输出 JSON 顶到 4096 输出护栏被截断，同批盲试
-    原样再炸；拆半后每半收敛。桩策略：批内 ≥3 行判「过大」返回 None，
-    否则逐片段出 fact——断言整天 4 个片段最终全部落盘。"""
+    Real shape: a 29-fragment day's extraction JSON hits the 4096 output guard
+    and truncates; same-batch blind retries re-truncate identically. After the
+    split each half converges. Stub policy: batches with >=3 lines are judged
+    oversized and return None; otherwise one fact per line -- asserting all 4
+    fragments of the day end up persisted."""
     def stub(journal):
         lines = [line for line in journal.splitlines() if line.strip()]
         if len(lines) >= 3:
@@ -907,7 +909,7 @@ async def test_daily_truncated_batch_splits_in_half_and_recovers():
 
 @pytest.mark.asyncio
 async def test_daily_progress_callback_reports_total_and_done():
-    """on_progress：批总数先报，每完成一批 done+1（进度条数据源契约）。"""
+    """on_progress reports the batch total first, then done+1 per completed batch (progress-bar data contract)."""
     updates = []
 
     def stub(journal):

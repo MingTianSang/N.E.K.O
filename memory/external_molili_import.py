@@ -15,7 +15,7 @@
 
 """Import Molili AI Friends user-data exports into the external-import candidate model.
 
-Same contract as :mod:`memory.external_markdown_import`: the archive is *data*.
+Same contract as ``memory.external_markdown_import``: the archive is *data*.
 Nothing in it is executed, no LLM runs here, and the mapping is deterministic
 and reviewable. The caller (``main_routers/memory_router.py``) feeds the
 produced candidates into the shared preview/commit pipeline, with
@@ -23,7 +23,8 @@ produced candidates into the shared preview/commit pipeline, with
 
 Mapping (v1, archive layout ``molili-user-data-export`` schema 1):
 
-* ``personality/<agent>/role_prompt.md`` -> not a memory candidate. It is the
+* ``manifest.json`` -- format/schema sniffing; counts feed the skip report.
+* ``personality/<agent>/role_prompt.md`` -- not a memory candidate. It is the
   character's *base* setting: split on markdown headings into per-section
   card fields (``character_card.sections``, emoji-cleaned, tag = heading
   title) so the card shows tagged areas instead of one blob. The full
@@ -31,23 +32,21 @@ Mapping (v1, archive layout ``molili-user-data-export`` schema 1):
   fallback/compat.
 * ``personality/<agent>/{trait_profile,interaction_profile}.md`` and the
   numbered lines of ``cognitive.md`` -> persona candidates, ``entity=neko``:
-  these are the parts that *evolved through interaction*, which is what the
-  persona pool is for. A one-line favor snapshot from ``game/progress.json``
-  joins this group so fusion knows which favor stage the trait text assumes.
+  evolved self-view content that belongs in the persona pool.
 * ``memory/long_term.jsonl`` ``profile_v1`` -> persona candidate,
-  ``entity=master`` (the portrait of the *user*), minus its ``基础信息``
-  identity fields. N.E.K.O's master card is global while the portrait is
-  per-character: identity claims in a candidate contradict the global card
-  and the persona fusion rejects them wholesale, so identity fields are
+  ``entity=master`` (the portrait of the *user*), minus its basic-info
+  identity fields (see ``_BASIC_INFO_KEY``: the Molili key is homoglyph
+  adjacent to a generic label -- pinned by constant). Identity fields are
   returned separately in ``master_profile`` for the caller to route (per
-  -character card prompt, or the global master card). Stripping them also
+  -character card prompt, or the global master card); stripping them also
   changes the fusion fingerprint, so a previously rejected portrait genuinely
-  re-fuses on re-import. Mind the homoglyph: the Molili key is ``基础信息``
-  (U+7840 础), NOT ``基本信息`` (U+672C 本).
-* ``event_v1`` records (already-extracted ``summary`` + ``time_iso``) and
-  ``diaries/*.jsonl`` -> daily candidates grouped per local day into one
-  ``molili/memory/YYYY-MM-DD.md`` ``source_file`` so the commit side runs one
-  per-day extraction with the day's date as the event anchor.
+  re-fuses on re-import. When the v1 basic-info is null, identity falls back
+  to the structured ``profile_cache`` record.
+* ``memory/long_term.jsonl`` ``event_v1`` (already-extracted
+  ``summary`` + ``time_iso``) and ``diaries/*.jsonl`` -> daily candidates
+  grouped per local day into one ``molili/memory/YYYY-MM-DD.md``
+  ``source_file`` so the commit side runs one per-day extraction with the
+  day's date as the event anchor.
 * ``profile_cache`` / ``event_cache`` (superseded by the v1 records),
   ``conversations/history.jsonl`` (raw chats already distilled into
   ``event_v1.original_messages``), ``attachments/`` and ``owned_items`` are
@@ -56,8 +55,7 @@ Mapping (v1, archive layout ``molili-user-data-export`` schema 1):
 Layering: parsing is stdlib-only. Reuse from
 ``memory.external_markdown_import`` (limits, injection scan, long-fragment
 splitting) is same-package imports, so this module stays importable in unit
-tests the same way its sibling is.
-"""
+tests the same way its sibling is."""
 from __future__ import annotations
 
 import io
@@ -275,12 +273,11 @@ _BASIC_INFO_KEY = "基础信息"
 
 
 def _identity_fields(identity: object) -> dict[str, str]:
-    """Normalize a 基本信息 payload into flat ``{字段: 文本}`` identity fields.
+    """Normalize a basic-info payload into flat identity fields.
 
-    Accepts the structured dict form ({"昵称": ...}); scalar/list forms carry no
-    usable field names and yield {}. Empty fields are dropped so a null value
-    never pretends to be identity data.
-    """
+    Accepts the structured dict form; scalar/list forms carry no usable field
+    names and yield an empty dict. Empty values are dropped so a null entry
+    never pretends to be identity data."""
     if not isinstance(identity, dict):
         return {}
     return {

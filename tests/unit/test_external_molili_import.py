@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Molili 归档解析器的映射、限额与安全边界测试。
+"""Molili archive parser: mapping, limits and security-boundary tests.
 
-fixture 按真实导出（molili-user-data-export schema 1）的结构特征构造：
+Fixtures mirror the real export structure (molili-user-data-export schema 1):
 manifest 计数、personality 四件套、long_term.jsonl 的 v1/cache 双格式、
 日记与事件同日合并、attachments 只进 skipped 报告。
 """
@@ -242,7 +242,7 @@ def test_molili_dedupes_repeated_event_summaries():
 
 
 def test_molili_identity_falls_back_to_profile_cache():
-    """volc 版 profile_v1 的基础信息常是 null：身份从 profile_cache 的结构化字段捞。"""
+    """The volc-flavored profile_v1 carries a null basic-info: identity falls back to the structured profile_cache record."""
     members = _molili_members()
     long_term = [
         {
@@ -269,9 +269,10 @@ def test_molili_identity_falls_back_to_profile_cache():
 
 
 def test_molili_identity_key_is_jichu_not_jiben():
-    """回归锚：身份键是「基础信息」（础 U+7840），不是同形的「基本信息」（本 U+672C）。
+    """Regression anchor: the identity key uses U+7840, not the lookalike U+672C form (both render as CJK in console).
 
-    两词在控制台转义后几乎无法分辨，曾让身份拆分整条静默落空。"""
+    The two words are nearly indistinguishable after console escaping; this
+    once made the whole identity split silently fall through."""
     wrong_key = "基" + chr(0x672C) + "信息"
     right_key = "基" + chr(0x7840) + "信息"
     members = _molili_members()
@@ -303,7 +304,7 @@ def test_molili_identity_key_is_jichu_not_jiben():
 
 
 def test_molili_sections_dedupe_and_emoji_cleanup():
-    """重复节标题去重、emoji 从标题与正文清理、CJK 正文不受影响。"""
+    """Duplicate section titles dedupe; emoji is cleaned from titles and bodies; CJK bodies are unaffected."""
     members = _molili_members()
     members["personality/1_74000/role_prompt.md"] = (
         "## 👍 关键正面规则\n\n坚持口语化聊天风格喵。\n\n"
@@ -328,7 +329,7 @@ def test_molili_inline_files_mode():
 
 
 def test_router_preview_dispatches_molili_zip():
-    """preview 端点按 auto 嗅探把 Molili zip 交给新解析器，附建卡预填材料。"""
+    """The preview endpoint sniffs auto archives and routes Molili zips to the new parser, carrying card prefill material."""
     from main_routers.memory_router import preview_external_memory_import
 
     class _FakeRequest:
