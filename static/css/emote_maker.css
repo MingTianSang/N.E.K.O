@@ -4932,3 +4932,94 @@ body.is-pack-dragging * {
 .maker-grid {
     position: relative;
 }
+
+/* ── 表演台抽屉：动作库 / 用户图片 胶囊页签 ───────────────────────────────── */
+.st-userimg-panel {
+    display: grid;
+    gap: 8px;
+    padding: 10px 10px 4px;
+}
+
+.st-userimg-import {
+    min-height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--emote-line);
+    border-radius: 9px;
+    background: #ffffff;
+    color: var(--emote-accent-strong);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.st-userimg-import:hover {
+    border-color: var(--emote-accent);
+    background: var(--emote-accent-soft);
+}
+
+.st-userimg-import:focus-visible {
+    outline: 2px solid var(--emote-accent);
+    outline-offset: -2px;
+}
+
+.st-userimg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    gap: 6px;
+}
+
+.st-userimg-grid .st-pick {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 6px;
+    border-color: var(--emote-line);
+}
+
+.st-userimg-grid .st-pick-thumb {
+    width: 100%;
+    height: 56px;
+}
+
+.st-userimg-grid .st-pick-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+}
+
+.st-userimg-empty {
+    margin: 0;
+    padding: 10px;
+    border: 1px dashed var(--emote-line);
+    border-radius: 8px;
+    color: var(--st-muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+/* 用户图片格的删除钮 */
+.st-userimg-remove {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    z-index: 1;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.3);
+    color: #ffffff;
+    font-size: 11px;
+    line-height: 14px;
+    cursor: pointer;
+    opacity: 0;
+}
+
+.st-userimg:hover .st-userimg-remove {
+    opacity: 1;
+}
+
+.st-userimg-remove:hover {
+    background: rgba(0, 0, 0, 0.5);
+}

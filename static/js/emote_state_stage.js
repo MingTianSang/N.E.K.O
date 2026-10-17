@@ -433,7 +433,17 @@
         }
 
         function activeSource(node) {
+            const imgKey = imageSourceKey(node);
+            if (imgKey) return imgKey;
             return previewScene || committedScene(node);
+        }
+
+        /** 图片源的 sourceKey（image:<id>），供 framesOf 走图片绘制路径。 */
+        function imageSourceKey(node) {
+            if (!node) return '';
+            const source = model.findSource(graph, node.id, 'source');
+            return source && source.type === 'source.image' && String(source.params.imageId || '')
+                ? 'image:' + source.params.imageId : '';
         }
 
         function activeQuality(node) {
@@ -1184,9 +1194,10 @@
         function renderUserImages() {
             const entries = userImages();
             userImageGrid.replaceChildren(...entries.map((entry) => {
-                const tile = document.createElement('button');
-                tile.type = 'button';
+                const tile = document.createElement('div');
                 tile.className = 'st-pick st-userimg';
+                tile.setAttribute('role', 'option');
+                tile.setAttribute('tabindex', '0');
                 tile.dataset.imageId = entry.id;
                 tile.setAttribute('role', 'option');
                 const thumb = document.createElement('span');
@@ -1203,7 +1214,21 @@
                 label.className = 'st-pick-label';
                 label.textContent = entry.label;
                 text.appendChild(label);
-                tile.append(thumb, text);
+                // 删除钮：点 ≠ 赋格，只从清单里移除
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'st-userimg-remove';
+                remove.textContent = '×';
+                remove.setAttribute('aria-label', t('emoteMaker.stageUserImages')
+                    + ' · ' + entry.label);
+                remove.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    if (typeof options.onRemoveImage === 'function') {
+                        options.onRemoveImage(entry.id);
+                    }
+                });
+                tile.append(thumb, text, remove);
+                // 点击 = 赋给当前选中的状态格
                 tile.addEventListener('click', () => {
                     if (rowClickGuard ? rowClickGuard.shouldSwallow() : tile.dataset.justDragged) return;
                     applyImageTo(selectedNode(), entry.id);

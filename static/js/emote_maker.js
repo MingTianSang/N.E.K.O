@@ -4110,6 +4110,12 @@
                 label: scene.name || scene.animation?.id || scene.id,
             })),
             onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
+            onRemoveImage: (imageId) => {
+                // 从内存清单删掉 + 重推给舞台。副本里的旧文件留着无害
+                //（不进导出就不会被打包），不需要单独的删除接口。
+                stageUserImages.delete(imageId);
+                pushStageUserImages();
+            },
             onChange: (next) => {
                 state.nodeGraph = next;
                 state.packMode = 'graph';
