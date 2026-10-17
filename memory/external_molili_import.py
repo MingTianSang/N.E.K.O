@@ -657,7 +657,12 @@ def detect_molili_archive(archive_bytes: bytes) -> bool:
             )
             if info is None or info.file_size > MAX_FILE_BYTES:
                 return False
-            manifest = json.loads(archive.read(info).decode("utf-8-sig"))
-    except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, OSError):
+            # 与 _MemberReader.read_text 同写法：有界流读，不信中央目录声明的大小
+            with archive.open(info, "r") as stream:
+                data = stream.read(MAX_FILE_BYTES + 1)
+            if len(data) > MAX_FILE_BYTES:
+                return False
+            manifest = json.loads(data.decode("utf-8-sig"))
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, UnicodeDecodeError, ValueError, OSError):
         return False
     return isinstance(manifest, dict) and manifest.get("format") == MOLILI_FORMAT
