@@ -4293,7 +4293,8 @@
     const MEMORY_ROLE_ORIGIN_KEYS = {
         self: 'character.cardOriginSelf',
         imported: 'character.cardOriginImported',
-        steam: 'character.cardOriginSteam'
+        steam: 'character.cardOriginSteam',
+        molili: 'character.cardOriginMolili'
     };
 
     function syncMemoryRoleNameOverflow(button) {

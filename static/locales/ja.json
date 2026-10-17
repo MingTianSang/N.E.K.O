@@ -3009,6 +3009,7 @@
         "cardOriginSelf": "自作",
         "cardOriginImported": "インポート",
         "cardOriginSteam": "Steam Workshop",
+        "cardOriginMolili": "Molili インポート",
         "cardNotCreated": "未作成",
         "editAuthor": "作者を編集",
         "cardAuthorReadonly": "この由来のカードは作者を変更できません",

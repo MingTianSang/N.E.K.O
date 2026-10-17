@@ -3009,6 +3009,7 @@
         "cardOriginSelf": "Local",
         "cardOriginImported": "Importado",
         "cardOriginSteam": "Steam Workshop",
+        "cardOriginMolili": "Importación de Molili",
         "cardNotCreated": "Aún no creado",
         "editAuthor": "Editar autor",
         "cardAuthorReadonly": "El autor es de solo lectura para esta fuente",

@@ -3009,6 +3009,7 @@
         "cardOriginSelf": "本地创作",
         "cardOriginImported": "外部导入",
         "cardOriginSteam": "Steam 创意工坊",
+        "cardOriginMolili": "Molili 导入",
         "cardNotCreated": "尚未创建",
         "editAuthor": "编辑作者",
         "cardAuthorReadonly": "该来源的角色卡不允许修改作者信息",

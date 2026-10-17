@@ -1330,7 +1330,7 @@ async def get_card_meta(name: str):
 
 @router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
-    """Update card-face metadata (author / tags; only when origin=self)."""
+    """Update card-face metadata (author / tags; molili origin mark; only when origin=self/molili)."""
     _config_manager = get_config_manager()
     name_error = _validate_existing_character_path_name(name)
     if name_error:
@@ -1347,8 +1347,12 @@ async def put_card_meta(name: str, request: Request):
 
     new_author = data.get('author') if isinstance(data, dict) else None
     new_tags = data.get('tags') if isinstance(data, dict) else None
-    if new_author is None and new_tags is None:
-        return JSONResponse({'success': False, 'error': '缺少 author 或 tags 字段'}, status_code=400)
+    new_origin = data.get('origin') if isinstance(data, dict) else None
+    if new_author is None and new_tags is None and new_origin is None:
+        return JSONResponse({'success': False, 'error': '缺少 author / tags / origin 字段'}, status_code=400)
+    # origin 只接受单向标记为 Molili 导入（导入向导使用），其余值不可经此接口改动
+    if new_origin is not None and new_origin != 'molili':
+        return JSONResponse({'success': False, 'error': 'origin 仅支持设置为 molili'}, status_code=400)
 
     cleaned_tags = None
     if new_tags is not None:
@@ -1376,13 +1380,15 @@ async def put_card_meta(name: str, request: Request):
     if not meta_path.exists() or existing.get('origin') is None:
         existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
 
-    if existing.get('origin') != 'self':
+    if existing.get('origin') not in ('self', 'molili'):
         return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改元数据'}, status_code=403)
 
     if new_author is not None:
         existing['author'] = new_author
     if cleaned_tags is not None:
         existing['tags'] = cleaned_tags
+    if new_origin is not None and existing.get('origin') != 'molili':
+        existing['origin'] = 'molili'
     now_iso = datetime.now().isoformat(timespec='seconds')
     existing['updated_at'] = now_iso
     if not existing.get('created_at'):

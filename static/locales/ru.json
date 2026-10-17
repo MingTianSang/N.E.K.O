@@ -3009,6 +3009,7 @@
         "cardOriginSelf": "Локальная",
         "cardOriginImported": "Импортированная",
         "cardOriginSteam": "Мастерская Steam",
+        "cardOriginMolili": "Импорт из Molili",
         "cardNotCreated": "Ещё не создано",
         "editAuthor": "Изменить автора",
         "cardAuthorReadonly": "Автор недоступен для редактирования у этого источника",

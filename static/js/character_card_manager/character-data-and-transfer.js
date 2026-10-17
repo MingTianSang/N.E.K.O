@@ -485,7 +485,7 @@ function updateCardMetaAfterFaceChange(name, timestamp) {
     window._cardMetas[name] = {
         author: existing.author || '',
         origin: 'self',
-        // 重建缓存项时保留卡面元数据标签（如 molili导入），否则标签行会消失
+        // 重建缓存项时保留卡面元数据标签，否则标签行会消失
         tags: Array.isArray(existing.tags) ? existing.tags.slice() : [],
         created_at: existing.created_at || updatedAt,
         updated_at: updatedAt
@@ -858,15 +858,18 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
         originValue.className = 'card-meta-origin-badge origin-' + origin;
         const originKey = origin === 'imported' ? 'character.cardOriginImported'
             : origin === 'steam' ? 'character.cardOriginSteam'
-                : 'character.cardOriginSelf';
-        const originText = window.t ? window.t(originKey) : (origin === 'imported' ? '导入' : origin === 'steam' ? '创意工坊' : '本地');
+                : origin === 'molili' ? 'character.cardOriginMolili'
+                    : 'character.cardOriginSelf';
+        const originText = window.t ? window.t(originKey)
+            : (origin === 'imported' ? '导入' : origin === 'steam' ? '创意工坊'
+                : origin === 'molili' ? 'Molili 导入' : '本地');
         originValue.dataset.i18n = originKey;
         originValue.textContent = originText;
         originRow.appendChild(originLabel);
         originRow.appendChild(originValue);
         container.appendChild(originRow);
 
-        // 作者（可编辑：仅 origin=self）
+        // 作者（可编辑：origin=self / molili——Molili 导入同样是本地持有的卡）
         const authorRow = document.createElement('div');
         authorRow.className = 'card-meta-row card-meta-author';
         const authorLabel = document.createElement('span');
@@ -875,7 +878,7 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
         authorLabel.textContent = window.t ? window.t('character.cardAuthor') : '作者';
         authorRow.appendChild(authorLabel);
 
-        if (origin === 'self') {
+        if (origin === 'self' || origin === 'molili') {
             const authorInput = document.createElement('input');
             authorInput.type = 'text';
             authorInput.className = 'card-meta-author-input';
@@ -920,7 +923,7 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
         }
         container.appendChild(authorRow);
 
-        // 标签（卡面元数据；Molili 导入会写入 molili导入 标签）
+        // 标签（卡面元数据；Molili 导入的来源标记在 origin，不再写标签）
         const metaTags = Array.isArray(m && m.tags) ? m.tags : [];
         if (metaTags.length) {
             const tagsRow = document.createElement('div');
@@ -1314,7 +1317,7 @@ async function handleMoliliArchiveImport(file) {
                         '昵称': choice.name,
                         // role_prompt 按 ## 标题拆成独立字段（各进 persona 记忆、
                         // 卡面分区显示），主人身份是独立字段而非塞进设定。
-                        // 均随卡可导出、可编辑；molili导入 标签写在卡面元数据。
+                        // 均随卡可导出、可编辑；Molili 来源标记写在卡面元数据 origin。
                         ...moliliSectionFields,
                     }),
                 });
@@ -1349,7 +1352,7 @@ async function handleMoliliArchiveImport(file) {
             const mutableCard = Object.fromEntries(
                 Object.entries(targetCard).filter(([key]) => !isReservedKey(key)));
             const updates = { ...mutableCard, ...moliliSectionFields };
-            // 历史误写在 关键词 里的 molili导入 标签：已迁至卡面元数据，剥离之
+            // 历史误写在 关键词 里的 molili导入 标签：来源标记已迁至卡面元数据 origin，剥离之
             //（剥离后为空则不传该字段，PUT 会把空字段删除）。
             const existingTags = Array.isArray(targetCard['关键词']) ? targetCard['关键词'] : [];
             const keptTags = existingTags.filter(t => t !== 'molili导入');
@@ -1373,25 +1376,28 @@ async function handleMoliliArchiveImport(file) {
             }
         }
 
-        // 卡面信息写入 molili导入 标签（卡面元数据 sidecar，与 关键词 字段独立）。
+        // 来源徽章：把卡的 origin 标记为 molili（与 本地创作/导入/创意工坊 并列展示）。
+        // 早期版本把 molili导入 写进卡面元数据标签：迁移为 origin 时顺手剥离旧标签。
         // Best-effort：失败只告警，不阻断导入。
         try {
             const metaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`);
             const metaNow = await metaResponse.json().catch(() => ({}));
             const currentMeta = metaNow.meta || metaNow || {};
             const metaTags = Array.isArray(currentMeta.tags) ? currentMeta.tags.slice() : [];
-            if (!metaTags.includes('molili导入')) {
-                metaTags.push('molili导入');
+            const metaBody = {};
+            if (currentMeta.origin !== 'molili') metaBody.origin = 'molili';
+            if (metaTags.includes('molili导入')) metaBody.tags = metaTags.filter(t => t !== 'molili导入');
+            if (Object.keys(metaBody).length) {
                 const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tags: metaTags }),
+                    body: JSON.stringify(metaBody),
                 });
                 if (saveMetaResponse.ok) {
                     const metaSaved = await saveMetaResponse.json().catch(() => ({}));
                     if (metaSaved.meta && window._cardMetas) {
                         window._cardMetas[characterName] = metaSaved.meta;
-                        // 该角色详情面板若已打开，立即重渲染卡面信息，标签不用重开页面才可见
+                        // 该角色详情面板若已打开，立即重渲染卡面信息，来源徽章不用重开页面才可见
                         if (typeof refreshOpenCardMetaBlock === 'function') refreshOpenCardMetaBlock(characterName);
                     }
                 }

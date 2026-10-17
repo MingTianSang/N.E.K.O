@@ -3009,6 +3009,7 @@
         "cardOriginSelf": "직접 제작",
         "cardOriginImported": "가져옴",
         "cardOriginSteam": "Steam 창작마당",
+        "cardOriginMolili": "Molili 가져오기",
         "cardNotCreated": "아직 생성되지 않음",
         "editAuthor": "작성자 수정",
         "cardAuthorReadonly": "이 출처의 카드는 작성자를 수정할 수 없습니다",
