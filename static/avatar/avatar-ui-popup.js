@@ -22,6 +22,7 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             || finalUrl.startsWith('/api_key')
             || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
+            || finalUrl.startsWith('/emote_maker')
         );
 }
 
@@ -1109,6 +1110,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                         windowName = 'neko_voice_identity';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                         windowName = 'neko_memory_browser';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                        windowName = 'neko_emote_maker';
                     }
                     features = getAvatarNavigationWindowFeatures(finalUrl);
                 }
@@ -3108,6 +3111,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_voice_identity';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                                 windowName = 'neko_memory_browser';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                                windowName = 'neko_emote_maker';
                             }
                             features = getAvatarNavigationWindowFeatures(finalUrl);
                         }
