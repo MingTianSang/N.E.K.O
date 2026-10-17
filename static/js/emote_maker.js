@@ -3921,6 +3921,7 @@
         } catch (_) {
             showToast(t('emoteMaker.stageImagesSaveFailed'));
         }
+        pushStageUserImages();
         if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
         showToast(interpolate(t('emoteMaker.stageImagesImported'), { count: images.length }));
     }
@@ -3950,12 +3951,19 @@
                 });
                 if (dataUrl) stageUserImages.set(id, { name: id, dataUrl });
             }
-            if (paths.length && stateStageSession?.refreshUserImages) {
-                stateStageSession.refreshUserImages();
-            }
+            if (paths.length) pushStageUserImages();
         } catch (_) {
             stageUserImagesRestored = false;   // 拉取失败下次再试
         }
+    }
+
+    /** 把内存清单推给舞台模块（冻结对象的方法照常可调）。 */
+    function pushStageUserImages() {
+        const stageModule = window.NekoEmoteStateStage;
+        if (!stageModule || typeof stageModule.setUserImages !== 'function') return;
+        stageModule.setUserImages([...stageUserImages.entries()].map(([id, image]) => ({
+            id, label: image.name, thumb: image.dataUrl,
+        })));
     }
 
     /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */
@@ -4068,6 +4076,7 @@
     }
 
     function openStateStage() {
+        pushStageUserImages();   // 打开表演台前把当前清单推给舞台模块
         const stageModule = window.NekoEmoteStateStage;
         const model = window.NekoEmoteNodeGraph;
         if (!stageModule || !model) {
@@ -4097,9 +4106,6 @@
             animationsFor: () => getImportedScenes().map((scene) => ({
                 value: scene.id,
                 label: scene.name || scene.animation?.id || scene.id,
-            })),
-            userImages: () => [...stageUserImages.entries()].map(([id, image]) => ({
-                id, label: image.name, thumb: image.dataUrl,
             })),
             onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
             onChange: (next) => {
@@ -5057,6 +5063,20 @@
         try {
             for (let index = 0; index < jobs.length; index += 1) {
                 const job = jobs[index];
+                // 图片状态：没有场景，把用户图片按导出边长画成一帧
+                if (job.imageId) {
+                    const image = stageUserImages.get(job.imageId);
+                    if (!image) continue;
+                    if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
+                    const frames = await frameFromStageImage(image, edge);
+                    if (!frames.length) continue;
+                    results.push({
+                        stateKey: job.stateKey, frames, edge, fps,
+                        look: { sceneId: '', skins: [], sliders: [], slots: [], texts: [] },
+                        scale: job.scale || 1, rotation: job.rotation || 0,
+                    });
+                    continue;
+                }
                 const scene = sceneList.find((item) => item.id === job.sceneId);
                 if (!scene) continue;
                 if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
@@ -5204,7 +5224,8 @@
             ['idle_image'],
         );
         const sceneIds = new Set(getImportedScenes().map((scene) => scene.id));
-        const usable = plan.kept.filter((output) => sceneIds.has(output.look.sceneId));
+        const usable = plan.kept.filter((output) =>
+            sceneIds.has(output.look.sceneId) || (output.imageId && output.imageId.length));
         if (plan.dropped.length) {
             const reasons = new Set(plan.dropped.map((item) => item.reason));
             showToast(`${t('emoteMaker.packPlanSkipped')} (${plan.dropped.length})${
@@ -5227,6 +5248,18 @@
             || templatePackage?.model?.displayName
             || t('emoteMaker.title');
         const jobs = usable.map((output) => {
+            if (output.imageId) {
+                // 图片状态：单帧静态源，时间轴只控停留时长
+                const hold = Math.max(0.05, Number(output.seconds) || 0.05);
+                return {
+                    stateKey: output.stateKey,
+                    imageId: output.imageId,
+                    frames: Math.max(1, Math.ceil(hold * fps)),
+                    timeWindow: { from: 0, to: hold },
+                    scale: output.scale,
+                    rotation: output.rotation,
+                };
+            }
             const scene = getImportedScenes().find((item) => item.id === output.look.sceneId);
             const duration = Math.max(0.05, Number(getImportedAnimationDuration(scene?.animation?.id)) || 0.05);
             const from = Math.min(Math.max(0, Number(output.startAt) || 0), duration);
