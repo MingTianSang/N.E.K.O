@@ -212,3 +212,15 @@ def test_late_textures_merge_into_the_existing_copy(store):
 
     with pytest.raises(EmoteTemplateStoreError):
         store.save_textures(key, [("../escape.png", b"x")])
+
+
+def test_remove_texture_deletes_the_file(store):
+    key = "k"
+    store.save(key, _zip())
+    store.save_textures(key, [("Tex/a.png", b"one"), ("Tex/b.png", b"two")])
+    store.remove_texture(key, "Tex/a.png")
+    assert store.texture_path(key, "Tex/b.png").read_bytes() == b"two"
+    with pytest.raises(EmoteTemplateStoreError):
+        store.texture_path(key, "Tex/a.png")
+    # 不存在的文件删了不报错
+    store.remove_texture(key, "Tex/ghost.png")

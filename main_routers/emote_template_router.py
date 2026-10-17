@@ -211,6 +211,20 @@ async def merge_template_library_textures(
     return JSONResponse(content={"success": True, **result})
 
 
+@router.post("/library/textures/remove")
+async def remove_template_library_texture(
+    key: str = Query(...),
+    texture_paths: list[str] | None = Form(None),
+):
+    try:
+        store = _archive_store()
+        for path in (texture_paths or []):
+            store.remove_texture(key, path)
+    except EmoteTemplateStoreError as exc:
+        return _store_error(exc, status=404)
+    return JSONResponse(content={"success": True})
+
+
 @router.get("/library/texture")
 async def open_template_library_texture(key: str = Query(...), path: str = Query(...)):
     try:

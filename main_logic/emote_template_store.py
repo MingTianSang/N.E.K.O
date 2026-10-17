@@ -264,6 +264,13 @@ class EmoteTemplateArchiveStore:
             target.write_bytes(blob)
         return {"key": str(key), "textures": self.texture_paths(key)}
 
+    def remove_texture(self, key: str, relative: str) -> None:
+        """从副本里删掉单张贴图文件。"""
+        textures_dir = self._entry_dir(key) / TEXTURES_DIR
+        target = self._safe_child(textures_dir, relative)
+        if target.is_file():
+            target.unlink()
+
     def delete(self, key: str) -> dict:
         entry_dir = self._entry_dir(key)
         if not entry_dir.is_dir():

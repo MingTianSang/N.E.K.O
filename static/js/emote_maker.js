@@ -4116,11 +4116,16 @@
             })),
             onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
             onRemoveImage: (imageId) => {
-                // 从内存清单删掉 + 重推给舞台。副本里的旧文件留着无害
-                //（不进导出就不会被打包），不需要单独的删除接口。
                 stageUserImages.delete(imageId);
                 pushStageUserImages();
                 if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
+                // 副本上的文件也真删：不然每次打开表演台 restore 又拉回来
+                const key = currentTemplateKey();
+                if (!key) return;
+                const form = new FormData();
+                form.append('texture_paths', `${STAGE_IMAGE_PREFIX}${imageId}.png`);
+                fetch(`/api/emote-maker/library/textures/remove?key=${encodeURIComponent(key)}`,
+                    { method: 'POST', body: form, credentials: 'same-origin' });
             },
             onChange: (next) => {
                 state.nodeGraph = next;
