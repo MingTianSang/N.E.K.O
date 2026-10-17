@@ -3881,7 +3881,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-history-time,
 .compact-export-history-status {
+  flex-shrink: 0;
   font-size: 0.72rem;
+  /* 气泡继承下来的 anywhere 会把时间压成 12:3 / 4 两行；长角色名由作者名一侧断行。 */
+  white-space: nowrap;
 }
 
 .compact-export-history-content {
@@ -3891,6 +3894,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   min-width: 0;
   font-size: 0.92rem;
   line-height: 1.48;
+}
+
+/* anywhere 参与 min-content 计算，继承进自动布局表格后列宽会收缩到约 1 个字符、
+   单词被逐字拆行；表格复位为整词断行，超宽部分走 .message-block-markdown table 的横向滚动。 */
+.compact-export-history-bubble .message-block-markdown table,
+.compact-export-preview-bubble .message-block-markdown table {
+  overflow-wrap: normal;
 }
 
 /* Preserve a readable card at the 180px compact-surface minimum without
