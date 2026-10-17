@@ -485,6 +485,8 @@ function updateCardMetaAfterFaceChange(name, timestamp) {
     window._cardMetas[name] = {
         author: existing.author || '',
         origin: 'self',
+        // 重建缓存项时保留卡面元数据标签（如 molili导入），否则标签行会消失
+        tags: Array.isArray(existing.tags) ? existing.tags.slice() : [],
         created_at: existing.created_at || updatedAt,
         updated_at: updatedAt
     };
@@ -1387,7 +1389,11 @@ async function handleMoliliArchiveImport(file) {
                 });
                 if (saveMetaResponse.ok) {
                     const metaSaved = await saveMetaResponse.json().catch(() => ({}));
-                    if (metaSaved.meta && window._cardMetas) window._cardMetas[characterName] = metaSaved.meta;
+                    if (metaSaved.meta && window._cardMetas) {
+                        window._cardMetas[characterName] = metaSaved.meta;
+                        // 该角色详情面板若已打开，立即重渲染卡面信息，标签不用重开页面才可见
+                        if (typeof refreshOpenCardMetaBlock === 'function') refreshOpenCardMetaBlock(characterName);
+                    }
                 }
             }
         } catch (metaError) {
