@@ -342,8 +342,9 @@ class FactStore:
         self._persist_alocks: dict[str, asyncio.Lock] = {}
         # 外部 daily 导入的礼貌起呼间隔：挂在共享的 FactStore 上，多个角色
         # 同时导入时也共用同一个间隔（它们共享同一个 provider 配额）。
+        # 上次起呼时间记在闸门锁对象上（gate.last_call_at），运行时热替换
+        # FactStore 时共享这一个锁即同时共享间隔状态。
         self._external_daily_call_gate: asyncio.Lock | None = None
-        self._external_daily_last_call_at = 0.0
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -5381,7 +5382,9 @@ class FactStore:
         # 频率——两者配合才是对免费配额/WAF 真正的温和。锁内只做时间计算与
         # sleep，不罩 LLM 调用本身（不占并发槽的驻留时间）。
         if self._external_daily_call_gate is None:
-            self._external_daily_call_gate = asyncio.Lock()
+            gate = asyncio.Lock()
+            gate.last_call_at = 0.0
+            self._external_daily_call_gate = gate
         call_gate = self._external_daily_call_gate
 
         async def _polite_gap() -> None:
@@ -5389,10 +5392,10 @@ class FactStore:
                 return
             async with call_gate:
                 now = asyncio.get_running_loop().time()
-                wait = self._external_daily_last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
+                wait = call_gate.last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
                 if wait > 0:
                     await asyncio.sleep(wait)
-                self._external_daily_last_call_at = asyncio.get_running_loop().time()
+                call_gate.last_call_at = asyncio.get_running_loop().time()
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
@@ -5416,8 +5419,9 @@ class FactStore:
                 # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
                 # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
                 # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
-                # 「数组但无 object 元素」同理 strict（split 兜底），挡不住会被
-                # checkpoint 成空抽取天、后续导入静默丢该天 facts（Codex P2）。
+                # 「数组但无 object 元素」「数组混有非 object 元素」同理 strict
+                # （split 兜底）：混合元素只留 dict 会静默丢内容，且当天指纹照记
+                # 后重导被 skip，丢的部分永远补不回来（wehos 第 14 轮）。
                 failure: dict = {}
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(
@@ -5432,9 +5436,10 @@ class FactStore:
                         # 单片段的批没法拆，不能一次抖动就丢掉整天。
                         parse_max_retries=1,
                     )
-                if extracted is None or (
-                    extracted and not any(isinstance(f, dict) for f in extracted)
-                ):
+                has_malformed_elements = (
+                    extracted is not None and any(not isinstance(f, dict) for f in extracted)
+                )
+                if extracted is None or has_malformed_elements:
                     # 只有输出类失败（解析失败 / 格式不对）拆半才可能修好；网络 /
                     # 429 / 5xx 在完整退避后仍失败时拆了只会多烧配额和时间。
                     output_failure = extracted is not None or failure.get("reason") in {"parse", "schema"}

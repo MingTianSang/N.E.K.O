@@ -131,6 +131,21 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI_RE.sub("", text).replace("  ", " ").strip()
 
 
+def _declared_member_count(archive_bytes: bytes) -> int | None:
+    """Bounded read of the EOCD's declared member count (``None`` if no EOCD).
+
+    ``zipfile.ZipFile`` 构造会把整个中央目录物化成 ZipInfo，成员数上限
+    必须在构造之前用 EOCD 里声明的计数预筛，否则数万成员的归档会先吃满
+    CPU/内存才被拒。EOCD 声明值可以伪造——构造后的 ``raw_member_count``
+    仍按实际条目复核，这里只是廉价的提前拦截。
+    """
+    tail = archive_bytes[-65536:]
+    pos = tail.rfind(b"PK\x05\x06")
+    if pos < 0 or pos + 22 > len(tail):
+        return None
+    return int.from_bytes(tail[pos + 10:pos + 12], "little")
+
+
 def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
     """Split markdown into ``(title, body)`` sections on ATX headings.
 
@@ -163,7 +178,15 @@ class _MemberReader:
         archive_bytes: bytes | None,
         files: list[dict[str, Any]] | None,
     ) -> None:
-        self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes)) if archive_bytes is not None else None
+        if archive_bytes is not None:
+            # 构造 ZipFile 前先按 EOCD 声明值拦截成员超限的归档（见
+            # _declared_member_count）；构造后的 raw_member_count 仍会复核。
+            declared = _declared_member_count(archive_bytes)
+            if declared is not None and declared > MAX_ARCHIVE_MEMBERS:
+                raise ExternalMemoryImportError("Molili archive contains too many files")
+            self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes))
+        else:
+            self._archive = None
         self._files = list(files or [])
         # 上限按原始成员数算（路径过滤之前）：ZipFile 构造时已把全部 ZipInfo
         # 物化，被过滤掉的穿越形成员同样占内存/CPU。
@@ -655,6 +678,11 @@ def build_molili_candidates(
 def detect_molili_archive(archive_bytes: bytes) -> bool:
     """Sniff whether a zip is a Molili user-data export (manifest format tag)."""
     try:
+        # ZipFile 构造会物化整个中央目录：成员数明显超限的直接判定为非
+        # Molili 归档，不进构造（显式 molili 模式下会拿到明确的报错文案）。
+        declared = _declared_member_count(archive_bytes)
+        if declared is not None and declared > MAX_ARCHIVE_MEMBERS:
+            return False
         with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
             info = next(
                 (i for i in archive.infolist()

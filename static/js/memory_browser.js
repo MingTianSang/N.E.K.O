@@ -4344,6 +4344,12 @@
                 ['path', { d: 'm7 10 5 5 5-5' }],
                 ['path', { d: 'M5 18v2h14v-2' }]
             ],
+            // Molili 导入与通用导入共用同一下载箭头图形（提示文案已区分来源）
+            molili: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
             // Steam glyph from Simple Icons (CC0-1.0):
             // https://github.com/simple-icons/simple-icons/blob/develop/icons/steam.svg
             steam: [
