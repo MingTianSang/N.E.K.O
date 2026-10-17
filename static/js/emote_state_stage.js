@@ -1232,7 +1232,7 @@
                 tile.addEventListener('click', () => {
                     if (rowClickGuard ? rowClickGuard.shouldSwallow() : tile.dataset.justDragged) return;
                     applyImageTo(selectedNode(), entry.id);
-                    loadSelected().then(refreshUserImages);
+                    loadSelected().then(renderUserImages);
                 });
                 holdToDrag(tile, { kind: 'image', imageId: entry.id, label: entry.label });
                 return tile;
@@ -1634,7 +1634,7 @@
                 clearPreview();
                 applyImageTo(node, imageId);
                 await loadSelected();
-                refreshUserImages();
+                renderUserImages();
             },
 
             refreshUserImages: () => {
