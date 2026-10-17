@@ -7917,10 +7917,19 @@ describe('App', () => {
     expect(compactChatStyles).toMatch(
       /\.compact-export-history-bubble \.message-block-markdown table,\s*\.compact-export-preview-bubble \.message-block-markdown table\s*\{[^}]*overflow-wrap: normal;[^}]*\}/,
     );
-    // 气泡头部的时间 / 状态不被继承来的 anywhere 拆成两行。
+    // 气泡头部的时间不被继承来的 anywhere 拆成两行；状态标签不锁，最窄面宽下仍可换行。
     expect(compactChatStyles).toMatch(
-      /\.compact-export-history-time,\s*\.compact-export-history-status\s*\{(?=[^}]*flex-shrink: 0;)(?=[^}]*white-space: nowrap;)[^}]*\}/,
+      /\.compact-export-history-time\s*\{(?=[^}]*flex-shrink: 0;)(?=[^}]*white-space: nowrap;)[^}]*\}/,
     );
+    expect(compactChatStyles).not.toMatch(
+      /\.compact-export-history-status\s*\{[^}]*white-space: nowrap;/,
+    );
+    expect(compactChatStyles).toMatch(/\.compact-export-history-meta\s*\{[^}]*flex-wrap: wrap;[^}]*\}/);
+    // 导出失败时的降级预览头部与历史头部对称。
+    expect(compactChatStyles).toMatch(
+      /\.compact-export-preview-time\s*\{(?=[^}]*flex-shrink: 0;)(?=[^}]*white-space: nowrap;)[^}]*\}/,
+    );
+    expect(compactChatStyles).toMatch(/\.compact-export-preview-meta\s*\{[^}]*flex-wrap: wrap;[^}]*\}/);
   });
 
   it('gives compact history link cards a bounded readable width', () => {

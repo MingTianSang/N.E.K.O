@@ -3863,6 +3863,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-history-meta {
   display: flex;
+  /* 窄气泡里作者名 / 时间 / 状态放不下一行时整项换行，而不是把状态挤成逐字竖排。 */
+  flex-wrap: wrap;
   align-items: center;
   gap: 5px;
   margin-bottom: 4px;
@@ -3881,9 +3883,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-history-time,
 .compact-export-history-status {
-  flex-shrink: 0;
   font-size: 0.72rem;
-  /* 气泡继承下来的 anywhere 会把时间压成 12:3 / 4 两行；长角色名由作者名一侧断行。 */
+}
+
+/* 气泡继承下来的 anywhere 会把时间压成 12:3 / 4 两行；只锁时间，
+   作者名和状态（如「发送失败」）仍可换行，180px 最窄面宽下头部不会撑出气泡。 */
+.compact-export-history-time {
+  flex-shrink: 0;
   white-space: nowrap;
 }
 
@@ -4705,6 +4711,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-preview-meta {
   display: flex;
+  /* 同 .compact-export-history-meta：放不下一行时整项换行。 */
+  flex-wrap: wrap;
   gap: 5px;
   margin-bottom: 3px;
   color: rgba(89, 101, 121, 0.72);
@@ -4714,6 +4722,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-preview-message.is-user .compact-export-preview-meta {
   justify-content: flex-end;
+}
+
+/* 同 .compact-export-history-time：时间不被继承来的 anywhere 拆成两行，作者名一侧断行。 */
+.compact-export-preview-time {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .compact-export-preview-content {
