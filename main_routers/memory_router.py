@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -2010,6 +2011,19 @@ async def commit_external_memory_import(request: Request):
         raise
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
+    except httpx.TimeoutException:
+        # 转发窗口到点 ≠ 导入失败：记忆服务器会继续跑完，逐日指纹幂等，稍候重导
+        # 即可收尾。给前端稳定的错误码——httpx 的超时异常 str() 可能是空串，
+        # 前端靠文案正则认不出来，只会弹通用失败。
+        logger.warning("External memory import forward timed out; memory server keeps running")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "External memory import timed out; the memory server may still be finishing it",
+                "error_code": "external_import_timeout",
+            },
+            status_code=504,
+        )
     except Exception as exc:
         logger.exception("External memory import failed")
         return _external_import_error(f"External memory import failed: {exc}", 500)

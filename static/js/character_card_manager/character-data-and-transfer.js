@@ -1482,6 +1482,12 @@ async function handleMoliliArchiveImport(file) {
                 commit = await commitResponse.json().catch(() => ({}));
                 if (!commitResponse.ok || commit.status !== 'success') {
                     const outcome = commit.error_code;
+                    if (outcome === 'external_import_timeout') {
+                        // 后端转发窗口到点：与前端 AbortController 超时同一种处理
+                        const timeoutError = new Error(commit.error || 'timed out');
+                        timeoutError.name = 'AbortError';
+                        throw timeoutError;
+                    }
                     if (outcome === 'external_import_partial' || outcome === 'external_import_too_large') {
                         const partial = commit.partial_import || {};
                         // 已落盘的部分照样通知主窗口刷新上下文

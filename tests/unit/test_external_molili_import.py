@@ -458,3 +458,32 @@ def test_router_auto_format_accepts_molili_archive_over_markdown_cap(monkeypatch
             "character_name": "言叶",
             "archive_b64": base64.b64encode(plain_zip).decode("ascii"),
         })
+
+
+def test_router_commit_forward_timeout_returns_stable_error_code(monkeypatch):
+    """A forward timeout to the memory server returns 504 with a stable error code the wizard can recognise."""
+    import httpx
+
+    import main_routers.memory_router as memory_router
+    import utils.internal_http_client as internal_http_client
+
+    class _TimeoutClient:
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ReadTimeout("")
+
+    class _FakeRequest:
+        async def json(self):
+            return {
+                "character_name": "言叶",
+                "archive_b64": base64.b64encode(_molili_zip()).decode("ascii"),
+                "source_format": "molili",
+                "acknowledge_warnings": True,
+            }
+
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *_a, **_k: None)
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", lambda: _TimeoutClient())
+
+    response = asyncio.run(memory_router.commit_external_memory_import(_FakeRequest()))
+
+    assert response.status_code == 504
+    assert json.loads(response.body)["error_code"] == "external_import_timeout"

@@ -2838,12 +2838,14 @@ class FactStore:
         last_failure = "transport"
         while retries < max_retries:
             resp = None
-            if before_attempt is not None:
-                await before_attempt()
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
                 if thinking:
+                    # 钩子紧贴实际请求：配置读取 / 建客户端也会挂起，放在它们之前
+                    # 会让并发请求的真正起呼顺序乱掉
+                    if before_attempt is not None:
+                        await before_attempt()
                     resp, _ = await ainvoke_thinking(
                         api_config, prompt, timeout=timeout,
                         call_label=f"{lanlan_name} {call_type}",
@@ -2859,6 +2861,8 @@ class FactStore:
                         provider_type=api_config.get('provider_type'),
                     )
                     try:
+                        if before_attempt is not None:
+                            await before_attempt()
                         resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
                     finally:
                         await llm.aclose()
