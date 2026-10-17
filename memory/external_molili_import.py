@@ -132,13 +132,11 @@ def _strip_emoji(text: str) -> str:
 
 
 def _declared_member_count(archive_bytes: bytes) -> int | None:
-    """Bounded read of the EOCD's declared member count (``None`` if no EOCD).
-
-    ``zipfile.ZipFile`` 构造会把整个中央目录物化成 ZipInfo，成员数上限
-    必须在构造之前用 EOCD 里声明的计数预筛，否则数万成员的归档会先吃满
-    CPU/内存才被拒。EOCD 声明值可以伪造——构造后的 ``raw_member_count``
-    仍按实际条目复核，这里只是廉价的提前拦截。
-    """
+    """Bounded read of the EOCD's declared member count (``None`` if no EOCD)."""
+    # ``zipfile.ZipFile`` 构造会把整个中央目录物化成 ZipInfo，成员数上限必须
+    # 在构造之前用 EOCD 里声明的计数预筛，否则数万成员的归档会先吃满
+    # CPU/内存才被拒。EOCD 声明值可以伪造——构造后的 ``raw_member_count``
+    # 仍按实际条目复核，这里只是廉价的提前拦截。
     tail = archive_bytes[-65536:]
     pos = tail.rfind(b"PK\x05\x06")
     if pos < 0 or pos + 22 > len(tail):
