@@ -4078,7 +4078,8 @@
     }
 
     function openStateStage() {
-        pushStageUserImages();   // 打开表演台前把当前清单推给舞台模块
+        void restoreStageImages();   // 副本里的图片先拉回来（异步不阻塞打开）
+        pushStageUserImages();       // 把当前清单推给舞台模块
         const stageModule = window.NekoEmoteStateStage;
         const model = window.NekoEmoteNodeGraph;
         if (!stageModule || !model) {

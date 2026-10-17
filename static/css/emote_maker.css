@@ -4998,6 +4998,10 @@ body.is-pack-dragging * {
 }
 
 /* 用户图片格的删除钮 */
+.st-userimg {
+    position: relative;
+}
+
 .st-userimg-remove {
     position: absolute;
     top: 3px;
