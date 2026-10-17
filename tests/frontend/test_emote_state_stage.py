@@ -902,11 +902,21 @@ def test_tile_and_library_share_one_thumb_cache(page: Page, running_server: str)
     page.wait_for_timeout(200)
     page.click(".st-rail")
     page.wait_for_timeout(600)
+    # 抽屉开了用户图片区之后，行的纵向位置变了：停在轨道上的指针可能正好
+    # 压住某一行，触发一次合法的悬停预览（poster 档）。这条用例只管缓存共享，
+    # 悬停预览归另一条——把指针停到台面中央再读调用清单。
+    page.mouse.move(700, 400)
     calls = _sources(page)
     # 收起再展开也不该重取：缓存按动画存，和状态行共用同一份
     for scene in ("anim-a", "anim-b"):
         assert calls.count("thumb:" + scene) == 1, calls
-    assert not [c for c in calls if "|" in c and "root:" not in c], calls
+    # 每条动画的缩略图各采一次（状态行与动作库共享同一份缓存）；
+    # 开合抽屉时指针扫过行会带出一次海报档悬停预览——合法，至多一次；
+    # 昂贵的 full 档只属于 root（状态行真渲染），场景动画不许进 full。
+    for scene in ("anim-a", "anim-b"):
+        assert calls.count("thumb:" + scene) == 1, calls
+        assert calls.count(scene + "|poster") <= 1, calls
+        assert scene + "|full" not in calls, calls
 
 def test_only_a_state_row_accepts_a_dropped_animation(page: Page, running_server: str) -> None:
     """拖到台面、胶片带或空白处都不该改动任何东西 —— 过去落在台面上会写进当前选中格，

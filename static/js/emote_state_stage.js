@@ -83,6 +83,9 @@
         const PREVIEW_CARD_W = 150;    // 检视窗画布：台面被遮住后唯一的"看一眼"地方
         const PREVIEW_CARD_H = 176;
         const animationsFor = typeof options.animationsFor === 'function' ? options.animationsFor : emptyList;
+        // 用户图片：清单（{id, label, thumb}）与"导入图片"入口（面板只管叫，导入逻辑在页面层）
+        const userImages = typeof options.userImages === 'function' ? options.userImages : emptyList;
+        const onImportImages = typeof options.onImportImages === 'function' ? options.onImportImages : () => {};
         const fpsOf = () => Math.max(1, Number(
             typeof options.fps === 'function' ? options.fps() : options.fps,
         ) || 12);
@@ -232,6 +235,26 @@
             listScroll.scrollTop = 0;
         });
 
+        // 用户图片区：导入的 PNG 缩略图排在这里，点/拖都能赋给状态格
+        const imageHead = document.createElement('div');
+        imageHead.className = 'st-userimg-head';
+        const imageTitle = document.createElement('span');
+        imageTitle.className = 'st-userimg-title';
+        imageTitle.textContent = t('emoteMaker.stageUserImages');
+        const imageImport = document.createElement('button');
+        imageImport.type = 'button';
+        imageImport.className = 'st-userimg-import';
+        imageImport.textContent = t('emoteMaker.stageImportImages');
+        imageImport.addEventListener('click', () => onImportImages());
+        imageHead.append(imageTitle, imageImport);
+        const userImageGrid = document.createElement('div');
+        userImageGrid.className = 'st-userimg-grid';
+        userImageGrid.setAttribute('role', 'listbox');
+        userImageGrid.setAttribute('aria-label', t('emoteMaker.stageUserImages'));
+        const userImageEmpty = document.createElement('p');
+        userImageEmpty.className = 'st-userimg-empty';
+        userImageEmpty.textContent = t('emoteMaker.stageNoUserImages');
+
         // 检视窗：悬停哪条就演哪条；没悬停时演这一格真正选中的那条。
         // 台面被抽屉完全遮住后它代替舞台成为"看一眼"的地方。
         const previewCard = document.createElement('div');
@@ -244,7 +267,7 @@
         const drawerMain = document.createElement('div');
         drawerMain.className = 'st-drawer-main';
         // 搜索框放在列表列里：它筛的是这一列，不是整块抽屉
-        listScroll.append(search, library);
+        listScroll.append(search, imageHead, userImageGrid, userImageEmpty, library);
         drawerMain.append(listScroll, previewCard);
         drawer.append(drawerHead, drawerMain);
 
@@ -1050,6 +1073,33 @@
             playhead = 0;
         }
 
+        /**
+         * 把某一格的帧源换成用户图片（imageId）。与 applySceneTo 同一套纪律：
+         * 只动图上那一根线；已有图片源就改参数，没有就建一个新节点接上。
+         */
+        function applyImageTo(node, imageId) {
+            if (!node) return;
+            const upstreamLink = graph.links.find((link) => link.to === node.id);
+            const upstream = upstreamLink
+                ? graph.nodes.find((entry) => entry.id === upstreamLink.from) : null;
+            if (upstream && upstream.type === 'source.image') {
+                upstream.params = model.normalizeParams('source.image', { imageId });
+                graph = model.normalizeGraph(graph);
+                return;
+            }
+            const created = model.makeNode('source.image', 60, 60, { imageId });
+            graph = { ...graph, nodes: graph.nodes.concat([created]) };
+            // addLink 自己会拆掉该输入槽的旧线（source.default 等共享源不能删节点）
+            graph = model.addLink(graph, created.id, model.LOOK, node.id, model.LOOK);
+        }
+
+        function imageNodeFor(node) {
+            if (!node) return null;
+            const link = graph.links.find((entry) => entry.to === node.id);
+            const source = link ? graph.nodes.find((entry) => entry.id === link.from) : null;
+            return source && source.type === 'source.image' ? source : null;
+        }
+
         function animationLabel(sceneId) {
             if (isDefaultSource(sceneId)) return t('emoteMaker.stageUseDefaults');
             const found = animationsFor().find((item) => String(item.value) === String(sceneId));
@@ -1092,6 +1142,41 @@
                 if (committedScene(entry) === sceneId) users.push(entry.params.stateKey);
             });
             return users;
+        }
+
+        function renderUserImages() {
+            const entries = userImages();
+            userImageGrid.replaceChildren(...entries.map((entry) => {
+                const tile = document.createElement('button');
+                tile.type = 'button';
+                tile.className = 'st-pick st-userimg';
+                tile.dataset.imageId = entry.id;
+                tile.setAttribute('role', 'option');
+                const thumb = document.createElement('span');
+                thumb.className = 'st-pick-thumb';
+                if (entry.thumb) {
+                    const image = document.createElement('img');
+                    image.alt = '';
+                    image.src = entry.thumb;
+                    thumb.replaceChildren(image);
+                }
+                const text = document.createElement('span');
+                text.className = 'st-pick-text';
+                const label = document.createElement('span');
+                label.className = 'st-pick-label';
+                label.textContent = entry.label;
+                text.appendChild(label);
+                tile.append(thumb, text);
+                tile.addEventListener('click', () => {
+                    if (rowClickGuard ? rowClickGuard.shouldSwallow() : tile.dataset.justDragged) return;
+                    applyImageTo(selectedNode(), entry.id);
+                    loadSelected().then(refreshUserImages);
+                });
+                holdToDrag(tile, { kind: 'image', imageId: entry.id, label: entry.label });
+                return tile;
+            }));
+            userImageEmpty.hidden = entries.length > 0;
+            imageImport.hidden = false;
         }
 
         function renderLibrary() {
@@ -1246,7 +1331,9 @@
          */
         function holdToDrag(row, entry) {
             row.addEventListener('pointerdown', (event) => {
-                const payload = { kind: 'scene', sceneId: entry.value, label: entry.label };
+                const payload = entry.kind === 'image'
+                    ? { kind: 'image', imageId: entry.id, label: entry.label }
+                    : { kind: 'scene', sceneId: entry.value, label: entry.label };
                 const fire = (point) => {
                     if (rowClickGuard) rowClickGuard.arm();
                     else {
@@ -1340,6 +1427,7 @@
         function openLibrary() {
             if (!drawer.classList.contains('is-open')) {
                 renderLibrary();
+                renderUserImages();
                 drawer.classList.add('is-open');
                 dock.classList.add('is-open');
                 // 先按最终尺寸量一次再画：否则首帧用画布默认的 300x150 排版，
@@ -1476,6 +1564,19 @@
                     tile.classList.toggle('is-drop-target', tile.dataset.state === stateKey);
                 });
             },
+            async assignImage(stateKey, imageId) {
+                const node = ensureNodeForState(stateKey);
+                selected = node.id;
+                clearPreview();
+                applyImageTo(node, imageId);
+                await loadSelected();
+                refreshUserImages();
+            },
+
+            refreshUserImages: () => {
+                renderUserImages();
+            },
+
             async assignScene(stateKey, sceneId) {
                 const node = ensureNodeForState(stateKey);
                 selected = node.id;

@@ -398,6 +398,13 @@
         'emoteMaker.stageDropHint': "松开时放到某一格上",
         'emoteMaker.stageGestureHint': "拖动旋转，滚轮缩放",
         'emoteMaker.stageLibrary': "动作库",
+        'emoteMaker.stageUserImages': "用户图片",
+        'emoteMaker.stageImportImages': "导入图片",
+        'emoteMaker.stageNoUserImages': "还没有导入图片，点「导入图片」加几张",
+        'emoteMaker.stageImagesPngOnly': "只支持 PNG 图片",
+        'emoteMaker.stageImagesImported': "已导入 {{count}} 张图片",
+        'emoteMaker.stageImagesSaveFailed': "图片没存进模板副本：下次打开可能要重新导入",
+        'emoteMaker.nodeSourceImage': "用户图片",
         'emoteMaker.stageSearch': "搜索动作",
         'emoteMaker.packPlanSkipped': "已跳过未设置的槽位",
         'emoteMaker.packPriorityLabel': "状态优先级",
@@ -3643,6 +3650,11 @@
             if (upEvent.type === 'pointercancel') return;
             const target = packDropTargetAt(upEvent.clientX, upEvent.clientY);
             if (!target) return;
+            if (payload.kind === 'image') {
+                suppressClickUntil = Date.now() + 500;
+                void stateStageSession.assignImage(target.stateKey, payload.imageId);
+                return;
+            }
             const scene = resolveSceneForPayload(payload);
             if (!scene) {
                 showToast(t('emoteMaker.packDropNoScene'));
@@ -3761,6 +3773,10 @@
     const STAGE_CAPTURE_THUMB = 1;
     const stageFramesBySource = new Map();   // `${源}|${档位}` -> frame[]
     const stageThumbs = new Map();           // sceneId -> dataURL
+    // 用户图片：id -> { name, dataUrl }。字节随副本走（StageImages/ 合并进贴图管线），
+    // 内存里只留 dataURL 供预览与帧绘制；导出/清库跟模板副本同生共死。
+    const stageUserImages = new Map();
+    let stageUserImagesRestored = false;
     const stagePending = new Map();          // 队列键 -> Promise（同一份不重复排）
     /**
      * 所有采集排队串行跑。bakePackJobs 会暂停渲染器、改 state.selectedSceneId、
@@ -3845,6 +3861,125 @@
     }
 
     /** 采一帧源的某一档。同一 sceneId 的不同档位分开缓存，海报不会污染清晰视图。*/
+    // ── 用户图片：导入、持久化、恢复 ─────────────────────────────────────
+    // 图片走本地副本的贴图管线（StageImages/ 合并进副本），随模板同生共死；
+    // 不进场景清单，帧源用 image:<id> 前缀与场景区分。
+    const STAGE_IMAGE_PREFIX = 'StageImages/';
+
+    function stageImageId(name) {
+        return `img-${String(name || 'image').replace(/[^\w.-]+/g, '-').toLowerCase()}-${Date.now().toString(36)}`;
+    }
+
+    function dataUrlToBlob(dataUrl) {
+        const [head, body] = String(dataUrl).split(',');
+        const mime = /:(.*?);/.exec(head)[1] || 'image/png';
+        const binary = atob(body);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+    }
+
+    async function persistStageImages(entries) {
+        if (!entries.length) return;
+        const form = new FormData();
+        entries.forEach(([id, image]) => {
+            const blob = dataUrlToBlob(image.dataUrl);
+            form.append('textures', blob, `${id}.png`);
+            form.append('texture_paths', `${STAGE_IMAGE_PREFIX}${id}.png`);
+        });
+        const key = currentTemplateKey();
+        if (!key) return;
+        const response = await fetch(
+            `/api/emote-maker/library/textures?key=${encodeURIComponent(key)}`,
+            { method: 'POST', body: form, credentials: 'same-origin' },
+        );
+        if (!response.ok) throw new Error('stage-image-persist-failed');
+    }
+
+    async function importStageImages(files) {
+        const images = Array.from(files || []).filter(
+            (file) => /\.png$/i.test(file.name || ''),
+        );
+        if (!images.length) {
+            showToast(t('emoteMaker.stageImagesPngOnly'));
+            return;
+        }
+        const persisted = [];
+        for (const file of images) {
+            const dataUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(file);
+            });
+            const id = stageImageId(file.name);
+            stageUserImages.set(id, { name: file.name, dataUrl });
+            persisted.push([id, stageUserImages.get(id)]);
+        }
+        try {
+            await persistStageImages(persisted);
+        } catch (_) {
+            showToast(t('emoteMaker.stageImagesSaveFailed'));
+        }
+        if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
+        showToast(interpolate(t('emoteMaker.stageImagesImported'), { count: images.length }));
+    }
+
+    async function restoreStageImages() {
+        if (stageUserImagesRestored || !currentTemplateKey()) return;
+        stageUserImagesRestored = true;
+        try {
+            const listResponse = await fetch('/api/emote-maker/library/textures'
+                + `?key=${encodeURIComponent(currentTemplateKey())}`,
+            { credentials: 'same-origin' });
+            const list = await listResponse.json();
+            const paths = (list.paths || []).filter(
+                (path) => String(path).indexOf(STAGE_IMAGE_PREFIX) === 0);
+            for (const path of paths) {
+                const id = path.slice(STAGE_IMAGE_PREFIX.length).replace(/\.png$/i, '');
+                const response = await fetch('/api/emote-maker/library/texture'
+                    + `?key=${encodeURIComponent(currentTemplateKey())}&path=${encodeURIComponent(path)}`,
+                { credentials: 'same-origin' });
+                if (!response.ok) continue;
+                const blob = await response.blob();
+                const dataUrl = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result || ''));
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(blob);
+                });
+                if (dataUrl) stageUserImages.set(id, { name: id, dataUrl });
+            }
+            if (paths.length && stateStageSession?.refreshUserImages) {
+                stateStageSession.refreshUserImages();
+            }
+        } catch (_) {
+            stageUserImagesRestored = false;   // 拉取失败下次再试
+        }
+    }
+
+    /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */
+    function frameFromStageImage(image, edge) {
+        return new Promise((resolve) => {
+            const imageEl = new Image();
+            imageEl.onload = () => {
+                const size = Math.max(1, edge || 512);
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const scale = Math.min(size / imageEl.width, size / imageEl.height) || 1;
+                const width = imageEl.width * scale;
+                const height = imageEl.height * scale;
+                ctx.drawImage(imageEl, (size - width) / 2, (size - height) / 2, width, height);
+                const data = ctx.getImageData(0, 0, size, size);
+                resolve([{ width: size, height: size, data: data.data }]);
+            };
+            imageEl.onerror = () => resolve([]);
+            imageEl.src = image.dataUrl;
+        });
+    }
+
     function captureStageSource(sourceKey, quality, priorityOverride) {
         const budget = STAGE_QUALITY[quality] || STAGE_QUALITY.full;
         const priority = Number(priorityOverride) > 0
@@ -3854,6 +3989,12 @@
             priority,
             priority >= STAGE_CAPTURE_INTERACTIVE ? 'frames' : 'thumb',
             async () => {
+                // 用户图片：单帧源，不过 Spine 采集管线
+                if (String(sourceKey || '').indexOf('image:') === 0) {
+                    const image = stageUserImages.get(String(sourceKey).slice(6));
+                    if (!image) return [];
+                    return frameFromStageImage(image, budget.edge);
+                }
                 const resolved = await resolveStageSource(sourceKey);
                 if (!resolved) return [];
                 const { scene, look } = resolved;
@@ -3957,6 +4098,10 @@
                 value: scene.id,
                 label: scene.name || scene.animation?.id || scene.id,
             })),
+            userImages: () => [...stageUserImages.entries()].map(([id, image]) => ({
+                id, label: image.name, thumb: image.dataUrl,
+            })),
+            onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
             onChange: (next) => {
                 state.nodeGraph = next;
                 state.packMode = 'graph';
@@ -5724,6 +5869,17 @@
     const PACK_TALKING_FRAMES = 1;
     let packBusy = false;
     let stateStageSession = null;
+    // 表演台的用户图片导入入口：input 常驻页面，表演台的"导入图片"按钮只负责叫它
+    const stageImageInput = document.createElement('input');
+    stageImageInput.type = 'file';
+    stageImageInput.accept = '.png,image/png';
+    stageImageInput.multiple = true;
+    stageImageInput.hidden = true;
+    stageImageInput.addEventListener('change', () => {
+        void importStageImages(stageImageInput.files);
+        stageImageInput.value = '';
+    });
+    document.body.appendChild(stageImageInput);
 
     function animationIsPlayable(id) {
         if (!hasSpineRenderer()) return false;
