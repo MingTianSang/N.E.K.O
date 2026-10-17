@@ -3771,6 +3771,8 @@
     const STAGE_ROOT_PREFIX = 'root:';
     const STAGE_CAPTURE_INTERACTIVE = 10;
     const STAGE_CAPTURE_THUMB = 1;
+    // 表演台预览帧率：时间轴刻度和"一帧多长"都靠它，太高浪费、太低不流畅
+    const STAGE_PREVIEW_FPS = 10;
     const stageFramesBySource = new Map();   // `${源}|${档位}` -> frame[]
     const stageThumbs = new Map();           // sceneId -> dataURL
     // 用户图片：id -> { name, dataUrl }。字节随副本走（StageImages/ 合并进贴图管线），
