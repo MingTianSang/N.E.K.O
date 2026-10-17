@@ -4120,6 +4120,7 @@
                 //（不进导出就不会被打包），不需要单独的删除接口。
                 stageUserImages.delete(imageId);
                 pushStageUserImages();
+                if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
             },
             onChange: (next) => {
                 state.nodeGraph = next;
