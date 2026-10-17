@@ -78,7 +78,7 @@ def _open_stage(page: Page, running_server: str, images=None) -> None:
 def _switch_to_images(page: Page) -> None:
     page.evaluate("""() => {
         const btns = [...document.querySelectorAll('.st-drawer-head .list-segment-btn')];
-        btns.find((b) => b.textContent.includes('用户图片')).click();
+        btns[1].click();
     }""")
 
 
@@ -166,7 +166,7 @@ def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str)
         window.__userImages.splice(0, 1);   // 同步清单
         const btns = [...document.querySelectorAll('.st-drawer-head .list-segment-btn')];
         btns.find((b) => b.textContent.includes('动作库')).click();
-        btns.find((b) => b.textContent.includes('用户图片')).click();
+        btns[1].click();
     }""")
     page.wait_for_function(
         "() => document.querySelectorAll('.st-userimg-grid .st-userimg').length === 0",

@@ -4040,7 +4040,7 @@
         "nodeSocketLook": "Внешность",
         "nodeSourceDefault": "Базовая внешность",
         "nodeSourceScene": "Сцена",
-        "stageUserImages": "Пользовательские картинки",
+        "stageUserImages": "Действия",
         "stageImportImages": "Импорт картинок",
         "stageNoUserImages": "Картинок пока нет — нажмите «Импорт картинок»",
         "stageImagesPngOnly": "Поддерживаются только PNG",

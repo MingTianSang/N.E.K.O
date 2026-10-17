@@ -4040,7 +4040,7 @@
         "nodeSocketLook": "외형",
         "nodeSourceDefault": "기본 외형",
         "nodeSourceScene": "장면 지정",
-        "stageUserImages": "사용자 이미지",
+        "stageUserImages": "액션",
         "stageImportImages": "이미지 가져오기",
         "stageNoUserImages": "아직 이미지가 없어요. \"이미지 가져오기\"로 추가하세요",
         "stageImagesPngOnly": "PNG 이미지만 지원합니다",

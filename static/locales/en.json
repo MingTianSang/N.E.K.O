@@ -4040,7 +4040,7 @@
         "nodeSocketLook": "Look",
         "nodeSourceDefault": "Default look",
         "nodeSourceScene": "Scene",
-        "stageUserImages": "User images",
+        "stageUserImages": "Actions",
         "stageImportImages": "Import images",
         "stageNoUserImages": "No images yet — use “Import images” to add some",
         "stageImagesPngOnly": "Only PNG images are supported",
