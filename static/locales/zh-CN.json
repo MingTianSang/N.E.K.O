@@ -2757,7 +2757,6 @@
                         "moliliUpdatingMaster":  "正在更新「我的档案」...",
         "moliliMasterUpdateFailed":  "更新「我的档案」失败: {{error}}",
         "moliliCommitTimeout":  "本次导入耗时较长，服务端可能仍在后台继续处理。请等待约 1 分钟后重新执行一次导入收尾：已完成的日期会自动跳过，只补剩余部分。",
-        "cardTagsLabel": "标签",
         "moliliAttachmentsNote": "附件 {{count}} 个与原始聊天不会随记忆迁移，如有需要请提前自行保存",
         "moliliChatsNote": "原始聊天 {{count}} 条不会随记忆迁移，如有需要请提前自行保存",
         "moliliStageFusion": "融合人格中...",

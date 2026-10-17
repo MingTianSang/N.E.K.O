@@ -2757,7 +2757,6 @@
                         "moliliUpdatingMaster":  "Updating your global profile...",
         "moliliMasterUpdateFailed":  "Failed to update your profile: {{error}}",
         "moliliCommitTimeout":  "This import took longer than expected; the server is likely still processing it in the background. Wait about a minute, then run the import once more to finish: completed days are skipped automatically and only the remainder is filled in.",
-        "cardTagsLabel": "Tags",
         "moliliAttachmentsNote": "{{count}} attachments and the raw chats are not migrated; save them yourself beforehand if needed",
         "moliliChatsNote": "{{count}} raw chat messages are not migrated; save them yourself beforehand if needed",
         "moliliStageFusion": "Fusing personality...",

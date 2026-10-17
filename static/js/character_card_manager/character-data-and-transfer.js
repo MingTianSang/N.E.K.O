@@ -485,8 +485,6 @@ function updateCardMetaAfterFaceChange(name, timestamp) {
     window._cardMetas[name] = {
         author: existing.author || '',
         origin: 'self',
-        // 重建缓存项时保留卡面元数据标签，否则标签行会消失
-        tags: Array.isArray(existing.tags) ? existing.tags.slice() : [],
         created_at: existing.created_at || updatedAt,
         updated_at: updatedAt
     };
@@ -923,28 +921,6 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
         }
         container.appendChild(authorRow);
 
-        // 标签（卡面元数据；Molili 导入的来源标记在 origin，不再写标签）
-        const metaTags = Array.isArray(m && m.tags) ? m.tags : [];
-        if (metaTags.length) {
-            const tagsRow = document.createElement('div');
-            tagsRow.className = 'card-meta-row card-meta-tags';
-            const tagsLabel = document.createElement('span');
-            tagsLabel.className = 'card-meta-label';
-            tagsLabel.dataset.i18n = 'character.cardTagsLabel';
-            tagsLabel.textContent = window.t ? window.t('character.cardTagsLabel') : '标签';
-            tagsRow.appendChild(tagsLabel);
-            const chipsWrap = document.createElement('span');
-            chipsWrap.className = 'card-meta-tag-chips';
-            metaTags.forEach(tag => {
-                const chip = document.createElement('span');
-                chip.className = 'card-meta-origin-badge';
-                chip.textContent = tag;
-                chipsWrap.appendChild(chip);
-            });
-            tagsRow.appendChild(chipsWrap);
-            container.appendChild(tagsRow);
-        }
-
         // 创建时间
         if (createdAt) {
             const timeRow = document.createElement('div');
@@ -1352,11 +1328,6 @@ async function handleMoliliArchiveImport(file) {
             const mutableCard = Object.fromEntries(
                 Object.entries(targetCard).filter(([key]) => !isReservedKey(key)));
             const updates = { ...mutableCard, ...moliliSectionFields };
-            // 历史误写在 关键词 里的 molili导入 标签：来源标记已迁至卡面元数据 origin，剥离之
-            //（剥离后为空则不传该字段，PUT 会把空字段删除）。
-            const existingTags = Array.isArray(targetCard['关键词']) ? targetCard['关键词'] : [];
-            const keptTags = existingTags.filter(t => t !== 'molili导入');
-            if (keptTags.length) updates['关键词'] = keptTags;
             const existingSetting = String(targetCard['设定'] || '');
             const fullText = (preview.character_card && preview.character_card.system_prompt) || '';
             // 只有本次的分节字段换了别的名字时才删旧整块；无标题设定本身就落在
@@ -1377,21 +1348,16 @@ async function handleMoliliArchiveImport(file) {
         }
 
         // 来源徽章：把卡的 origin 标记为 molili（与 本地创作/导入/创意工坊 并列展示）。
-        // 早期版本把 molili导入 写进卡面元数据标签：迁移为 origin 时顺手剥离旧标签。
         // Best-effort：失败只告警，不阻断导入。
         try {
             const metaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`);
             const metaNow = await metaResponse.json().catch(() => ({}));
             const currentMeta = metaNow.meta || metaNow || {};
-            const metaTags = Array.isArray(currentMeta.tags) ? currentMeta.tags.slice() : [];
-            const metaBody = {};
-            if (currentMeta.origin !== 'molili') metaBody.origin = 'molili';
-            if (metaTags.includes('molili导入')) metaBody.tags = metaTags.filter(t => t !== 'molili导入');
-            if (Object.keys(metaBody).length) {
+            if (currentMeta.origin !== 'molili') {
                 const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(metaBody),
+                    body: JSON.stringify({ origin: 'molili' }),
                 });
                 if (saveMetaResponse.ok) {
                     const metaSaved = await saveMetaResponse.json().catch(() => ({}));
@@ -1403,7 +1369,7 @@ async function handleMoliliArchiveImport(file) {
                 }
             }
         } catch (metaError) {
-            console.warn('卡面标签写入失败（不阻断导入）:', metaError);
+            console.warn('卡面来源标记失败（不阻断导入）:', metaError);
         }
 
         // 归档里没有任何记忆候选（只有角色设定）：设定已写好，没有记忆可导，

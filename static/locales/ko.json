@@ -2757,7 +2757,6 @@
                         "moliliUpdatingMaster":  "전역 프로필 업데이트 중...",
         "moliliMasterUpdateFailed":  "프로필 업데이트 실패: {{error}}",
         "moliliCommitTimeout":  "이 가져오기는 시간이 오래 걸리고 있습니다. 서버가 백그라운드에서 계속 처리 중일 수 있습니다. 약 1분 후 가져오기를 한 번 더 실행하여 마무리하세요. 완료된 날짜는 자동으로 건너뛰고 나머지만 채워집니다.",
-        "cardTagsLabel": "태그",
         "moliliAttachmentsNote": "첨부파일 {{count}}개와 원본 채팅은 기억으로 이전되지 않습니다. 필요하다면 미리 저장해 두세요",
         "moliliChatsNote": "원본 채팅 {{count}}개는 기억으로 이전되지 않습니다. 필요하다면 미리 저장해 두세요",
         "moliliStageFusion": "페르소나 융합 중...",

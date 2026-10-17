@@ -33,7 +33,7 @@ class _FakeRequest:
 def _config(tmp_path, origin='self'):
     sidecar = tmp_path / 'meta.json'
     sidecar.write_text(json.dumps({
-        'author': '', 'origin': origin, 'tags': [],
+        'author': '', 'origin': origin,
         'created_at': '2026-10-17T16:43:31', 'updated_at': '2026-10-17T16:43:31',
     }, ensure_ascii=False), encoding='utf-8')
     config_manager = MagicMock()

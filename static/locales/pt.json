@@ -2757,7 +2757,6 @@
                         "moliliUpdatingMaster":  "Atualizando o perfil global...",
         "moliliMasterUpdateFailed":  "Falha ao atualizar o perfil: {{error}}",
         "moliliCommitTimeout":  "Esta importação está demorando mais do que o esperado; o servidor provavelmente ainda está processando em segundo plano. Aguarde cerca de 1 minuto e execute a importação novamente para concluir: os dias concluídos são pulados automaticamente e apenas o restante é preenchido.",
-        "cardTagsLabel": "Tags",
         "moliliAttachmentsNote": "{{count}} anexos e os chats brutos não são migrados com a memória; guarde-os antes se necessário",
         "moliliChatsNote": "{{count}} mensagens de chat brutas não são migradas com a memória; guarde-as antes se necessário",
         "moliliStageFusion": "Fundindo personalidade...",
