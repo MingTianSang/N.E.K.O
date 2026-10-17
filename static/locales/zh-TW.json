@@ -4040,7 +4040,7 @@
         "nodeSocketLook": "外觀",
         "nodeSourceDefault": "預設外觀",
         "nodeSourceScene": "指定場景",
-        "stageUserImages": "動作庫",
+        "stageUserImages": "圖片庫",
         "stageImportImages": "匯入圖片",
         "stageNoUserImages": "還沒有匯入圖片，點「匯入圖片」加幾張",
         "stageImagesPngOnly": "只支援 PNG 圖片",

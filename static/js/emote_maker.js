@@ -398,7 +398,7 @@
         'emoteMaker.stageDropHint': "松开时放到某一格上",
         'emoteMaker.stageGestureHint': "拖动旋转，滚轮缩放",
         'emoteMaker.stageLibrary': "动作库",
-        'emoteMaker.stageUserImages': "动作库",
+        'emoteMaker.stageUserImages': "图片库",
         'emoteMaker.stageImportImages': "导入图片",
         'emoteMaker.stageNoUserImages': "还没有导入图片，点「导入图片」加几张",
         'emoteMaker.stageImagesPngOnly': "只支持 PNG 图片",
