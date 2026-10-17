@@ -63,6 +63,9 @@
         return `emoteMaker.packState${camel}`;
     }
 
+    // 用户图片清单的模块级持有者：setUserImages 注入，create 之后也能换/刷
+    let userImagesProvider = () => [];
+
     function create(options) {
         const model = options.model;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
@@ -83,8 +86,9 @@
         const PREVIEW_CARD_W = 150;    // 检视窗画布：台面被遮住后唯一的"看一眼"地方
         const PREVIEW_CARD_H = 176;
         const animationsFor = typeof options.animationsFor === 'function' ? options.animationsFor : emptyList;
-        // 用户图片：清单（{id, label, thumb}）与"导入图片"入口（面板只管叫，导入逻辑在页面层）
-        const userImages = typeof options.userImages === 'function' ? options.userImages : emptyList;
+        // 用户图片：清单（{id, label, thumb}）走模块级 setUserImages 注入
+        // （导出对象是 frozen 的，create 之后没法从外面换 options 上的函数）
+        const userImages = typeof options.userImages === 'function' ? options.userImages : () => userImagesProvider();
         const onImportImages = typeof options.onImportImages === 'function' ? options.onImportImages : () => {};
         const fpsOf = () => Math.max(1, Number(
             typeof options.fps === 'function' ? options.fps() : options.fps,
@@ -209,11 +213,26 @@
         drawer.setAttribute('aria-label', t('emoteMaker.stageLibrary'));
         const drawerHead = document.createElement('div');
         drawerHead.className = 'st-drawer-head';
-        const drawerTitle = document.createElement('h3');
-        drawerTitle.textContent = t('emoteMaker.stageLibrary');
+        // 胶囊切换：动作库 / 用户图片——两个库并列，不再一个区压在另一个区头上
+        const seg = document.createElement('div');
+        seg.className = 'list-segment';
+        seg.setAttribute('role', 'tablist');
+        const segScene = document.createElement('button');
+        segScene.type = 'button';
+        segScene.className = 'list-segment-btn is-active';
+        segScene.setAttribute('role', 'tab');
+        segScene.setAttribute('aria-selected', 'true');
+        segScene.textContent = t('emoteMaker.stageLibrary');
+        const segImage = document.createElement('button');
+        segImage.type = 'button';
+        segImage.className = 'list-segment-btn';
+        segImage.setAttribute('role', 'tab');
+        segImage.setAttribute('aria-selected', 'false');
+        segImage.textContent = t('emoteMaker.stageUserImages');
+        seg.append(segScene, segImage);
         const drawerCount = document.createElement('span');
         drawerCount.className = 'st-drawer-count';
-        drawerHead.append(drawerTitle, drawerCount);
+        drawerHead.append(seg, drawerCount);
         // 一个动作列表在几十条时能靠滚动，到几百条就只能靠筛
         const search = document.createElement('input');
         search.type = 'search';
@@ -234,19 +253,36 @@
             // 只有改筛选条件才回顶部；划过列表、拖时间轴都不该动滚动位置
             listScroll.scrollTop = 0;
         });
+        let imageTab = false;
+        const applyTab = () => {
+            segScene.classList.toggle('is-active', !imageTab);
+            segScene.setAttribute('aria-selected', String(!imageTab));
+            segImage.classList.toggle('is-active', imageTab);
+            segImage.setAttribute('aria-selected', String(imageTab));
+            search.hidden = imageTab;
+            library.style.display = imageTab ? 'none' : '';
+            imagePanel.hidden = !imageTab;
+            renderUserImages();
+            const total = imageTab ? userImages().length : animationsFor().length;
+            drawerCount.textContent = String(total);
+            listScroll.scrollTop = 0;
+        };
+        segScene.addEventListener('click', () => {
+            if (imageTab) { imageTab = false; applyTab(); }
+        });
+        segImage.addEventListener('click', () => {
+            if (!imageTab) { imageTab = true; applyTab(); }
+        });
 
-        // 用户图片区：导入的 PNG 缩略图排在这里，点/拖都能赋给状态格
-        const imageHead = document.createElement('div');
-        imageHead.className = 'st-userimg-head';
-        const imageTitle = document.createElement('span');
-        imageTitle.className = 'st-userimg-title';
-        imageTitle.textContent = t('emoteMaker.stageUserImages');
+        // 用户图片面板：导入按钮 + 缩略图格 + 空态，切到「用户图片」时才显示
+        const imagePanel = document.createElement('div');
+        imagePanel.className = 'st-userimg-panel';
+        imagePanel.hidden = true;
         const imageImport = document.createElement('button');
         imageImport.type = 'button';
         imageImport.className = 'st-userimg-import';
         imageImport.textContent = t('emoteMaker.stageImportImages');
         imageImport.addEventListener('click', () => onImportImages());
-        imageHead.append(imageTitle, imageImport);
         const userImageGrid = document.createElement('div');
         userImageGrid.className = 'st-userimg-grid';
         userImageGrid.setAttribute('role', 'listbox');
@@ -254,6 +290,7 @@
         const userImageEmpty = document.createElement('p');
         userImageEmpty.className = 'st-userimg-empty';
         userImageEmpty.textContent = t('emoteMaker.stageNoUserImages');
+        imagePanel.append(imageImport, userImageGrid, userImageEmpty);
 
         // 检视窗：悬停哪条就演哪条；没悬停时演这一格真正选中的那条。
         // 台面被抽屉完全遮住后它代替舞台成为"看一眼"的地方。
@@ -267,7 +304,7 @@
         const drawerMain = document.createElement('div');
         drawerMain.className = 'st-drawer-main';
         // 搜索框放在列表列里：它筛的是这一列，不是整块抽屉
-        listScroll.append(search, imageHead, userImageGrid, userImageEmpty, library);
+        listScroll.append(search, library, imagePanel);
         drawerMain.append(listScroll, previewCard);
         drawer.append(drawerHead, drawerMain);
 
@@ -1209,9 +1246,11 @@
             library.querySelectorAll('.st-pick-thumb.is-loading').forEach((thumb) => {
                 if (thumbWatcher) thumbWatcher.observe(thumb); else loadThumb(thumb);
             });
-            const total = all.length;
-            drawerCount.textContent = shown.length === total
-                ? String(total) : `${shown.length} / ${total}`;
+            if (!imageTab) {
+                const total = all.length;
+                drawerCount.textContent = shown.length === total
+                    ? String(total) : `${shown.length} / ${total}`;
+            }
         }
 
         /**
@@ -1427,7 +1466,7 @@
         function openLibrary() {
             if (!drawer.classList.contains('is-open')) {
                 renderLibrary();
-                renderUserImages();
+                applyTab();   // 恢复上次的页签（动作库/用户图片）并刷计数
                 drawer.classList.add('is-open');
                 dock.classList.add('is-open');
                 // 先按最终尺寸量一次再画：否则首帧用画布默认的 300x150 排版，
@@ -1600,5 +1639,8 @@
         };
     }
 
-    return Object.freeze({ create, TILE_STATES, secondsLabel, clamp, stateLabel });
+    return Object.freeze({
+        create, TILE_STATES, secondsLabel, clamp, stateLabel,
+        setUserImages(list) { userImagesProvider = () => (Array.isArray(list) ? list : []); },
+    });
 }));
