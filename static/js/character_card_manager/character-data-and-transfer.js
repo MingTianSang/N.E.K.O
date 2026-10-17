@@ -1131,9 +1131,9 @@ function _moliliT(key, fallback, params) {
 // 后约 4/3 倍，再加 JSON 序列化副本，大文件会把渲染进程撑爆）。
 const MOLILI_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
-// 同一份归档新建角色后若超时/部分失败，重试应导回那个角色，而不是再建一个
-// 「名字(1)」。按 snapshot_time + 识别名记住建出的角色（sessionStorage，读写失败
-// 就只是不预选）。
+// 同一份归档导入超时/部分失败后，重试应导回同一个角色，而不是再建一个
+// 「名字(1)」或回到新建模式。按 snapshot_time + 识别名记住目标角色（sessionStorage，
+// 读写失败就只是不预选）。
 const MOLILI_RETRY_TARGETS_KEY = 'neko_molili_retry_targets';
 
 function _moliliRetryKey(preview) {
@@ -1325,7 +1325,6 @@ async function handleMoliliArchiveImport(file) {
             }
             // 重名时后端自动加后缀（如 言叶(1)）：记忆必须导进实际建出的角色
             characterName = created.character_name || choice.name;
-            _moliliRememberRetryTarget(preview, characterName);
         } else if (Object.keys(moliliSectionFields).length) {
             // 导入到现有角色：分节字段 + 主人身份字段合并进该角色档案。
             // ⚠ PUT /catgirl/{name} 的语义是"未传字段即删除"——必须先 GET 全量
@@ -1452,6 +1451,9 @@ async function handleMoliliArchiveImport(file) {
             } catch (e) { /* 忽略单次轮询失败，下一轮再试 */ }
         }, 5000);
 
+        // 记下本次的导入目标（新建或现有角色都记）：commit 超时/部分失败后重开
+        // 同一份归档，默认导回这个角色；整次成功后才清掉。
+        _moliliRememberRetryTarget(preview, characterName);
         let commit;
         try {
             const controller = new AbortController();
@@ -1570,11 +1572,17 @@ function _showMoliliImportDialog(preview, archiveB64) {
                 { count: extraAgents }));
         }
         const attachmentCount = skipped.attachments?.count || 0;
+        const chatCount = Number(skipped.conversation_messages) || 0;
         if (attachmentCount > 0) {
             // 用户需要知情：附件（图）不随记忆迁移
             summaryLines.push(_moliliT('character.moliliAttachmentsNote',
                 `附件 ${attachmentCount} 个与原始聊天不会随记忆迁移，如有需要请提前自行保存`,
                 { count: attachmentCount }));
+        } else if (chatCount > 0) {
+            // 纯文本归档没有附件，原始聊天不迁移这件事也要单独告知
+            summaryLines.push(_moliliT('character.moliliChatsNote',
+                `原始聊天 ${chatCount} 条不会随记忆迁移，如有需要请提前自行保存`,
+                { count: chatCount }));
         }
         if ((preview.warning_count || 0) > 0) {
             summaryLines.push(_moliliT('character.moliliWarnings',

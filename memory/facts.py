@@ -2791,6 +2791,7 @@ class FactStore:
         timeout: float = 60,
         thinking: bool = False,
         parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -2800,6 +2801,11 @@ class FactStore:
         same as ``max_retries``). A caller with its own fallback for malformed
         or truncated output (the external daily import splits the batch) sets
         it to 1 while network errors / 429 / 5xx keep the full backoff budget.
+
+        ``failure_info``: on terminal failure, ``failure_info["reason"]`` is set
+        to ``"parse"`` (the last attempt returned unparseable JSON) or
+        ``"transport"`` (network / provider / other error), so a caller can
+        tell output it might repair from an outage it cannot.
 
         Note: no longer accepts temperature. The project-wide convention is to
         never send that parameter (gatekeeper: scripts/check_no_temperature.py).
@@ -2825,6 +2831,7 @@ class FactStore:
 
         retries = 0
         parse_failures = 0
+        last_failure = "transport"
         while retries < max_retries:
             resp = None
             try:
@@ -2854,6 +2861,7 @@ class FactStore:
                 return robust_json_loads(raw)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 网络错误 {type(e).__name__}, "
                     f"重试 {retries}/{max_retries}"
@@ -2864,6 +2872,7 @@ class FactStore:
             except json.JSONDecodeError as e:
                 retries += 1
                 parse_failures += 1
+                last_failure = "parse"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
                     f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
@@ -2875,6 +2884,7 @@ class FactStore:
                 continue
             except Exception as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 失败 "
                     f"(重试 {retries}/{max_retries}): {type(e).__name__}: {e}"
@@ -2886,6 +2896,8 @@ class FactStore:
         logger.warning(
             f"[FactStore] {lanlan_name}: {call_type} 达到最大重试 {max_retries}，放弃"
         )
+        if failure_info is not None:
+            failure_info["reason"] = last_failure
         return None
 
     async def _allm_extract_facts(
@@ -2893,6 +2905,7 @@ class FactStore:
         *, treat_malformed_as_failure: bool = False,
         speaker_label: str | None = None,
         parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2938,6 +2951,7 @@ class FactStore:
             tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
             call_type="memory_fact_extraction",
             parse_max_retries=parse_max_retries,
+            failure_info=failure_info,
         )
         if extracted is None:
             return None
@@ -2947,6 +2961,8 @@ class FactStore:
                     f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
                     f"{type(extracted).__name__}，当作抽取失败（可重试，不 checkpoint）"
                 )
+                if failure_info is not None:
+                    failure_info["reason"] = "schema"
                 return None
             logger.warning(
                 f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
@@ -5390,10 +5406,12 @@ class FactStore:
                 # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
                 # 「数组但无 object 元素」同理 strict（split 兜底），挡不住会被
                 # checkpoint 成空抽取天、后续导入静默丢该天 facts（Codex P2）。
+                failure: dict = {}
                 async with llm_slots:
                     await _polite_gap()
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
+                        failure_info=failure,
                         # 截断类失败交给 _extract_group 的拆半递归（每半本身就是
                         # 一次子集重试），同批盲试 3 次是纯浪费——解析失败 1 次就拆。
                         # 只限解析失败：网络错误 / 429 / 5xx 仍按完整退避重试，
@@ -5403,7 +5421,10 @@ class FactStore:
                 if extracted is None or (
                     extracted and not any(isinstance(f, dict) for f in extracted)
                 ):
-                    if len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
+                    # 只有输出类失败（解析失败 / 格式不对）拆半才可能修好；网络 /
+                    # 429 / 5xx 在完整退避后仍失败时拆了只会多烧配额和时间。
+                    output_failure = extracted is not None or failure.get("reason") in {"parse", "schema"}
+                    if output_failure and len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
                         split_budget['left'] -= 2
                         mid = len(fragments) // 2
                         logger.warning(

@@ -4,6 +4,8 @@ import pytest
 
 from memory.facts import FactStore
 
+TRANSPORT = object()  # stub sentinel: extraction failed on transport, not output
+
 
 class _DailyHarness(FactStore):
     """Minimal FactStore stand-in exercising aimport_external_daily.
@@ -43,14 +45,23 @@ class _DailyHarness(FactStore):
 
     async def _allm_extract_facts(
         self, lanlan_name, messages, *, treat_malformed_as_failure=False,
-        parse_max_retries: int = 3,
+        parse_max_retries: int = 3, failure_info=None,
     ):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
         result = self._stub(text)
+        # 桩返回 TRANSPORT = 网络/限流类失败；其余 None 按输出截断（parse）处理
+        if result is TRANSPORT:
+            if failure_info is not None:
+                failure_info["reason"] = "transport"
+            return None
+        if result is None and failure_info is not None:
+            failure_info["reason"] = "parse"
         # 忠实模拟真实 _allm_extract_facts 的非数组处理：daily 传 strict → None
         # （畸形当失败天，可重试），非 strict → []（对话路径容忍）。
         if result is not None and not isinstance(result, list):
+            if treat_malformed_as_failure and failure_info is not None:
+                failure_info["reason"] = "schema"
             return None if treat_malformed_as_failure else []
         return result
 
@@ -1004,3 +1015,40 @@ async def test_parse_retry_cap_keeps_transport_retries(monkeypatch):
     )
     assert result is None
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_transport_failure_is_not_split(monkeypatch):
+    """A batch that failed on transport after its retries fails the day without splitting into more calls."""
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+    harness = _DailyHarness(lambda _journal: TRANSPORT)
+    candidates = _daily("memories/2026-09-16.md", "2026-09-16", "A", "B", "C", "D")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "molili", "t")
+
+    assert result["failed_days"] == 1
+    assert len(harness.extract_inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_wrapper_reports_failure_reason(monkeypatch):
+    """failure_info tells parse failures apart from transport failures."""
+    import httpx
+    from openai import APIConnectionError
+
+    store, _calls = _retry_harness(monkeypatch, ["{not json"])
+    info: dict = {}
+    assert await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", parse_max_retries=1, failure_info=info,
+    ) is None
+    assert info == {"reason": "parse"}
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, _calls = _retry_harness(monkeypatch, [error])
+    info = {}
+    assert await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", max_retries=1, failure_info=info,
+    ) is None
+    assert info == {"reason": "transport"}

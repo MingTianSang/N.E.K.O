@@ -2759,6 +2759,7 @@
         "moliliCommitTimeout":  "本次匯入耗時較長，服務端可能仍在背景繼續處理。請等待約 1 分鐘後重新執行一次匯入收尾：已完成的日期會自動跳過，只補剩餘部分。",
         "cardTagsLabel": "標籤",
         "moliliAttachmentsNote": "附件 {{count}} 個與原始聊天不會隨記憶遷移，如有需要請提前自行保存",
+        "moliliChatsNote": "原始聊天 {{count}} 則不會隨記憶遷移，如有需要請提前自行保存",
         "moliliStageFusion": "融合人格中...",
         "moliliStageDaily":  "整理記憶批次 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "同步更新「我的檔案」為以上身分（注意：我的檔案為所有角色共享，此變更會影響它們）",
