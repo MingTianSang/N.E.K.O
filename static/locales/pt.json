@@ -4111,7 +4111,6 @@
         "templateNoRuntime": "Pré-visualização indisponível",
         "templateLibrary": "Modelos guardados",
         "removeTemplateConfirm": "Excluir “{{name}}”?",
-        "panelToggle": "Recolher ou expandir um painel lateral",
         "confirmCancel": "Cancelar",
         "confirmDelete": "Excluir",
         "groupEmptyList": "Sem grupos",

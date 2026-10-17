@@ -4111,7 +4111,6 @@
         "templateNoRuntime": "預覽暫不可用",
         "templateLibrary": "已有模板",
         "removeTemplateConfirm": "刪除「{{name}}」？",
-        "panelToggle": "收起或展開側欄",
         "confirmCancel": "取消",
         "confirmDelete": "刪除",
         "groupEmptyList": "暫無組",

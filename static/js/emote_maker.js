@@ -98,9 +98,6 @@
         // 形象包的编辑层级：基础只填一个待机场景，进阶交给节点图。
         packMode: 'basic',
         groupPanelOpen: true,
-        // 两侧面板贴边折叠：true = 该侧收进窗口边缘
-        panelLeftCollapsed: false,
-        panelRightCollapsed: false,
         // 底部「批量导出」那颗按钮的气泡开合：只是当前浏览状态，不存盘
         groupPickerOpen: false,
         zoom: 1,
@@ -4614,34 +4611,12 @@
         if (layout.dock) layout.dock = clampLayout('dock', layout.dock);
         grid.style.setProperty('--col-left', `${layout.left}px`);
         grid.style.setProperty('--col-right', `${layout.right}px`);
-        applyPanelLayout();
         // dock 允许 0 表示"未固定"，此时交给内容自适应。
         const workspace = document.querySelector('.workspace-panel');
         if (workspace) {
             if (layout.dock) workspace.style.setProperty('--dock-height', `${layout.dock}px`);
             else workspace.style.removeProperty('--dock-height');
         }
-    }
-
-    function applyPanelLayout() {
-        const grid = document.querySelector('.maker-grid');
-        if (!grid) return;
-        grid.classList.toggle('left-collapsed', state.panelLeftCollapsed === true);
-        grid.classList.toggle('right-collapsed', state.panelRightCollapsed === true);
-        const left = $('#panel-toggle-left');
-        const right = $('#panel-toggle-right');
-        if (left) left.setAttribute('aria-expanded', String(state.panelLeftCollapsed !== true));
-        if (right) right.setAttribute('aria-expanded', String(state.panelRightCollapsed !== true));
-    }
-
-    function bindPanelToggles() {
-        const flip = (which) => {
-            state[which] = state[which] !== true;
-            persistLayout();
-            applyPanelLayout();
-        };
-        $('#panel-toggle-left')?.addEventListener('click', () => flip('panelLeftCollapsed'));
-        $('#panel-toggle-right')?.addEventListener('click', () => flip('panelRightCollapsed'));
     }
 
     function loadLayout() {
@@ -4657,9 +4632,6 @@
                 layout[which] = clampLayout(which, saved[which]);
             }
         });
-        // 两侧折叠状态
-        state.panelLeftCollapsed = saved.panelLeftCollapsed === true;
-        state.panelRightCollapsed = saved.panelRightCollapsed === true;
         // dock 允许 0 表示"未固定"
         layout.dock = Number.isFinite(Number(saved.dock)) && Number(saved.dock) >= 0
             ? Math.min(LAYOUT_LIMITS.dock[1], Math.max(0, Math.round(Number(saved.dock))))
@@ -4676,8 +4648,6 @@
         try {
             localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
                 left: layout.left,
-                panelLeftCollapsed: state.panelLeftCollapsed === true,
-                panelRightCollapsed: state.panelRightCollapsed === true,
                 right: layout.right,
                 dock: layout.dock,
                 packMode: state.packMode,
@@ -6317,7 +6287,6 @@
             selectGroup(event.target.value);
         });
         bindCursorTips();
-        bindPanelToggles();
         $('#new-group-btn')?.addEventListener('click', () => {
             if (createGroup()) showToast(t('emoteMaker.groupCreated'));
         });
