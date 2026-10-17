@@ -67,7 +67,10 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from config import EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES
-from config.character_fields import CHARACTER_RESERVED_FIELDS
+from config.character_fields import (
+    CHARACTER_LEGACY_FLAT_RESERVED_FIELDS,
+    CHARACTER_RESERVED_FIELDS,
+)
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
     MAX_ENTRIES,
@@ -90,8 +93,11 @@ MAX_SAMPLED_SKIPPED = 20
 #: role_prompt 按标题拆出的卡片字段数上限；超出则整段回退单一"设定"字段。
 MAX_CARD_SECTIONS = 64
 
-# 角色卡保留字段（通用编辑接口会静默过滤）+ 核心名字字段（会覆盖用户选的名字）
-_RESERVED_TAG_NAMES = frozenset((*CHARACTER_RESERVED_FIELDS, "档案名", "昵称"))
+# 角色卡保留字段（通用编辑接口会静默过滤）+ 旧平铺兼容字段（如 pngtuber_idle_image，
+# 迁移时会被收进 _reserved 并删掉）+ 核心名字字段（会覆盖用户选的名字）
+_RESERVED_TAG_NAMES = frozenset((
+    *CHARACTER_RESERVED_FIELDS, *CHARACTER_LEGACY_FLAT_RESERVED_FIELDS, "档案名", "昵称",
+))
 
 MOLILI_FORMAT = "molili-user-data-export"
 MOLILI_SCHEMA_VERSION = 1

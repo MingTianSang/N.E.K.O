@@ -410,11 +410,13 @@ def test_molili_section_tags_avoid_every_reserved_card_field():
     members = _molili_members()
     members["personality/1_74000/role_prompt.md"] = (
         "## system_prompt\n\nA\n\n## 档案名\n\nB\n\n## 昵称\n\nC\n\n## 描述\n\nD\n\n## 性格\n\nE\n"
+        "## pngtuber_idle_image\n\nF\n"
     )
     analysis = build_molili_candidates(_zip_bytes(members))
 
     assert [s["tag"] for s in analysis["character_card"]["sections"]] == [
         "Molili system_prompt", "Molili 档案名", "Molili 昵称", "Molili 描述", "性格",
+        "Molili pngtuber_idle_image",
     ]
 
 
