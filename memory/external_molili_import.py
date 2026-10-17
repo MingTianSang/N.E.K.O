@@ -137,7 +137,9 @@ def _declared_member_count(archive_bytes: bytes) -> int | None:
     # 在构造之前用 EOCD 里声明的计数预筛，否则数万成员的归档会先吃满
     # CPU/内存才被拒。EOCD 声明值可以伪造——构造后的 ``raw_member_count``
     # 仍按实际条目复核，这里只是廉价的提前拦截。
-    tail = archive_bytes[-65536:]
+    # EOCD 最长 = 65535 字节 ZIP 注释 + 22 字节结构本身；窗口不足会在合法
+    # 长注释归档上漏掉 EOCD，预筛失效退回「构造后才发现」。
+    tail = archive_bytes[-(65535 + 22):]
     pos = tail.rfind(b"PK\x05\x06")
     if pos < 0 or pos + 22 > len(tail):
         return None

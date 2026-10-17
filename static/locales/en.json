@@ -2780,6 +2780,7 @@
         "moliliImporting":  "Importing memories for \"{{name}}\". This may take a few minutes — please keep this page open...",
         "moliliImportDone":  "\"{{name}}\" imported successfully.",
         "moliliImportFailed": "Molili import failed: {{error}}",
+        "moliliImportBusy": "A Molili import is already running — wait for it to finish before choosing another archive",
         "moliliArchiveTooLarge": "The archive is larger than {{max}} MB and cannot be imported",
         "moliliExtraAgentsNote": "The archive contains {{count}} more character personalities that will not be imported (only the first character is imported)",
         "moliliImportPartial": "The import stopped partway: {{persona}} persona entries and {{facts}} facts were saved. Run the import once more to finish; already imported content is skipped automatically.",

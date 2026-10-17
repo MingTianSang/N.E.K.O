@@ -687,6 +687,22 @@ async def test_mixed_array_with_malformed_elements_is_failed_day():
 
 
 @pytest.mark.asyncio
+async def test_dict_without_text_is_failed_day_not_silent_drop():
+    # coderabbit：[{"text": "ok"}, {"fact": "..."}] 两个都是 dict，旧行为整批
+    # 接受——persist 对缺有效 text 的 dict 直接 continue 丢弃，整天指纹却打在
+    # 收下的那条上，被丢元素重导时被指纹 skip、永远补不回。与「无 object 数组」
+    # 同口径：strict 失败天（split 兜底），不 checkpoint sidecar。
+    harness = _DailyHarness(
+        lambda journal: [{"text": "real fact", "importance": 5}, {"fact": "missing text field"}]
+    )
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert harness.state_fps == set()             # 缺 text 的 dict 不 checkpoint
+
+
+@pytest.mark.asyncio
 async def test_persist_failure_clears_concurrent_sidecar():
     # Codex：persist 抛异常时也清该天 sidecar（并发空抽取先写下的），否则残留成
     # 唯一载体、压制用户重试 skip 未变日记而永不落盘。

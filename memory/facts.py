@@ -5419,9 +5419,19 @@ class FactStore:
                 # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
                 # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
                 # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
-                # 「数组但无 object 元素」「数组混有非 object 元素」同理 strict
-                # （split 兜底）：混合元素只留 dict 会静默丢内容，且当天指纹照记
-                # 后重导被 skip，丢的部分永远补不回来（wehos 第 14 轮）。
+                # 「数组但无 object 元素」「数组混有 persist 会丢的元素」同理
+                # strict（split 兜底）：_apersist_new_facts_locked 对非 dict 和
+                # 缺有效 text 的 dict 直接 continue 丢弃，整批照收 + 指纹照记的
+                # 话，丢的内容重导时被 skip，永远补不回（wehos 14 / coderabbit）。
+                def _persistable_element(element: object) -> bool:
+                    # 口径必须与 _apersist_new_facts_locked 的丢弃条件逐条对应
+                    #（不收敛 _as_fact_entry：那条会 promote 裸字符串，而本路径
+                    # 不会）。
+                    if not isinstance(element, dict):
+                        return False
+                    text = element.get('text')
+                    return isinstance(text, str) and bool(text.strip())
+
                 failure: dict = {}
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(
@@ -5437,7 +5447,7 @@ class FactStore:
                         parse_max_retries=1,
                     )
                 has_malformed_elements = (
-                    extracted is not None and any(not isinstance(f, dict) for f in extracted)
+                    extracted is not None and any(not _persistable_element(f) for f in extracted)
                 )
                 if extracted is None or has_malformed_elements:
                     # 只有输出类失败（解析失败 / 格式不对）拆半才可能修好；网络 /

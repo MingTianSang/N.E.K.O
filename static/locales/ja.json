@@ -2780,6 +2780,7 @@
         "moliliImporting":  "「{{name}}」に記憶をインポート中。数分かかる場合があります。ページを開いたままお待ちください...",
         "moliliImportDone":  "「{{name}}」のインポートが完了しました",
         "moliliImportFailed": "Moliliインポートに失敗しました: {{error}}",
+        "moliliImportBusy": "Moliliインポートが実行中です。完了してから次のアーカイブを選んでください",
         "moliliArchiveTooLarge": "アーカイブが {{max}} MB を超えているため、インポートできません",
         "moliliExtraAgentsNote": "アーカイブには他に {{count}} 体のキャラクターの人格がありますが、インポートされません（今回は最初のキャラクターのみ）",
         "moliliImportPartial": "インポートが途中で停止しました：人格 {{persona}} 件、事実 {{facts}} 件を保存済みです。もう一度インポートを実行すると残りが補われ、インポート済みの内容は自動的にスキップされます。",

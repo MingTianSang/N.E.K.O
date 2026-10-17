@@ -2780,6 +2780,7 @@
         "moliliImporting":  "Importando recuerdos de «{{name}}». Puede tardar unos minutos; no cierres la página...",
         "moliliImportDone":  "«{{name}}» importado correctamente",
         "moliliImportFailed": "Error al importar Molili: {{error}}",
+        "moliliImportBusy": "Ya hay una importación de Molili en curso: espera a que termine antes de elegir otro archivo",
         "moliliArchiveTooLarge": "El archivo supera los {{max}} MB y no se puede importar",
         "moliliExtraAgentsNote": "El archivo contiene {{count}} personalidades de personajes más que no se importarán (solo se importa el primer personaje)",
         "moliliImportPartial": "La importación se detuvo a medias: se guardaron {{persona}} entradas de personalidad y {{facts}} hechos. Vuelve a ejecutar la importación para terminar; lo ya importado se omite automáticamente.",

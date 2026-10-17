@@ -990,6 +990,11 @@ function _extractNekoChunk(uint8Array) {
     return null;
 }
 
+// 重入标志：一次 Molili 导入从 preview 到 commit 要好几分钟，期间再选一份
+// zip 会并行第二套 preview/确认框/建卡/commit（建出 name(1)、双份 LLM 抽取，
+// commit 重入还会对同一角色重复导入）。
+let _moliliImportInFlight = false;
+
 async function handleImportCharacterCard(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -998,7 +1003,17 @@ async function handleImportCharacterCard(event) {
     // .zip 走 Molili 停服归档导入（后端按 manifest 嗅探确认，误选普通 zip 会报
     // "不是 Molili 归档"），PNG / .nekocfg 维持原角色卡流程。
     if (file.name.toLowerCase().endsWith('.zip')) {
-        await handleMoliliArchiveImport(file);
+        if (_moliliImportInFlight) {
+            showMessage(_moliliT('character.moliliImportBusy',
+                '已有 Molili 导入在进行中，请等它完成后再选归档'), 'import-error');
+            return;
+        }
+        _moliliImportInFlight = true;
+        try {
+            await handleMoliliArchiveImport(file);
+        } finally {
+            _moliliImportInFlight = false;
+        }
         return;
     }
 

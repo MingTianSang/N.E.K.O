@@ -2780,6 +2780,7 @@
         "moliliImporting":  "正在为「{{name}}」导入记忆，可能需要几分钟，请勿关闭页面...",
         "moliliImportDone":  "「{{name}}」导入完成",
         "moliliImportFailed": "Molili 导入失败: {{error}}",
+        "moliliImportBusy": "已有 Molili 导入在进行中，请等它完成后再选归档",
         "moliliArchiveTooLarge": "归档超过 {{max}} MB，无法导入",
         "moliliExtraAgentsNote": "归档中另有 {{count}} 个角色的人格不会导入（本次只导入第一个角色）",
         "moliliImportPartial": "导入中途停止：已保存 {{persona}} 条人格、{{facts}} 条事实。请再执行一次导入补齐，已导入的内容会自动跳过。",
