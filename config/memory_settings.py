@@ -744,6 +744,13 @@ EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 # daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
 # 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
+# 外部记忆导入上传的归档（zip）原始字节上限。Molili 停服归档带图片附件
+# （样本 ~9MB 里 ~8.6MB 是 attachments/），解析的文本仍由 8MiB 文本预算把关。
+# 主服务器的入站请求体守卫按这个值给 external_import 的 preview/commit 两条
+# JSON 路由放宽（base64 膨胀 4/3），否则全局 16MiB 会让 >12MiB 的归档先 413。
+EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+# 上面那两条路由的请求体上限：归档 base64 体积外加 1MiB JSON 余量。
+EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES = 4 * ((EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES + 2) // 3) + 1024 * 1024
 # 免费档礼貌间隔：全局任意两次逐日抽取调用之间的最小秒数（0=关）。并发槽
 # 决定同时在飞的调用数，这个间隔决定起呼频率——两者配合把"突发"摊成
 # "匀速"，才是对免费配额/WAF 真正的温和。付费档可设 0 关闭。

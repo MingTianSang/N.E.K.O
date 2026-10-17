@@ -585,7 +585,9 @@ class ExternalMemoryImportRequest(BaseModel):
 # character → {stage, persona_total/done, daily_total/done, finished, ...}。
 # 写入点：_import_external_markdown（注册/融合/收尾）与 aimport_external_daily
 # 的 on_progress 回调（每完成一批）。单角色一条、条目极小，不设淘汰；
-# async 单线程事件循环内读写，无需加锁。
+# async 单线程事件循环内读写，无需加锁。每次导入持有自己的条目对象、只改
+# 自己那份：同一角色的重叠请求（前端超时后重试）由后来者覆盖登记，先跑完的
+# 旧请求不会把新请求的条目标成 finished，也不会往里写计数。
 _IMPORT_PROGRESS: dict[str, dict] = {}
 
 
@@ -618,16 +620,18 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             {"status": "cancelled", "message": "character release in progress"},
             status_code=409,
         )
+    progress: dict = {}
     try:
-        return await _import_external_markdown(request)
+        return await _import_external_markdown(request, progress)
     finally:
         runtime._end_character_request(name, context_token)
-        entry = _IMPORT_PROGRESS.get(name)
-        if entry is not None:
-            entry['finished'] = True
+        progress['finished'] = True
 
 
-async def _import_external_markdown(request: ExternalMemoryImportRequest):
+async def _import_external_markdown(
+    request: ExternalMemoryImportRequest,
+    progress: dict | None = None,
+):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
@@ -750,7 +754,10 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     persona_entities = list(persona_candidates_by_entity.items())
 
     # 进度登记：persona 按 entity 计数，daily 的计数由 on_progress 回调补
-    _IMPORT_PROGRESS[name] = {
+    if progress is None:
+        progress = {}
+    _IMPORT_PROGRESS[name] = progress
+    progress.update({
         'stage': 'persona',
         'persona_total': len(persona_entities),
         'persona_done': 0,
@@ -758,7 +765,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         'daily_done': 0,
         'finished': False,
         'started_at': imported_at,
-    }
+    })
     # Browser imports deliberately omit ``language``. Resolve the durable
     # character preference at execution time so a preference changed while the
     # user was reading/confirming the preview cannot be overwritten by a stale
@@ -774,9 +781,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
             outcome = await runtime.persona_manager.afuse_external_facts(
                 name, entity, entity_candidates, request.source_format,
             )
-            entry = _IMPORT_PROGRESS.get(name)
-            if entry is not None:
-                entry['persona_done'] = entry.get('persona_done', 0) + 1
+            progress['persona_done'] = progress.get('persona_done', 0) + 1
             return outcome
 
         fusion_outcomes = await asyncio.gather(
@@ -871,9 +876,8 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         try:
             with language_context(memory_language):
                 def _on_daily_progress(update: dict) -> None:
-                    entry = _IMPORT_PROGRESS.setdefault(name, {})
-                    entry.update(update)
-                    entry['stage'] = 'daily'
+                    progress.update(update)
+                    progress['stage'] = 'daily'
 
                 daily_result = await runtime.fact_store.aimport_external_daily(
                     name, daily_candidates, request.source_format, imported_at,

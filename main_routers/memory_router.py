@@ -1813,16 +1813,21 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     requested_format = str(payload.get("source_format") or "auto").strip().lower()
     # Molili 归档里图片附件占大头（样本 ~9MB 中 ~8.6MB 是 attachments/），解码
     # 上限按格式放宽；8MiB 的文本预算仍由各解析器对"实际解析的文本"把关。
-    archive_cap = MAX_ZIP_BYTES if requested_format == "molili" else MAX_TOTAL_BYTES
+    # auto 也先按 Molili 上限解码：嗅探之前不知道是不是 Molili，嗅探失败的
+    # 归档再补一道 8MiB 检查，OpenClaw/Hermes 的上限不变。
+    archive_cap = MAX_ZIP_BYTES if requested_format in {"molili", "auto"} else MAX_TOTAL_BYTES
     archive_bytes = _decode_external_archive(payload.get("archive_b64"), max_bytes=archive_cap)
     direct_files = payload.get("files")
     if archive_bytes is not None and direct_files:
         raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
-    if requested_format == "molili" or (
+    is_molili = requested_format == "molili" or (
         requested_format == "auto"
         and archive_bytes is not None
         and detect_molili_archive(archive_bytes)
-    ):
+    )
+    if not is_molili and archive_bytes is not None and len(archive_bytes) > MAX_TOTAL_BYTES:
+        raise ExternalMemoryImportError("Archive upload is too large")
+    if is_molili:
         analysis = build_molili_candidates(
             archive_bytes=archive_bytes,
             files=direct_files if isinstance(direct_files, list) else None,

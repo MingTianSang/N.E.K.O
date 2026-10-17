@@ -924,3 +924,83 @@ async def test_daily_progress_callback_reports_total_and_done():
 
     assert updates[0] == {"daily_total": 1, "daily_done": 0}
     assert updates[-1]["daily_done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_split_recursion_is_bounded_by_call_budget(monkeypatch):
+    """Split-in-half retries draw from a shared extra-call budget; once spent, the day fails (retryable) instead of recursing."""
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_MAX_FILES", 2)
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+    def stub(journal):
+        lines = [line for line in journal.splitlines() if line.strip()]
+        return None if len(lines) >= 2 else [{"text": f"fact: {journal}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    candidates = _daily("memories/2026-09-16.md", "2026-09-16", "A", "B", "C", "D")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "molili", "t")
+
+    # 预算 2 = 只够拆一次：4 片批失败 → 拆半；左半 2 片再失败时预算已空 → 整天失败
+    assert result["failed_days"] == 1
+    assert len(harness.extract_inputs) == 2
+    assert harness.persisted == []
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+def _retry_harness(monkeypatch, outcomes):
+    """FactStore whose chat LLM yields ``outcomes`` in order (exception instances are raised)."""
+    import utils.llm_client as llm_client
+
+    calls = {"n": 0}
+
+    class _FakeLLM:
+        async def ainvoke(self, _prompt):
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return _FakeResponse(outcome)
+
+        async def aclose(self):
+            return None
+
+    async def fake_create_chat_llm_async(*_args, **_kwargs):
+        return _FakeLLM()
+
+    class _Config:
+        async def aget_model_api_config(self, _tier):
+            return {"model": "m", "base_url": "http://127.0.0.1", "api_key": "k"}
+
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    store = FactStore()
+    store._config_manager = _Config()
+    return store, calls
+
+
+@pytest.mark.asyncio
+async def test_parse_retry_cap_keeps_transport_retries(monkeypatch):
+    """parse_max_retries=1 stops after one malformed reply but still retries a connection error."""
+    import httpx
+    from openai import APIConnectionError
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, calls = _retry_harness(monkeypatch, [error, '[{"text": "ok"}]'])
+    result = await store._allm_call_with_retries(
+        "prompt", "Neko", tier="t", call_type="c", parse_max_retries=1,
+    )
+    assert result == [{"text": "ok"}]
+    assert calls["n"] == 2
+
+    store, calls = _retry_harness(monkeypatch, ["{not json at all", '[{"text": "late"}]'])
+    result = await store._allm_call_with_retries(
+        "prompt", "Neko", tier="t", call_type="c", parse_max_retries=1,
+    )
+    assert result is None
+    assert calls["n"] == 1

@@ -66,6 +66,8 @@ from datetime import date
 from pathlib import PurePosixPath
 from typing import Any
 
+from config import EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES
+from config.character_fields import CHARACTER_RESERVED_FIELDS
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
     MAX_ENTRIES,
@@ -82,9 +84,14 @@ from memory.external_markdown_import import (
 #: that dwarfs the text payload — the sample archive is ~9 MB with ~8.6 MB of
 #: images. The 8 MiB budget therefore applies to *parsed text* only; the zip
 #: itself gets this larger cap so users can upload the export as-is.
-MAX_ZIP_BYTES = 64 * 1024 * 1024
+MAX_ZIP_BYTES = EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES
 MAX_ARCHIVE_MEMBERS = 2048
 MAX_SAMPLED_SKIPPED = 20
+#: role_prompt 按标题拆出的卡片字段数上限；超出则整段回退单一"设定"字段。
+MAX_CARD_SECTIONS = 64
+
+# 角色卡保留字段（通用编辑接口会静默过滤）+ 核心名字字段（会覆盖用户选的名字）
+_RESERVED_TAG_NAMES = frozenset((*CHARACTER_RESERVED_FIELDS, "档案名", "昵称"))
 
 MOLILI_FORMAT = "molili-user-data-export"
 MOLILI_SCHEMA_VERSION = 1
@@ -145,9 +152,6 @@ def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
 class _MemberReader:
     """Uniform read view over a zip archive or an inline ``files`` list."""
 
-class _MemberReader:
-    """Uniform read view over a zip archive or an inline ``files`` list."""
-
     def __init__(
         self,
         archive_bytes: bytes | None,
@@ -155,8 +159,15 @@ class _MemberReader:
     ) -> None:
         self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes)) if archive_bytes is not None else None
         self._files = list(files or [])
-        self.raw_member_count = 0
+        # 上限按原始成员数算（路径过滤之前）：ZipFile 构造时已把全部 ZipInfo
+        # 物化，被过滤掉的穿越形成员同样占内存/CPU。
+        self.raw_member_count = (
+            len(self._archive.infolist()) if self._archive is not None else len(self._files)
+        )
         self.skipped_names: list[str] = []
+        # 规范化路径 → 原始 ZipInfo：成员名可能是 ``a\b.md`` 这类反斜杠形，
+        # 读取必须用原始条目，不能拿规范化路径回 getinfo()。
+        self._infos: dict[str, zipfile.ZipInfo] = {}
 
     def __enter__(self) -> "_MemberReader":
         return self
@@ -169,7 +180,6 @@ class _MemberReader:
         """Safe (path, byte-size) pairs; unsafe paths are skipped, not fatal."""
         entries: list[tuple[str, int]] = []
         if self._archive is not None:
-            self.raw_member_count = len(self._archive.infolist())
             for info in self._archive.infolist():
                 if info.is_dir():
                     continue
@@ -177,6 +187,7 @@ class _MemberReader:
                 if path is None:
                     self.skipped_names.append(str(info.filename))
                     continue
+                self._infos.setdefault(path, info)
                 entries.append((path, info.file_size))
         else:
             entries.extend(
@@ -188,7 +199,7 @@ class _MemberReader:
     def read_text(self, path: str) -> str:
         """Decode one UTF-8 text member; enforce the per-file cap."""
         if self._archive is not None:
-            info = self._archive.getinfo(path)
+            info = self._infos.get(path) or self._archive.getinfo(path)
             if info.file_size > MAX_FILE_BYTES:
                 raise ExternalMemoryImportError(f"Molili archive file is too large: {path}")
             with self._archive.open(info, "r") as stream:
@@ -292,6 +303,20 @@ def _identity_fields(identity: object) -> dict[str, str]:
         for field, value in identity.items()
         if isinstance(value, (str, int, float)) and str(value).strip()
     }
+
+
+def _manifest_count(counts: dict[str, Any], key: str) -> int:
+    """Read one display-only manifest count; garbage values count as 0.
+
+    These numbers only feed the skip report, so a malformed count must not
+    reject an otherwise valid archive (nor escape as a 500)."""
+    value = counts.get(key)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _candidate_text(section: str, text: str) -> str:
@@ -398,9 +423,9 @@ def build_molili_candidates(
         consumed_files.append(manifest_path)
         # 跳过项的真实计数以 manifest 为准（我们数的是文件/成员，不是消息条数）
         manifest_counts = manifest.get("counts") if isinstance(manifest.get("counts"), dict) else {}
-        skipped["conversation_messages"] = int(manifest_counts.get("conversation_messages") or 0)
-        skipped["cache_memory_records"] = int(manifest_counts.get("cached_memory_records") or 0)
-        skipped["owned_items"] = int(manifest_counts.get("owned_items") or 0)
+        skipped["conversation_messages"] = _manifest_count(manifest_counts, "conversation_messages")
+        skipped["cache_memory_records"] = _manifest_count(manifest_counts, "cached_memory_records")
+        skipped["owned_items"] = _manifest_count(manifest_counts, "owned_items")
 
         # ── 分类成员：attachments 与 conversations 永不入池，只进报告 ──
         agent_dirs = sorted({
@@ -448,24 +473,28 @@ def build_molili_candidates(
         # 按 markdown 标题拆节：每节一个卡片自定义字段（tag=节标题），替代
         # 一整坨塞进"设定"。正文/标题统一 emoji 清理。无标题的退化输入回退
         # 单一"设定"字段，保持旧行为可用。
-        # 节标题避开角色卡保留字段名（描述/标签/关键词等会被 POST 过滤或覆盖
-        # 系统数据）。碰撞时加前缀 "Molili " 区分。
-        _RESERVED_TAG_NAMES = frozenset({
-            "描述", "标签", "关键词", "原始数据", "文件路径",
-            "description", "tags", "name", "创意工坊物品ID",
-        })
+        # 节标题避开角色卡保留字段名（全部保留字段会被 POST/PUT 静默过滤，
+        # 档案名/昵称会覆盖用户选的名字）。碰撞时加前缀 "Molili " 区分。
         card_sections: list[dict[str, str]] = []
         master_profile: dict[str, str] = {}
         used_tags: set[str] = set()
-        for sec_title, sec_body in _split_markdown_sections(system_prompt):
+        next_suffix: dict[str, int] = {}
+        sections = _split_markdown_sections(system_prompt)
+        if len(sections) > MAX_CARD_SECTIONS:
+            # 标题多到不像正常设定（每节都会变成一个卡片字段）：退回单一
+            # "设定"字段，全文仍完整保留。
+            sections = [("", system_prompt)] if system_prompt else []
+        for sec_title, sec_body in sections:
             tag = (sec_title or "设定").strip()[:60]
             if tag in _RESERVED_TAG_NAMES:
                 tag = f"Molili {tag}"
             base_tag = tag
-            counter = 1
+            # 每个基础名记住下一个可用后缀，重复标题不再从 2 起逐个探测
+            counter = next_suffix.get(base_tag, 1)
             while tag in used_tags:
                 counter += 1
                 tag = f"{base_tag} {counter}"
+            next_suffix[base_tag] = counter
             used_tags.add(tag)
             card_sections.append({"tag": tag, "text": sec_body})
 

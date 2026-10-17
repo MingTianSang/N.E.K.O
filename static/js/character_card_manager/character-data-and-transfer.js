@@ -1127,6 +1127,67 @@ function _moliliT(key, fallback, params) {
     return window.t ? window.t(key, params) : fallback;
 }
 
+// 与后端 EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES 一致：超限的 zip 不读进页面（base64
+// 后约 4/3 倍，再加 JSON 序列化副本，大文件会把渲染进程撑爆）。
+const MOLILI_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+
+// 同一份归档新建角色后若超时/部分失败，重试应导回那个角色，而不是再建一个
+// 「名字(1)」。按 snapshot_time + 识别名记住建出的角色（sessionStorage，读写失败
+// 就只是不预选）。
+const MOLILI_RETRY_TARGETS_KEY = 'neko_molili_retry_targets';
+
+function _moliliRetryKey(preview) {
+    const card = (preview && preview.character_card) || {};
+    return `${(preview && preview.snapshot_time) || ''}|${card.suggested_name || ''}`;
+}
+
+function _moliliReadRetryTargets() {
+    try {
+        const raw = window.sessionStorage.getItem(MOLILI_RETRY_TARGETS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function _moliliRememberRetryTarget(preview, characterName) {
+    try {
+        const targets = _moliliReadRetryTargets();
+        targets[_moliliRetryKey(preview)] = characterName;
+        window.sessionStorage.setItem(MOLILI_RETRY_TARGETS_KEY, JSON.stringify(targets));
+    } catch (_) { /* 存不下只是重试时不预选 */ }
+}
+
+function _moliliForgetRetryTarget(preview) {
+    try {
+        const targets = _moliliReadRetryTargets();
+        delete targets[_moliliRetryKey(preview)];
+        window.sessionStorage.setItem(MOLILI_RETRY_TARGETS_KEY, JSON.stringify(targets));
+    } catch (_) { /* ignore */ }
+}
+
+// 与 memory_browser.js 的外部导入一致：记忆落盘后通知主窗口丢弃旧上下文，
+// 否则正在聊的角色要手动重开会话才看得到新导入的人格/事实。
+function _moliliBroadcastMemoryEdited(characterName) {
+    if (!characterName) return;
+    if (typeof BroadcastChannel !== 'undefined') {
+        let channel = null;
+        try {
+            channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage({ action: 'memory_edited', catgirl_name: characterName });
+            return;
+        } catch (error) {
+            console.warn('[Molili] memory_edited broadcast failed:', error);
+        } finally {
+            if (channel) channel.close();
+        }
+    }
+    if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'memory_edited', catgirl_name: characterName }, window.location.origin);
+    }
+}
+
 // 与解析器 _EMOJI_RE 同范围：emoji/装饰符号清理（旧版整块设定比对用）
 function _moliliStripEmoji(text) {
     return String(text || '')
@@ -1149,6 +1210,12 @@ function _moliliFileToBase64(file) {
 }
 
 async function handleMoliliArchiveImport(file) {
+    if (file.size > MOLILI_MAX_ARCHIVE_BYTES) {
+        const maxMb = Math.round(MOLILI_MAX_ARCHIVE_BYTES / 1024 / 1024);
+        showMessage(_moliliT('character.moliliArchiveTooLarge',
+            `归档超过 ${maxMb} MB，无法导入`, { max: maxMb }), 'import-error');
+        return;
+    }
     const parseNotice = showMessage(_moliliT('character.moliliParsing', '正在解析 Molili 归档...'), 'importing', 0);
     let archiveB64 = '';
     let preview;
@@ -1250,6 +1317,7 @@ async function handleMoliliArchiveImport(file) {
             }
             // 重名时后端自动加后缀（如 言叶(1)）：记忆必须导进实际建出的角色
             characterName = created.character_name || choice.name;
+            _moliliRememberRetryTarget(preview, characterName);
         } else if (Object.keys(moliliSectionFields).length) {
             // 导入到现有角色：分节字段 + 主人身份字段合并进该角色档案。
             // ⚠ PUT /catgirl/{name} 的语义是"未传字段即删除"——必须先 GET 全量
@@ -1271,7 +1339,10 @@ async function handleMoliliArchiveImport(file) {
             if (keptTags.length) updates['关键词'] = keptTags;
             const existingSetting = String(targetCard['设定'] || '');
             const fullText = (preview.character_card && preview.character_card.system_prompt) || '';
-            if (existingSetting && fullText && _moliliStripEmoji(existingSetting) === fullText) {
+            // 只有本次的分节字段换了别的名字时才删旧整块；无标题设定本身就落在
+            // 「设定」上，删掉等于把刚写的设定一起删了。
+            const sectionsUseSetting = Object.prototype.hasOwnProperty.call(moliliSectionFields, '设定');
+            if (!sectionsUseSetting && existingSetting && fullText && _moliliStripEmoji(existingSetting) === fullText) {
                 delete updates['设定'];
             }
             const settingResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}`, {
@@ -1342,7 +1413,7 @@ async function handleMoliliArchiveImport(file) {
                 const dailyFrac = dailyDone / dailyTotal;
                 barInner.style.width = Math.round(100 * (0.25 * personaFrac + 0.75 * dailyFrac)) + '%';
                 stageLine.textContent = _moliliT('character.moliliStageDaily',
-                    `整理记忆 ${dailyDone}/${dailyTotal} 天...`, { done: dailyDone, total: dailyTotal });
+                    `整理记忆批次 ${dailyDone}/${dailyTotal}...`, { done: dailyDone, total: dailyTotal });
             }
             // daily_total=0 = 还在 persona 阶段：条保持初始宽度，阶段文案不变
         };
@@ -1380,6 +1451,24 @@ async function handleMoliliArchiveImport(file) {
                 });
                 commit = await commitResponse.json().catch(() => ({}));
                 if (!commitResponse.ok || commit.status !== 'success') {
+                    const outcome = commit.error_code;
+                    if (outcome === 'external_import_partial' || outcome === 'external_import_too_large') {
+                        const partial = commit.partial_import || {};
+                        // 已落盘的部分照样通知主窗口刷新上下文
+                        if (partial.added_persona > 0 || partial.added_facts > 0) {
+                            _moliliBroadcastMemoryEdited(partial.character_name || characterName);
+                        }
+                        const counts = { persona: partial.added_persona || 0, facts: partial.added_facts || 0 };
+                        const err = new Error(outcome === 'external_import_partial'
+                            ? _moliliT('character.moliliImportPartial',
+                                `导入中途停止：已保存 ${counts.persona} 条人格、${counts.facts} 条事实。请再执行一次导入补齐，已导入的内容会自动跳过。`,
+                                counts)
+                            : _moliliT('character.moliliImportTooLarge',
+                                `要整理的日常记忆超过单次导入上限，这部分未能导入（已保存 ${counts.persona} 条人格、${counts.facts} 条事实）。`,
+                                counts));
+                        err.moliliOutcome = outcome;
+                        throw err;
+                    }
                     throw new Error(commit.error || commit.detail || `HTTP ${commitResponse.status}`);
                 }
             } finally {
@@ -1389,17 +1478,23 @@ async function handleMoliliArchiveImport(file) {
             stopMoliliProgressPolling();
         }
 
+        _moliliForgetRetryTarget(preview);
+        _moliliBroadcastMemoryEdited(commit.character_name || characterName);
         showMessage(_moliliT('character.moliliImportDone',
             `「${characterName}」导入完成`,
             { name: characterName }),
             'import-success', 0);
     } catch (error) {
         console.error('Molili 导入失败:', error);
+        // partial / too_large：文案已自带结果与下一步，不再套「导入失败」前缀
+        const outcome = error && error.moliliOutcome;
         // 超时类失败 ≠ 失败：记忆服务器会继续把整批跑完，且逐日指纹幂等——
         // 稍候重跑一次导入即可收尾，已落盘部分全部跳过
         const message = String((error && error.message) || '');
         const timedOut = (error && error.name === 'AbortError') || /timed out|timeout|ReadTimeout/i.test(message);
-        if (timedOut) {
+        if (outcome) {
+            showMessage(error.message, outcome === 'external_import_partial' ? 'import-warning' : 'import-error', 0);
+        } else if (timedOut) {
             showMessage(_moliliT('character.moliliCommitTimeout',
                 '本次导入耗时较长，服务端可能仍在后台继续处理。请等待约 1 分钟后重新执行一次导入收尾：已完成的日期会自动跳过，只补剩余部分。'),
                 'import-warning', 0);
@@ -1451,6 +1546,13 @@ function _showMoliliImportDialog(preview, archiveB64) {
                 `检测到角色「${suggestedName}」· 记忆 ${counts.daily || 0} 条`,
                 { name: suggestedName, memory: counts.daily || 0 }),
         ];
+        const extraAgents = Number(skipped.extra_personality_agents) || 0;
+        if (extraAgents > 0) {
+            // 多角色归档只导第一个角色：用户需要知道其余角色不会进来
+            summaryLines.push(_moliliT('character.moliliExtraAgentsNote',
+                `归档中另有 ${extraAgents} 个角色的人格不会导入（本次只导入第一个角色）`,
+                { count: extraAgents }));
+        }
         const attachmentCount = skipped.attachments?.count || 0;
         if (attachmentCount > 0) {
             // 用户需要知情：附件（图）不随记忆迁移
@@ -1562,6 +1664,14 @@ function _showMoliliImportDialog(preview, archiveB64) {
             names.forEach(name => existingSelect.appendChild(new Option(name, name)));
             if (!names.length) {
                 existingSelect.appendChild(new Option(_moliliT('character.moliliNoCharacters', '（暂无角色）'), ''));
+            }
+            // 上次用这份归档新建的角色还在 → 默认导回它（重试收尾），不再新建
+            const retryTarget = _moliliReadRetryTargets()[_moliliRetryKey(preview)];
+            if (retryTarget && names.includes(retryTarget)) {
+                existingRadio.checked = true;
+                existingSelect.value = retryTarget;
+                nameInput.disabled = true;
+                existingSelect.disabled = false;
             }
             if (masterCurrentLine) {
                 const master = (data && data['主人']) || {};

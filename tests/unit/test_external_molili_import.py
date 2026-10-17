@@ -350,3 +350,111 @@ def test_router_preview_dispatches_molili_zip():
     # 两个日期文件 → 2 次逐日抽取
     assert result["daily_extraction_calls"] == 2
     assert result["skipped"]["attachments"]["count"] == 1
+
+
+def test_molili_rejects_too_many_zip_members_before_path_filtering():
+    """The member cap counts raw ZIP entries, including traversal-shaped ones that get filtered out."""
+    from memory.external_molili_import import MAX_ARCHIVE_MEMBERS
+
+    members = _molili_members()
+    for index in range(MAX_ARCHIVE_MEMBERS):
+        members[f"../escape/{index}.txt"] = "x"
+
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        build_molili_candidates(_zip_bytes(members))
+
+
+def test_molili_rejects_too_many_inline_files():
+    """Inline ``files`` mode is held to the same member cap as ZIP uploads."""
+    from memory.external_molili_import import MAX_ARCHIVE_MEMBERS
+
+    members = _molili_members()
+    files = [{"path": path, "content": text} for path, text in members.items()]
+    files.extend({"path": f"extra/{i}.txt", "content": "x"} for i in range(MAX_ARCHIVE_MEMBERS))
+
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        build_molili_candidates(files=files, source_format="molili")
+
+
+def test_molili_reads_members_stored_with_backslash_names():
+    """Members whose stored name uses backslashes are read through their original ZipInfo."""
+    from memory.external_molili_import import _MemberReader
+
+    archive_bytes = _zip_bytes({"personality/a/role_prompt.md": "你是言叶。"})
+    with _MemberReader(archive_bytes, None) as reader:
+        # 模拟非 Windows 平台上的反斜杠成员名：zipfile 只在 Windows 上自动归一化
+        info = reader._archive.infolist()[0]
+        info.filename = chr(92).join(["personality", "a", "role_prompt.md"])
+        reader._archive.NameToInfo = {info.filename: info}
+        names = reader.names()
+        assert names == [("personality/a/role_prompt.md", info.file_size)]
+        assert reader.read_text("personality/a/role_prompt.md") == "你是言叶。"
+
+
+def test_molili_tolerates_non_numeric_manifest_counts():
+    """Manifest counts only feed the skip report; garbage values count as 0 instead of failing the import."""
+    members = _molili_members()
+    manifest = json.loads(members["manifest.json"])
+    manifest["counts"] = {"conversation_messages": "lots", "cached_memory_records": None, "owned_items": [1]}
+    members["manifest.json"] = json.dumps(manifest)
+
+    analysis = build_molili_candidates(_zip_bytes(members))
+
+    assert analysis["skipped"]["conversation_messages"] == 0
+    assert analysis["skipped"]["cache_memory_records"] == 0
+    assert analysis["skipped"]["owned_items"] == 0
+
+
+def test_molili_section_tags_avoid_every_reserved_card_field():
+    """Headings named after reserved or core name fields get a prefix so the card API keeps them."""
+    members = _molili_members()
+    members["personality/1_74000/role_prompt.md"] = (
+        "## system_prompt\n\nA\n\n## 档案名\n\nB\n\n## 昵称\n\nC\n\n## 描述\n\nD\n\n## 性格\n\nE\n"
+    )
+    analysis = build_molili_candidates(_zip_bytes(members))
+
+    assert [s["tag"] for s in analysis["character_card"]["sections"]] == [
+        "Molili system_prompt", "Molili 档案名", "Molili 昵称", "Molili 描述", "性格",
+    ]
+
+
+def test_molili_many_duplicate_headings_stay_unique_and_fall_back_when_excessive():
+    """Repeated headings get distinct suffixes; an excessive section count collapses into one setting field."""
+    from memory.external_molili_import import MAX_CARD_SECTIONS
+
+    members = _molili_members()
+    members["personality/1_74000/role_prompt.md"] = "## x\n\na\n\n## x 2\n\nb\n\n## x\n\nc\n\n## x\n\nd\n"
+    tags = [s["tag"] for s in build_molili_candidates(_zip_bytes(members))["character_card"]["sections"]]
+    assert tags == ["x", "x 2", "x 3", "x 4"]
+
+    members["personality/1_74000/role_prompt.md"] = "".join(
+        f"## x\n\nbody {i}\n\n" for i in range(MAX_CARD_SECTIONS + 1)
+    )
+    sections = build_molili_candidates(_zip_bytes(members))["character_card"]["sections"]
+    assert [s["tag"] for s in sections] == ["设定"]
+    assert f"body {MAX_CARD_SECTIONS}" in sections[0]["text"]
+
+
+def test_router_auto_format_accepts_molili_archive_over_markdown_cap(monkeypatch):
+    """``source_format=auto`` sniffs Molili archives larger than the markdown ZIP cap; other ZIPs keep that cap."""
+    import main_routers.memory_router as memory_router
+
+    molili_zip = _molili_zip()
+    # 上限压到归档一半：base64 长度按 3 字节取整，差 1 字节的上限测不出来
+    monkeypatch.setattr(memory_router, "MAX_TOTAL_BYTES", len(molili_zip) // 2)
+
+    _name, analysis = memory_router._prepare_external_import({
+        "character_name": "言叶",
+        "archive_b64": base64.b64encode(molili_zip).decode("ascii"),
+    })
+    assert analysis["source_format"] == "molili"
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("MEMORY.md", "- " + "x" * len(molili_zip))
+    plain_zip = buffer.getvalue()
+    with pytest.raises(ExternalMemoryImportError, match="too large"):
+        memory_router._prepare_external_import({
+            "character_name": "言叶",
+            "archive_b64": base64.b64encode(plain_zip).decode("ascii"),
+        })

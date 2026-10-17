@@ -340,6 +340,10 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # 外部 daily 导入的礼貌起呼间隔：挂在共享的 FactStore 上，多个角色
+        # 同时导入时也共用同一个间隔（它们共享同一个 provider 配额）。
+        self._external_daily_call_gate: asyncio.Lock | None = None
+        self._external_daily_last_call_at = 0.0
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -2786,10 +2790,16 @@ class FactStore:
         max_retries: int = 3,
         timeout: float = 60,
         thinking: bool = False,
+        parse_max_retries: int | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
         terminal failure (caller decides whether to abort / swallow).
+
+        ``parse_max_retries`` caps JSON-parse failures separately (``None`` =
+        same as ``max_retries``). A caller with its own fallback for malformed
+        or truncated output (the external daily import splits the batch) sets
+        it to 1 while network errors / 429 / 5xx keep the full backoff budget.
 
         Note: no longer accepts temperature. The project-wide convention is to
         never send that parameter (gatekeeper: scripts/check_no_temperature.py).
@@ -2814,6 +2824,7 @@ class FactStore:
         from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
+        parse_failures = 0
         while retries < max_retries:
             resp = None
             try:
@@ -2852,10 +2863,13 @@ class FactStore:
                 continue
             except json.JSONDecodeError as e:
                 retries += 1
+                parse_failures += 1
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
                     f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
                 )
+                if parse_max_retries is not None and parse_failures >= parse_max_retries:
+                    break
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
@@ -2878,7 +2892,7 @@ class FactStore:
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
         speaker_label: str | None = None,
-        parse_max_retries: int = 3,
+        parse_max_retries: int | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2923,7 +2937,7 @@ class FactStore:
             prompt, lanlan_name,
             tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
             call_type="memory_fact_extraction",
-            max_retries=parse_max_retries,
+            parse_max_retries=parse_max_retries,
         )
         if extracted is None:
             return None
@@ -5328,24 +5342,29 @@ class FactStore:
 
         daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
+        # 拆半递归的额外调用预算：上面的 cap 只数了预拆的批，失败批每拆一次
+        # 多出 2 次调用。预算与 cap 同量级（总调用 ≤ 2×cap），耗尽后失败批
+        # 直接判该天失败（整天原子、可重试），不再无界递归撞转发超时。
+        split_budget = {'left': EXTERNAL_IMPORT_DAILY_MAX_FILES}
 
-        # 免费档礼貌间隔：全局（跨天/跨批）任意两次抽取起呼之间的最小间隔，
-        # 把并发突发摊成匀速。并发槽决定同时在飞的调用数，这个间隔决定起呼
+        # 免费档礼貌间隔：任意两次抽取起呼之间的最小间隔（跨天/跨批，且跨
+        # 同时进行的多个角色导入——锁与时间戳挂在共享的 FactStore 上），把
+        # 并发突发摊成匀速。并发槽决定同时在飞的调用数，这个间隔决定起呼
         # 频率——两者配合才是对免费配额/WAF 真正的温和。锁内只做时间计算与
         # sleep，不罩 LLM 调用本身（不占并发槽的驻留时间）。
-        call_gate = asyncio.Lock()
-        last_call_at = 0.0
+        if self._external_daily_call_gate is None:
+            self._external_daily_call_gate = asyncio.Lock()
+        call_gate = self._external_daily_call_gate
 
         async def _polite_gap() -> None:
-            nonlocal last_call_at
             if EXTERNAL_IMPORT_DAILY_CALL_INTERVAL <= 0:
                 return
             async with call_gate:
                 now = asyncio.get_running_loop().time()
-                wait = last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
+                wait = self._external_daily_last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
                 if wait > 0:
                     await asyncio.sleep(wait)
-                last_call_at = asyncio.get_running_loop().time()
+                self._external_daily_last_call_at = asyncio.get_running_loop().time()
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
@@ -5376,13 +5395,16 @@ class FactStore:
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
                         # 截断类失败交给 _extract_group 的拆半递归（每半本身就是
-                        # 一次子集重试），同批盲试 3 次是纯浪费——失败 1 次就拆。
+                        # 一次子集重试），同批盲试 3 次是纯浪费——解析失败 1 次就拆。
+                        # 只限解析失败：网络错误 / 429 / 5xx 仍按完整退避重试，
+                        # 单片段的批没法拆，不能一次抖动就丢掉整天。
                         parse_max_retries=1,
                     )
                 if extracted is None or (
                     extracted and not any(isinstance(f, dict) for f in extracted)
                 ):
-                    if len(fragments) >= 2 and depth < 6:
+                    if len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
+                        split_budget['left'] -= 2
                         mid = len(fragments) // 2
                         logger.warning(
                             f"[FactStore] {lanlan_name}: 外部 daily 抽取批次失败，"
