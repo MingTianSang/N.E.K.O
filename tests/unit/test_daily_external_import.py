@@ -45,8 +45,10 @@ class _DailyHarness(FactStore):
 
     async def _allm_extract_facts(
         self, lanlan_name, messages, *, treat_malformed_as_failure=False,
-        parse_max_retries: int = 3, failure_info=None,
+        parse_max_retries: int = 3, failure_info=None, before_attempt=None,
     ):
+        if before_attempt is not None:
+            await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
         result = self._stub(text)
@@ -1052,3 +1054,24 @@ async def test_retry_wrapper_reports_failure_reason(monkeypatch):
         "p", "Neko", tier="t", call_type="c", max_retries=1, failure_info=info,
     ) is None
     assert info == {"reason": "transport"}
+
+
+@pytest.mark.asyncio
+async def test_retry_wrapper_runs_before_attempt_hook_for_every_attempt(monkeypatch):
+    """The pacing hook runs before each provider attempt, including transport retries."""
+    import httpx
+    from openai import APIConnectionError
+
+    error = APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1"))
+    store, calls = _retry_harness(monkeypatch, [error, '[{"text": "ok"}]'])
+    hook_calls = []
+
+    async def hook():
+        hook_calls.append(calls["n"])
+
+    result = await store._allm_call_with_retries(
+        "p", "Neko", tier="t", call_type="c", before_attempt=hook,
+    )
+    assert result == [{"text": "ok"}]
+    # 每次请求前各跑一次：第 1 次请求前 n=0，重试前 n=1
+    assert hook_calls == [0, 1]

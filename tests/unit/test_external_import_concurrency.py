@@ -454,7 +454,10 @@ class _DailyConcurrencyHarness(FactStore):
         # mkdir 幽灵角色目录。
         return None
 
-    async def _allm_extract_facts(self, lanlan_name, messages, **_kwargs):
+    async def _allm_extract_facts(self, lanlan_name, messages, *, before_attempt=None, **_kwargs):
+        # 忠实模拟真实路径：礼貌间隔挂在每次实际请求前
+        if before_attempt is not None:
+            await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
         return await self._extract(text)
 

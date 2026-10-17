@@ -30,7 +30,7 @@ import re
 import asyncio
 import secrets
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -2792,6 +2792,7 @@ class FactStore:
         thinking: bool = False,
         parse_max_retries: int | None = None,
         failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -2806,6 +2807,9 @@ class FactStore:
         to ``"parse"`` (the last attempt returned unparseable JSON) or
         ``"transport"`` (network / provider / other error), so a caller can
         tell output it might repair from an outage it cannot.
+
+        ``before_attempt`` is awaited before every provider attempt, retries
+        included (the external daily import paces all its calls through it).
 
         Note: no longer accepts temperature. The project-wide convention is to
         never send that parameter (gatekeeper: scripts/check_no_temperature.py).
@@ -2834,6 +2838,8 @@ class FactStore:
         last_failure = "transport"
         while retries < max_retries:
             resp = None
+            if before_attempt is not None:
+                await before_attempt()
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
@@ -2906,6 +2912,7 @@ class FactStore:
         speaker_label: str | None = None,
         parse_max_retries: int | None = None,
         failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2952,6 +2959,7 @@ class FactStore:
             call_type="memory_fact_extraction",
             parse_max_retries=parse_max_retries,
             failure_info=failure_info,
+            before_attempt=before_attempt,
         )
         if extracted is None:
             return None
@@ -5408,10 +5416,12 @@ class FactStore:
                 # checkpoint 成空抽取天、后续导入静默丢该天 facts（Codex P2）。
                 failure: dict = {}
                 async with llm_slots:
-                    await _polite_gap()
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
                         failure_info=failure,
+                        # 礼貌间隔挂在每次实际请求前（含内部网络重试），限流时
+                        # 重试也要排队，不能和别的批次同时起呼。
+                        before_attempt=_polite_gap,
                         # 截断类失败交给 _extract_group 的拆半递归（每半本身就是
                         # 一次子集重试），同批盲试 3 次是纯浪费——解析失败 1 次就拆。
                         # 只限解析失败：网络错误 / 429 / 5xx 仍按完整退避重试，

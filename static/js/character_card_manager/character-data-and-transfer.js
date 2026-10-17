@@ -1338,16 +1338,14 @@ async function handleMoliliArchiveImport(file) {
             }
             const list = await listResponse.json();
             const targetCard = (list && list['猫娘'] && list['猫娘'][characterName]) || {};
-            // 只回写可编辑字段：保留字段由后端自行保留（PUT 不会删它们），而
-            // voice_id / model_type 一出现在请求体里就会被当成「要改音色/模型」去
-            // 校验——音色暂不可用时整次导入会 400。
-            const reservedFields = new Set([
-                'voice_id', 'model_type',
-                ...(typeof _getReservedConfigOrFallback === 'function'
-                    ? _getReservedConfigOrFallback().all_reserved_fields : []),
-            ]);
+            // 只回写可编辑字段，过滤口径与角色卡编辑器一致（isCharacterReservedFieldName）：
+            // 保留字段由后端自行保留（PUT 不会删它们）；voice_id / model_type 一出现在
+            // 请求体里就会被当成「要改音色/模型」去校验（音色暂不可用时整次导入 400）；
+            // pngtuber_* 是读取时从 _reserved 展开的兼容字段，回写会变成普通卡片字段。
+            const isReservedKey = (key) => key === 'voice_id' || key === 'model_type'
+                || (typeof isCharacterReservedFieldName === 'function' && isCharacterReservedFieldName(key));
             const mutableCard = Object.fromEntries(
-                Object.entries(targetCard).filter(([key]) => !reservedFields.has(key)));
+                Object.entries(targetCard).filter(([key]) => !isReservedKey(key)));
             const updates = { ...mutableCard, ...moliliSectionFields };
             // 历史误写在 关键词 里的 molili导入 标签：已迁至卡面元数据，剥离之
             //（剥离后为空则不传该字段，PUT 会把空字段删除）。
