@@ -1234,7 +1234,7 @@
                     applyImageTo(selectedNode(), entry.id);
                     loadSelected().then(renderUserImages);
                 });
-                holdToDrag(tile, { kind: 'image', imageId: entry.id, label: entry.label });
+                holdToDrag(tile, { kind: 'image', id: entry.id, label: entry.label });
                 return tile;
             }));
             userImageEmpty.hidden = entries.length > 0;
