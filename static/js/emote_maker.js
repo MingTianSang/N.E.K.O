@@ -3654,7 +3654,9 @@
                 'target:', target ? target.kind + ':' + target.stateKey : 'null');
             if (payload.kind === 'image') {
                 suppressClickUntil = Date.now() + 500;
-                void stateStageSession.assignImage(target.stateKey, payload.imageId);
+                stateStageSession.assignImage(target.stateKey, payload.imageId)
+                    .then(() => console.log('[drag] assignImage OK'))
+                    .catch((err) => console.error('[drag] assignImage FAILED:', err.message || err));
                 return;
             }
             const scene = resolveSceneForPayload(payload);

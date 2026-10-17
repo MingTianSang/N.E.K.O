@@ -1632,9 +1632,11 @@
                 const node = ensureNodeForState(stateKey);
                 selected = node.id;
                 clearPreview();
+                console.log('[stage] assignImage: applying', imageId, 'to', stateKey);
                 applyImageTo(node, imageId);
                 await loadSelected();
                 renderUserImages();
+                console.log('[stage] assignImage: done, graph:', graph.nodes.length, 'nodes');
             },
 
             refreshUserImages: () => {
