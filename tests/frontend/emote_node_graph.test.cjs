@@ -355,3 +355,48 @@ test('两条都没接动作时保留第一条并去掉悬空线', () => {
     assert.deepEqual(clean.nodes.map((n) => n.id), ['root', 'sad-a']);
     assert.deepEqual(clean.links.map((l) => `${l.from}>${l.to}`), ['root>sad-a']);
 });
+
+test('source.image 整格替换为用户图片：输出带 imageId、不报 no-scene', () => {
+    const g = graph.emptyGraph();
+    g.nodes.push(
+        node('source.image', { imageId: 'smile.png' }, 'img'),
+        node('output.state', { stateKey: 'happy_image', seconds: 1.5 }, 'out'),
+    );
+    g.links.push({ from: 'img', fromSocket: graph.LOOK, to: 'out', toSocket: graph.LOOK });
+    const evaluated = graph.evaluate(g, { sceneId: 'a.json#0', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    assert.equal(evaluated.outputs.length, 1);
+    const output = evaluated.outputs[0];
+    assert.equal(output.imageId, 'smile.png', '图片 id 要跟到输出上');
+    assert.equal(output.look.imageId, 'smile.png');
+    assert.equal(output.look.sceneId, '', '图片状态没有场景');
+    assert.equal(output.seconds, 1.5);
+    assert.deepEqual(evaluated.warnings, [], '图片状态不缺场景，别报 no-scene');
+});
+
+test('source.image 没填 imageId 时回落到上游默认，按缺场景如实报告', () => {
+    const g = graph.emptyGraph();
+    g.nodes.push(
+        node('source.image', { imageId: '' }, 'img'),
+        node('output.state', { stateKey: 'idle_image' }, 'out'),
+    );
+    g.links.push({ from: 'img', fromSocket: graph.LOOK, to: 'out', toSocket: graph.LOOK });
+    const evaluated = graph.evaluate(g, { sceneId: '', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    assert.equal(evaluated.outputs[0].imageId, '');
+    assert.ok(evaluated.warnings.some((w) => w.startsWith('no-scene:')),
+        '什么内容都没接时该如实报缺场景');
+});
+
+test('imageId 会随输出状态进 normalizeGraph 往返（存档往返不丢）', () => {
+    const g = graph.emptyGraph();
+    g.nodes.push(
+        node('source.image', { imageId: 'wink.png' }, 'img'),
+        node('output.state', { stateKey: 'sad_image', seconds: 2 }, 'out'),
+    );
+    g.links.push({ from: 'img', fromSocket: graph.LOOK, to: 'out', toSocket: graph.LOOK });
+    const restored = graph.normalizeGraph(g);
+    assert.equal(restored.nodes.length, 2);
+    const img = restored.nodes.find((n) => n.type === 'source.image');
+    assert.equal(img.params.imageId, 'wink.png');
+    const evaluated = graph.evaluate(restored, { sceneId: '', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    assert.equal(evaluated.outputs[0].imageId, 'wink.png');
+});

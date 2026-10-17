@@ -43,6 +43,15 @@
             outputs: [{ id: LOOK, kind: LOOK }],
             params: [{ id: 'sceneId', widget: 'scene', default: '' }],
         },
+        // 用户图片：整格内容就是这张图（单帧静态源），没有骨骼/皮肤可言。
+        // imageId 指向表演台里导入的用户图片，不在场景清单里。
+        'source.image': {
+            titleKey: 'emoteMaker.nodeSourceImage',
+            category: 'source',
+            inputs: [],
+            outputs: [{ id: LOOK, kind: LOOK }],
+            params: [{ id: 'imageId', widget: 'text', default: '' }],
+        },
         'mod.skin': {
             titleKey: 'emoteMaker.nodeModSkin',
             category: 'modify',
@@ -353,6 +362,7 @@
             const type = typeOf(source);
             if (type && type.category === 'source') {
                 if (source.type === 'source.scene' && String(source.params.sceneId || '')) return 3;
+                if (source.type === 'source.image' && String(source.params.imageId || '')) return 3;
                 best = Math.max(best, 2);
                 return best;
             }
@@ -410,6 +420,7 @@
         const params = node.params || {};
         const next = {
             sceneId: look.sceneId,
+            imageId: look.imageId || '',
             skins: look.skins.slice(),
             sliders: look.sliders.slice(),
             slots: look.slots.map((slot) => ({ ...slot })),
@@ -422,6 +433,13 @@
                 break;
             case 'source.scene':
                 if (params.sceneId) next.sceneId = params.sceneId;
+                break;
+            case 'source.image':
+                // 图片是整格内容的替换：没有场景，也没有可继承的皮肤/滑杆
+                if (params.imageId) {
+                    next.sceneId = '';
+                    next.imageId = params.imageId;
+                }
                 break;
             case 'mod.skin':
                 (params.groups || []).forEach((group) => {
@@ -492,6 +510,7 @@
     function evaluate(graph, defaults, context) {
         const base = {
             sceneId: (defaults && defaults.sceneId) || '',
+            imageId: '',
             skins: ((defaults && defaults.skins) || []).map((item) => ({ ...item })),
             sliders: ((defaults && defaults.sliders) || []).map((item) => ({ ...item })),
             slots: ((defaults && defaults.slots) || []).map((item) => ({ ...item })),
@@ -521,7 +540,9 @@
             looks.set(id, result);
             if (definition.category === 'output') {
                 const sceneId = result.sceneId;
-                if (!sceneId) warnings.push('no-scene:' + id);
+                const imageId = result.imageId || '';
+                // 图片状态没有场景：不缺场景，别报 no-scene
+                if (!sceneId && !imageId) warnings.push('no-scene:' + id);
                 const params = node.params || {};
                 outputs.push({
                     nodeId: id,
@@ -531,6 +552,8 @@
                     scale: Math.min(5, Math.max(0.1, (Number(params.scalePercent) || 100) / 100)),
                     rotation: (Math.min(180, Math.max(-180, Number(params.degrees) || 0)) * Math.PI) / 180,
                     look: result,
+                    // 图片状态：内容是这张图而不是场景动画（sceneId 为空）
+                    imageId: result.imageId || '',
                 });
             }
         });
