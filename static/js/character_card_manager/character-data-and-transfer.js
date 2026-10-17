@@ -1167,6 +1167,14 @@ function _moliliForgetRetryTarget(preview) {
     } catch (_) { /* ignore */ }
 }
 
+// 收尾刷新角色列表：超时/部分失败时服务端往往已建卡并继续落盘（实测形态：
+// 浏览器报超时，服务端随后跑完）——不刷新的话新角色要重开页面才可见。
+function _moliliRefreshCardList() {
+    if (typeof loadCharacterCards === 'function') {
+        loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
+    }
+}
+
 // 与 memory_browser.js 的外部导入一致：记忆落盘后通知主窗口丢弃旧上下文，
 // 否则正在聊的角色要手动重开会话才看得到新导入的人格/事实。
 function _moliliBroadcastMemoryEdited(characterName) {
@@ -1379,6 +1387,18 @@ async function handleMoliliArchiveImport(file) {
             console.warn('卡面标签写入失败（不阻断导入）:', metaError);
         }
 
+        // 归档里没有任何记忆候选（只有角色设定）：设定已写好，没有记忆可导，
+        // 直接收尾——commit 接口对空候选会回 400「Invalid candidate count」。
+        if (!(Number(preview.candidate_count) > 0)) {
+            _moliliForgetRetryTarget(preview);
+            showMessage(_moliliT('character.moliliImportDone',
+                `「${characterName}」导入完成`,
+                { name: characterName }),
+                'import-success', 0);
+            _moliliRefreshCardList();
+            return;
+        }
+
         // 进度模态框：与页面弹窗同款覆盖层（保证可见），轮询后端真实计数
         //（persona 按组、逐日按批）刷新进度条与阶段文案。
         // 进度面板：底部居中悬浮条（不阻塞页面交互），轮询后端真实计数
@@ -1502,12 +1522,8 @@ async function handleMoliliArchiveImport(file) {
             showMessage(_moliliT('character.moliliImportFailed', `Molili 导入失败: ${error.message}`, { error: error.message }), 'import-error');
         }
     }
-    // 无论成败都在收尾时刷新列表：超时/部分失败时服务端往往已建卡并继续
-    // 落盘（实测形态：浏览器报超时，服务端随后跑完）——不刷新的话新角色
-    // 要重开页面才可见。
-    if (typeof loadCharacterCards === 'function') {
-        loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
-    }
+    // 无论成败都在收尾时刷新列表（见 _moliliRefreshCardList）
+    _moliliRefreshCardList();
 }
 
 function _showMoliliImportDialog(preview, archiveB64) {
