@@ -3650,6 +3650,8 @@
             if (upEvent.type === 'pointercancel') return;
             const target = packDropTargetAt(upEvent.clientX, upEvent.clientY);
             if (!target) return;
+            console.log('[drag-drop] payload.kind:', payload.kind,
+                'target:', target ? target.kind + ':' + target.stateKey : 'null');
             if (payload.kind === 'image') {
                 suppressClickUntil = Date.now() + 500;
                 void stateStageSession.assignImage(target.stateKey, payload.imageId);
