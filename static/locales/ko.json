@@ -2782,6 +2782,7 @@
         "moliliCancel": "취소",
         "moliliConfirm": "만들고 가져오기",
         "moliliNameRequired": "캐릭터 이름을 입력하세요",
+        "moliliNameTooLong": "캐릭터 이름이 {{max}}자를 넘어 기억 시스템으로 가져올 수 없습니다. 더 짧은 이름을 사용해 주세요",
         "moliliPickExisting": "가져올 기존 캐릭터를 선택하세요",
         "moliliCreatingCard": "캐릭터 \"{{name}}\" 생성 중...",
         "moliliImporting":  "\"{{name}}\"의 기억을 가져오는 중. 몇 분 걸릴 수 있으니 페이지를 닫지 마세요...",

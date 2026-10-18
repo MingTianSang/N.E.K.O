@@ -344,7 +344,11 @@ class FactStore:
         # 同时导入时也共用同一个间隔（它们共享同一个 provider 配额）。
         # 上次起呼时间记在闸门锁对象上（gate.last_call_at），运行时热替换
         # FactStore 时共享这一个锁即同时共享间隔状态。
-        self._external_daily_call_gate: asyncio.Lock | None = None
+        # 构造时就建好（不懒建）：运行时热替换会把这个对象复制给新的
+        # FactStore，懒建时复制过去的可能是 None，新旧导入就各建各的闸门。
+        # asyncio.Lock 在首次等待时才绑定事件循环，构造期创建是安全的。
+        self._external_daily_call_gate: asyncio.Lock = asyncio.Lock()
+        self._external_daily_call_gate.last_call_at = 0.0
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -5437,10 +5441,6 @@ class FactStore:
         # 并发突发摊成匀速。并发槽决定同时在飞的调用数，这个间隔决定起呼
         # 频率——两者配合才是对免费配额/WAF 真正的温和。锁内只做时间计算与
         # sleep，不罩 LLM 调用本身（不占并发槽的驻留时间）。
-        if self._external_daily_call_gate is None:
-            gate = asyncio.Lock()
-            gate.last_call_at = 0.0
-            self._external_daily_call_gate = gate
         call_gate = self._external_daily_call_gate
 
         async def _polite_gap() -> None:

@@ -2782,6 +2782,7 @@
         "moliliCancel": "取消",
         "moliliConfirm": "创建并导入",
         "moliliNameRequired": "请填写角色名",
+        "moliliNameTooLong": "角色名超过 {{max}} 个字符，记忆系统无法导入，请换一个短一些的名字",
         "moliliPickExisting": "请选择要导入的现有角色",
         "moliliCreatingCard": "正在创建角色「{{name}}」...",
         "moliliImporting":  "正在为「{{name}}」导入记忆，可能需要几分钟，请勿关闭页面...",

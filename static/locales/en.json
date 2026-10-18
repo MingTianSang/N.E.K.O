@@ -2782,6 +2782,7 @@
         "moliliCancel": "Cancel",
         "moliliConfirm": "Create & Import",
         "moliliNameRequired": "Please enter a character name",
+        "moliliNameTooLong": "The character name is longer than {{max}} characters, which the memory system cannot import. Please choose a shorter name",
         "moliliPickExisting": "Please pick an existing character",
         "moliliCreatingCard": "Creating character \"{{name}}\"...",
         "moliliImporting":  "Importing memories for \"{{name}}\". This may take a few minutes — please keep this page open...",

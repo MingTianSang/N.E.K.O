@@ -1162,3 +1162,13 @@ async def test_retry_wrapper_runs_before_attempt_hook_for_every_attempt(monkeypa
     assert result == [{"text": "ok"}]
     # 每次请求前各跑一次：第 1 次请求前 n=0，重试前 n=1
     assert hook_calls == [0, 1]
+
+
+def test_daily_call_gate_exists_before_any_import():
+    """The shared pacing gate is built with the store, so a runtime reload never copies a missing gate."""
+    import asyncio
+
+    store = FactStore()
+    gate = store._external_daily_call_gate
+    assert isinstance(gate, asyncio.Lock)
+    assert gate.last_call_at == 0.0

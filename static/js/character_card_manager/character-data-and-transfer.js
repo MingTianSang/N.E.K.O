@@ -1171,6 +1171,19 @@ function _moliliRefreshCardList() {
     }
 }
 
+// 记忆系统的角色名上限（记忆服务器 validate_lanlan_name 的 max_length=50）比
+// 角色卡（60 单位）严：超长的名字能建卡，却导不了记忆、每次重试都失败。在
+// 建卡 / 改卡之前就拦下，不留下导了一半的角色。
+const MOLILI_MEMORY_NAME_MAX_LENGTH = 50;
+
+function _moliliNameFitsMemory(name) {
+    if (String(name || '').length <= MOLILI_MEMORY_NAME_MAX_LENGTH) return true;
+    showMessage(_moliliT('character.moliliNameTooLong',
+        `角色名超过 ${MOLILI_MEMORY_NAME_MAX_LENGTH} 个字符，记忆系统无法导入，请换一个短一些的名字`,
+        { max: MOLILI_MEMORY_NAME_MAX_LENGTH }), 'warning');
+    return false;
+}
+
 // 与 memory_browser.js 的外部导入一致：记忆落盘后通知主窗口丢弃旧上下文，
 // 否则正在聊的角色要手动重开会话才看得到新导入的人格/事实。
 function _moliliBroadcastMemoryEdited(characterName) {
@@ -1747,6 +1760,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
                     showMessage(_moliliT('character.moliliNameRequired', '请填写角色名'), 'warning');
                     return;
                 }
+                if (!_moliliNameFitsMemory(name)) return;
                 close({ mode: 'create', name, masterOverwrite });
             } else {
                 const name = existingSelect.value;
@@ -1754,6 +1768,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
                     showMessage(_moliliT('character.moliliPickExisting', '请选择要导入的现有角色'), 'warning');
                     return;
                 }
+                if (!_moliliNameFitsMemory(name)) return;
                 close({ mode: 'existing', name, masterOverwrite });
             }
         };

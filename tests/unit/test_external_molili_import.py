@@ -489,3 +489,58 @@ def test_router_commit_forward_timeout_returns_stable_error_code(monkeypatch):
 
     assert response.status_code == 504
     assert json.loads(response.body)["error_code"] == "external_import_timeout"
+
+
+def _patched_eocd_zip(member_count: int, declared_count: int) -> bytes:
+    """A ZIP with ``member_count`` entries whose EOCD claims only ``declared_count``."""
+    members = _molili_members()
+    for index in range(member_count):
+        members[f"extra/{index}.txt"] = "x"
+    data = bytearray(_zip_bytes(members))
+    pos = data.rfind(b"PK" + bytes([5, 6]))
+    data[pos + 8:pos + 10] = declared_count.to_bytes(2, "little")
+    data[pos + 10:pos + 12] = declared_count.to_bytes(2, "little")
+    return bytes(data)
+
+
+def test_molili_forged_eocd_count_is_rejected_before_zipfile_parses(monkeypatch):
+    """A lowered EOCD member count cannot sneak a huge central directory past the precheck."""
+    import memory.external_molili_import as molili
+
+    from memory.external_molili_import import MAX_ARCHIVE_MEMBERS
+
+    archive = _patched_eocd_zip(MAX_ARCHIVE_MEMBERS * 2, declared_count=10)
+    # 目录上限按字节算；把它压到这份归档的目录之下，验证「改小计数」绕不过去
+    monkeypatch.setattr(molili, "MAX_CENTRAL_DIRECTORY_BYTES", 64 * 1024)
+
+    def _no_zipfile(*_args, **_kwargs):
+        raise AssertionError("ZipFile must not be constructed for an oversized directory")
+
+    monkeypatch.setattr(molili.zipfile, "ZipFile", _no_zipfile)
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        build_molili_candidates(archive)
+    assert detect_molili_archive(archive) is False
+
+
+def test_molili_zip64_end_record_directory_size_is_checked(monkeypatch):
+    """A zip64 end record that declares an oversized central directory is rejected like a plain EOCD."""
+    import memory.external_molili_import as molili
+
+    from memory.external_molili_import import MAX_CENTRAL_DIRECTORY_BYTES
+
+    data = bytearray(_molili_zip())
+    eocd = data.rfind(b"PK" + bytes([5, 6]))
+    record = bytearray(56)
+    record[0:4] = b"PK" + bytes([6, 6])
+    record[32:40] = (10).to_bytes(8, "little")
+    record[40:48] = (MAX_CENTRAL_DIRECTORY_BYTES + 1).to_bytes(8, "little")
+    locator = bytearray(20)
+    locator[0:4] = b"PK" + bytes([6, 7])
+    archive = bytes(data[:eocd] + record + locator + data[eocd:])
+
+    def _no_zipfile(*_args, **_kwargs):
+        raise AssertionError("ZipFile must not be constructed for an oversized directory")
+
+    monkeypatch.setattr(molili.zipfile, "ZipFile", _no_zipfile)
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        build_molili_candidates(archive)

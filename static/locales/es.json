@@ -2782,6 +2782,7 @@
         "moliliCancel": "Cancelar",
         "moliliConfirm": "Crear e importar",
         "moliliNameRequired": "Escribe el nombre del personaje",
+        "moliliNameTooLong": "El nombre del personaje supera los {{max}} caracteres y el sistema de memoria no puede importarlo. Elige un nombre más corto",
         "moliliPickExisting": "Elige un personaje existente",
         "moliliCreatingCard": "Creando personaje «{{name}}»...",
         "moliliImporting":  "Importando recuerdos de «{{name}}». Puede tardar unos minutos; no cierres la página...",

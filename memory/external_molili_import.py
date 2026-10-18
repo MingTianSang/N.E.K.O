@@ -89,6 +89,11 @@ from memory.external_markdown_import import (
 #: itself gets this larger cap so users can upload the export as-is.
 MAX_ZIP_BYTES = EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES
 MAX_ARCHIVE_MEMBERS = 2048
+#: 中央目录字节数上限：每条目录项 46 字节固定头 + 文件名/扩展字段，按平均
+#: 每项 256 字节给余量（Molili 导出的路径都很短，2048 项约 300 KB）。这限住的
+#: 是 zipfile 构造时物化的条目量（最坏约 1.1 万个极短条目），不是精确计数——
+#: 精确的 2048 上限由构造后的 raw_member_count 复核。
+MAX_CENTRAL_DIRECTORY_BYTES = MAX_ARCHIVE_MEMBERS * 256
 MAX_SAMPLED_SKIPPED = 20
 #: role_prompt 按标题拆出的卡片字段数上限；超出则整段回退单一"设定"字段。
 MAX_CARD_SECTIONS = 64
@@ -131,19 +136,42 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI_RE.sub("", text).replace("  ", " ").strip()
 
 
-def _declared_member_count(archive_bytes: bytes) -> int | None:
-    """Bounded read of the EOCD's declared member count (``None`` if no EOCD)."""
-    # ``zipfile.ZipFile`` 构造会把整个中央目录物化成 ZipInfo，成员数上限必须
-    # 在构造之前用 EOCD 里声明的计数预筛，否则数万成员的归档会先吃满
-    # CPU/内存才被拒。EOCD 声明值可以伪造——构造后的 ``raw_member_count``
-    # 仍按实际条目复核，这里只是廉价的提前拦截。
+def _declared_central_directory(archive_bytes: bytes) -> tuple[int, int] | None:
+    """Bounded read of the declared ``(member count, central-directory bytes)``.
+
+    Mirrors how ``zipfile`` locates them (EOCD, overridden by a zip64 end
+    record directly before its locator); ``None`` when there is no EOCD."""
+    # ``zipfile.ZipFile`` 构造会把中央目录物化成 ZipInfo，上限必须在构造之前
+    # 预筛，否则数万成员的归档会先吃满 CPU/内存才被拒。成员计数可以伪造（改小
+    # 计数、目录照旧很大），但 zipfile 只读 EOCD 登记的那段目录字节——卡住目录
+    # 字节数才真正限住构造时物化的条目量；计数仍一并检查，构造后的
+    # ``raw_member_count`` 再按实际条目复核。
     # EOCD 最长 = 65535 字节 ZIP 注释 + 22 字节结构本身；窗口不足会在合法
     # 长注释归档上漏掉 EOCD，预筛失效退回「构造后才发现」。
     tail = archive_bytes[-(65535 + 22):]
     pos = tail.rfind(b"PK\x05\x06")
     if pos < 0 or pos + 22 > len(tail):
         return None
-    return int.from_bytes(tail[pos + 10:pos + 12], "little")
+    count = int.from_bytes(tail[pos + 10:pos + 12], "little")
+    directory_bytes = int.from_bytes(tail[pos + 12:pos + 16], "little")
+    # zip64：定位器（20 字节）紧贴 EOCD 之前，zip64 结束记录（56 字节）紧贴定位器
+    # 之前；zipfile 遇到定位器就改用记录里的 8 字节计数与目录大小。
+    locator = len(archive_bytes) - len(tail) + pos - 20
+    if locator >= 0 and archive_bytes[locator:locator + 4] == b"PK\x06\x07":
+        record = locator - 56
+        if record >= 0 and archive_bytes[record:record + 4] == b"PK\x06\x06":
+            count = int.from_bytes(archive_bytes[record + 32:record + 40], "little")
+            directory_bytes = int.from_bytes(archive_bytes[record + 40:record + 48], "little")
+    return count, directory_bytes
+
+
+def _central_directory_over_limit(archive_bytes: bytes) -> bool:
+    """Whether the declared member count or central-directory size exceeds the caps."""
+    declared = _declared_central_directory(archive_bytes)
+    if declared is None:
+        return False
+    count, directory_bytes = declared
+    return count > MAX_ARCHIVE_MEMBERS or directory_bytes > MAX_CENTRAL_DIRECTORY_BYTES
 
 
 def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
@@ -181,8 +209,7 @@ class _MemberReader:
         if archive_bytes is not None:
             # 构造 ZipFile 前先按 EOCD 声明值拦截成员超限的归档（见
             # _declared_member_count）；构造后的 raw_member_count 仍会复核。
-            declared = _declared_member_count(archive_bytes)
-            if declared is not None and declared > MAX_ARCHIVE_MEMBERS:
+            if _central_directory_over_limit(archive_bytes):
                 raise ExternalMemoryImportError("Molili archive contains too many files")
             self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes))
         else:
@@ -680,8 +707,7 @@ def detect_molili_archive(archive_bytes: bytes) -> bool:
     try:
         # ZipFile 构造会物化整个中央目录：成员数明显超限的直接判定为非
         # Molili 归档，不进构造（显式 molili 模式下会拿到明确的报错文案）。
-        declared = _declared_member_count(archive_bytes)
-        if declared is not None and declared > MAX_ARCHIVE_MEMBERS:
+        if _central_directory_over_limit(archive_bytes):
             return False
         with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
             info = next(
