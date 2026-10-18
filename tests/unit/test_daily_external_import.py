@@ -106,7 +106,7 @@ async def test_daily_grouped_by_day_and_event_date_stamped():
         "Neko", candidates, "hermes", "2026-07-15T00:00:00",
     )
 
-    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     # One LLM call per day; same-day fragments joined into one journal turn.
     assert len(harness.extract_inputs) == 2
     assert "woke early\nshipped fix" in harness.extract_inputs
@@ -132,7 +132,7 @@ async def test_daily_extraction_failure_is_best_effort_skipped():
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
 
-    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     persisted = [f for batch in harness.persisted for f in batch]
     assert len(persisted) == 1
     assert persisted[0]["_external_import"]["event_date"] == "2026-07-13"
@@ -145,7 +145,7 @@ async def test_daily_empty_extraction_adds_nothing_and_is_not_a_failure():
 
     result = await harness.aimport_external_daily("Neko", candidates, "openclaw", "t")
 
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert harness.persisted == []
 
 
@@ -160,11 +160,11 @@ async def test_daily_reimport_of_unchanged_day_skips_llm():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "went hiking")
 
     first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
-    assert first == {"added": 1, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert first == {"added": 1, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1
 
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     # 重导没有产生新的 LLM 调用。
     assert len(harness.extract_inputs) == 1
 
@@ -194,21 +194,53 @@ async def test_daily_oversized_day_is_split_into_batches_not_truncated():
 
 
 @pytest.mark.asyncio
-async def test_daily_new_day_count_over_cap_raises_too_large():
-    from config import EXTERNAL_IMPORT_DAILY_MAX_FILES
+async def test_daily_over_cap_imports_oldest_days_and_defers_the_rest(monkeypatch):
+    """Over the per-import call cap, the oldest days that fit run now and the rest are deferred to the next import."""
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 3)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+    harness = _DailyHarness(lambda journal: [{"text": f"fact: {journal}", "importance": 5}])
+    candidates = []
+    # 故意乱序给出：顺延按日期从早到晚挑，不按传入顺序
+    for day in (5, 1, 4, 2, 3):
+        candidates += _daily(f"memories/2026-01-0{day}.md", f"2026-01-0{day}", f"journal {day}")
+
+    first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+
+    assert first == {"added": 3, "days": 5, "failed_days": 0, "skipped_days": 0, "deferred_days": 2}
+    assert sorted(harness.extract_inputs) == ["journal 1", "journal 2", "journal 3"]
+
+    # 再导一次：已完成的 3 天按指纹跳过，接着导剩下的 2 天
+    harness.extract_inputs.clear()
+    second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+
+    assert second == {"added": 2, "days": 5, "failed_days": 0, "skipped_days": 3, "deferred_days": 0}
+    assert sorted(harness.extract_inputs) == ["journal 4", "journal 5"]
+
+
+@pytest.mark.asyncio
+async def test_daily_over_cap_defers_a_huge_later_day_then_rejects_it_alone(monkeypatch):
+    """A later day that alone exceeds the cap is deferred first; once it is the only day left it is rejected as too large."""
     from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
-    harness = _DailyHarness(lambda journal: [])
-    candidates = []
-    for i in range(EXTERNAL_IMPORT_DAILY_MAX_FILES + 1):
-        candidates += _daily(
-            f"memories/2026-01-{i:02d}.md", "2026-01-01", f"journal {i}"
-        )
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS", 10)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 3)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
 
+    harness = _DailyHarness(lambda journal: [{"text": "fact", "importance": 5}])
+    candidates = (
+        _daily("memories/2026-07-11.md", "2026-07-11", "short day")
+        + _daily("memories/2026-07-12.md", "2026-07-12", "word " * 200)
+    )
+
+    first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert first["deferred_days"] == 1
+    assert harness.extract_inputs == ["short day"]
+
+    harness.extract_inputs.clear()
     with pytest.raises(ExternalMemoryImportTooLargeError):
         await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    # cap 在任何 LLM 调用之前生效。
-    assert harness.extract_inputs == []
+    assert harness.extract_inputs == []  # 单天超限在任何 LLM 调用前就拒绝
 
 
 # ── daily 去重键含 event_date（真 _apersist_new_facts，stub 存储/FTS）──
@@ -430,12 +462,12 @@ async def test_daily_empty_extraction_day_records_fingerprint_and_skips_reimport
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "nothing factual")
 
     first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
-    assert first == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert first == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1
     assert len(harness.state_fps) == 1      # 空抽取天也落 processed 指纹
 
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1  # 重导零新 LLM 调用
 
 
@@ -460,12 +492,12 @@ async def test_daily_all_deduped_day_does_not_record_sidecar_and_reextracts():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "edited entry")
 
     first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
-    assert first == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert first == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1
     assert harness.state_fps == set()        # 全去重天不落 sidecar
 
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert len(harness.extract_inputs) == 2  # 无指纹载体 → 重导重抽（added=0 不丢数据）
 
 
@@ -479,7 +511,7 @@ async def test_successful_day_uses_provenance_not_sidecar():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "went hiking")
 
     first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
-    assert first == {"added": 1, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert first == {"added": 1, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()       # 成功天不写 sidecar
     fp = harness._daily_fingerprint(["went hiking"], event_date="2026-07-12")
     assert any(
@@ -487,7 +519,7 @@ async def test_successful_day_uses_provenance_not_sidecar():
     )                                        # 指纹落在 fact provenance 里
 
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1  # 靠 provenance skip，零新 LLM
 
 
@@ -505,7 +537,7 @@ async def test_archived_day_provenance_still_skips_reimport():
     harness.store.clear()
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1  # 归档后重导仍 skip，零新 LLM
 
 
@@ -525,7 +557,7 @@ async def test_sidecar_write_failure_does_not_fail_the_day():
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
     # 写失败被吞：该天仍算成功（added 0、非 failed），退回下次重导重抽。
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
 
 
 @pytest.mark.asyncio
@@ -547,7 +579,7 @@ async def test_imported_day_fps_merges_sidecar_and_fact_provenance():
         + _daily("memories/2026-07-13.md", "2026-07-13", "day two"),
         "hermes", "t",
     )
-    assert result == {"added": 0, "days": 2, "failed_days": 0, "skipped_days": 2}
+    assert result == {"added": 0, "days": 2, "failed_days": 0, "skipped_days": 2, "deferred_days": 0}
     assert harness.extract_inputs == []
 
 
@@ -642,7 +674,7 @@ async def test_stale_sidecar_healed_before_skip():
         "hermes", "t",
     )
     # 这天靠 provenance skip；陈旧 sidecar 在 skip 前被自愈清除。
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     assert harness.state_fps == set()             # 陈旧 sidecar 已清
     assert harness.extract_inputs == []           # 零 LLM
 
@@ -656,7 +688,7 @@ async def test_malformed_extraction_is_failed_day_not_sidecar_checkpoint():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()             # 畸形不 checkpoint sidecar
 
 
@@ -669,7 +701,7 @@ async def test_malformed_array_without_objects_is_failed_day():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()             # 无 object 数组不 checkpoint
 
 
@@ -682,7 +714,7 @@ async def test_mixed_array_with_malformed_elements_is_failed_day():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()             # 混合元素不 checkpoint
 
 
@@ -698,7 +730,7 @@ async def test_dict_without_text_is_failed_day_not_silent_drop():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()             # 缺 text 的 dict 不 checkpoint
 
 
@@ -759,12 +791,12 @@ async def test_provenance_upgraded_day_uses_provenance_not_sidecar():
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "user corroboration")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()        # 有 provenance 载体 → 不记 sidecar
 
     # 本天指纹在既有 fact 的 provenance 上 → 重导靠 provenance skip、零新 LLM。
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1, "deferred_days": 0}
     assert len(harness.extract_inputs) == 1
 
 
@@ -790,7 +822,7 @@ async def test_empty_day_skips_sidecar_when_concurrent_import_persisted_facts():
         "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "nothing factual"),
         "hermes", "t",
     )
-    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
     assert harness.state_fps == set()        # 并发对方已落 provenance → 不记 sidecar
 
 

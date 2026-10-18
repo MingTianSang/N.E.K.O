@@ -1488,7 +1488,13 @@ async function handleMoliliArchiveImport(file) {
                             _moliliBroadcastMemoryEdited(partial.character_name || characterName);
                         }
                         const counts = { persona: partial.added_persona || 0, facts: partial.added_facts || 0 };
-                        const err = new Error(outcome === 'external_import_partial'
+                        const remainingDays = Number(partial.remaining_days) || 0;
+                        // 分段续导：一次导不完的日期顺延到下次，提示用户再导一次接着往后导
+                        const err = new Error(outcome === 'external_import_partial' && remainingDays > 0
+                            ? _moliliT('character.moliliImportContinue',
+                                `已导入一部分：保存了 ${counts.persona} 条人格、${counts.facts} 条事实，还有 ${remainingDays} 天的日常记忆留到下次。请再执行一次导入，会接着往后导，已导入的内容自动跳过。`,
+                                { ...counts, days: remainingDays })
+                            : outcome === 'external_import_partial'
                             ? _moliliT('character.moliliImportPartial',
                                 `导入中途停止：已保存 ${counts.persona} 条人格、${counts.facts} 条事实。请再执行一次导入补齐，已导入的内容会自动跳过。`,
                                 counts)

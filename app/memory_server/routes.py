@@ -884,8 +884,9 @@ async def _import_external_markdown(
                     on_progress=_on_daily_progress,
                 )
         except ExternalMemoryImportTooLargeError as exc:
-            # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →
-            # too_large 引导拆分。已导入天会被逐日指纹 skip，分次导入零重复成本。
+            # 确定性超限（单独一天就超过单次调用上限）：重试同一份必然再超 →
+            # too_large 引导拆分。天数多但每天放得下的情况不走这里，而是分段续导
+            # （见下方 deferred_days）。
             logger.warning(
                 "External Markdown import: daily too large: character=%s detail=%s",
                 name, exc,
@@ -921,27 +922,37 @@ async def _import_external_markdown(
                 },
             )
         daily_added = daily_result["added"]
-        if daily_result["failed_days"]:
-            # 有日记天抽取失败：不能回 success（客户端会当导入完成、失败天永久
-            # 丢失且无重试信号，Greptile P1）→ 返回可重试 partial。重试收敛：
-            # persona 指纹幂等 skip、MEMORY.md 与已抽出 daily fact 被 SHA/FTS5
-            # 去重挡住，只有失败天真正重抽。
+        failed_days = daily_result["failed_days"]
+        deferred_days = daily_result.get("deferred_days", 0)
+        if failed_days or deferred_days:
+            # 有日记天抽取失败或顺延到下次（分段续导）：不能回 success（客户端会
+            # 当导入完成、剩余天永久丢失且无重试信号，Greptile P1）→ 返回可重试
+            # partial。重试收敛：persona 指纹幂等 skip、MEMORY.md 与已抽出 daily
+            # fact 被 SHA/FTS5 去重挡住、已完成天被逐日指纹 skip，只有失败天和
+            # 顺延天真正抽取。
             logger.warning(
-                "External Markdown import: %s daily journal(s) failed extraction: character=%s",
-                daily_result["failed_days"], name,
+                "External Markdown import: daily journals incomplete: character=%s "
+                "failed=%s deferred=%s",
+                name, failed_days, deferred_days,
             )
+            detail_parts = []
+            if failed_days:
+                detail_parts.append(f"{failed_days} daily journal(s) failed extraction")
+            if deferred_days:
+                detail_parts.append(
+                    f"{deferred_days} daily journal(s) deferred to the next import"
+                )
             return JSONResponse(
                 status_code=500,
                 content={
-                    "detail": (
-                        f"{daily_result['failed_days']} daily journal(s) failed "
-                        "extraction; retry to finish"
-                    ),
+                    "detail": "; ".join(detail_parts) + "; retry to finish",
                     "error_code": "external_import_partial",
                     "partial_import": {
                         "character_name": name,
                         "added_persona": added_persona,
                         "added_facts": memory_added + daily_added,
+                        "failed_days": failed_days,
+                        "remaining_days": deferred_days,
                     },
                 },
             )

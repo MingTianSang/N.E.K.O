@@ -401,6 +401,32 @@ async def test_daily_failed_days_returns_retryable_partial(wire):
 
 
 @pytest.mark.asyncio
+async def test_daily_deferred_days_return_retryable_partial_with_remaining_count(wire):
+    """Days deferred by the per-import cap come back as a retryable partial carrying the remaining day count."""
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 0, "skipped": 1, "fused": False},
+        }),
+        fact_store=_FakeFactStore(
+            {"added": 6, "days": 9, "failed_days": 0, "skipped_days": 0, "deferred_days": 4}
+        ),
+    )
+
+    response = await routes_mod.import_external_markdown(
+        _request([_daily_cand("memories/2026-07-12.md", "2026-07-12")])
+    )
+
+    assert response.status_code == 500
+    body = _body(response)
+    assert body["error_code"] == "external_import_partial"
+    assert body["partial_import"]["remaining_days"] == 4
+    assert body["partial_import"]["failed_days"] == 0
+    assert body["partial_import"]["added_facts"] == 6
+    assert "deferred" in body["detail"]
+
+
+@pytest.mark.asyncio
 async def test_daily_over_cap_returns_413_too_large(wire):
     # aimport_external_daily 抛「天数超 cap」→ 413 too_large（前端引导拆分）。
     wire(
@@ -497,7 +523,7 @@ async def test_daily_days_extract_concurrently():
         timeout=5,
     )
 
-    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0, "deferred_days": 0}
 
 
 @pytest.mark.asyncio
@@ -554,7 +580,7 @@ async def test_daily_crashing_day_is_counted_failed_and_others_survive():
         "hermes", "t",
     )
 
-    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0, "deferred_days": 0}
     assert len(harness.persisted) == 1
 
 

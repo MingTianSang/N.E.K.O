@@ -5292,13 +5292,19 @@ class FactStore:
         re-extraction output is absorbed by the same-date FTS5 dedup in
         ``_apersist_new_facts``.
 
-        After fingerprint filtering, more than ``EXTERNAL_IMPORT_DAILY_MAX_FILES``
-        genuinely-new days raises ``ExternalMemoryImportTooLargeError`` — an
-        unbounded workspace would mean hundreds of LLM calls and blow the 240s
-        window even under bounded concurrency; the frontend guides splitting
-        the import, and already-imported days keep skipping for free (Codex P2).
+        After fingerprint filtering, the genuinely-new days are capped at
+        ``EXTERNAL_IMPORT_DAILY_MAX_FILES`` extraction calls per import (an
+        unbounded workspace would mean hundreds of LLM calls and blow the
+        forwarding window even under bounded concurrency, Codex P2). Over the
+        cap, the oldest days that fit are imported and the rest are deferred
+        (``deferred_days``): the caller reports a retryable partial result, and
+        each re-import skips the finished days by fingerprint and continues
+        with the next ones, so any history converges in a few imports. Only a
+        single day that alone needs more calls than the cap raises
+        ``ExternalMemoryImportTooLargeError`` (retrying cannot make progress).
 
-        Returns ``{'added': int, 'days': int, 'failed_days': int, 'skipped_days': int}``.
+        Returns ``{'added': int, 'days': int, 'failed_days': int,
+        'skipped_days': int, 'deferred_days': int}``.
         """
         from memory.external_markdown_import import batch_daily_fragments
         from memory.persona.fusion import ExternalMemoryImportTooLargeError
@@ -5359,15 +5365,42 @@ class FactStore:
             }
         )
         total_batches = sum(len(b) for b in groups_by_file.values())
+        deferred_days = 0
+        if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+            # 分段续导：超过单次调用上限时，按日期从早到晚挑出放得下的天先导，
+            # 其余顺延到下次导入。已完成的天会被逐日指纹 skip，所以每次重导都
+            # 接着往后推进，任意长度的历史导几次就收敛（Molili 归档无法拆分，
+            # 整份拒绝会让长期用户永远导不进）。只有「单独一天就超上限」才是
+            # 重试也推进不了的情况，仍按 too_large 拒绝。
+            ordered = sorted(
+                groups_by_file, key=lambda f: (day_dates.get(f) or "", f),
+            )
+            first_calls = len(groups_by_file[ordered[0]])
+            if first_calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+                raise ExternalMemoryImportTooLargeError(
+                    f"daily journal {ordered[0]} alone needs {first_calls} extraction "
+                    f"calls (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
+                )
+            selected: list[str] = []
+            used_calls = 0
+            for source_file in ordered:
+                calls = len(groups_by_file[source_file])
+                if used_calls + calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+                    break
+                selected.append(source_file)
+                used_calls += calls
+            deferred_days = len(pending) - len(selected)
+            logger.info(
+                f"[FactStore] {lanlan_name}: 外部 daily 导入超过单次 "
+                f"{EXTERNAL_IMPORT_DAILY_MAX_FILES} 次调用上限，本次先导最早的 "
+                f"{len(selected)} 天（{used_calls} 次调用），{deferred_days} 天顺延到下次导入"
+            )
+            pending = {source_file: pending[source_file] for source_file in selected}
+            groups_by_file = {source_file: groups_by_file[source_file] for source_file in selected}
+            total_batches = used_calls
         # 进度上报（外部导入进度条用）：total 先报，之后每完成一批 +1
         if on_progress is not None:
             on_progress({'daily_total': total_batches, 'daily_done': 0})
-        if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
-            raise ExternalMemoryImportTooLargeError(
-                f"daily import needs {total_batches} extraction calls across "
-                f"{len(pending)} new journal days (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); "
-                "split the workspace"
-            )
 
         daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
@@ -5569,6 +5602,7 @@ class FactStore:
             "days": len(by_file),
             "failed_days": failed_days,
             "skipped_days": skipped_days,
+            "deferred_days": deferred_days,
         }
 
     @staticmethod

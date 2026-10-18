@@ -4827,6 +4827,15 @@
                         persistedCharacterName = partial.character_name;
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
+                    // 分段续导：超过单次调用上限的日记天顺延到下次，提示用户再导一次接着导
+                    const remainingDays = Number(partial.remaining_days) || 0;
+                    if (remainingDays > 0) {
+                        throw new Error(translate(
+                            'memory.externalImportContinue',
+                            'Part of the import is done: {{persona}} persona entries and {{facts}} facts were saved, and {{days}} journal days are left for the next run. Import again to continue; imported content is skipped.',
+                            { persona: partial.added_persona || 0, facts: partial.added_facts || 0, days: remainingDays }
+                        ));
+                    }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
