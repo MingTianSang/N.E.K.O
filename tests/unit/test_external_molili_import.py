@@ -559,3 +559,30 @@ def test_molili_eocd_lookup_prefers_trailing_record_like_zipfile():
     count, directory_bytes = _declared_central_directory(bytes(data))
     assert count == int.from_bytes(data[eocd + 10:eocd + 12], "little")
     assert directory_bytes == int.from_bytes(data[eocd + 12:eocd + 16], "little")
+
+
+def test_molili_zip64_end_record_found_through_locator_offset(monkeypatch):
+    """A zip64 end record placed away from the locator (extensible data) is still found via the locator offset."""
+    import memory.external_molili_import as molili
+
+    from memory.external_molili_import import MAX_CENTRAL_DIRECTORY_BYTES
+
+    data = bytearray(_molili_zip())
+    eocd = data.rfind(b"PK" + bytes([5, 6]))
+    record = bytearray(56)
+    record[0:4] = b"PK" + bytes([6, 6])
+    record[32:40] = (10).to_bytes(8, "little")
+    record[40:48] = (MAX_CENTRAL_DIRECTORY_BYTES + 1).to_bytes(8, "little")
+    gap = bytes(32)  # 扩展数据区：结束记录不再紧贴定位器
+    record_offset = eocd
+    locator = bytearray(20)
+    locator[0:4] = b"PK" + bytes([6, 7])
+    locator[8:16] = record_offset.to_bytes(8, "little")
+    archive = bytes(data[:eocd] + record + gap + locator + data[eocd:])
+
+    def _no_zipfile(*_args, **_kwargs):
+        raise AssertionError("ZipFile must not be constructed for an oversized directory")
+
+    monkeypatch.setattr(molili.zipfile, "ZipFile", _no_zipfile)
+    with pytest.raises(ExternalMemoryImportError, match="too many files"):
+        build_molili_candidates(archive)

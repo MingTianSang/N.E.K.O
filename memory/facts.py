@@ -349,6 +349,10 @@ class FactStore:
         # asyncio.Lock 在首次等待时才绑定事件循环，构造期创建是安全的。
         self._external_daily_call_gate: asyncio.Lock = asyncio.Lock()
         self._external_daily_call_gate.last_call_at = 0.0
+        # 外部 daily 分段续导的排序提示：本进程里抽取过、但事实全部命中既有事实
+        # 而没留下完成标记的天（{角色: {天指纹}}）。只用来把它们排到顺延天之后，
+        # 不跳过任何天、不落盘——回滚或重启后清空即恢复原排序，不影响回滚自愈。
+        self._external_daily_deduped_fps: dict[str, set[str]] = {}
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -5386,6 +5390,9 @@ class FactStore:
             #   日期从早到晚：改过的旧日记抽出的事实常全部命中既有事实而去重，
             #   这类天不记完成标记（见 _aload_imported_day_fps，为回滚自愈），
             #   若排在前面会每次被重新选中、占满额度，让真正的新日期永远轮不到。
+            # 本进程里刚试过且全部去重的天排在最后：否则它们每次都被重新选中、
+            # 占满额度，顺延的天永远轮不到（例如同一段历史已从别的来源导入过）。
+            recently_deduped = self._external_daily_deduped_fps.get(lanlan_name, set())
             previously_imported_files = {
                 str(meta.get('file'))
                 for f in await self.aload_facts_full(lanlan_name)
@@ -5393,7 +5400,12 @@ class FactStore:
             }
             ordered = sorted(
                 groups_by_file,
-                key=lambda f: (f in previously_imported_files, day_dates.get(f) or "", f),
+                key=lambda f: (
+                    day_fps[f] in recently_deduped,
+                    f in previously_imported_files,
+                    day_dates.get(f) or "",
+                    f,
+                ),
             )
             oversized = [
                 f for f in ordered if len(groups_by_file[f]) > EXTERNAL_IMPORT_DAILY_MAX_FILES
@@ -5600,6 +5612,11 @@ class FactStore:
             #    回滚后重抽会重新 append）；若被并发空抽取的 sidecar 挡住就破坏自愈。
             # 绝大多数天 sidecar 无此指纹 → 一次 stat 即返回（Codex）。
             await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
+            if not new_facts:
+                # 抽出了事实但全部去重：不记完成标记（见上），只记进程内排序提示
+                self._external_daily_deduped_fps.setdefault(lanlan_name, set()).add(
+                    day_fps[source_file]
+                )
             return len(new_facts), False
 
         outcomes = await asyncio.gather(

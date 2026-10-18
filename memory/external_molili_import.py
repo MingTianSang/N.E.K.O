@@ -165,10 +165,17 @@ def _declared_central_directory(archive_bytes: bytes) -> tuple[int, int] | None:
     # 之前；zipfile 遇到定位器就改用记录里的 8 字节计数与目录大小。
     locator = len(archive_bytes) - len(tail) + pos - 20
     if locator >= 0 and archive_bytes[locator:locator + 4] == b"PK\x06\x07":
-        record = locator - 56
-        if record >= 0 and archive_bytes[record:record + 4] == b"PK\x06\x06":
-            count = int.from_bytes(archive_bytes[record + 32:record + 40], "little")
-            directory_bytes = int.from_bytes(archive_bytes[record + 40:record + 48], "little")
+        # 项目锁定的 Python 3.11 假定 zip64 结束记录紧贴定位器之前（不跟定位器
+        # 里的偏移）；更新的 zipfile 可能改为按偏移找（带扩展数据区时两处不同）。
+        # 两处都读，取较大的计数 / 目录大小，按最坏情况预筛。
+        candidates = {locator - 56, int.from_bytes(archive_bytes[locator + 8:locator + 16], "little")}
+        for record in candidates:
+            if 0 <= record and archive_bytes[record:record + 4] == b"PK\x06\x06":
+                count = max(count, int.from_bytes(archive_bytes[record + 32:record + 40], "little"))
+                directory_bytes = max(
+                    directory_bytes,
+                    int.from_bytes(archive_bytes[record + 40:record + 48], "little"),
+                )
     return count, directory_bytes
 
 

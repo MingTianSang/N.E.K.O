@@ -1277,7 +1277,9 @@ async function handleMoliliArchiveImport(file) {
     const hasMasterFields = Object.keys(masterProfile).length > 0;
     // role_prompt 按 ## 标题拆成带 tag 的独立字段：各字段经 persona 同步单独
     // 成条、卡面分区显示。解析器无标题可拆时回退单一"设定"字段（旧行为）。
-    const moliliSectionFields = {};
+    // 无原型对象：标题叫 __proto__ 时普通对象赋值会改原型而不是存成字段，
+    // 这一节会被静默丢掉；后面的对象展开照常把它复制成普通字段。
+    const moliliSectionFields = Object.create(null);
     ((preview.character_card && preview.character_card.sections) || []).forEach(s => {
         if (s.tag && s.text) moliliSectionFields[s.tag] = s.text;
     });

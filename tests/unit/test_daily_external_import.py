@@ -1172,3 +1172,33 @@ def test_daily_call_gate_exists_before_any_import():
     gate = store._external_daily_call_gate
     assert isinstance(gate, asyncio.Lock)
     assert gate.last_call_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_daily_all_deduped_days_rotate_behind_deferred_days(monkeypatch):
+    """Days whose facts all deduped in this process go after the deferred days on the next import, so later days get their turn."""
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 2)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+    class _DedupHarness(_DailyHarness):
+        async def _apersist_new_facts(self, lanlan_name, extracted, **kwargs):
+            # 「dup」天的事实全部命中既有事实：不落盘、不留 provenance
+            if any("dup" in str(f.get("text")) for f in extracted):
+                return []
+            return await super()._apersist_new_facts(lanlan_name, extracted, **kwargs)
+
+    harness = _DedupHarness(lambda journal: [{"text": f"fact: {journal}", "importance": 5}])
+    candidates = []
+    for day, text in (("2026-01-01", "dup one"), ("2026-01-02", "dup two"),
+                      ("2026-01-03", "new three"), ("2026-01-04", "new four")):
+        candidates += _daily(f"memories/{day}.md", day, text)
+
+    first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert first["deferred_days"] == 2
+    assert sorted(harness.extract_inputs) == ["dup one", "dup two"]
+
+    harness.extract_inputs.clear()
+    second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    # 刚全部去重的两天排到后面，顺延的 01-03 / 01-04 先轮到
+    assert sorted(harness.extract_inputs) == ["new four", "new three"]
+    assert second["deferred_days"] == 2
