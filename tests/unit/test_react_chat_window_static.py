@@ -27,7 +27,6 @@ APP_INTERPAGE_PATH = JavaScriptParts(
 )
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
 AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
-STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -90,23 +89,23 @@ def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_appro
     assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
 
 
-def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
+def test_chat_settings_cat_toggles_live_in_desktop_aggregated_settings():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
-    assert "id: 'auto-cat'" in chat_settings_block
-    assert "id: 'cat-audio'" in chat_settings_block
-    assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
-    assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
-    assert "dependsOnToggleId" not in cat_audio_config
-    assert "neko:auto-cat-setting-changed" not in source
-
-    cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
-        "const indicator = document.createElement('div');",
-        1,
-    )[0]
-    assert "window.nekoIdleCatAudio.isEnabled()" in cat_audio_init_block
+    # 自动变猫 / 重力猫猫 / 猫猫音效已迁移到桌面壳的聚合设置页（N.E.K.O.-PC 统一设置窗口
+    # 的「通用 → 猫咪」分组），对话设置侧边面板不再渲染这三个开关，也不再读写它们的状态层。
+    for toggle_id in ("'auto-cat'", "'gravity-cat'", "'cat-audio'"):
+        assert toggle_id not in chat_settings_block
+    for marker in (
+        "nekoAutoGoodbye.setAutoCatEnabled",
+        "nekoAutoGoodbye.isAutoCatEnabled",
+        "nekoIdleCat1Playground.setGravityCatEnabled",
+        "nekoIdleCat1Playground.isGravityCatEnabled",
+        "nekoIdleCatAudio.setEnabled",
+        "nekoIdleCatAudio.isEnabled",
+    ):
+        assert marker not in source
 
     dependency_block = source.split("const updateDependentToggleState = () => {", 1)[1].split(
         "const updateStyle = () => {",
@@ -126,27 +125,6 @@ def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     assert "toggleItem._nekoUpdateSettingsToggleStyle();" in source
     assert "const refreshDependentToggles = () => {" in source
     assert "candidate._nekoUpdateSettingsToggleStyle();" in source
-
-    cat_audio_change_block = source.split("} else if (toggle.id === 'cat-audio')", 1)[1].split(
-        "}",
-        1,
-    )[0]
-    assert "window.nekoIdleCatAudio.setEnabled(isChecked)" in cat_audio_change_block
-
-    en_locale = json.loads((STATIC_LOCALES_DIR / "en.json").read_text(encoding="utf-8"))
-    ja_locale = json.loads((STATIC_LOCALES_DIR / "ja.json").read_text(encoding="utf-8"))
-    ko_locale = json.loads((STATIC_LOCALES_DIR / "ko.json").read_text(encoding="utf-8"))
-    ru_locale = json.loads((STATIC_LOCALES_DIR / "ru.json").read_text(encoding="utf-8"))
-    zh_cn_locale = json.loads((STATIC_LOCALES_DIR / "zh-CN.json").read_text(encoding="utf-8"))
-    zh_tw_locale = json.loads((STATIC_LOCALES_DIR / "zh-TW.json").read_text(encoding="utf-8"))
-
-    assert en_locale["settings"]["toggles"]["catAudio"] == "Cat Audio"
-    assert "Volume" not in en_locale["settings"]["toggles"]["catAudio"]
-    assert "音量" not in ja_locale["settings"]["toggles"]["catAudio"]
-    assert "볼륨" not in ko_locale["settings"]["toggles"]["catAudio"]
-    assert "Громкость" not in ru_locale["settings"]["toggles"]["catAudio"]
-    assert zh_cn_locale["settings"]["toggles"]["catAudio"] == "猫猫音效"
-    assert zh_tw_locale["settings"]["toggles"]["catAudio"] == "貓貓音效"
 
 
 def test_model_settings_proactive_controls_use_right_aligned_sliders():
