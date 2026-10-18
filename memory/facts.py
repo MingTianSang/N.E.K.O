@@ -5382,7 +5382,7 @@ class FactStore:
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
             # Segmented resume: over the per-import call cap, the days that fit run now and the rest are deferred to the next
             # import. Finished days skip by daily fingerprint, so every re-import moves further ahead and
-            # any length of history converges within a few imports (Molili archives cannot be split; rejecting the whole archive would
+            # any number of days converges within a few imports, as long as each day fits one import (Molili archives cannot be split; rejecting the whole archive would
             # leave long-time users unable to import ever).
             # - Days that alone exceed the cap are set aside (oversized): retrying cannot progress them, but they must not
             #   block later dates; only when nothing else is left are they rejected as too_large.

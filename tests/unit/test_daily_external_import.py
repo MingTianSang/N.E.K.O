@@ -7,6 +7,12 @@ from memory.facts import FactStore
 TRANSPORT = object()  # stub sentinel: extraction failed on transport, not output
 
 
+@pytest.fixture(autouse=True)
+def _no_daily_call_interval(monkeypatch):
+    """Skip the production courtesy interval between extraction calls; no test here measures pacing."""
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+
 class _DailyHarness(FactStore):
     """Minimal FactStore stand-in exercising aimport_external_daily.
 

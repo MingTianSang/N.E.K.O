@@ -1399,7 +1399,9 @@ async function handleMoliliArchiveImport(file) {
             const metaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`);
             const metaNow = await metaResponse.json().catch(() => ({}));
             const currentMeta = metaNow.meta || metaNow || {};
-            if (currentMeta.origin !== 'molili') {
+            // 后端只允许 self 改标为 molili；导入 / 创意工坊角色发了也必然 403，直接跳过
+            //（这类角色照常导入记忆，只是不加 Molili 来源徽章）
+            if (currentMeta.origin === 'self') {
                 const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
