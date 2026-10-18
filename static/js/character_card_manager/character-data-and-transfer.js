@@ -1096,13 +1096,80 @@ async function handleImportCharacterCard(event) {
     }
 }
 
+// 导入类型选择：同一个「导入角色卡」按钮承载两类完全不同的归档（猫娘计划
+// 角色卡 PNG/.nekocfg 与 Molili 停服数据 zip），文件选择器里只看后缀不直观，
+// 先让用户显式选类型，再打开对应 accept 的文件选择器。返回 'card'/'molili'/null。
+function _showImportTypeDialog() {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'ccm-modal-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10002;display:flex;align-items:center;justify-content:center;animation:ccmFadeIn 0.18s ease';
+
+        const dialog = document.createElement('div');
+        dialog.style.cssText = 'background:#fff;border-radius:14px;padding:22px 26px 18px;width:440px;max-width:92vw;box-shadow:0 14px 40px rgba(0,0,0,0.25);animation:ccmSlideUp 0.22s ease';
+
+        const close = (value) => {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            document.removeEventListener('keydown', escHandler);
+            resolve(value);
+        };
+        const escHandler = (e) => { if (e.key === 'Escape') close(null); };
+        document.addEventListener('keydown', escHandler);
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:16px;font-weight:700;color:#222;margin-bottom:14px';
+        title.textContent = _moliliT('character.importTypeTitle', '选择导入类型');
+        dialog.appendChild(title);
+
+        [
+            {
+                key: 'card',
+                title: _moliliT('character.importTypeCard', '导入猫娘计划角色卡'),
+                desc: _moliliT('character.importTypeCardDesc', 'PNG 或 .nekocfg 角色卡文件'),
+            },
+            {
+                key: 'molili',
+                title: _moliliT('character.importTypeMolili', '导入 Molili 数据'),
+                desc: _moliliT('character.importTypeMoliliDesc', 'Molili 停服数据归档（.zip）'),
+            },
+        ].forEach(option => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.style.cssText = 'display:block;width:100%;text-align:left;background:#f6f9fc;border:1px solid #d8e2ec;border-radius:10px;padding:12px 16px;margin-bottom:10px;cursor:pointer;font:inherit;transition:border-color 0.15s ease, background 0.15s ease';
+            item.addEventListener('mouseenter', () => { item.style.borderColor = '#5bb0e6'; item.style.background = '#eef6fd'; });
+            item.addEventListener('mouseleave', () => { item.style.borderColor = '#d8e2ec'; item.style.background = '#f6f9fc'; });
+            const optionTitle = document.createElement('div');
+            optionTitle.style.cssText = 'font-size:14px;font-weight:600;color:#222';
+            optionTitle.textContent = option.title;
+            const optionDesc = document.createElement('div');
+            optionDesc.style.cssText = 'font-size:12px;color:#7a8794;margin-top:3px';
+            optionDesc.textContent = option.desc;
+            item.appendChild(optionTitle);
+            item.appendChild(optionDesc);
+            item.addEventListener('click', () => close(option.key));
+            dialog.appendChild(item);
+        });
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+        document.body.appendChild(overlay);
+    });
+}
+
 // 绑定导入按钮（页面加载后）
 function _setupImportCardButton() {
     const btn = document.getElementById('chara-import-btn');
     const input = document.getElementById('chara-import-input');
     if (btn && input && !btn._bound) {
         btn._bound = true;
-        btn.addEventListener('click', () => input.click());
+        btn.addEventListener('click', async () => {
+            const choice = await _showImportTypeDialog();
+            if (!choice) return;
+            // 每次按所选类型设置 accept：card 模式不收 .zip（防误选），Molili
+            // 模式只收 .zip。类型选错时 change 处理器的分流仍会兜底。
+            input.accept = choice === 'molili' ? '.zip' : 'image/png,.nekocfg';
+            input.click();
+        });
         input.addEventListener('change', handleImportCharacterCard);
     }
 }

@@ -75,6 +75,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-17-pr3447-molili-import",
         "2026-10-17-pr3447-molili-chats-note",
         "2026-10-17-pr3447-molili-origin-badge",
+        "2026-10-17-pr3447-molili-reentry-guard",
+        "2026-10-18-pr3447-partial-day-notes",
         "2026-10-17-pr3441-main-rebase",
         "2026-10-16-voice-activation-feedback",
         "2026-10-17-chat-sync-quota-split-oversized",
@@ -457,7 +459,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "3fee7a029e3db7e790d7d9872bc8ee19105cd3b9a7e73b6227b6c8bdea6d8d69"
+LOCALE_KEY_SIGNATURE = "05f818d782f52d437ca882d2ffe469647ce61dc6f1edd9e1d101ca578dbd5962"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
