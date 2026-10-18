@@ -628,9 +628,13 @@
                     window._isProcessingRealisticQueue = false;
                     if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
                         processRealisticQueue(window._realisticGeminiVersion || 0);
+                    } else {
+                        // Announce actual owner release, never a superseded queue.
+                        window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
                     }
                 }
             }
+            if (window.nekoReplyTail) window.nekoReplyTail.changed();
         }
     }
 
@@ -698,7 +702,10 @@
         window._isProcessingRealisticQueue = false;
         window._realisticProcessingOwner = null;
         var queue = window._realisticGeminiQueue;
-        if (!Array.isArray(queue) || queue.length === 0) return;
+        if (!Array.isArray(queue) || queue.length === 0) {
+            window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
+            return;
+        }
         // 同步创建所有待排队的 bubble
         for (var i = 0; i < queue.length; i++) {
             try {
@@ -708,6 +715,8 @@
             } catch (_) {}
         }
         window._realisticGeminiQueue = [];
+        if (window.nekoReplyTail) window.nekoReplyTail.changed();
+        window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
     }
 
     // ======================== appendMessage（覆盖核心） ========================
@@ -1075,7 +1084,10 @@
         return true;
     }
 
-    function appendReactChatBlocks(payload) {
+    function appendReactChatBlocks(payload, tailPlacement) {
+        if (payload && payload.reply_tail && !tailPlacement) {
+            return !!(window.nekoReplyTail && window.nekoReplyTail.enqueue(payload));
+        }
         var host = getHost();
         var blocks = structuredBlocksFrom(payload && payload.blocks);
         var cardHandled = false;
@@ -1113,6 +1125,11 @@
             blocks: blocks,
             status: 'sent'
         };
+        if (tailPlacement) {
+            message.id = tailPlacement.id;
+            message.sortKey = tailPlacement.sortKey;
+            message.createdAt = tailPlacement.createdAt;
+        }
         if (host && typeof host.appendMessage === 'function') {
             _tryFlushPendingHostMessages();
             if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {

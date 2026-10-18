@@ -2601,6 +2601,22 @@
     // refresh so a window that missed that reload cannot keep a stale view.
     refreshCoreApiCapability();
 
+    function syncProactiveVisionConsent(enabled) {
+        if (typeof enabled !== 'boolean') {
+            enabled = window.appProactive
+                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                ? window.appProactive.isProactiveVisionEnabledNow()
+                : S.proactiveVisionEnabled;
+        }
+        if (typeof enabled !== 'boolean' || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({ action: 'proactive_vision_consent', enabled: enabled }));
+        } catch (error) {
+            console.warn('[App] proactive vision consent sync failed:', error);
+        }
+    }
+    mod.syncProactiveVisionConsent = syncProactiveVisionConsent;
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -2947,6 +2963,9 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            if (window.nekoReplyTail) window.nekoReplyTail.reset();
+            announceReplyTailCapability();
+            if (window.appSettings) syncProactiveVisionConsent();
             console.log(window.t('console.websocketConnected'));
             // The state module publishes read errors; reconnect must remain usable.
             window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});
@@ -3310,6 +3329,17 @@
                 }
 
                 // -------- gemini_response --------
+                if (response.type === 'chat_sync_history_changed') {
+                    // Only a local committed-page hint reaches this current socket.
+                    // The sync UI reads its own cursor/history before passive merge.
+                    if (window.nekoChatSync) window.nekoChatSync.notifyHistoryCommitted(response).catch(function () {});
+                    return;
+                }
+                if (response.type === 'chat_original_identity') {
+                    // Backend identities only join optimistic UI; they never submit new chat.
+                    if (window.nekoChatSync && response.role === 'user') window.nekoChatSync.markAcceptedUser(response);
+                    return;
+                }
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant chunk after session ended by server');
@@ -3398,6 +3428,9 @@
                             assistantResponseMeta,
                             response.request_id
                         );
+                    }
+                    if (window.nekoChatSync && response.chat_original_id) {
+                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3628,6 +3661,10 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // Snapshot exact display IDs before this accepted voice frame is rendered.
+                    var syncVoiceHost = window.reactChatWindowHost;
+                    var syncVoiceBefore = syncVoiceHost && typeof syncVoiceHost.getState === 'function'
+                        ? new Set(syncVoiceHost.getState().messages.map(function (item) { return item.id; })) : null;
                     // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
                     // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
                     // 由后端在 user_transcript 之后补发该轮 preview 复原
@@ -3667,6 +3704,9 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
+                        // A canonical transcript owns one exact display identity.
+                        // Keep separate accepted frames separate on the React host.
+                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;
@@ -3688,6 +3728,14 @@
                                 }
                             }
                         }
+                    }
+
+                    if (response.chat_original_id && window.nekoChatSync && syncVoiceBefore) {
+                        syncVoiceHost.getState().messages.forEach(function (item) {
+                            if (item.role === 'user' && !syncVoiceBefore.has(item.id)) {
+                                window.nekoChatSync.markLiveOriginal(response.chat_original_id, item.id);
+                            }
+                        });
                     }
 
                 // -------- user_activity --------
@@ -5318,18 +5366,27 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
-                        try {
-                            function replySuppressedScreenshot() {
-                                if (typeof window.isNekoHomeTutorialProactiveSuppressed !== 'function'
-                                    || !window.isNekoHomeTutorialProactiveSuppressed()) return false;
-                                // 回空结果解除后端 future，避免额外等待 3 秒。现有协议
-                                // 没有“拒绝兜底”语义：本机连接仍可能由 pyautogui 截图，
-                                // 此闸门只保证前端不发送教程期间的屏幕内容。
-                                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                                    S.socket.send(JSON.stringify({ action: 'screenshot_response', data: '' }));
-                                }
-                                return true;
+                        function sendScreenshotReply(reply) {
+                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            // Echo the ID for every reply, including privacy/tutorial
+                            // declines and the legacy capture-function path.
+                            if (typeof response.request_id === 'string' && response.request_id) {
+                                reply.request_id = response.request_id;
                             }
+                            S.socket.send(JSON.stringify(reply));
+                        }
+                        function replySuppressedScreenshot() {
+                            var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
+                                && window.isNekoHomeTutorialProactiveSuppressed();
+                            var privacyBlocked = window.appProactive
+                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
+                                ? !window.appProactive.isProactiveVisionEnabledNow()
+                                : S.proactiveVisionEnabled === false;
+                            if (!tutorialBlocked && !privacyBlocked) return false;
+                            sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                            return true;
+                        }
+                        try {
                             if (replySuppressedScreenshot()) return;
                             var dataUrl = null;
                             // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
@@ -5339,6 +5396,10 @@
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                if (shot && shot.declined === true) {
+                                    sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
+                                    return;
+                                }
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
@@ -5373,9 +5434,11 @@
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }
-                                S.socket.send(JSON.stringify(respMsg));
+                                sendScreenshotReply(respMsg);
                             }
                         } catch (e2) {
+                            // 抛错也可能发生在权限撤回之后，不能静默超时再由后端补截。
+                            if (replySuppressedScreenshot()) return;
                             console.warn('[App] request_screenshot capture failed:', e2);
                         }
                     })();
@@ -6340,6 +6403,17 @@
     window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
+
+    // ========================  Reply-tail capability  ========================
+    // Kept out of the handshake section that static harnesses evaluate alone.
+    function announceReplyTailCapability() {
+        var socket = S.socket;
+        if (!window.nekoReplyTail || window.__nekoReplyTailPresentationVersion !== 1
+                || !socket || socket.readyState !== WebSocket.OPEN || socket._replyTailVersion === 1) return;
+        socket.send(JSON.stringify({ action: 'reply_tail_capabilities', version: 1 }));
+        socket._replyTailVersion = 1;
+    }
+    window.addEventListener('neko-reply-tail-presentation', announceReplyTailCapability);
 
     // ========================  Greeting check (after model loaded)  ========================
     // 需要 WS 已连接 AND 模型已加载 两个条件同时满足才发送，
