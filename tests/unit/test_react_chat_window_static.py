@@ -89,23 +89,32 @@ def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_appro
     assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
 
 
-def test_chat_settings_cat_toggles_live_in_desktop_aggregated_settings():
+def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
+    cat_panel_block = source.split("function createCatSettingsSidePanel(", 1)[1].split(
+        "function createVisitSettingsSidePanel(", 1
+    )[0]
 
-    # 自动变猫 / 重力猫猫 / 猫猫音效已迁移到桌面壳的聚合设置页（N.E.K.O.-PC 统一设置窗口
-    # 的「通用 → 猫咪」分组），对话设置侧边面板不再渲染这三个开关，也不再读写它们的状态层。
+    # 自动变猫 / 重力猫猫 / 猫猫音效不再混入对话设置面板，改由独立「猫咪设置」
+    # 侧边面板承载（浏览器部署的唯一入口，与桌面壳聚合设置页「通用 → 猫咪」
+    # 分组共用状态层，双入口）。
     for toggle_id in ("'auto-cat'", "'gravity-cat'", "'cat-audio'"):
         assert toggle_id not in chat_settings_block
-    for marker in (
-        "nekoAutoGoodbye.setAutoCatEnabled",
-        "nekoAutoGoodbye.isAutoCatEnabled",
-        "nekoIdleCat1Playground.setGravityCatEnabled",
-        "nekoIdleCat1Playground.isGravityCatEnabled",
-        "nekoIdleCatAudio.setEnabled",
-        "nekoIdleCatAudio.isEnabled",
-    ):
-        assert marker not in source
+        assert f"id: {toggle_id}" in cat_panel_block
+    order = [cat_panel_block.index(f"id: {toggle_id}") for toggle_id in ("'auto-cat'", "'gravity-cat'", "'cat-audio'")]
+    assert order == sorted(order)
+    assert "data-neko-sidepanel-type', 'cat-settings'" in cat_panel_block
+    assert "settings.toggles.catSettings" in source
+
+    # 弹层菜单顺序：动画设置 → 猫咪设置 → 主动搭话
+    popup_content = source.split("function createSettingsPopupContent(", 1)[1]
+    assert popup_content.index("animationSettings") < popup_content.index("catSettings")
+    assert popup_content.index("catSettings") < popup_content.index("id: 'proactive-chat'")
+
+    assert "nekoAutoGoodbye.setAutoCatEnabled" in source
+    assert "nekoIdleCat1Playground.setGravityCatEnabled" in source
+    assert "nekoIdleCatAudio.setEnabled" in source
 
     dependency_block = source.split("const updateDependentToggleState = () => {", 1)[1].split(
         "const updateStyle = () => {",

@@ -505,6 +505,19 @@ function createSettingsPopupContent(manager, prefix, popup) {
         void window.nekoVisitSettings.revealEntries();
     }
 
+    // 2.6 猫咪设置（自动变猫 / 重力猫猫 / 猫猫音效）：浏览器部署的独立入口，
+    // 与桌面壳聚合设置页「通用 → 猫咪」分组共用状态层
+    const catSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.toggles.catSettings') : '猫咪设置',
+        labelKey: 'settings.toggles.catSettings'
+    });
+    popup.appendChild(catSettingsBtn);
+
+    const catSidePanel = manager._createCatSettingsSidePanel(popup);
+    catSidePanel._anchorElement = catSettingsBtn;
+    catSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(catSettingsBtn, catSidePanel);
+
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
@@ -810,6 +823,39 @@ function createVisitSettingsSidePanel(manager, prefix, popup) {
     if (window.nekoVisitSettings && typeof window.nekoVisitSettings.appendPanelExtras === 'function') {
         window.nekoVisitSettings.appendPanelExtras(container);
     }
+
+    document.body.appendChild(container);
+    return container;
+}
+
+/**
+ * 创建猫咪设置侧边面板：自动变猫 / 重力猫猫 / 猫猫音效三个猫形态开关。
+ * 状态层与桌面壳聚合设置页「通用 → 猫咪」分组共用同一组 localStorage 键，
+ * 双入口互相同步；浏览器部署（无 N.E.K.O.-PC 桌面壳）以本面板为唯一入口。
+ */
+function createCatSettingsSidePanel(manager, prefix, popup) {
+    const container = manager._createSidePanelContainer();
+    container.setAttribute('data-neko-sidepanel-type', 'cat-settings');
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '0';
+    container.style.width = '200px';
+    container.style.minWidth = '0';
+    container.style.padding = '4px 4px';
+
+    const catToggles = [
+        { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
+        { id: 'gravity-cat', label: window.t ? window.t('settings.toggles.gravityCat') : '重力猫猫', labelKey: 'settings.toggles.gravityCat', tooltipKey: 'settings.toggles.gravityCatTooltip', alwaysTinted: true },
+        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
+    ];
+
+    catToggles.forEach(toggle => {
+        const toggleItem = manager._createSettingsToggleItem(toggle);
+        container.appendChild(toggleItem);
+        if (typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+            toggleItem._nekoUpdateSettingsToggleStyle();
+        }
+    });
 
     document.body.appendChild(container);
     return container;
@@ -2606,6 +2652,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
+    } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
+        checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
+    } else if (toggle.id === 'gravity-cat' && window.nekoIdleCat1Playground
+        && typeof window.nekoIdleCat1Playground.isGravityCatEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCat1Playground.isGravityCatEnabled();
+    } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
+        checkbox.checked = window.nekoIdleCatAudio.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2826,6 +2879,21 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
+        } else if (toggle.id === 'auto-cat') {
+            // 「自动变猫」开关：开=启用自动 idle 变猫（默认）。状态由 app-auto-goodbye 自管（独立 localStorage），
+            // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
+                window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
+            }
+        } else if (toggle.id === 'gravity-cat') {
+            if (window.nekoIdleCat1Playground
+                && typeof window.nekoIdleCat1Playground.setGravityCatEnabled === 'function') {
+                window.nekoIdleCat1Playground.setGravityCatEnabled(isChecked);
+            }
+        } else if (toggle.id === 'cat-audio') {
+            if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
+                window.nekoIdleCatAudio.setEnabled(isChecked);
+            }
         }
     };
 
@@ -2948,6 +3016,10 @@ const AvatarPopupMixin = {
 
         ManagerProto._createVisitSettingsSidePanel = function (popup) {
             return createVisitSettingsSidePanel(this, prefix, popup);
+        };
+
+        ManagerProto._createCatSettingsSidePanel = function (popup) {
+            return createCatSettingsSidePanel(this, prefix, popup);
         };
 
         ManagerProto._createAnimationSettingsSidePanel = function () {
