@@ -3989,7 +3989,14 @@
                 if (dataUrl) stageUserImages.set(
                     id, { name: names[id] || id, dataUrl });
             }
-            if (paths.length) pushStageUserImages();
+            if (paths.length) {
+                pushStageUserImages();
+                // 恢复晚于抽屉渲染完成：不主动刷一次，绑图格子会一直停在
+                // "跟随默认"，直到用户点了别的什么才被连带重绘
+                if (stateStageSession?.refreshUserImages) {
+                    stateStageSession.refreshUserImages();
+                }
+            }
         } catch (_) {
             stageUserImagesRestored = false;   // 拉取失败下次再试
         }

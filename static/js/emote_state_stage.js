@@ -1660,6 +1660,9 @@
 
             refreshUserImages: () => {
                 renderUserImages();
+                // 清单是外部喂进来的：绑图格子的副标题/缩略图也吃这份名单，
+                // 只重绘网格的话，异步恢复完成后那八行会一直停在"跟随默认"
+                paint();
             },
 
             async assignScene(stateKey, sceneId) {

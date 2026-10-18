@@ -1066,6 +1066,65 @@ def test_image_bound_rows_show_a_thumb_without_being_clicked(page: Page, running
     assert ["image:img-x", True] in state["calls"], state
     assert state["idleSub"] == "图片.png", state
 
+
+def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str) -> None:
+    """副本恢复晚于抽屉渲染：清单后补 + refreshUserImages 之后，绑图格子的
+    副标题/缩略图必须立刻跟上，不用点任何东西（2026-10-18 用户抓的：
+    不点刷新就一直显示"跟随默认"）。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        const png = (() => {
+            const c = document.createElement('canvas'); c.width = 24; c.height = 24;
+            const x = c.getContext('2d'); x.fillStyle = '#7a3fa0'; x.fillRect(0, 0, 24, 24);
+            return c.toDataURL('image/png');
+        })();
+        window.__THUMB_CALLS = [];
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: {
+                schemaVersion: 1,
+                nodes: [
+                    mk('source.default', {}, 'root'),
+                    mk('source.image', { imageId: 'img-x' }, 'img-node'),
+                    mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle'),
+                    mk('output.state', { stateKey: 'happy_image', seconds: 0 }, 'o-happy'),
+                ],
+                links: [
+                    { from: 'img-node', to: 'o-idle', fromSocket: 'look', toSocket: 'look' },
+                    { from: 'root', to: 'o-happy', fromSocket: 'look', toSocket: 'look' },
+                ],
+            },
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [{ value: 'walk', label: '散步' }],
+            thumbFor: (sceneId, hot) => {
+                window.__THUMB_CALLS.push([sceneId, hot === true]);
+                return Promise.resolve(png);
+            },
+            framesFor: () => [],
+        });
+        return true;
+    }""")
+    page.wait_for_timeout(400)
+    before = page.evaluate(
+        "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent || ''")
+    assert before == "跟随默认", before   # 清单还没喂进来，只能报跟随默认
+    page.evaluate("""() => {
+        window.NekoEmoteStateStage.setUserImages([{ id: 'img-x', label: '晚到.png', thumb: '' }]);
+        window.__STAGE.refreshUserImages();
+    }""")
+    page.wait_for_function(
+        "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '晚到.png'",
+        timeout=5000)
+    has_thumb = page.evaluate(
+        "() => Boolean(document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-thumb img'))")
+    assert has_thumb is True, "刷新后缩略图也要跟上"
+
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
     """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
     _boot(page, running_server)
