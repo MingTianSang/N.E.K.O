@@ -2718,22 +2718,13 @@
         return filename;
     }
 
+    // 这些页面跑在 Electron 托管的子窗口里，那里的 File System Access 只能弹框、不能写：
+    // showSaveFilePicker 会正常返回 handle（并把目标文件创建/截断成 0 字节），紧接着
+    // createWritable() 抛 NotAllowedError，而异常被 catch 吞掉后回落的 <a download>
+    // 又把文件下到别处 —— 用户手里于是多出一个打不开的空文件。
+    // 所以这里不试 picker：一律 <a download>，让 Electron 的原生保存框来选位置，
+    // 一次交互、一个有效文件。
     async function saveFile(blob, filename) {
-        try {
-            if ('showSaveFilePicker' in window) {
-                const handle = await window.showSaveFilePicker({
-                    suggestedName: filename,
-                    types: [{ description: 'PNG 图片', accept: { 'image/png': ['.png'] } }]
-                });
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                return;
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') return; // 用户取消
-        }
-        // fallback
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;

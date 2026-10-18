@@ -1,0 +1,311 @@
+/*
+ * 组（分组导出用的那层）与「存下来的取景」的数据规则。
+ *
+ * 为什么不叫场景列表：源头 EmoteLab 的那个东西叫 SceneList，名字是作者手填的文件名
+ * （`YUI_All_191` 这种），直接当标题显示没人看得懂。这里把它统一成"组"，并且把
+ * 文件名里那个尾数还原成它真正的意思（组里有几张）。
+ *
+ * 和上一轮的模板库一样：只做数据，不碰 DOM、不读文件，规则能在 Node 里单测。
+ *
+ * 两类成员要分清，不然导出时会打架：
+ *   - scene：模板包里本来就有的场景（只读，我们只是挑中它）
+ *   - shot ：我们在编辑器里调好之后"存下来的取景"（引用一个来源场景 + 一份外观快照）
+ * 组里两者混着放，导出按顺序出文件。
+ */
+(function (root, factory) {
+    'use strict';
+
+    if (typeof module === 'object' && module.exports) {
+        module.exports = factory();
+        return;
+    }
+
+    root.NekoEmoteGroupLibrary = factory();
+}(typeof window !== 'undefined' ? window : globalThis, function () {
+    'use strict';
+
+    // 一次批量导出会把所有产物攒在内存里再压成一个 zip（Electron 下 <a download> 是唯一
+    // 能落盘的通道），所以必须有上限：几百张 GIF 直接把页面压死。
+    const MAX_BATCH = 100;
+    const MAX_GROUP_NAME = 40;
+    const MAX_ITEMS_PER_GROUP = 400;
+    const IMPORTED_PREFIX = 'list:';
+
+    function text(value) {
+        return String(value == null ? '' : value).trim();
+    }
+
+    let idSeed = 0;
+    function nextId(prefix) {
+        idSeed += 1;
+        return `${prefix}${Date.now().toString(36)}-${idSeed.toString(36)}`;
+    }
+
+    /**
+     * 把 `YUI_All_191` 这类作者手填的名字讲清楚：末尾数字如果正好等于组内数量，
+     * 那它就是"有几张"，从名字里剥出来单独显示；不等就原样保留（可能是版本号）。
+     */
+    function humanListName(rawName, count) {
+        const name = text(rawName) || 'SceneList';
+        const total = Number(count);
+        if (!Number.isFinite(total) || total <= 0) return { name, count: 0 };
+        const match = name.match(/^(.*)[_\s-](\d+)$/);
+        if (match && Number(match[2]) === total && text(match[1])) {
+            return { name: text(match[1]), count: total };
+        }
+        return { name, count: total };
+    }
+
+    /** 模板包里已有的 SceneList → 只读的组。 */
+    function importedGroups(templatePackage) {
+        const lists = Array.isArray(templatePackage?.sceneLists) ? templatePackage.sceneLists : [];
+        return lists.map((list) => {
+            const scenes = (Array.isArray(list.scenes) ? list.scenes : [])
+                .map((scene) => scene?.id)
+                .filter(Boolean);
+            const human = humanListName(list.name || list.path, scenes.length);
+            return {
+                id: `${IMPORTED_PREFIX}${text(list.id || list.path)}`,
+                name: human.name,
+                rawName: text(list.name || list.path),
+                count: human.count,
+                readOnly: true,
+                items: scenes.map((sceneId) => ({ kind: 'scene', ref: sceneId })),
+            };
+        });
+    }
+
+    function makeGroup(input) {
+        const src = input || {};
+        const items = (Array.isArray(src.items) ? src.items : [])
+            .map((item) => {
+                const kind = item?.kind === 'shot' ? 'shot' : 'scene';
+                const ref = text(item?.ref);
+                return ref ? { kind, ref } : null;
+            })
+            .filter(Boolean)
+            .slice(0, MAX_ITEMS_PER_GROUP);
+        return {
+            id: text(src.id) || nextId('group:'),
+            name: (text(src.name) || '未命名组').slice(0, MAX_GROUP_NAME),
+            readOnly: false,
+            items,
+            createdAt: Number(src.createdAt) || Date.now(),
+        };
+    }
+
+    function hasItem(group, kind, ref) {
+        return (group.items || []).some((item) => item.kind === kind && item.ref === String(ref));
+    }
+
+    function addItem(group, kind, ref) {
+        if (!group || group.readOnly) return group;
+        const next = { ...group, items: [...(group.items || [])] };
+        if (hasItem(next, kind, ref)) return next;
+        if (next.items.length >= MAX_ITEMS_PER_GROUP) return next;
+        next.items.push({ kind, ref: String(ref) });
+        return next;
+    }
+
+    function removeItem(group, kind, ref) {
+        if (!group || group.readOnly) return group;
+        return { ...group, items: (group.items || []).filter((item) => !(item.kind === kind && item.ref === String(ref))) };
+    }
+
+    function renameGroup(groups, id, name) {
+        return (groups || []).map((group) => (group.id === id && !group.readOnly
+            ? { ...group, name: (text(name) || group.name).slice(0, MAX_GROUP_NAME) }
+            : group));
+    }
+
+    /** 去重命名：`新组`、`新组 2`、`新组 3`… 只跟已有名字比，大小写视为同一个。 */
+    function uniqueGroupName(groups, base) {
+        const taken = new Set((groups || []).map((group) => text(group.name).toLocaleLowerCase()));
+        const root = (text(base) || '未命名组').slice(0, MAX_GROUP_NAME);
+        if (!taken.has(root.toLocaleLowerCase())) return root;
+        for (let n = 2; n < 1000; n += 1) {
+            const suffix = ` ${n}`;
+            const candidate = `${root.slice(0, MAX_GROUP_NAME - suffix.length)}${suffix}`;
+            if (!taken.has(candidate.toLocaleLowerCase())) return candidate;
+        }
+        return `${root}-${Date.now()}`;
+    }
+
+    /** 一条"存下来的取景"：引用来源场景 + 当时的外观快照。 */
+    function makeShot(input) {
+        const src = input || {};
+        // 取景的形状必须和 currentLookDefaults() / applyLookToState() 用的一致：transform 住在
+        // look 下面。放在顶层读会得到空对象，于是大小、角度、位移全都被静默丢成默认值。
+        const transform = src.look?.transform && typeof src.look.transform === 'object'
+            ? src.look.transform : {};
+        return {
+            id: text(src.id) || nextId('shot:'),
+            name: (text(src.name) || '取景').slice(0, MAX_GROUP_NAME),
+            sourceSceneId: text(src.sourceSceneId),
+            progress: Math.max(0, Math.min(100, Number(src.progress) || 0)),
+            look: {
+                skins: Array.isArray(src.look?.skins) ? src.look.skins.map((item) => ({ ...item })) : [],
+                sliders: Array.isArray(src.look?.sliders) ? src.look.sliders.map((item) => ({ ...item })) : [],
+                slots: Array.isArray(src.look?.slots) ? src.look.slots.map((item) => ({ ...item })) : [],
+                transform: {
+                    x: Number(transform.x) || 0,
+                    y: Number(transform.y) || 0,
+                    rotation: Number(transform.rotation) || 0,
+                    scale: Number(transform.scale) || 1,
+                },
+            },
+            createdAt: Number(src.createdAt) || Date.now(),
+        };
+    }
+
+    function shotsFrom(list) {
+        return (Array.isArray(list) ? list : [])
+            .filter((shot) => shot && typeof shot === 'object')
+            .map((shot) => makeShot(shot));
+    }
+
+    function groupsFrom(list) {
+        return (Array.isArray(list) ? list : [])
+            .filter((group) => group && typeof group === 'object' && !String(group.id || '').startsWith(IMPORTED_PREFIX))
+            .map((group) => makeGroup(group));
+    }
+
+    // Windows 文件名里 \\ / : * ? " < > | 和控制字符都不能要；结尾的点号/空格也会被悄悄剥掉。
+    // 只按"能不能写"来清洗，不做 transliterate —— 中文文件名在这台机器上本来就正常。
+    function sanitizeFileName(value, fallback = 'emote') {
+        const cleaned = text(value)
+            // eslint-disable-next-line no-control-regex
+            .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
+            .replace(/[.\s_]+$/, '')
+            .replace(/^[.\s_]+/, '')
+            .slice(0, 80);
+        return cleaned || fallback;
+    }
+
+    /**
+     * 出文件名：序号前缀保证导出后仍是组内的顺序（文件名排序＝肉眼顺序），
+     * 同名不覆盖。序号位数按总数走，9 张以内用 `01_`，超过 99 张用 `001_`。
+     */
+    function planFileNames(items) {
+        const width = String(Math.max(items.length, 1)).length < 2 ? 2 : String(items.length).length;
+        const taken = new Map();
+        return items.map((item, index) => {
+            const ordinal = String(index + 1).padStart(width, '0');
+            const base = sanitizeFileName(item.name, item.kind === 'shot' ? 'shot' : 'scene');
+            let file = `${ordinal}_${base}.${item.ext || 'gif'}`;
+            const seen = taken.get(file.toLocaleLowerCase()) || 0;
+            if (seen) {
+                taken.set(file.toLocaleLowerCase(), seen + 1);
+                const suffix = seen + 1;
+                file = `${ordinal}_${base}-${suffix}.${item.ext || 'gif'}`;
+                taken.set(file.toLocaleLowerCase(), (taken.get(file.toLocaleLowerCase()) || 0) + 1);
+            } else {
+                taken.set(file.toLocaleLowerCase(), 1);
+            }
+            return { ...item, file, index };
+        });
+    }
+
+    /**
+     * 导出计划：把组里的成员摊平成"要出几张、每张是谁、叫什么文件名"。
+     * shot 要能烘焙必须有 sourceSceneId（来源场景被删掉/换包之后就没了），这种条目
+     * 单独报告，不能静默少几张 —— 用户以为导出了 20 张实际只有 18 张最难查。
+     *
+     * 场景成员存的是 id 引用，名字得回查（`nameOf`）：不然导出「模板自带」的整份列表时，
+     * 文件名会是 `01_ModelA#0.gif` 这种没人认得出的东西。
+     */
+    function planGroupExport({ group, shots, ext = 'gif', limit = MAX_BATCH, nameOf } = {}) {
+        const items = [];
+        const skipped = [];
+        const shotById = new Map((Array.isArray(shots) ? shots : []).map((shot) => [shot.id, shot]));
+        (group?.items || []).forEach((item) => {
+            if (item.kind === 'scene') {
+                const label = typeof nameOf === 'function' ? text(nameOf(item.ref)) : '';
+                items.push({ kind: 'scene', ref: item.ref, name: item.name || label || item.ref, ext });
+                return;
+            }
+            const shot = shotById.get(item.ref);
+            if (!shot) {
+                skipped.push({ kind: 'shot', ref: item.ref, reason: 'missing-shot', name: item.ref });
+                return;
+            }
+            if (!shot.sourceSceneId) {
+                skipped.push({ kind: 'shot', ref: shot.id, reason: 'no-source', name: shot.name });
+                return;
+            }
+            items.push({ kind: 'shot', ref: shot.id, name: shot.name, ext });
+        });
+        const truncated = items.length > limit;
+        return {
+            items: planFileNames(truncated ? items.slice(0, limit) : items),
+            skipped,
+            total: items.length,
+            limit,
+            truncated,
+            ready: (truncated ? items.slice(0, limit) : items).length > 0,
+        };
+    }
+
+    /**
+     * 导出引擎：把"计划里每一项"变成"zip 里一个文件"。
+     *
+     * produce / zip 都是注入进来的 —— 页面给真的烘焙器和 fflate，测试给假的。这样
+     * 引擎本身的规则（顺序、进度、单张失败不拖垮整批、能中断）不需要 Spine 运行时
+     * 就能验；反过来页面只剩"怎么烘一张"这一件事。
+     */
+    async function runGroupExport(options) {
+        const {
+            plan, produce, zip, onProgress, shouldAbort,
+        } = options || {};
+        const items = (plan && Array.isArray(plan.items)) ? plan.items : [];
+        if (typeof produce !== 'function' || typeof zip !== 'function') {
+            throw new Error('导出引擎缺少 produce / zip');
+        }
+        const files = [];
+        const failed = [];
+        for (let index = 0; index < items.length; index += 1) {
+            if (typeof shouldAbort === 'function' && shouldAbort()) {
+                return { aborted: true, files, failed, done: index, total: items.length };
+            }
+            const item = items[index];
+            try {
+                const bytes = await produce(item);
+                if (!bytes || !bytes.length) {
+                    failed.push({ file: item.file, reason: 'empty' });
+                } else {
+                    files.push({ path: item.file, data: bytes });
+                }
+            } catch (error) {
+                failed.push({ file: item.file, reason: (error && error.message) || 'produce-failed' });
+            }
+            if (typeof onProgress === 'function') {
+                onProgress({ done: index + 1, total: items.length, file: item.file });
+            }
+        }
+        if (!files.length) return { aborted: false, files, failed, done: items.length, total: items.length };
+        const blob = await zip(files);
+        return { aborted: false, files, failed, blob, done: items.length, total: items.length };
+    }
+
+    return Object.freeze({
+        MAX_BATCH,
+        MAX_GROUP_NAME,
+        MAX_ITEMS_PER_GROUP,
+        IMPORTED_PREFIX,
+        humanListName,
+        importedGroups,
+        makeGroup,
+        makeShot,
+        groupsFrom,
+        shotsFrom,
+        addItem,
+        removeItem,
+        hasItem,
+        renameGroup,
+        uniqueGroupName,
+        sanitizeFileName,
+        planFileNames,
+        planGroupExport,
+        runGroupExport,
+    });
+}));

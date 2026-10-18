@@ -6,6 +6,31 @@ transport page loads (`trtc.js`, `livekit-client.umd.js`). This is not an invent
 `static/libs`. These components retain their upstream licenses; the project's
 root Apache-2.0 license does not replace them.
 
+## Esoteric Software Spine Runtimes
+
+- File: `spine/spine-webgl-4.3.13.min.js`
+- Package: `@esotericsoftware/spine-webgl@4.3.13` (official IIFE; includes
+  matching `spine-core`)
+- Source: <https://github.com/EsotericSoftware/spine-runtimes>
+- SHA-256: `FE05B399895CB4F5ACAF00CA91724CBB5F6DBA7972B53D4C7D5D9131FDE5B018`
+- License: [SPINE-RUNTIMES-LICENSE-4.3.13.txt](spine/SPINE-RUNTIMES-LICENSE-4.3.13.txt)
+- Bundle-specific provenance and loading policy:
+  [spine/NOTICE.md](spine/NOTICE.md)
+
+The bundle is lazy-loaded by `spine_runtime_loader.js`; it is not initialized
+on page startup. It does not include any EmoteLab user resources.
+
+## fflate
+
+- File: `fflate.umd.js`
+- Package: `fflate@0.8.2`
+- Source: <https://github.com/101arrowz/fflate>
+- License: [FFLATE-LICENSE.txt](licenses/FFLATE-LICENSE.txt)
+
+The bundle is used only by the EmoteLab client asset bridge for bounded,
+in-memory ZIP decoding. Imported archives are not written to disk or
+`localStorage`.
+
 ## @moeru/three-mmd
 
 - File: `three-mmd.module.js`

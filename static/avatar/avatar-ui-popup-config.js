@@ -57,6 +57,7 @@ if (typeof Live2DManager !== 'undefined') {
         animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
         characterMenuItems: [
             { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+            { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
             { id: 'live2d-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
             { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
             { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
@@ -85,6 +86,7 @@ const _vrmPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+        { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
         { id: 'vrm-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
@@ -166,6 +168,7 @@ const _mmdPopupConfig = {
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
+        { id: 'emote-maker', label: '表情包制作', labelKey: 'settings.menu.emoteMaker', icon: '/static/icons/emoji_icon.png', action: 'navigate', url: '/emote_maker' },
         { id: 'mmd-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
