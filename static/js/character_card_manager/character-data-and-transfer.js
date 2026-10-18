@@ -1471,6 +1471,9 @@ async function handleMoliliArchiveImport(file) {
         progressPanel.appendChild(progressNote);
         document.body.appendChild(progressPanel);
 
+        // 预览阶段就知道有没有日常记忆要抽取：决定人格阶段在进度条里占多大比例
+        const hasDailyToImport = (Number(preview.daily_extraction_calls) || 0) > 0
+            || (Number(preview.counts && preview.counts.daily) || 0) > 0;
         const applyMoliliProgress = (p) => {
             const personaTotal = Number(p.persona_total) || 0;
             const personaDone = Number(p.persona_done) || 0;
@@ -1483,9 +1486,11 @@ async function handleMoliliArchiveImport(file) {
                 stageLine.textContent = _moliliT('character.moliliStageDaily',
                     `整理记忆批次 ${dailyDone}/${dailyTotal}...`, { done: dailyDone, total: dailyTotal });
             } else if (personaFrac > 0) {
-                // 还没有日常记忆进度（还在 persona 阶段，或归档根本没有日常记忆）：
-                // 按人格融合进度走，不让进度条停在初始宽度看着像卡住；阶段文案不变
-                barInner.style.width = Math.max(8, Math.round(100 * personaFrac)) + '%';
+                // 还没有日常记忆进度：按人格融合进度走，不让进度条停在初始宽度看着像卡住。
+                // 后面还有日常记忆要导时只占前 25%（与上面的组合进度衔接，不会先冲到
+                // 100% 再掉回去）；归档根本没有日常记忆时人格就是全部进度。阶段文案不变
+                const personaShare = hasDailyToImport ? 0.25 : 1;
+                barInner.style.width = Math.max(8, Math.round(100 * personaShare * personaFrac)) + '%';
             }
         };
 
