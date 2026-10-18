@@ -4033,12 +4033,16 @@
         });
     }
 
-    function captureStageSource(sourceKey, quality, priorityOverride) {
+    function captureStageSource(sourceKey, quality, priorityOverride, windowOverride) {
         const budget = STAGE_QUALITY[quality] || STAGE_QUALITY.full;
         const priority = Number(priorityOverride) > 0
             ? Number(priorityOverride)
             : (quality === 'thumb' ? STAGE_CAPTURE_THUMB : STAGE_CAPTURE_INTERACTIVE);
-        return queueStageCapture(`${sourceKey}|${quality}`,
+        // 同一源不同起点是不同的采集：队列键带上起点，缓存才不会互串
+        const startAt = Math.max(0, Number(windowOverride && windowOverride.startAt) || 0);
+        const captureKey = startAt > 0
+            ? `${sourceKey}|${quality}@${startAt}` : `${sourceKey}|${quality}`;
+        return queueStageCapture(captureKey,
             priority,
             priority >= STAGE_CAPTURE_INTERACTIVE ? 'frames' : 'thumb',
             async () => {
@@ -4069,7 +4073,10 @@
                 const frames = Math.max(1,
                     Math.min(budget.maxFrames, Math.ceil(duration * budget.fps)));
                 const baked = await bakePackJobs(
-                    [{ stateKey: 'preview', sceneId: scene.id, look, frames }],
+                    [{ stateKey: 'preview', sceneId: scene.id, look, frames,
+                        timeWindow: startAt > 0
+                            ? { from: startAt, to: startAt + 1 / budget.fps }
+                            : undefined }],
                     { fps: budget.fps, edge: budget.edge },
                 );
                 return baked[0] ? baked[0].frames : [];
@@ -4114,12 +4121,17 @@
      * 一条动画的 96px 单帧缩略图。走 thumb 档（1 帧、不碰整条动画）。
      * hot=true 是给右侧状态行用的：那八条要排在抽屉的缩略图长队前面，
      * 否则抽屉一开，状态行就长时间是空白。
+     * opts.startAt：状态格的缩略图要采这一格起始手柄指向的那一帧——
+     * 同一条动画不同起点采出来的样子不一样，缓存键按起点拆开。
      */
-    async function stageThumbFor(sceneId, hot) {
-        const key = String(sceneId || '');
+    async function stageThumbFor(sceneId, hot, opts) {
+        const startAt = Math.max(0, Number(opts && opts.startAt) || 0);
+        const key = startAt > 0 ? `${String(sceneId)}@${startAt}` : String(sceneId || '');
         if (stageThumbs.has(key)) return stageThumbs.get(key);
         const frames = await captureStageSource(
-            key, 'thumb', hot ? STAGE_CAPTURE_INTERACTIVE : STAGE_CAPTURE_THUMB);
+            String(sceneId || ''), 'thumb',
+            hot ? STAGE_CAPTURE_INTERACTIVE : STAGE_CAPTURE_THUMB,
+            startAt > 0 ? { startAt } : undefined);
         const first = frames[0];
         if (!first) return '';
         const canvas = document.createElement('canvas');

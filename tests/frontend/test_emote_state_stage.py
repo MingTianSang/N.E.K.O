@@ -1204,6 +1204,65 @@ def test_image_carousel_appends_and_removes(page: Page, running_server: str) -> 
     })""")
     assert state["hasImageNode"] is False and state["rowHidden"] is True, state
 
+
+def test_state_tiles_capture_thumbs_at_their_start_frame(page: Page, running_server: str) -> None:
+    """格子缩略图采"起始手柄指的那一帧"：同一条动画不同起点的格子各采各的，
+    采集方（thumbFor）要拿到 {startAt}，缓存按起点拆开（2026-10-18 用户抓的：
+    缩略图一直是动画开头那帧，和实际播放对不上）。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        const png = (() => {
+            const c = document.createElement('canvas'); c.width = 24; c.height = 24;
+            const x = c.getContext('2d'); x.fillStyle = '#7a3fa0'; x.fillRect(0, 0, 24, 24);
+            return c.toDataURL('image/png');
+        })();
+        window.__THUMB_CALLS = [];
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: {
+                schemaVersion: 1,
+                nodes: [
+                    mk('source.default', {}, 'root'),
+                    mk('source.scene', { sceneId: 'walk' }, 's-a'),
+                    mk('source.scene', { sceneId: 'wave' }, 's-b'),
+                    mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle'),
+                    mk('output.state', { stateKey: 'happy_image', seconds: 0, startAt: 2.5 }, 'o-happy'),
+                    mk('output.state', { stateKey: 'sad_image', seconds: 0, startAt: 4 }, 'o-sad'),
+                    mk('output.state', { stateKey: 'talking_image', seconds: 0 }, 'o-talk'),
+                ],
+                links: [
+                    { from: 's-a', to: 'o-idle', fromSocket: 'look', toSocket: 'look' },
+                    { from: 's-b', to: 'o-happy', fromSocket: 'look', toSocket: 'look' },
+                    { from: 's-a', to: 'o-sad', fromSocket: 'look', toSocket: 'look' },
+                ],
+            },
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [
+                { value: 'walk', label: '散步' },
+                { value: 'wave', label: '挥手' },
+            ],
+            thumbFor: (sceneId, hot, opts) => {
+                window.__THUMB_CALLS.push([sceneId, hot === true, opts || null]);
+                return Promise.resolve(png);
+            },
+            framesFor: () => [],
+        });
+        return true;
+    }""")
+    page.wait_for_timeout(500)
+    calls = page.evaluate("() => window.__THUMB_CALLS")
+    flat = [tuple(call) for call in calls]
+    assert ("wave", True, {"startAt": 2.5}) in flat, flat
+    assert ("walk", True, {"startAt": 4}) in flat, flat
+    assert ("walk", True, None) in flat, flat   # 没动过起点的格子照旧不带窗口
+
+
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
     """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
     _boot(page, running_server)

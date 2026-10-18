@@ -906,7 +906,10 @@
                     requestTileThumb(refs.thumb, `image:${bound[0].id}`);
                 } else if (refs.thumb.firstChild === null && node && sourceScene
                     && sourceScene.indexOf(ROOT_PREFIX) !== 0) {
-                    requestTileThumb(refs.thumb, sourceScene);
+                    // 格子是"这个状态长什么样"：起始手柄指到哪，缩略图就采哪一帧，
+                    // 同一条动画不同起点的两格各采各的（缩略图缓存按起点拆开）
+                    const startAt = Math.max(0, Number(node.params.startAt) || 0);
+                    requestTileThumb(refs.thumb, sourceScene, startAt > 0 ? { startAt } : undefined);
                 }
 
                 const sub = bound?.length
@@ -1304,7 +1307,9 @@
             animButton.classList.toggle('is-previewing', Boolean(previewScene));
         }
 
-        function requestTileThumb(host, scene) {
+        function requestTileThumb(host, scene, opts) {
+            const startAt = Math.max(0, Number(opts && opts.startAt) || 0);
+            const cacheKey = startAt > 0 ? `${scene}@${startAt}` : scene;
             const paintThumb = (url) => {
                 if (!url || disposed || !host.isConnected) return;
                 const image = document.createElement('img');
@@ -1312,16 +1317,17 @@
                 image.src = url;
                 host.replaceChildren(image);
             };
-            if (thumbsByScene.has(scene)) {
-                paintThumb(thumbsByScene.get(scene));
+            if (thumbsByScene.has(cacheKey)) {
+                paintThumb(thumbsByScene.get(cacheKey));
                 return;
             }
             if (typeof options.thumbFor !== 'function') return;
             // hot=true：状态行只有八条，必须排在动作库那几百条缩略图前面
-            Promise.resolve(options.thumbFor(scene, true)).then((url) => {
-                thumbsByScene.set(scene, url || '');
-                paintThumb(url);
-            }, () => {});
+            Promise.resolve(options.thumbFor(scene, true, startAt > 0 ? { startAt } : undefined))
+                .then((url) => {
+                    thumbsByScene.set(cacheKey, url || '');
+                    paintThumb(url);
+                }, () => {});
         }
 
         function statesUsing(sceneId) {
