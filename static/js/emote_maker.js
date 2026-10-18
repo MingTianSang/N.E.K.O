@@ -4042,9 +4042,22 @@
             priority,
             priority >= STAGE_CAPTURE_INTERACTIVE ? 'frames' : 'thumb',
             async () => {
-                // 用户图片：单帧源，不过 Spine 采集管线
-                if (String(sourceKey || '').indexOf('image:') === 0) {
-                    const image = stageUserImages.get(String(sourceKey).slice(6));
+                // 用户图片：单帧源，不过 Spine 采集管线。images: 是轮播
+                // 列表（按序每张一帧）；image: 是旧的单图键，照旧认。
+                const captureKey = String(sourceKey || '');
+                if (captureKey.indexOf('images:') === 0) {
+                    const frames = [];
+                    for (const id of captureKey.slice('images:'.length).split('|')) {
+                        if (!id) continue;
+                        const image = stageUserImages.get(id);
+                        if (!image) continue;
+                        const one = await frameFromStageImage(image, budget.edge);
+                        if (one.length) frames.push(one[0]);
+                    }
+                    return frames;
+                }
+                if (captureKey.indexOf('image:') === 0) {
+                    const image = stageUserImages.get(captureKey.slice('image:'.length));
                     if (!image) return [];
                     return frameFromStageImage(image, budget.edge);
                 }
@@ -5123,17 +5136,35 @@
         try {
             for (let index = 0; index < jobs.length; index += 1) {
                 const job = jobs[index];
-                // 图片状态：没有场景，把用户图片按导出边长画成一帧
-                if (job.imageId) {
-                    const image = stageUserImages.get(job.imageId);
-                    if (!image) {
+                // 图片状态：没有场景，把用户图片按导出边长画成一帧；
+                // 多图轮播 = 总帧数均摊到每张图，前 total%n 张各多扛一帧
+                const jobImageIds = (job.imageIds && job.imageIds.length)
+                    ? job.imageIds
+                    : (job.imageId ? [job.imageId] : []);
+                if (jobImageIds.length) {
+                    const sources = jobImageIds
+                        .map((id) => stageUserImages.get(id))
+                        .filter(Boolean);
+                    if (!sources.length) {
                         // 真缺图（图被删了还绑着）不再无声：导出时说一声缺了几个
                         if (!previewFps) missingImages += 1;
                         continue;
                     }
                     if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
-                    const frames = await frameFromStageImage(image, edge);
-                    if (!frames.length) continue;
+                    const singles = [];
+                    for (const image of sources) {
+                        const one = await frameFromStageImage(image, edge);
+                        if (one.length) singles.push(one[0]);
+                    }
+                    if (!singles.length) continue;
+                    const total = Math.max(singles.length, Number(job.frames) || singles.length);
+                    const base = Math.floor(total / singles.length);
+                    const extra = total % singles.length;
+                    const frames = [];
+                    singles.forEach((frame, imageIndex) => {
+                        const count = base + (imageIndex < extra ? 1 : 0);
+                        for (let repeat = 0; repeat < count; repeat += 1) frames.push(frame);
+                    });
                     results.push({
                         stateKey: job.stateKey, frames, edge, fps,
                         look: { sceneId: '', skins: [], sliders: [], slots: [], texts: [] },
@@ -5297,7 +5328,9 @@
         );
         const sceneIds = new Set(getImportedScenes().map((scene) => scene.id));
         const usable = plan.kept.filter((output) =>
-            sceneIds.has(output.look.sceneId) || (output.imageId && output.imageId.length));
+            sceneIds.has(output.look.sceneId)
+            || (output.imageId && output.imageId.length)
+            || (output.imageIds && output.imageIds.length));
         if (plan.dropped.length) {
             const reasons = new Set(plan.dropped.map((item) => item.reason));
             showToast(`${t('emoteMaker.packPlanSkipped')} (${plan.dropped.length})${
@@ -5320,13 +5353,17 @@
             || templatePackage?.model?.displayName
             || t('emoteMaker.title');
         const jobs = usable.map((output) => {
-            if (output.imageId) {
-                // 图片状态：单帧静态源，时间轴只控停留时长
+            const imageIds = (output.imageIds && output.imageIds.length)
+                ? output.imageIds
+                : (output.imageId ? [output.imageId] : []);
+            if (imageIds.length) {
+                // 图片状态：静态源，时间轴控总停留时长；多图 = 按序轮播，
+                // 总帧数均摊到每张图（保底每张至少一帧）
                 const hold = Math.max(0.05, Number(output.seconds) || 0.05);
                 return {
                     stateKey: output.stateKey,
-                    imageId: output.imageId,
-                    frames: Math.max(1, Math.ceil(hold * fps)),
+                    imageIds,
+                    frames: Math.max(imageIds.length, Math.ceil(hold * fps)),
                     timeWindow: { from: 0, to: hold },
                     scale: output.scale,
                     rotation: output.rotation,

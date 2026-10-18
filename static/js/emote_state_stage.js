@@ -363,9 +363,23 @@
         stripCanvas.setAttribute('aria-label', t('emoteMaker.stageStripAria'));
         strip.append(band, stripCanvas);
 
+        // 已绑图片行：只有选中格绑了用户图片才出现。轮播的删减入口就在这——
+        // 追加靠拖拽/点击，摘除得有个地方放 ×。
+        const boundRow = document.createElement('div');
+        boundRow.className = 'st-bound';
+        boundRow.hidden = true;
+        const boundTitle = document.createElement('span');
+        boundTitle.className = 'st-bound-title';
+        const boundChips = document.createElement('span');
+        boundChips.className = 'st-bound-chips';
+        const boundClear = document.createElement('button');
+        boundClear.type = 'button';
+        boundClear.className = 'st-link st-bound-clear';
+        boundRow.append(boundTitle, boundChips, boundClear);
+
         const panel = document.createElement('section');
         panel.className = 'st-panel';
-        panel.append(head, body, strip);
+        panel.append(head, body, strip, boundRow);
         overlay.appendChild(panel);
         (options.host || document.body).appendChild(overlay);
 
@@ -442,16 +456,28 @@
         function imageSourceKey(node) {
             if (!node) return '';
             const source = model.findSource(graph, node.id, 'source');
-            return source && source.type === 'source.image' && String(source.params.imageId || '')
-                ? 'image:' + source.params.imageId : '';
+            if (!source || source.type !== 'source.image') return '';
+            const ids = boundImageIds(source);
+            return ids.length ? 'images:' + ids.join('|') : '';
         }
 
-        /** 这一格上游绑的用户图片条目；图片已从库中删除时返回 null。 */
-        function boundImageFor(node) {
-            const key = imageSourceKey(node);
-            if (!key) return null;
-            const id = key.slice('image:'.length);
-            return userImages().find((entry) => entry.id === id) || null;
+        /** 这一格上游图片源里的 id 列表（旧单值图也归一成一项）。 */
+        function boundImageIds(source) {
+            const params = source && source.params || {};
+            const list = Array.isArray(params.imageIds) && params.imageIds.length
+                ? params.imageIds
+                : (String(params.imageId || '') ? [params.imageId] : []);
+            return list.map((id) => String(id)).filter(Boolean);
+        }
+
+        /** 这一格上游绑的用户图片条目（轮播顺序）；查不到清单项的 id 跳过。 */
+        function boundImagesFor(node) {
+            const source = node ? model.findSource(graph, node.id, 'source') : null;
+            if (!source || source.type !== 'source.image') return [];
+            const known = userImages();
+            return boundImageIds(source)
+                .map((id) => known.find((entry) => entry.id === id) || null)
+                .filter(Boolean);
         }
 
         function activeQuality(node) {
@@ -870,19 +896,21 @@
 
                 // 先前只给"正在编辑的那一格"取帧，其余七行一直是空白，要点一下才亮
                 const scene = node ? sceneNodeFor(node) : null;
-                const bound = node ? boundImageFor(node) : null;
+                const bound = node ? boundImagesFor(node) : null;
                 const sourceScene = node ? committedScene(node) : '';
                 if (slice?.length) paintTileCanvas(refs.thumb, slice[0]);
-                else if (refs.thumb.firstChild === null && node && bound) {
+                else if (refs.thumb.firstChild === null && node && bound?.length) {
                     // 绑了用户图片的格子缩略图走图片源；committedScene 给的是
-                    // root: 前缀，照旧路走会把这格永远哑成空白
-                    requestTileThumb(refs.thumb, `image:${bound.id}`);
+                    // root: 前缀，照旧路走会把这格永远哑成空白。多图轮播也只
+                    // 摆第一张：格子里要的是"这格是图"，不是预告片。
+                    requestTileThumb(refs.thumb, `image:${bound[0].id}`);
                 } else if (refs.thumb.firstChild === null && node && sourceScene
                     && sourceScene.indexOf(ROOT_PREFIX) !== 0) {
                     requestTileThumb(refs.thumb, sourceScene);
                 }
 
-                const sub = bound ? (bound.label || '—')
+                const sub = bound?.length
+                    ? imageListLabel(bound)
                     : scene ? (labels[scene.params.sceneId] || '—')
                     : t('emoteMaker.stageFollowTag');
                 if (refs.sub.textContent !== sub) refs.sub.textContent = sub;
@@ -917,6 +945,7 @@
         function paint(forceStage) {
             publishSlice();
             drawTiles();
+            renderBoundChips();
             drawStrip();
             drawStage(forceStage);
             // 台面定格后这里就是"当前帧"的显示口，漏画就会一直停在旧帧
@@ -1135,23 +1164,49 @@
         }
 
         /**
-         * 把某一格的帧源换成用户图片（imageId）。与 applySceneTo 同一套纪律：
-         * 只动图上那一根线；已有图片源就改参数，没有就建一个新节点接上。
+         * 把一张用户图片**追加**进某一格的轮播列表（已有同一张就不重复）。
+         * 与 applySceneTo 同一套纪律：只动图上那一根线；没有图片源就建一个新节点接上。
          */
         function applyImageTo(node, imageId) {
-            if (!node) return;
+            if (!node || !imageId) return;
+            const id = String(imageId);
             const upstreamLink = graph.links.find((link) => link.to === node.id);
             const upstream = upstreamLink
                 ? graph.nodes.find((entry) => entry.id === upstreamLink.from) : null;
             if (upstream && upstream.type === 'source.image') {
-                upstream.params = model.normalizeParams('source.image', { imageId });
+                const ids = boundImageIds(upstream);
+                if (ids.includes(id)) return;
+                ids.push(id);
+                upstream.params = model.normalizeParams('source.image', {
+                    ...upstream.params, imageIds: ids, imageId: ids[0],
+                });
                 graph = model.normalizeGraph(graph);
                 return;
             }
-            const created = model.makeNode('source.image', 60, 60, { imageId });
+            const created = model.makeNode('source.image', 60, 60, {
+                imageIds: [id], imageId: id,
+            });
             graph = { ...graph, nodes: graph.nodes.concat([created]) };
             // addLink 自己会拆掉该输入槽的旧线（source.default 等共享源不能删节点）
             graph = model.addLink(graph, created.id, model.LOOK, node.id, model.LOOK);
+        }
+
+        /** 从某一格的轮播列表里摘掉一张；摘空 = 拆掉图片源回"跟随默认外观"。 */
+        function removeBoundImage(node, imageId) {
+            if (!node) return;
+            const source = model.findSource(graph, node.id, 'source');
+            if (!source || source.type !== 'source.image') return;
+            const ids = boundImageIds(source).filter((id) => id !== String(imageId));
+            if (ids.length) {
+                source.params = model.normalizeParams('source.image', {
+                    ...source.params, imageIds: ids, imageId: ids[0],
+                });
+                graph = model.normalizeGraph(graph);
+                return;
+            }
+            graph = model.removeNode(graph, source.id);
+            const root = rootNode();
+            if (root) graph = model.addLink(graph, root.id, model.LOOK, node.id, model.LOOK);
         }
 
         function imageNodeFor(node) {
@@ -1161,11 +1216,79 @@
             return source && source.type === 'source.image' ? source : null;
         }
 
+        /** 绑图格子的副标题/按钮文案：一张直呼其名，多张报"第一张 等 N 张"。 */
+        function imageListLabel(entries) {
+            if (!entries || !entries.length) return '—';
+            if (entries.length === 1) return entries[0].label || '—';
+            return t('emoteMaker.stageImageMulti',
+                { first: entries[0].label || '', count: entries.length });
+        }
+
+        // 已绑图片行的重绘：paint 每帧都跑，这里用签名挡住重复重建，
+        // 只有选中格或名单真的变了才动 DOM。
+        let boundChipsKey = null;
+        function renderBoundChips() {
+            const node = selectedNode();
+            const entries = node ? boundImagesFor(node) : [];
+            const key = `${node ? node.id : ''}|${entries.map((entry) => entry.id).join(',')}`;
+            if (key === boundChipsKey) return;
+            boundChipsKey = key;
+            if (!entries.length) {
+                boundRow.hidden = true;
+                boundChips.replaceChildren();
+                return;
+            }
+            boundRow.hidden = false;
+            boundTitle.textContent = t('emoteMaker.stageBoundTitle');
+            boundClear.textContent = t('emoteMaker.stageBoundClear');
+            const rebuild = () => {
+                const current = selectedNode();
+                if (!current) return;
+                sliceByNode.delete(current.id);
+                playhead = 0;
+                boundChipsKey = null;   // 名单变了：下一轮 paint 强制重建
+                loadSelected();          // 重取帧并 paint（onChange 随 paint 发出）
+            };
+            const chips = entries.map((entry) => {
+                const chip = document.createElement('span');
+                chip.className = 'st-bound-chip';
+                const thumb = document.createElement('img');
+                thumb.alt = '';
+                if (entry.thumb) thumb.src = entry.thumb;
+                const label = document.createElement('span');
+                label.className = 'st-bound-chip-label';
+                label.textContent = entry.label;
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'st-bound-chip-x';
+                remove.textContent = '×';
+                remove.setAttribute('aria-label', entry.label);
+                remove.addEventListener('click', () => {
+                    removeBoundImage(selectedNode(), entry.id);
+                    rebuild();
+                });
+                chip.append(thumb, label, remove);
+                return chip;
+            });
+            boundChips.replaceChildren(...chips);
+            boundClear.onclick = () => {
+                entries.forEach((entry) => removeBoundImage(selectedNode(), entry.id));
+                rebuild();
+            };
+        }
+
         function animationLabel(sceneId) {
             if (isDefaultSource(sceneId)) return t('emoteMaker.stageUseDefaults');
-            if (String(sceneId).indexOf('image:') === 0) {
+            const key = String(sceneId || '');
+            if (key.indexOf('images:') === 0) {
+                const ids = key.slice('images:'.length).split('|').filter(Boolean);
+                const known = userImages();
+                return imageListLabel(
+                    ids.map((id) => known.find((entry) => entry.id === id)).filter(Boolean));
+            }
+            if (key.indexOf('image:') === 0) {
                 const entry = userImages().find(
-                    (item) => item.id === String(sceneId).slice('image:'.length));
+                    (item) => item.id === key.slice('image:'.length));
                 return entry ? (entry.label || '—') : '—';
             }
             const found = animationsFor().find((item) => String(item.value) === String(sceneId));

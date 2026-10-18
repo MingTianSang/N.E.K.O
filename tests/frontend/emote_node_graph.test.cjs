@@ -277,6 +277,34 @@ test('绑用户图片的格子算"已设置"，空图片 id 不算', () => {
     assert.deepEqual(plan.dropped.map((d) => d.reason), ['unassigned']);
 });
 
+test('图片轮播：单值旧图自动升级成单元素列表，列表去重去空', () => {
+    const legacy = graph.makeNode('source.image', 0, 0, { imageId: 'img-a' });
+    assert.deepEqual(legacy.params.imageIds, ['img-a']);
+    assert.equal(legacy.params.imageId, 'img-a');
+    const multi = graph.makeNode('source.image', 0, 0, {
+        imageIds: ['img-a', ' img-b ', '', 'img-a'],
+    });
+    assert.deepEqual(multi.params.imageIds, ['img-a', 'img-b']);
+    assert.equal(multi.params.imageId, 'img-a');
+});
+
+test('轮播列表随 evaluate 带到输出，规划照常放行', () => {
+    const g = graph.normalizeGraph({
+        schemaVersion: 1,
+        nodes: [
+            graph.makeNode('source.image', 0, 0, { imageIds: ['img-a', 'img-b'] }, 'img'),
+            graph.makeNode('output.state', 0, 0, { stateKey: 'happy_image' }, 'o'),
+        ],
+        links: [{ from: 'img', to: 'o', fromSocket: 'look', toSocket: 'look' }],
+    });
+    const evaluated = graph.evaluate(g, {});
+    assert.deepEqual(evaluated.outputs[0].imageIds, ['img-a', 'img-b']);
+    assert.equal(evaluated.outputs[0].imageId, 'img-a');
+    const plan = graph.planOutputs(
+        g, evaluated.outputs, ['idle_image', 'talking_image', 'happy_image'], ['idle_image']);
+    assert.deepEqual(plan.kept.map((o) => o.stateKey), ['happy_image']);
+});
+
 test('接了动画的输出留下，中间夹了加工节点也认得', () => {
     const g = {
         schemaVersion: 1,

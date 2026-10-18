@@ -1125,6 +1125,85 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
         "() => Boolean(document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-thumb img'))")
     assert has_thumb is True, "刷新后缩略图也要跟上"
 
+
+def test_image_carousel_appends_and_removes(page: Page, running_server: str) -> None:
+    """轮播：同一格再赋一张 = 追加不是替换；已绑图片行可摘单张、可清空。
+    追加走 assignImage（拖拽/点击同一入口），删减只在这一行做。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: {
+                schemaVersion: 1,
+                nodes: [
+                    mk('source.default', {}, 'root'),
+                    mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle'),
+                ],
+                links: [
+                    { from: 'root', to: 'o-idle', fromSocket: 'look', toSocket: 'look' },
+                ],
+            },
+            t: (key, params) => {
+                let text = ZH[key.split('.').slice(1).join('.')] || key;
+                if (params) {
+                    for (const [name, value] of Object.entries(params)) {
+                        text = text.split(`{{${name}}}`).join(String(value));
+                    }
+                }
+                return text;
+            },
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [],
+            userImages: () => [
+                { id: 'img-a', label: '图片A', thumb: '' },
+                { id: 'img-b', label: '图片B', thumb: '' },
+            ],
+            thumbFor: () => Promise.resolve(''),
+            framesFor: () => [],
+        });
+        return true;
+    }""")
+    page.wait_for_timeout(300)
+    page.evaluate("""async () => {
+        await window.__STAGE.assignImage('idle_image', 'img-a');
+        await window.__STAGE.assignImage('idle_image', 'img-b');
+    }""")
+    page.wait_for_function(
+        "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '图片A 等 2 张'",
+        timeout=5000)
+    state = page.evaluate("""() => ({
+        ids: window.__STAGE.getGraph().nodes.find((n) => n.type === 'source.image')?.params.imageIds,
+        chips: document.querySelectorAll('.st-bound-chip').length,
+        rowHidden: document.querySelector('.st-bound')?.hidden,
+    })""")
+    assert state["ids"] == ["img-a", "img-b"], state
+    assert state["chips"] == 2 and state["rowHidden"] is False, state
+
+    # 摘第一张：列表变 [img-b]，副标题跟名
+    page.evaluate("() => document.querySelector('.st-bound-chip .st-bound-chip-x').click()")
+    page.wait_for_function(
+        "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '图片B'",
+        timeout=5000)
+    ids = page.evaluate(
+        "() => window.__STAGE.getGraph().nodes.find((n) => n.type === 'source.image')?.params.imageIds")
+    assert ids == ["img-b"], ids
+
+    # 清空：拆掉图片源，回"跟随默认"
+    page.evaluate("() => document.querySelector('.st-bound-clear').click()")
+    page.wait_for_function(
+        "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '跟随默认'",
+        timeout=5000)
+    state = page.evaluate("""() => ({
+        hasImageNode: window.__STAGE.getGraph().nodes.some((n) => n.type === 'source.image'),
+        rowHidden: document.querySelector('.st-bound').hidden,
+    })""")
+    assert state["hasImageNode"] is False and state["rowHidden"] is True, state
+
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
     """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
     _boot(page, running_server)
