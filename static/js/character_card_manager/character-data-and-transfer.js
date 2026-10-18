@@ -1344,6 +1344,12 @@ async function handleMoliliArchiveImport(file) {
             }
             // 重名时后端自动加后缀（如 言叶(1)）：记忆必须导进实际建出的角色
             characterName = created.character_name || choice.name;
+            // 兜底复核服务端实际给的名字（名单可能在确认后又多了同名角色）：超长就
+            // 停在这里，不去调必然失败的 commit
+            if (Number(preview.candidate_count) > 0 && !_moliliNameFitsMemory(characterName)) {
+                _moliliRefreshCardList();
+                return;
+            }
         } else if (Object.keys(moliliSectionFields).length) {
             // 导入到现有角色：分节字段 + 主人身份字段合并进该角色档案。
             // ⚠ PUT /catgirl/{name} 的语义是"未传字段即删除"——必须先 GET 全量
@@ -1574,6 +1580,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
         const hasMemoryToImport = Number(preview.candidate_count) > 0;
         // 角色名单加载后填入，用于按后端重名规则推算新建角色的最终名字
         let knownCharacterNames = [];
+        let characterNamesState = 'loading';
 
         const overlay = document.createElement('div');
         overlay.className = 'ccm-modal-overlay';
@@ -1725,6 +1732,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
         fetch('/api/characters').then(r => r.json()).then(data => {
             const names = Object.keys((data && data['猫娘']) || {}).sort();
             knownCharacterNames = names;
+            characterNamesState = 'loaded';
             existingSelect.innerHTML = '';
             names.forEach(name => existingSelect.appendChild(new Option(name, name)));
             if (!names.length) {
@@ -1747,6 +1755,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
         }).catch(() => {
             existingSelect.innerHTML = '';
             existingSelect.appendChild(new Option(_moliliT('character.moliliLoadFailed', '（列表加载失败）'), ''));
+            characterNamesState = 'failed';
         });
 
         const footer = document.createElement('div');
@@ -1775,7 +1784,14 @@ function _showMoliliImportDialog(preview, archiveB64) {
                     showMessage(_moliliT('character.moliliNameRequired', '请填写角色名'), 'warning');
                     return;
                 }
-                // 只有要导记忆时才受记忆系统的名字上限约束；按重名后缀后的最终名字算
+                // 只有要导记忆时才受记忆系统的名字上限约束；按重名后缀后的最终名字算，
+                // 所以名单必须已加载成功（没加载完就算不出后缀）
+                if (hasMemoryToImport && characterNamesState !== 'loaded') {
+                    showMessage(characterNamesState === 'failed'
+                        ? _moliliT('character.moliliLoadFailed', '（列表加载失败）')
+                        : _moliliT('character.moliliLoadingCharacters', '加载中...'), 'warning');
+                    return;
+                }
                 if (hasMemoryToImport
                     && !_moliliNameFitsMemory(_moliliAvailableName(knownCharacterNames, name))) return;
                 close({ mode: 'create', name, masterOverwrite });

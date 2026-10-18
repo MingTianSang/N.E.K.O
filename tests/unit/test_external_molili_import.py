@@ -544,3 +544,18 @@ def test_molili_zip64_end_record_directory_size_is_checked(monkeypatch):
     monkeypatch.setattr(molili.zipfile, "ZipFile", _no_zipfile)
     with pytest.raises(ExternalMemoryImportError, match="too many files"):
         build_molili_candidates(archive)
+
+
+def test_molili_eocd_lookup_prefers_trailing_record_like_zipfile():
+    """A signature-like byte run inside the EOCD's own fields must not hide the real record from the precheck."""
+    from memory.external_molili_import import _declared_central_directory
+
+    data = bytearray(_molili_zip())
+    eocd = len(data) - 22
+    assert data[eocd:eocd + 4] == b"PK" + bytes([5, 6])
+    # 把 EOCD 的「中央目录偏移」字段（第 16-20 字节）写成签名字节：只用 rfind 会
+    # 命中这个更靠后的假位置；zipfile 先认末尾 22 字节的真记录
+    data[eocd + 16:eocd + 20] = b"PK" + bytes([5, 6])
+    count, directory_bytes = _declared_central_directory(bytes(data))
+    assert count == int.from_bytes(data[eocd + 10:eocd + 12], "little")
+    assert directory_bytes == int.from_bytes(data[eocd + 12:eocd + 16], "little")

@@ -149,9 +149,16 @@ def _declared_central_directory(archive_bytes: bytes) -> tuple[int, int] | None:
     # EOCD 最长 = 65535 字节 ZIP 注释 + 22 字节结构本身；窗口不足会在合法
     # 长注释归档上漏掉 EOCD，预筛失效退回「构造后才发现」。
     tail = archive_bytes[-(65535 + 22):]
-    pos = tail.rfind(b"PK\x05\x06")
-    if pos < 0 or pos + 22 > len(tail):
-        return None
+    # 与 zipfile._EndRecData 同顺序：先认末尾 22 字节的无注释 EOCD，找不到才
+    # 回退 rfind。只用 rfind 的话，EOCD 自己的偏移/大小字段里若恰好出现签名
+    # 字节，会命中那个更靠后的假位置而返回 None，预筛被跳过。
+    last = archive_bytes[-22:]
+    if len(last) == 22 and last[:4] == b"PK\x05\x06" and last[-2:] == b"\x00\x00":
+        pos = len(tail) - 22
+    else:
+        pos = tail.rfind(b"PK\x05\x06")
+        if pos < 0 or pos + 22 > len(tail):
+            return None
     count = int.from_bytes(tail[pos + 10:pos + 12], "little")
     directory_bytes = int.from_bytes(tail[pos + 12:pos + 16], "little")
     # zip64：定位器（20 字节）紧贴 EOCD 之前，zip64 结束记录（56 字节）紧贴定位器
