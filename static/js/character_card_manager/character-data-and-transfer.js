@@ -1176,6 +1176,16 @@ function _moliliRefreshCardList() {
 // 建卡 / 改卡之前就拦下，不留下导了一半的角色。
 const MOLILI_MEMORY_NAME_MAX_LENGTH = 50;
 
+// 与后端 _available_character_name 同规则：重名时追加 (1)、(2)…，记忆导入用的
+// 是加完后缀的最终名字，长度检查必须按它算。
+function _moliliAvailableName(existingNames, requestedName) {
+    const taken = new Set(existingNames || []);
+    if (!taken.has(requestedName)) return requestedName;
+    let counter = 1;
+    while (taken.has(`${requestedName}(${counter})`)) counter += 1;
+    return `${requestedName}(${counter})`;
+}
+
 function _moliliNameFitsMemory(name) {
     if (String(name || '').length <= MOLILI_MEMORY_NAME_MAX_LENGTH) return true;
     showMessage(_moliliT('character.moliliNameTooLong',
@@ -1560,6 +1570,10 @@ function _showMoliliImportDialog(preview, archiveB64) {
         const counts = preview.counts || {};
         const skipped = preview.skipped || {};
         const suggestedName = card.suggested_name || 'Molili';
+        // 没有记忆候选的归档只建卡、不调 commit，不受记忆系统的名字上限约束
+        const hasMemoryToImport = Number(preview.candidate_count) > 0;
+        // 角色名单加载后填入，用于按后端重名规则推算新建角色的最终名字
+        let knownCharacterNames = [];
 
         const overlay = document.createElement('div');
         overlay.className = 'ccm-modal-overlay';
@@ -1710,6 +1724,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
         // 现有角色名单（GET /api/characters 的 猫娘 字典即全部档案）
         fetch('/api/characters').then(r => r.json()).then(data => {
             const names = Object.keys((data && data['猫娘']) || {}).sort();
+            knownCharacterNames = names;
             existingSelect.innerHTML = '';
             names.forEach(name => existingSelect.appendChild(new Option(name, name)));
             if (!names.length) {
@@ -1760,7 +1775,9 @@ function _showMoliliImportDialog(preview, archiveB64) {
                     showMessage(_moliliT('character.moliliNameRequired', '请填写角色名'), 'warning');
                     return;
                 }
-                if (!_moliliNameFitsMemory(name)) return;
+                // 只有要导记忆时才受记忆系统的名字上限约束；按重名后缀后的最终名字算
+                if (hasMemoryToImport
+                    && !_moliliNameFitsMemory(_moliliAvailableName(knownCharacterNames, name))) return;
                 close({ mode: 'create', name, masterOverwrite });
             } else {
                 const name = existingSelect.value;
@@ -1768,7 +1785,7 @@ function _showMoliliImportDialog(preview, archiveB64) {
                     showMessage(_moliliT('character.moliliPickExisting', '请选择要导入的现有角色'), 'warning');
                     return;
                 }
-                if (!_moliliNameFitsMemory(name)) return;
+                if (hasMemoryToImport && !_moliliNameFitsMemory(name)) return;
                 close({ mode: 'existing', name, masterOverwrite });
             }
         };
