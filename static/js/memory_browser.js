@@ -4868,10 +4868,11 @@
                         persistedCharacterName = big.character_name;
                         broadcastExternalMemoryEdited(big.character_name);
                     }
+                    // 与 partial 分支、Molili 向导对称：带上单独超上限的天数说明
                     throw new Error(translate(
                         'memory.externalImportTooLargeToFuse',
                         'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
-                    ));
+                    ) + externalImportDayNotes(big));
                 }
                 throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
             }
