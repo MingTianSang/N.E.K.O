@@ -1165,6 +1165,21 @@ function _moliliForgetRetryTarget(preview) {
 
 // 收尾刷新角色列表：超时/部分失败时服务端往往已建卡并继续落盘（实测形态：
 // 浏览器报超时，服务端随后跑完）——不刷新的话新角色要重开页面才可见。
+function _moliliPartialDayNotes(partial) {
+    const notes = [];
+    const failedDays = Number(partial && partial.failed_days) || 0;
+    const oversizedDays = Number(partial && partial.oversized_days) || 0;
+    if (failedDays > 0) {
+        notes.push(_moliliT('character.moliliFailedDaysNote',
+            `其中 ${failedDays} 天抽取失败，再导入一次会重试。`, { count: failedDays }));
+    }
+    if (oversizedDays > 0) {
+        notes.push(_moliliT('character.moliliOversizedDaysNote',
+            `另有 ${oversizedDays} 天单独超过单次导入上限，需要先拆分这几天的内容。`, { count: oversizedDays }));
+    }
+    return notes.length ? ' ' + notes.join(' ') : '';
+}
+
 function _moliliRefreshCardList() {
     if (typeof loadCharacterCards === 'function') {
         loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
@@ -1461,14 +1476,17 @@ async function handleMoliliArchiveImport(file) {
             const personaDone = Number(p.persona_done) || 0;
             const dailyTotal = Number(p.daily_total) || 0;
             const dailyDone = Number(p.daily_done) || 0;
+            const personaFrac = personaTotal ? personaDone / personaTotal : 0;
             if (dailyTotal) {
-                const personaFrac = personaTotal ? personaDone / personaTotal : 0;
                 const dailyFrac = dailyDone / dailyTotal;
                 barInner.style.width = Math.round(100 * (0.25 * personaFrac + 0.75 * dailyFrac)) + '%';
                 stageLine.textContent = _moliliT('character.moliliStageDaily',
                     `整理记忆批次 ${dailyDone}/${dailyTotal}...`, { done: dailyDone, total: dailyTotal });
+            } else if (personaFrac > 0) {
+                // 还没有日常记忆进度（还在 persona 阶段，或归档根本没有日常记忆）：
+                // 按人格融合进度走，不让进度条停在初始宽度看着像卡住；阶段文案不变
+                barInner.style.width = Math.max(8, Math.round(100 * personaFrac)) + '%';
             }
-            // daily_total=0 = 还在 persona 阶段：条保持初始宽度，阶段文案不变
         };
 
         let moliliPollTimer = null;
@@ -1522,8 +1540,10 @@ async function handleMoliliArchiveImport(file) {
                         }
                         const counts = { persona: partial.added_persona || 0, facts: partial.added_facts || 0 };
                         const remainingDays = Number(partial.remaining_days) || 0;
+                        // 抽取失败的天 / 单独超上限的天：后端都有计数，一并告诉用户
+                        const dayNotes = _moliliPartialDayNotes(partial);
                         // 分段续导：一次导不完的日期顺延到下次，提示用户再导一次接着往后导
-                        const err = new Error(outcome === 'external_import_partial' && remainingDays > 0
+                        const err = new Error((outcome === 'external_import_partial' && remainingDays > 0
                             ? _moliliT('character.moliliImportContinue',
                                 `已导入一部分：保存了 ${counts.persona} 条人格、${counts.facts} 条事实，还有 ${remainingDays} 天的日常记忆留到下次。请再执行一次导入，会接着往后导，已导入的内容自动跳过。`,
                                 { ...counts, days: remainingDays })
@@ -1533,7 +1553,7 @@ async function handleMoliliArchiveImport(file) {
                                 counts)
                             : _moliliT('character.moliliImportTooLarge',
                                 `要整理的日常记忆超过单次导入上限，这部分未能导入（已保存 ${counts.persona} 条人格、${counts.facts} 条事实）。`,
-                                counts));
+                                counts)) + dayNotes);
                         err.moliliOutcome = outcome;
                         throw err;
                     }

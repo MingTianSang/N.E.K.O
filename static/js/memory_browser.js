@@ -4636,6 +4636,23 @@
         return payload;
     }
 
+    function externalImportDayNotes(partial) {
+        const notes = [];
+        const failedDays = Number(partial && partial.failed_days) || 0;
+        const oversizedDays = Number(partial && partial.oversized_days) || 0;
+        if (failedDays > 0) {
+            notes.push(translate('memory.externalImportFailedDaysNote',
+                '{{count}} of those journal days failed extraction and will be retried on the next import.',
+                { count: failedDays }));
+        }
+        if (oversizedDays > 0) {
+            notes.push(translate('memory.externalImportOversizedDaysNote',
+                '{{count}} more journal days each exceed the single-import limit; split those days first.',
+                { count: oversizedDays }));
+        }
+        return notes.length ? ' ' + notes.join(' ') : '';
+    }
+
     function broadcastExternalMemoryEdited(characterName) {
         if (typeof BroadcastChannel !== 'undefined') {
             let channel = null;
@@ -4829,18 +4846,20 @@
                     }
                     // 分段续导：超过单次调用上限的日记天顺延到下次，提示用户再导一次接着导
                     const remainingDays = Number(partial.remaining_days) || 0;
+                    // 抽取失败的天 / 单独超上限的天：后端都有计数，一并告诉用户
+                    const dayNotes = externalImportDayNotes(partial);
                     if (remainingDays > 0) {
                         throw new Error(translate(
                             'memory.externalImportContinue',
                             'Part of the import is done: {{persona}} persona entries and {{facts}} facts were saved, and {{days}} journal days are left for the next run. Import again to continue; imported content is skipped.',
                             { persona: partial.added_persona || 0, facts: partial.added_facts || 0, days: remainingDays }
-                        ));
+                        ) + dayNotes);
                     }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
                         { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
-                    ));
+                    ) + dayNotes);
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
