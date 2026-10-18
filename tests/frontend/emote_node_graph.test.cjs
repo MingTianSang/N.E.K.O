@@ -262,6 +262,21 @@ test('只是点过去的格子（跟随默认外观）不会进包', () => {
     assert.deepEqual(plan.dropped.map((d) => d.reason), ['unassigned']);
 });
 
+test('绑用户图片的格子算"已设置"，空图片 id 不算', () => {
+    // 复现 2026-10-18 故障：图片槽在规划层被当"未选动作"丢弃，导出里直接没有
+    const plan = planOf([
+        node('source.default', {}, 'root'),
+        node('source.image', { imageId: 'img-x' }, 'img'),
+        node('output.state', { stateKey: 'happy_image' }, 'o-img'),
+        node('output.state', { stateKey: 'talking_image' }, 'o-bad'),
+    ], [
+        { from: 'img', to: 'o-img', fromSocket: 'look', toSocket: 'look' },
+        { from: 'root', to: 'o-bad', fromSocket: 'look', toSocket: 'look' },
+    ], outList([['o-img', 'happy_image'], ['o-bad', 'talking_image']]));
+    assert.deepEqual(plan.kept.map((o) => o.nodeId), ['o-img']);
+    assert.deepEqual(plan.dropped.map((d) => d.reason), ['unassigned']);
+});
+
 test('接了动画的输出留下，中间夹了加工节点也认得', () => {
     const g = {
         schemaVersion: 1,

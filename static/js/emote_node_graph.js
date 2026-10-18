@@ -171,8 +171,11 @@
                 return;
             }
             const source = findSource(graph, output.nodeId, 'source');
-            const assigned = Boolean(source && source.type === 'source.scene'
-                && String(source.params.sceneId || ''));
+            // 绑了用户图片的格子同样是"用户真的设置过"：图片状态没有场景，
+            // 只认 source.scene 会把它当"未选动作"丢掉。
+            const assigned = Boolean(source && (
+                (source.type === 'source.scene' && String(source.params.sceneId || ''))
+                || (source.type === 'source.image' && String(source.params.imageId || ''))));
             if (!assigned && !required.has(key)) {
                 dropped.push({ output, reason: 'unassigned' });
                 return;
