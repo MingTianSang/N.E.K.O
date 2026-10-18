@@ -1202,3 +1202,31 @@ async def test_daily_all_deduped_days_rotate_behind_deferred_days(monkeypatch):
     # 刚全部去重的两天排到后面，顺延的 01-03 / 01-04 先轮到
     assert sorted(harness.extract_inputs) == ["new four", "new three"]
     assert second["deferred_days"] == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_import_terminates_once_every_remaining_day_deduped(monkeypatch):
+    """When every remaining over-cap day already deduped entirely in this process, the import finishes instead of looping."""
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 2)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0)
+
+    class _AllDedupHarness(_DailyHarness):
+        async def _apersist_new_facts(self, lanlan_name, extracted, **kwargs):
+            return []  # every extracted fact already exists
+
+    harness = _AllDedupHarness(lambda journal: [{"text": f"fact: {journal}", "importance": 5}])
+    candidates = []
+    for day in ("2026-01-01", "2026-01-02", "2026-01-03"):
+        candidates += _daily(f"memories/{day}.md", day, f"history {day}")
+
+    results = []
+    for _ in range(4):
+        results.append(await harness.aimport_external_daily("Neko", candidates, "hermes", "t"))
+        if results[-1]["deferred_days"] == 0:
+            break
+
+    # Each day is tried once; once all of them deduped in this process the import finishes.
+    assert results[-1]["deferred_days"] == 0
+    assert results[-1]["skipped_days"] == 3
+    assert len(results) <= 3
+    assert len(set(harness.extract_inputs)) == 3

@@ -5418,6 +5418,18 @@ class FactStore:
                     f"{len(groups_by_file[oversized[0]])} extraction calls "
                     f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
                 )
+            if all(day_fps[f] in recently_deduped for f in selectable):
+                # Every remaining day already ran in this process and all of its facts
+                # deduped against existing ones, so re-running them cannot add anything and
+                # (having no completion fingerprint) they would be re-selected forever. Count
+                # them as skipped and let this import finish. The hint is in-memory only:
+                # a reload / restart clears it and the next import tries them again.
+                logger.info(
+                    f"[FactStore] {lanlan_name}: {len(selectable)} remaining daily journal(s) "
+                    "already deduped entirely in this process; finishing the import"
+                )
+                skipped_days += len(selectable)
+                selectable = []
             selected: list[str] = []
             used_calls = 0
             for source_file in selectable:
