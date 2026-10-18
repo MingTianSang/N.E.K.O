@@ -1101,6 +1101,12 @@ async function handleImportCharacterCard(event) {
 // 先让用户显式选类型，再打开对应 accept 的文件选择器。返回 'card'/'molili'/null。
 function _showImportTypeDialog() {
     return new Promise(resolve => {
+        // 焦点管理：打开时聚焦第一个选项、Tab 困在弹窗内循环、关闭还原焦点——
+        // 否则焦点留在遮罩后的导入按钮上，Tab 会穿透到背景控件，Enter 还能
+        // 再开一层选择框（Codex/Greptile P2）。
+        const previouslyFocused = (document.activeElement
+            && typeof document.activeElement.focus === 'function')
+            ? document.activeElement : null;
         const overlay = document.createElement('div');
         overlay.className = 'ccm-modal-overlay';
         overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10002;display:flex;align-items:center;justify-content:center;animation:ccmFadeIn 0.18s ease';
@@ -1111,6 +1117,7 @@ function _showImportTypeDialog() {
         const close = (value) => {
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
             document.removeEventListener('keydown', escHandler);
+            if (previouslyFocused) previouslyFocused.focus();
             resolve(value);
         };
         const escHandler = (e) => { if (e.key === 'Escape') close(null); };
@@ -1121,6 +1128,7 @@ function _showImportTypeDialog() {
         title.textContent = _moliliT('character.importTypeTitle', '选择导入类型');
         dialog.appendChild(title);
 
+        const optionButtons = [];
         [
             {
                 key: 'card',
@@ -1148,11 +1156,25 @@ function _showImportTypeDialog() {
             item.appendChild(optionDesc);
             item.addEventListener('click', () => close(option.key));
             dialog.appendChild(item);
+            optionButtons.push(item);
         });
 
         overlay.appendChild(dialog);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
         document.body.appendChild(overlay);
+        if (optionButtons[0]) optionButtons[0].focus();
+        dialog.addEventListener('keydown', (e) => {
+            if (e.key !== 'Tab' || !optionButtons.length) return;
+            const first = optionButtons[0];
+            const last = optionButtons[optionButtons.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        });
     });
 }
 
