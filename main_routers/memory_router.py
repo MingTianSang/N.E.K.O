@@ -1953,10 +1953,10 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     if not validation.ok:
         raise ExternalMemoryImportError("Invalid target character name")
     requested_format = str(payload.get("source_format") or "auto").strip().lower()
-    # Molili 归档里图片附件占大头（样本 ~9MB 中 ~8.6MB 是 attachments/），解码
-    # 上限按格式放宽；8MiB 的文本预算仍由各解析器对"实际解析的文本"把关。
-    # auto 也先按 Molili 上限解码：嗅探之前不知道是不是 Molili，嗅探失败的
-    # 归档再补一道 8MiB 检查，OpenClaw/Hermes 的上限不变。
+    # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
+    # cap is widened per format; the 8 MiB text budget is still enforced by each parser on the text it actually parses.
+    # auto also decodes up to the Molili cap first: before sniffing we cannot know whether it is Molili; archives that
+    # fail the sniff get an extra 8 MiB check, so OpenClaw/Hermes caps are unchanged.
     archive_cap = MAX_ZIP_BYTES if requested_format in {"molili", "auto"} else MAX_TOTAL_BYTES
     archive_bytes = _decode_external_archive(payload.get("archive_b64"), max_bytes=archive_cap)
     direct_files = payload.get("files")
@@ -2045,7 +2045,7 @@ async def preview_external_memory_import(request: Request):
             "truncated_preview": len(analysis["candidates"]) > 100,
         }
         if "character_card" in analysis:
-            # Molili 独有：建卡预填材料与跳过清单，前端据此先建角色再导记忆
+            # Molili only: card prefill material and the skip report; the frontend creates the character first, then imports memories
             response["character_card"] = analysis["character_card"]
             response["master_profile"] = analysis.get("master_profile") or {}
             response["skipped"] = analysis["skipped"]
@@ -2154,9 +2154,9 @@ async def commit_external_memory_import(request: Request):
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
     except httpx.TimeoutException:
-        # 转发窗口到点 ≠ 导入失败：记忆服务器会继续跑完，逐日指纹幂等，稍候重导
-        # 即可收尾。给前端稳定的错误码——httpx 的超时异常 str() 可能是空串，
-        # 前端靠文案正则认不出来，只会弹通用失败。
+        # The forwarding window running out is not an import failure: the memory server keeps running and daily fingerprints are
+        # idempotent, so a later re-import finishes it. Give the frontend a stable error code: httpx timeout exceptions may str() to
+        # an empty string, which the frontend's message regex cannot recognise and would show as a generic failure.
         logger.warning("External memory import forward timed out; memory server keeps running")
         return JSONResponse(
             {

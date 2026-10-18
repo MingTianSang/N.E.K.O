@@ -1348,7 +1348,7 @@ async def put_card_meta(name: str, request: Request):
     new_origin = data.get('origin') if isinstance(data, dict) else None
     if new_author is None and new_origin is None:
         return JSONResponse({'success': False, 'error': '缺少 author / origin 字段'}, status_code=400)
-    # origin 只接受单向标记为 Molili 导入（导入向导使用），其余值不可经此接口改动
+    # origin only accepts the one-way Molili-import marker (used by the import wizard); other values cannot be changed here
     if new_origin is not None and new_origin != 'molili':
         return JSONResponse({'success': False, 'error': 'origin 仅支持设置为 molili'}, status_code=400)
 

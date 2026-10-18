@@ -89,17 +89,17 @@ from memory.external_markdown_import import (
 #: itself gets this larger cap so users can upload the export as-is.
 MAX_ZIP_BYTES = EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES
 MAX_ARCHIVE_MEMBERS = 2048
-#: 中央目录字节数上限：每条目录项 46 字节固定头 + 文件名/扩展字段，按平均
-#: 每项 256 字节给余量（Molili 导出的路径都很短，2048 项约 300 KB）。这限住的
-#: 是 zipfile 构造时物化的条目量（最坏约 1.1 万个极短条目），不是精确计数——
-#: 精确的 2048 上限由构造后的 raw_member_count 复核。
+#: Central-directory byte cap: each entry is a 46-byte fixed header + name / extra fields; allow an average of
+#: 256 bytes per entry (Molili export paths are short; 2048 entries are ~300 KB). This bounds
+#: how many entries zipfile materializes on construction (worst case ~11k tiny entries), not the exact count;
+#: the exact 2048 cap is re-checked by raw_member_count after construction.
 MAX_CENTRAL_DIRECTORY_BYTES = MAX_ARCHIVE_MEMBERS * 256
 MAX_SAMPLED_SKIPPED = 20
-#: role_prompt 按标题拆出的卡片字段数上限；超出则整段回退单一"设定"字段。
+#: Cap on card fields split from role_prompt headings; beyond it the whole prompt falls back to a single "设定" field.
 MAX_CARD_SECTIONS = 64
 
-# 角色卡保留字段（通用编辑接口会静默过滤）+ 旧平铺兼容字段（如 pngtuber_idle_image，
-# 迁移时会被收进 _reserved 并删掉）+ 核心名字字段（会覆盖用户选的名字）
+# Reserved card fields (silently filtered by the generic edit API) + legacy flat compat fields (such as pngtuber_idle_image,
+# which migration folds into _reserved and deletes) + core name fields (would overwrite the name the user chose)
 _RESERVED_TAG_NAMES = frozenset((
     *CHARACTER_RESERVED_FIELDS, *CHARACTER_LEGACY_FLAT_RESERVED_FIELDS, "档案名", "昵称",
 ))
@@ -111,15 +111,15 @@ _PERSONA_FILE_SECTIONS = {
     "trait_profile.md": "特质人格",
     "interaction_profile.md": "交互习惯",
 }
-# 归档里可能有多个 personality/<agent>/ 目录（多角色存档）。v1 只导一个：
-# 不同 agent 的人格混进同一个 neko 池会互相污染，且 commit 管线也只有一个
-# 角色名可落。多余的目录进 skipped 报告，等真实需求出现再放宽。
+# An archive may hold several personality/<agent>/ directories (multi-character saves). v1 imports one:
+# mixing different agents' personas into one neko pool contaminates both, and the commit pipeline has only one
+# character name to land on. Extra directories go into the skipped report until a real need appears.
 _COGNITIVE_LINE_RE = re.compile(r"^\s*\d+\.\s*(.+?)\s*\(@(\d{4}-\d{2}-\d{2})[\d\s:.]*\)\s*$")
 _ROLE_NAME_RE = re.compile(r"^\s*你是(.+?)(?=\s*[（(【\s，,、]|$)", re.MULTILINE)
 _SECTION_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
-# emoji/符号装饰清理范围：象形文字、杂项符号与装饰（☀-➿）、扩展符号
-# （⬀-⯿）、区域指示符、变体选择符、ZWJ 与 keycap。不含箭头（→ 等在正文里
-# 有语义）。CJK 不受影响。范围边界码点已用探针验证（2600/27bf/2b00/2bff）。
+# Emoji / decorative symbol cleanup range: pictographs, misc symbols and dingbats (☀-➿), extended symbols
+# (⬀-⯿), regional indicators, variation selectors, ZWJ and keycap. Arrows are excluded (→ etc. carry meaning
+# in body text). CJK is unaffected. Range boundary code points were verified with probes (2600/27bf/2b00/2bff).
 _EMOJI_RE = re.compile(
     "["
     "\U0001F000-\U0001FAFF"
@@ -141,17 +141,17 @@ def _declared_central_directory(archive_bytes: bytes) -> tuple[int, int] | None:
 
     Mirrors how ``zipfile`` locates them (EOCD, overridden by a zip64 end
     record directly before its locator); ``None`` when there is no EOCD."""
-    # ``zipfile.ZipFile`` 构造会把中央目录物化成 ZipInfo，上限必须在构造之前
-    # 预筛，否则数万成员的归档会先吃满 CPU/内存才被拒。成员计数可以伪造（改小
-    # 计数、目录照旧很大），但 zipfile 只读 EOCD 登记的那段目录字节——卡住目录
-    # 字节数才真正限住构造时物化的条目量；计数仍一并检查，构造后的
-    # ``raw_member_count`` 再按实际条目复核。
-    # EOCD 最长 = 65535 字节 ZIP 注释 + 22 字节结构本身；窗口不足会在合法
-    # 长注释归档上漏掉 EOCD，预筛失效退回「构造后才发现」。
+    # ``zipfile.ZipFile`` materializes the central directory into ZipInfo objects on construction, so the cap must be
+    # prechecked before constructing; otherwise an archive with tens of thousands of members eats CPU/memory before rejection. The member
+    # count can be forged (lowered while the directory stays large), but zipfile only reads the directory bytes the EOCD declares,
+    # so capping those bytes is what actually bounds the entries materialized on construction; the count is still checked too, and
+    # ``raw_member_count`` re-checks the real entries after construction.
+    # The EOCD is at most 65535 bytes of ZIP comment + the 22-byte structure; a smaller window would miss the EOCD on
+    # legitimate long-comment archives, and the precheck would fall back to finding out after construction.
     tail = archive_bytes[-(65535 + 22):]
-    # 与 zipfile._EndRecData 同顺序：先认末尾 22 字节的无注释 EOCD，找不到才
-    # 回退 rfind。只用 rfind 的话，EOCD 自己的偏移/大小字段里若恰好出现签名
-    # 字节，会命中那个更靠后的假位置而返回 None，预筛被跳过。
+    # Same order as zipfile._EndRecData: accept a comment-less EOCD in the trailing 22 bytes first, and only
+    # fall back to rfind otherwise. With rfind alone, signature bytes that happen to appear in the EOCD's own offset/size
+    # fields would hit that later fake position and return None, skipping the precheck.
     last = archive_bytes[-22:]
     if len(last) == 22 and last[:4] == b"PK\x05\x06" and last[-2:] == b"\x00\x00":
         pos = len(tail) - 22
@@ -161,13 +161,13 @@ def _declared_central_directory(archive_bytes: bytes) -> tuple[int, int] | None:
             return None
     count = int.from_bytes(tail[pos + 10:pos + 12], "little")
     directory_bytes = int.from_bytes(tail[pos + 12:pos + 16], "little")
-    # zip64：定位器（20 字节）紧贴 EOCD 之前，zip64 结束记录（56 字节）紧贴定位器
-    # 之前；zipfile 遇到定位器就改用记录里的 8 字节计数与目录大小。
+    # zip64: the locator (20 bytes) sits right before the EOCD and the zip64 end record (56 bytes) right before the locator;
+    # when zipfile sees a locator it uses the record's 8-byte count and directory size instead.
     locator = len(archive_bytes) - len(tail) + pos - 20
     if locator >= 0 and archive_bytes[locator:locator + 4] == b"PK\x06\x07":
-        # 项目锁定的 Python 3.11 假定 zip64 结束记录紧贴定位器之前（不跟定位器
-        # 里的偏移）；更新的 zipfile 可能改为按偏移找（带扩展数据区时两处不同）。
-        # 两处都读，取较大的计数 / 目录大小，按最坏情况预筛。
+        # The project's pinned Python 3.11 assumes the zip64 end record sits right before the locator (it ignores the locator's
+        # offset); newer zipfile versions may look it up by offset (the two differ when there is an extensible data sector).
+        # Read both and take the larger count / directory size, prechecking the worst case.
         candidates = {locator - 56, int.from_bytes(archive_bytes[locator + 8:locator + 16], "little")}
         for record in candidates:
             if 0 <= record and archive_bytes[record:record + 4] == b"PK\x06\x06":
@@ -221,22 +221,22 @@ class _MemberReader:
         files: list[dict[str, Any]] | None,
     ) -> None:
         if archive_bytes is not None:
-            # 构造 ZipFile 前先按 EOCD 声明值拦截成员超限的归档（见
-            # _declared_member_count）；构造后的 raw_member_count 仍会复核。
+            # Before constructing ZipFile, reject archives whose EOCD-declared members exceed the caps (see
+            # _central_directory_over_limit); raw_member_count still re-checks after construction.
             if _central_directory_over_limit(archive_bytes):
                 raise ExternalMemoryImportError("Molili archive contains too many files")
             self._archive = zipfile.ZipFile(io.BytesIO(archive_bytes))
         else:
             self._archive = None
         self._files = list(files or [])
-        # 上限按原始成员数算（路径过滤之前）：ZipFile 构造时已把全部 ZipInfo
-        # 物化，被过滤掉的穿越形成员同样占内存/CPU。
+        # The cap counts raw members (before path filtering): ZipFile has already materialized every ZipInfo on construction,
+        # and filtered-out traversal-shaped members cost memory/CPU just the same.
         self.raw_member_count = (
             len(self._archive.infolist()) if self._archive is not None else len(self._files)
         )
         self.skipped_names: list[str] = []
-        # 规范化路径 → 原始 ZipInfo：成员名可能是 ``a\b.md`` 这类反斜杠形，
-        # 读取必须用原始条目，不能拿规范化路径回 getinfo()。
+        # Normalized path -> original ZipInfo: member names may use backslashes such as ``a\b.md``,
+        # so reads must use the original entry rather than passing the normalized path back to getinfo().
         self._infos: dict[str, zipfile.ZipInfo] = {}
 
     def __enter__(self) -> "_MemberReader":
@@ -354,9 +354,9 @@ def _flatten_profile(value: object, prefix: str = "") -> list[str]:
     return lines
 
 
-# Molili 归档里画像的身份分类键是「基础信息」——「础」U+7840，不是
-# 「基本信息」的「本」U+672C。两词一字之差、控制台转义后几乎无法分辨
-# （础 vs 本），曾让整条身份拆分静默落空；键值以此常量为准。
+# The identity category key for the portrait in Molili archives is "基础信息" ("础" U+7840), not
+# "基本信息" ("本" U+672C). The two differ by one character and are nearly indistinguishable once escaped in a console
+# (础 vs 本), which once made the whole identity split silently miss; this constant is the source of truth for the key.
 _BASIC_INFO_KEY = "基础信息"
 
 
@@ -491,13 +491,13 @@ def build_molili_candidates(
             )
         snapshot_time = str(manifest.get("snapshot_time") or "")
         consumed_files.append(manifest_path)
-        # 跳过项的真实计数以 manifest 为准（我们数的是文件/成员，不是消息条数）
+        # The real skip counts come from the manifest (we count files/members, not messages)
         manifest_counts = manifest.get("counts") if isinstance(manifest.get("counts"), dict) else {}
         skipped["conversation_messages"] = _manifest_count(manifest_counts, "conversation_messages")
         skipped["cache_memory_records"] = _manifest_count(manifest_counts, "cached_memory_records")
         skipped["owned_items"] = _manifest_count(manifest_counts, "owned_items")
 
-        # ── 分类成员：attachments 与 conversations 永不入池，只进报告 ──
+        # ── Classify members: attachments and conversations never enter the pool, only the report ──
         agent_dirs = sorted({
             path.split("/")[1] for path in paths
             if path.startswith("personality/") and len(path.split("/")) > 2
@@ -522,7 +522,7 @@ def build_molili_candidates(
                 if len(skipped["attachments"]["samples"]) < MAX_SAMPLED_SKIPPED:
                     skipped["attachments"]["samples"].append(path)
 
-        # ── 人格：role_prompt 去角色卡，其余进 neko persona ──
+        # ── Persona: role_prompt goes to the character card, the rest into the neko persona ──
         agent = agent_dirs[0]
         skipped["extra_personality_agents"] = max(0, len(agent_dirs) - 1)
         personality_files = sorted(
@@ -540,26 +540,26 @@ def build_molili_candidates(
         if name_match:
             suggested_name = name_match.group(1).strip() or None
 
-        # 按 markdown 标题拆节：每节一个卡片自定义字段（tag=节标题），替代
-        # 一整坨塞进"设定"。正文/标题统一 emoji 清理。无标题的退化输入回退
-        # 单一"设定"字段，保持旧行为可用。
-        # 节标题避开角色卡保留字段名（全部保留字段会被 POST/PUT 静默过滤，
-        # 档案名/昵称会覆盖用户选的名字）。碰撞时加前缀 "Molili " 区分。
+        # Split on markdown headings: one custom card field per section (tag = heading), instead of
+        # stuffing everything into "设定". Bodies and headings are emoji-cleaned alike. Degenerate input without headings falls back to
+        # a single "设定" field, keeping the old behavior usable.
+        # Section headings avoid reserved card field names (every reserved field is silently filtered by POST/PUT,
+        # and 档案名/昵称 would overwrite the name the user chose). Collisions get a "Molili " prefix.
         card_sections: list[dict[str, str]] = []
         master_profile: dict[str, str] = {}
         used_tags: set[str] = set()
         next_suffix: dict[str, int] = {}
         sections = _split_markdown_sections(system_prompt)
         if len(sections) > MAX_CARD_SECTIONS:
-            # 标题多到不像正常设定（每节都会变成一个卡片字段）：退回单一
-            # "设定"字段，全文仍完整保留。
+            # So many headings that it does not look like a normal setting (each section becomes a card field): fall back to a single
+            # "设定" field; the full text is still kept intact.
             sections = [("", system_prompt)] if system_prompt else []
         for sec_title, sec_body in sections:
             tag = (sec_title or "设定").strip()[:60]
             if tag in _RESERVED_TAG_NAMES:
                 tag = f"Molili {tag}"
             base_tag = tag
-            # 每个基础名记住下一个可用后缀，重复标题不再从 2 起逐个探测
+            # Remember the next free suffix per base name, so repeated headings no longer probe one by one from 2
             counter = next_suffix.get(base_tag, 1)
             while tag in used_tags:
                 counter += 1
@@ -597,7 +597,7 @@ def build_molili_candidates(
                         source_file=path, event_date=event_date,
                     )
 
-        # ── 长期记忆：profile_v1 → master persona；event_v1 → 按天 daily ──
+        # ── Long-term memory: profile_v1 -> master persona; event_v1 -> per-day daily ──
         long_term_path = next((p for p in paths if p == "memory/long_term.jsonl"), None)
         daily_order: list[str] = []
         daily_fragments: dict[str, list[tuple[str, str]]] = {}
@@ -613,9 +613,9 @@ def build_molili_candidates(
             for record in _decode_jsonl(read_budgeted(long_term_path), long_term_path):
                 memory_type = str(record.get("memory_type") or "")
                 if memory_type in {"profile_cache", "event_cache"}:
-                    # 计数已在 manifest.counts 里拿过，这里只负责跳过。唯一例外：
-                    # volc 版 profile_v1 的基本信息常被置成 null，身份字段只剩
-                    # profile_cache 还带着（结构化 {"昵称": ...}），从那里捞。
+                    # Counts were already taken from manifest.counts; this only skips. The one exception:
+                    # the volc profile_v1 often has a null basic-info section, and the identity fields survive only in
+                    # profile_cache (structured {"昵称": ...}), so recover them from there.
                     if memory_type == "profile_cache" and not master_profile:
                         cached_content = record.get("content")
                         try:
@@ -630,8 +630,8 @@ def build_molili_candidates(
                             )
                     continue
                 if memory_type == "profile_v1":
-                    # 真实归档里画像挂在 memory_info.user_profile（JSON 字符串）；
-                    # 旧缓存变体把同结构放在顶层 content，两个位置都认一下
+                    # In real archives the portrait hangs off memory_info.user_profile (a JSON string);
+                    # the older cache variant keeps the same structure in top-level content, so accept both locations
                     info = record.get("memory_info")
                     raw_profile: object = None
                     if isinstance(info, dict) and info.get("user_profile"):
@@ -651,13 +651,13 @@ def build_molili_candidates(
                         raise ExternalMemoryImportError(
                             "Molili archive has a malformed profile_v1 payload"
                         )
-                    # 身份字段（基本信息，如昵称）不进记忆候选：N.E.K.O 的主人卡是
-                    # 全局的，记忆候选里的身份声明会与全局卡冲突、被人格融合守卫
-                    # 整条拒绝。拆出来交给上层决定去向（写入角色私有设定或全局卡）；
-                    # 且候选集变化会生成新融合指纹，让上次被拒的画像在重导时真正重试。
-                    # 注意：真实 volc 版 profile_v1 的基本信息是 null——身份以
-                    # profile_cache 的结构化字段为准（见上方 cache 分支），
-                    # v1 自身带字段时才覆盖。
+                    # Identity fields (basic info such as the nickname) are not memory candidates: N.E.K.O's master card is
+                    # global, and identity claims among memory candidates would conflict with the global card and be rejected wholesale
+                    # by the persona fusion guard. Split them out and let the caller decide where they go (private setting or global card);
+                    # the changed candidate set also yields a new fusion fingerprint, so a previously rejected portrait really retries on re-import.
+                    # Note: in real volc archives the profile_v1 basic info is null; identity comes from
+                    # profile_cache's structured fields (see the cache branch above),
+                    # and v1 only overrides when it carries the fields itself.
                     identity = profile.get(_BASIC_INFO_KEY)
                     master_profile = _identity_fields(identity) or master_profile
                     portrait = {
@@ -679,7 +679,7 @@ def build_molili_candidates(
                     if event_date and summary:
                         add_daily(event_date, "记忆", summary)
 
-        # ── 日记：与同日事件合并进同一个 daily 文件，省一次抽取调用 ──
+        # ── Diaries: merged with same-day events into one daily file, saving an extraction call ──
         for path in sorted(p for p in paths if p.startswith("diaries/") and p.endswith(".jsonl")):
             for record in _decode_jsonl(read_budgeted(path), path):
                 event_date = _validate_event_date(record.get("date"), path)
@@ -719,8 +719,8 @@ def build_molili_candidates(
 def detect_molili_archive(archive_bytes: bytes) -> bool:
     """Sniff whether a zip is a Molili user-data export (manifest format tag)."""
     try:
-        # ZipFile 构造会物化整个中央目录：成员数明显超限的直接判定为非
-        # Molili 归档，不进构造（显式 molili 模式下会拿到明确的报错文案）。
+        # Constructing ZipFile materializes the whole central directory: archives clearly over the member caps are judged
+        # not Molili and never constructed (explicit molili mode gets a clear error message instead).
         if _central_directory_over_limit(archive_bytes):
             return False
         with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
@@ -731,7 +731,7 @@ def detect_molili_archive(archive_bytes: bytes) -> bool:
             )
             if info is None or info.file_size > MAX_FILE_BYTES:
                 return False
-            # 与 _MemberReader.read_text 同写法：有界流读，不信中央目录声明的大小
+            # Same approach as _MemberReader.read_text: a bounded stream read that does not trust the central directory's declared size
             with archive.open(info, "r") as stream:
                 data = stream.read(MAX_FILE_BYTES + 1)
             if len(data) > MAX_FILE_BYTES:

@@ -123,7 +123,7 @@ def test_molili_archive_maps_to_layers():
     card = analysis["character_card"]
     assert card["suggested_name"] == "言叶"
     assert "自然属性" in card["system_prompt"]
-    # role_prompt 按 ## 标题拆节（tag=节标题、emoji 清理），不再是单一设定整块
+    # role_prompt splits into sections on ## headings (tag = heading, emoji cleaned) instead of one setting blob
     assert [s["tag"] for s in card["sections"]] == ["自然属性", "言叶性格"]
     assert "抑郁质" in card["sections"][1]["text"]
     assert "👍" not in json.dumps(card["sections"], ensure_ascii=True)
@@ -132,17 +132,17 @@ def test_molili_archive_maps_to_layers():
                     if c["target"] == "persona" and c["entity"] == "neko"]
     sections = {c["source_section"] for c in neko_persona}
     assert {"特质人格", "交互习惯", "重要设定"} <= sections
-    # 好感度快照改走「Molili 我的档案」字段（卡面受保护事实），不进 persona
-    # 候选——避免与分节卡面事实话题重叠被矛盾守卫误拒
-    # 好感度为 Molili 游戏属性，不迁移（卡面/记忆/我的档案均不出现）
+    # The affinity snapshot moves to the "Molili my profile" field (a protected card fact) instead of persona
+    # candidates, avoiding topic overlap with the section card facts that the contradiction guard would reject
+    # Affinity is a Molili game attribute and is not migrated (absent from the card, memories and my profile)
     assert "好感度" not in analysis["master_profile"]
     assert not any("好感度" in c["text"] for c in analysis["candidates"])
 
     master_persona = [c for c in analysis["candidates"]
                       if c["target"] == "persona" and c["entity"] == "master"]
     assert any("喜欢猫薄荷" in c["text"] for c in master_persona)
-    # 身份字段（基本信息）拆出 master_profile，不进记忆候选：避免与全局主人卡
-    # 冲突被人格守卫整条拒绝
+    # Identity fields (basic info) split out into master_profile, not memory candidates: avoids conflicting with the global
+    # master card and being rejected wholesale by the persona guard
     assert analysis["master_profile"] == {"昵称": "璃琉期"}
     assert not any("璃琉期" in c["text"] for c in analysis["candidates"])
 
@@ -153,7 +153,7 @@ def test_molili_archive_maps_to_layers():
         "molili/memory/2026-08-25.md",
     }
     assert {c["event_date"] for c in daily} == {"2026-08-24", "2026-08-25"}
-    # 同一天的日记与事件合并进同一个 daily 文件
+    # Same-day diaries and events merge into one daily file
     same_day = [c for c in daily if c["source_file"] == "molili/memory/2026-08-24.md"]
     assert {c["source_section"] for c in same_day} == {"记忆", "日记"}
 
@@ -162,7 +162,7 @@ def test_molili_archive_maps_to_layers():
     assert skipped["conversation_messages"] == 794
     assert skipped["cache_memory_records"] == 1
     assert skipped["owned_items"] == 3
-    # 附件与原始对话绝不进候选
+    # Attachments and raw conversations never become candidates
     assert not any(c["source_file"].startswith(("attachments/", "conversations/"))
                    for c in analysis["candidates"])
 
@@ -310,7 +310,7 @@ def test_molili_sections_dedupe_and_emoji_cleanup():
     sections = analysis["character_card"]["sections"]
 
     assert [s["tag"] for s in sections] == ["关键正面规则", "关键正面规则 2"]
-    assert "喵" in sections[0]["text"]  # 清理不伤 CJK 正文
+    assert "喵" in sections[0]["text"]  # Cleanup leaves CJK body text intact
     assert "👍" not in json.dumps(sections, ensure_ascii=True)
 
 
@@ -345,9 +345,9 @@ def test_router_preview_dispatches_molili_zip():
     assert result["source_format"] == "molili"
     assert result["character_card"]["suggested_name"] == "言叶"
     assert result["master_profile"] == {"昵称": "璃琉期"}
-    # persona 融合按 entity 分组：neko（特质/交互/设定/好感度）+ master（画像）
+    # Persona fusion groups by entity: neko (traits / interaction / settings / affinity) + master (portrait)
     assert result["persona_fusion_calls"] == 2
-    # 两个日期文件 → 2 次逐日抽取
+    # Two date files -> 2 daily extraction calls
     assert result["daily_extraction_calls"] == 2
     assert result["skipped"]["attachments"]["count"] == 1
 
@@ -382,7 +382,7 @@ def test_molili_reads_members_stored_with_backslash_names():
 
     archive_bytes = _zip_bytes({"personality/a/role_prompt.md": "你是言叶。"})
     with _MemberReader(archive_bytes, None) as reader:
-        # 模拟非 Windows 平台上的反斜杠成员名：zipfile 只在 Windows 上自动归一化
+        # Simulate backslash member names as on non-Windows platforms: zipfile only normalizes them on Windows
         info = reader._archive.infolist()[0]
         info.filename = chr(92).join(["personality", "a", "role_prompt.md"])
         reader._archive.NameToInfo = {info.filename: info}
@@ -442,7 +442,7 @@ def test_router_auto_format_accepts_molili_archive_over_markdown_cap(monkeypatch
     import main_routers.memory_router as memory_router
 
     molili_zip = _molili_zip()
-    # 上限压到归档一半：base64 长度按 3 字节取整，差 1 字节的上限测不出来
+    # Cap at half the archive: base64 length rounds to 3 bytes, so a cap 1 byte short would not be detected
     monkeypatch.setattr(memory_router, "MAX_TOTAL_BYTES", len(molili_zip) // 2)
 
     _name, analysis = memory_router._prepare_external_import({
@@ -510,7 +510,7 @@ def test_molili_forged_eocd_count_is_rejected_before_zipfile_parses(monkeypatch)
     from memory.external_molili_import import MAX_ARCHIVE_MEMBERS
 
     archive = _patched_eocd_zip(MAX_ARCHIVE_MEMBERS * 2, declared_count=10)
-    # 目录上限按字节算；把它压到这份归档的目录之下，验证「改小计数」绕不过去
+    # The directory cap is in bytes; push it below this archive's directory to prove lowering the count cannot bypass it
     monkeypatch.setattr(molili, "MAX_CENTRAL_DIRECTORY_BYTES", 64 * 1024)
 
     def _no_zipfile(*_args, **_kwargs):
@@ -553,8 +553,8 @@ def test_molili_eocd_lookup_prefers_trailing_record_like_zipfile():
     data = bytearray(_molili_zip())
     eocd = len(data) - 22
     assert data[eocd:eocd + 4] == b"PK" + bytes([5, 6])
-    # 把 EOCD 的「中央目录偏移」字段（第 16-20 字节）写成签名字节：只用 rfind 会
-    # 命中这个更靠后的假位置；zipfile 先认末尾 22 字节的真记录
+    # Write signature bytes into the EOCD's central-directory-offset field (bytes 16-20): rfind alone would
+    # hit this later fake position; zipfile checks the real trailing 22-byte record first
     data[eocd + 16:eocd + 20] = b"PK" + bytes([5, 6])
     count, directory_bytes = _declared_central_directory(bytes(data))
     assert count == int.from_bytes(data[eocd + 10:eocd + 12], "little")
@@ -573,7 +573,7 @@ def test_molili_zip64_end_record_found_through_locator_offset(monkeypatch):
     record[0:4] = b"PK" + bytes([6, 6])
     record[32:40] = (10).to_bytes(8, "little")
     record[40:48] = (MAX_CENTRAL_DIRECTORY_BYTES + 1).to_bytes(8, "little")
-    gap = bytes(32)  # 扩展数据区：结束记录不再紧贴定位器
+    gap = bytes(32)  # Extensible data sector: the end record no longer sits right before the locator
     record_offset = eocd
     locator = bytearray(20)
     locator[0:4] = b"PK" + bytes([6, 7])

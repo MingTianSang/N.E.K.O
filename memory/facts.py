@@ -340,18 +340,18 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # Per-character file locks.
         self._locks_guard = threading.Lock()  # Protect the _locks dictionary itself.
         self._persist_alocks: dict[str, asyncio.Lock] = {}
-        # 外部 daily 导入的礼貌起呼间隔：挂在共享的 FactStore 上，多个角色
-        # 同时导入时也共用同一个间隔（它们共享同一个 provider 配额）。
-        # 上次起呼时间记在闸门锁对象上（gate.last_call_at），运行时热替换
-        # FactStore 时共享这一个锁即同时共享间隔状态。
-        # 构造时就建好（不懒建）：运行时热替换会把这个对象复制给新的
-        # FactStore，懒建时复制过去的可能是 None，新旧导入就各建各的闸门。
-        # asyncio.Lock 在首次等待时才绑定事件循环，构造期创建是安全的。
+        # Courtesy call-start interval for external daily imports: it lives on the shared FactStore, so several characters
+        # importing at once share one interval (they share one provider quota).
+        # The last call time is stored on the gate lock object (gate.last_call_at), so sharing this one lock
+        # when the runtime hot-replaces the FactStore shares the interval state as well.
+        # Built at construction (not lazily): runtime hot replacement copies this object to the new
+        # FactStore, and a lazily built gate could be copied as None, leaving old and new imports with separate gates.
+        # asyncio.Lock only binds an event loop on its first wait, so creating it at construction is safe.
         self._external_daily_call_gate: asyncio.Lock = asyncio.Lock()
         self._external_daily_call_gate.last_call_at = 0.0
-        # 外部 daily 分段续导的排序提示：本进程里抽取过、但事实全部命中既有事实
-        # 而没留下完成标记的天（{角色: {天指纹}}）。只用来把它们排到顺延天之后，
-        # 不跳过任何天、不落盘——回滚或重启后清空即恢复原排序，不影响回滚自愈。
+        # Ordering hint for segmented external daily imports: days extracted in this process whose facts all matched existing
+        # facts and left no completion marker ({character: {day fingerprint}}). Only used to order them after deferred days;
+        # never skips a day on its own and is never persisted, so a rollback or restart clears it and restores the original order, keeping rollback self-healing intact.
         self._external_daily_deduped_fps: dict[str, set[str]] = {}
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
@@ -2851,8 +2851,8 @@ class FactStore:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
                 if thinking:
-                    # 钩子紧贴实际请求：配置读取 / 建客户端也会挂起，放在它们之前
-                    # 会让并发请求的真正起呼顺序乱掉
+                    # Keep the hook right before the actual request: config reads / client construction can also suspend, and putting it before them
+                    # would scramble the real call-start order of concurrent requests
                     if before_attempt is not None:
                         await before_attempt()
                     resp, _ = await ainvoke_thinking(
@@ -5380,18 +5380,18 @@ class FactStore:
         deferred_days = 0
         oversized_days = 0
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
-            # 分段续导：超过单次调用上限时，挑出放得下的天先导，其余顺延到下次
-            # 导入。已完成的天会被逐日指纹 skip，所以每次重导都接着往后推进，
-            # 任意长度的历史导几次就收敛（Molili 归档无法拆分，整份拒绝会让长期
-            # 用户永远导不进）。
-            # - 单独一天就超上限的天单独拎出（oversized）：重试也推进不了，但不能
-            #   让它挡住后面的日期；只剩它们时才按 too_large 拒绝。
-            # - 先导「从没导过的文件」，再导「导过、这次内容改了」的文件，各自按
-            #   日期从早到晚：改过的旧日记抽出的事实常全部命中既有事实而去重，
-            #   这类天不记完成标记（见 _aload_imported_day_fps，为回滚自愈），
-            #   若排在前面会每次被重新选中、占满额度，让真正的新日期永远轮不到。
-            # 本进程里刚试过且全部去重的天排在最后：否则它们每次都被重新选中、
-            # 占满额度，顺延的天永远轮不到（例如同一段历史已从别的来源导入过）。
+            # Segmented resume: over the per-import call cap, the days that fit run now and the rest are deferred to the next
+            # import. Finished days skip by daily fingerprint, so every re-import moves further ahead and
+            # any length of history converges within a few imports (Molili archives cannot be split; rejecting the whole archive would
+            # leave long-time users unable to import ever).
+            # - Days that alone exceed the cap are set aside (oversized): retrying cannot progress them, but they must not
+            #   block later dates; only when nothing else is left are they rejected as too_large.
+            # - Never-imported files go first, then files imported before whose content changed, each from
+            #   earliest to latest: facts extracted from edited old diaries often all dedupe against existing facts,
+            #   such days record no completion marker (see _aload_imported_day_fps, kept for rollback self-healing),
+            #   and if they came first they would be re-selected every time and fill the budget, starving the genuinely new dates.
+            # Days just tried in this process whose facts all deduped go last: otherwise they are re-selected every time and
+            # fill the budget, so deferred days never get their turn (e.g. the same history was already imported from another source).
             recently_deduped = self._external_daily_deduped_fps.get(lanlan_name, set())
             previously_imported_files = {
                 str(meta.get('file'))
@@ -5449,22 +5449,22 @@ class FactStore:
             pending = {source_file: pending[source_file] for source_file in selected}
             groups_by_file = {source_file: groups_by_file[source_file] for source_file in selected}
             total_batches = used_calls
-        # 进度上报（外部导入进度条用）：total 先报，之后每完成一批 +1
+        # Progress reporting (for the external import progress bar): report the total first, then +1 per finished batch
         if on_progress is not None:
             on_progress({'daily_total': total_batches, 'daily_done': 0})
 
         daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
-        # 拆半递归的额外调用预算：上面的 cap 只数了预拆的批，失败批每拆一次
-        # 多出 2 次调用。预算与 cap 同量级（总调用 ≤ 2×cap），耗尽后失败批
-        # 直接判该天失败（整天原子、可重试），不再无界递归撞转发超时。
+        # Extra call budget for split-in-half recursion: the cap above only counts the pre-split batches, and each split of a failed batch
+        # adds 2 calls. The budget matches the cap (total calls <= 2x cap); once spent, failed batches
+        # fail the day directly (day-atomic, retryable) instead of recursing unboundedly into the forwarding timeout.
         split_budget = {'left': EXTERNAL_IMPORT_DAILY_MAX_FILES}
 
-        # 免费档礼貌间隔：任意两次抽取起呼之间的最小间隔（跨天/跨批，且跨
-        # 同时进行的多个角色导入——锁与时间戳挂在共享的 FactStore 上），把
-        # 并发突发摊成匀速。并发槽决定同时在飞的调用数，这个间隔决定起呼
-        # 频率——两者配合才是对免费配额/WAF 真正的温和。锁内只做时间计算与
-        # sleep，不罩 LLM 调用本身（不占并发槽的驻留时间）。
+        # Free-tier courtesy interval: the minimum gap between any two extraction call starts (across days / batches, and across
+        # concurrent imports of several characters, since the lock and timestamp live on the shared FactStore), turning
+        # concurrency bursts into a steady pace. Concurrency slots bound how many calls are in flight; this interval bounds the
+        # start rate; together they actually spare free quotas / WAFs. The lock only covers the time arithmetic and
+        # sleep, never the LLM call itself (so it does not extend concurrency slot residency).
         call_gate = self._external_daily_call_gate
 
         async def _polite_gap() -> None:
@@ -5516,21 +5516,21 @@ class FactStore:
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
                         failure_info=failure,
-                        # 礼貌间隔挂在每次实际请求前（含内部网络重试），限流时
-                        # 重试也要排队，不能和别的批次同时起呼。
+                        # The courtesy interval runs before every actual request (including internal network retries): under rate limiting
+                        # retries must queue too instead of starting alongside other batches.
                         before_attempt=_polite_gap,
-                        # 截断类失败交给 _extract_group 的拆半递归（每半本身就是
-                        # 一次子集重试），同批盲试 3 次是纯浪费——解析失败 1 次就拆。
-                        # 只限解析失败：网络错误 / 429 / 5xx 仍按完整退避重试，
-                        # 单片段的批没法拆，不能一次抖动就丢掉整天。
+                        # Truncation-type failures go to _extract_group's split-in-half recursion (each half is itself
+                        # a subset retry); blindly retrying the same batch 3 times is pure waste, so split after 1 parse failure.
+                        # Parse failures only: network errors / 429 / 5xx still retry with full backoff,
+                        # since a single-fragment batch cannot be split and one hiccup must not drop the whole day.
                         parse_max_retries=1,
                     )
                 has_malformed_elements = (
                     extracted is not None and any(not _persistable_element(f) for f in extracted)
                 )
                 if extracted is None or has_malformed_elements:
-                    # 只有输出类失败（解析失败 / 格式不对）拆半才可能修好；网络 /
-                    # 429 / 5xx 在完整退避后仍失败时拆了只会多烧配额和时间。
+                    # Only output-type failures (parse failure / wrong shape) might be fixed by splitting; network /
+                    # 429 / 5xx failures after full backoff would only burn more quota and time if split.
                     output_failure = extracted is not None or failure.get("reason") in {"parse", "schema"}
                     if output_failure and len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
                         split_budget['left'] -= 2
@@ -5624,7 +5624,7 @@ class FactStore:
             # Most days lack this sidecar fingerprint, returning after one stat (Codex).
             await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
             if not new_facts:
-                # 抽出了事实但全部去重：不记完成标记（见上），只记进程内排序提示
+                # Facts were extracted but all deduped: record no completion marker (see above), only the in-process ordering hint
                 self._external_daily_deduped_fps.setdefault(lanlan_name, set()).add(
                     day_fps[source_file]
                 )

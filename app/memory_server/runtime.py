@@ -384,9 +384,9 @@ def _share_fact_store_write_state(old_component, new_component) -> None:
     """Keep full-file fact writers serialized and cache-coherent on reload."""
     if old_component is None:
         return
-    # _external_daily_call_gate：礼貌起呼闸门（上次起呼时间记在锁对象上），
-    # 热替换时一并共享，否则旧导入和新导入各自的间隔互不可见，会打破
-    # 对免费配额/WAF 的全局起呼节奏。
+    # _external_daily_call_gate: the courtesy call-start gate (last call time lives on the lock object),
+    # shared on hot replacement too; otherwise old and new imports cannot see each other's interval, breaking
+    # the global call-start pacing that spares free quotas / WAFs.
     for attr in ("_locks", "_locks_guard", "_persist_alocks", "_facts",
                  "_external_daily_call_gate"):
         if hasattr(old_component, attr) and hasattr(new_component, attr):

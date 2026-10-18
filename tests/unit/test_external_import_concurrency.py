@@ -506,7 +506,7 @@ class _DailyConcurrencyHarness(FactStore):
         return None
 
     async def _allm_extract_facts(self, lanlan_name, messages, *, before_attempt=None, **_kwargs):
-        # 忠实模拟真实路径：礼貌间隔挂在每次实际请求前
+        # Faithful to the real path: the courtesy interval runs before every actual request
         if before_attempt is not None:
             await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
@@ -559,8 +559,8 @@ async def test_daily_concurrency_is_bounded_by_semaphore(monkeypatch):
     from config import EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
     import memory.facts as facts_module
 
-    # 本测试目标是 Semaphore 峰值；礼貌间隔会把起呼摊成匀速、与信号量无关，
-    # 置 0 隔离变量。
+    # This test targets the Semaphore peak; the courtesy interval spreads call starts evenly and is unrelated to the semaphore,
+    # so set it to 0 to isolate the variable.
     monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.0)
 
     active = 0
@@ -611,8 +611,8 @@ async def test_daily_crashing_day_is_counted_failed_and_others_survive():
 
 @pytest.mark.asyncio
 async def test_daily_polite_gap_spaces_call_starts(monkeypatch):
-    # 礼貌间隔：全局任意两次抽取起呼间隔 ≥ interval，把突发摊成匀速
-    # （免费档 WAF 配额友好）。间隔 ≫ 单批耗时时并发自然失效，是设计使然。
+    # Courtesy interval: any two extraction call starts are at least `interval` apart, turning bursts into a steady pace
+    # (friendly to free-tier WAF quotas). When the interval far exceeds one batch's duration, concurrency naturally collapses, by design.
     import memory.facts as facts_module
 
     monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.2)

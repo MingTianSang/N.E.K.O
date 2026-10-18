@@ -446,7 +446,7 @@ def test_json_path_limit_raises_cap_only_for_the_listed_post_path():
     hit, sent = _run(_drive(mw, _scope_for("/api/memory/external_import/preview", 200)))
     assert hit is True and sent[0]["status"] == 200
 
-    # 其他路径、其他方法仍走全局上限
+    # Other paths and other methods still use the global cap
     hit, sent = _run(_drive(_make_json_override(), _scope_for("/api/memory/other", 200)))
     assert hit is False and sent[0]["status"] == 413
     hit, sent = _run(_drive(_make_json_override(), _scope_for("/api/memory/external_import/preview", 200, "PUT")))
@@ -471,7 +471,7 @@ def test_external_import_body_cap_fits_largest_archive_and_is_registered():
     assert EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES > base64_len + 1024
     assert EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES > DEFAULT_MAX_INBOUND_BODY_BYTES
 
-    # 导入 app.main_server 会跑整套启动流程，这里只静态核对两条路由都登记了
+    # Importing app.main_server runs the whole startup sequence; only check statically that both routes are registered
     source = (Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py").read_text(encoding="utf-8")
     for route in ("/api/memory/external_import/preview", "/api/memory/external_import/commit"):
         assert f'"{route}": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES' in source

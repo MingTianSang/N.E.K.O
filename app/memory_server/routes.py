@@ -581,13 +581,13 @@ class ExternalMemoryImportRequest(BaseModel):
     render_language: str | None = None
 
 
-# ── 外部导入进度登记（Molili/前端进度条轮询用） ────────────────────────────
-# character → {stage, persona_total/done, daily_total/done, finished, ...}。
-# 写入点：_import_external_markdown（注册/融合/收尾）与 aimport_external_daily
-# 的 on_progress 回调（每完成一批）。单角色一条、条目极小，不设淘汰；
-# async 单线程事件循环内读写，无需加锁。每次导入持有自己的条目对象、只改
-# 自己那份：同一角色的重叠请求（前端超时后重试）由后来者覆盖登记，先跑完的
-# 旧请求不会把新请求的条目标成 finished，也不会往里写计数。
+# ── External import progress registry (polled by the Molili frontend progress bar) ──────────
+# character → {stage, persona_total/done, daily_total/done, finished, ...}.
+# Written by _import_external_markdown (register / fuse / finish) and by
+# aimport_external_daily's on_progress callback (once per batch). One small entry per character, no eviction;
+# read and written on the single-threaded event loop, so no lock is needed. Each import owns its own entry
+# object and only edits that one: an overlapping request for the same character (a retry after a frontend
+# timeout) re-registers over it, and the older request finishing first never marks the newer entry finished or writes counts into it.
 _IMPORT_PROGRESS: dict[str, dict] = {}
 
 
@@ -753,7 +753,7 @@ async def _import_external_markdown(
     # Slow Phase 2 (LLM) is unlocked: only LLM round trips run concurrently; persistence is mutually exclusive.
     persona_entities = list(persona_candidates_by_entity.items())
 
-    # 进度登记：persona 按 entity 计数，daily 的计数由 on_progress 回调补
+    # Progress registry: persona counts per entity; daily counts come from the on_progress callback
     if progress is None:
         progress = {}
     _IMPORT_PROGRESS[name] = progress
@@ -959,8 +959,8 @@ async def _import_external_markdown(
                 },
             )
         if oversized_days:
-            # 其余天都已导完，只剩单独超上限的天：重试推进不了 → too_large
-            # 引导拆分，并带上本次已落盘的计数（前端据此广播 memory_edited）。
+            # Every other day is imported and only days that alone exceed the cap remain: retrying cannot progress -> too_large
+            # guides splitting, carrying the counts persisted by this import (the frontend broadcasts memory_edited from them).
             logger.warning(
                 "External Markdown import: %s daily journal(s) alone exceed the call cap: "
                 "character=%s",

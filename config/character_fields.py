@@ -60,9 +60,9 @@ CHARACTER_RESERVED_FIELDS = tuple(
 )
 
 
-# COMPAT(v1->v2): 迁入 _reserved 之前的旧平铺字段名。迁移时这些顶层键会被当作
-# 旧配置收进 _reserved 并从角色档案里删掉，所以任何写入角色档案的普通字段
-# （例如外部导入按标题拆出的分节字段）都不能用这些名字。
+# COMPAT(v1->v2): legacy flat field names from before the move into _reserved. Migration treats these top-level keys as
+# legacy config, folds them into _reserved and deletes them from the profile, so no ordinary field written to a profile
+# (e.g. the per-heading section fields from external imports) may use these names.
 CHARACTER_LEGACY_FLAT_RESERVED_FIELDS = (
     "voice_id",
     "system_prompt",

@@ -201,7 +201,7 @@ async def test_daily_over_cap_imports_oldest_days_and_defers_the_rest(monkeypatc
 
     harness = _DailyHarness(lambda journal: [{"text": f"fact: {journal}", "importance": 5}])
     candidates = []
-    # 故意乱序给出：顺延按日期从早到晚挑，不按传入顺序
+    # Given deliberately out of order: deferral picks days from earliest to latest, not in input order
     for day in (5, 1, 4, 2, 3):
         candidates += _daily(f"memories/2026-01-0{day}.md", f"2026-01-0{day}", f"journal {day}")
 
@@ -210,7 +210,7 @@ async def test_daily_over_cap_imports_oldest_days_and_defers_the_rest(monkeypatc
     assert first == {"added": 3, "days": 5, "failed_days": 0, "skipped_days": 0, "deferred_days": 2, "oversized_days": 0}
     assert sorted(harness.extract_inputs) == ["journal 1", "journal 2", "journal 3"]
 
-    # 再导一次：已完成的 3 天按指纹跳过，接着导剩下的 2 天
+    # Import again: the 3 finished days skip by fingerprint, and the remaining 2 days run next
     harness.extract_inputs.clear()
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
 
@@ -733,23 +733,23 @@ async def test_malformed_array_without_objects_is_failed_day():
 
 @pytest.mark.asyncio
 async def test_mixed_array_with_malformed_elements_is_failed_day():
-    # wehos 14：数组混有非 object 元素（[{"text": ...}, "junk"]）旧行为只留 dict
-    # 整批接受、当天指纹照记——被丢元素的内容重导时被指纹 skip，永远补不回。
-    # 与「无 object 数组」同口径：strict 失败天（split 兜底），不 checkpoint sidecar。
+    # wehos 14: an array mixing non-object elements ([{"text": ...}, "junk"]) used to keep only the dicts,
+    # accept the whole batch and record the day's fingerprint, so the dropped content was skipped on re-import and never recovered.
+    # Same rule as "arrays without objects": strict failed day (split fallback), no sidecar checkpoint.
     harness = _DailyHarness(lambda journal: [{"text": "real fact", "importance": 5}, "junk"])
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
     assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0, "oversized_days": 0}
-    assert harness.state_fps == set()             # 混合元素不 checkpoint
+    assert harness.state_fps == set()             # Mixed elements never checkpoint
 
 
 @pytest.mark.asyncio
 async def test_dict_without_text_is_failed_day_not_silent_drop():
-    # coderabbit：[{"text": "ok"}, {"fact": "..."}] 两个都是 dict，旧行为整批
-    # 接受——persist 对缺有效 text 的 dict 直接 continue 丢弃，整天指纹却打在
-    # 收下的那条上，被丢元素重导时被指纹 skip、永远补不回。与「无 object 数组」
-    # 同口径：strict 失败天（split 兜底），不 checkpoint sidecar。
+    # coderabbit: [{"text": "ok"}, {"fact": "..."}] are both dicts; the old behavior accepted the whole batch:
+    # persistence silently drops dicts without a valid text, yet the day's fingerprint landed on
+    # the kept fact, so the dropped element was skipped by fingerprint on re-import and never recovered. Same rule as
+    # "arrays without objects": strict failed day (split fallback), no sidecar checkpoint.
     harness = _DailyHarness(
         lambda journal: [{"text": "real fact", "importance": 5}, {"fact": "missing text field"}]
     )
@@ -757,7 +757,7 @@ async def test_dict_without_text_is_failed_day_not_silent_drop():
 
     result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
     assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0, "deferred_days": 0, "oversized_days": 0}
-    assert harness.state_fps == set()             # 缺 text 的 dict 不 checkpoint
+    assert harness.state_fps == set()             # Dicts without text never checkpoint
 
 
 @pytest.mark.asyncio
@@ -983,7 +983,7 @@ async def test_daily_truncated_batch_splits_in_half_and_recovers():
     def stub(journal):
         lines = [line for line in journal.splitlines() if line.strip()]
         if len(lines) >= 3:
-            return None  # 模拟截断：大批必炸
+            return None  # Simulate truncation: large batches always fail
         return [{"text": f"fact: {journal}", "importance": 5}]
 
     harness = _DailyHarness(stub)
@@ -997,9 +997,9 @@ async def test_daily_truncated_batch_splits_in_half_and_recovers():
     )
 
     assert result["failed_days"] == 0
-    # 拆半后的两个半批各自成功；桩每批出 1 条 fact（批=2 片段的拼接文本）
+    # Both halves succeed after the split; the stub yields 1 fact per batch (a batch = 2 joined fragments)
     assert result["added"] == 2
-    # 1 次失败批 + 拆半后的 2 次成功批
+    # 1 failed batch + 2 successful batches after the split
     assert len(harness.extract_inputs) == 3
     all_persisted = [f for batch in harness.persisted for f in batch]
     assert {f["text"] for f in all_persisted} == {
@@ -1043,7 +1043,7 @@ async def test_daily_split_recursion_is_bounded_by_call_budget(monkeypatch):
 
     result = await harness.aimport_external_daily("Neko", candidates, "molili", "t")
 
-    # 预算 2 = 只够拆一次：4 片批失败 → 拆半；左半 2 片再失败时预算已空 → 整天失败
+    # Budget 2 = only one split: the 4-fragment batch fails -> split; when the left 2-fragment half fails again the budget is spent -> the day fails
     assert result["failed_days"] == 1
     assert len(harness.extract_inputs) == 2
     assert harness.persisted == []
@@ -1160,7 +1160,7 @@ async def test_retry_wrapper_runs_before_attempt_hook_for_every_attempt(monkeypa
         "p", "Neko", tier="t", call_type="c", before_attempt=hook,
     )
     assert result == [{"text": "ok"}]
-    # 每次请求前各跑一次：第 1 次请求前 n=0，重试前 n=1
+    # Runs once before each request: n=0 before the 1st request, n=1 before the retry
     assert hook_calls == [0, 1]
 
 
@@ -1182,7 +1182,7 @@ async def test_daily_all_deduped_days_rotate_behind_deferred_days(monkeypatch):
 
     class _DedupHarness(_DailyHarness):
         async def _apersist_new_facts(self, lanlan_name, extracted, **kwargs):
-            # 「dup」天的事实全部命中既有事实：不落盘、不留 provenance
+            # The "dup" days' facts all match existing facts: nothing persists, no provenance is left
             if any("dup" in str(f.get("text")) for f in extracted):
                 return []
             return await super()._apersist_new_facts(lanlan_name, extracted, **kwargs)
@@ -1199,7 +1199,7 @@ async def test_daily_all_deduped_days_rotate_behind_deferred_days(monkeypatch):
 
     harness.extract_inputs.clear()
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
-    # 刚全部去重的两天排到后面，顺延的 01-03 / 01-04 先轮到
+    # The two days that just deduped entirely go last; the deferred 01-03 / 01-04 run first
     assert sorted(harness.extract_inputs) == ["new four", "new three"]
     assert second["deferred_days"] == 2
 

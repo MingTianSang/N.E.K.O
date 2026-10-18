@@ -219,10 +219,10 @@ def _split_long_fragment(text: str) -> list[str]:
     return [item for item in out if item]
 
 
-#: 单次抽取批次里的片段数上限。这是**乐观上限**而非安全上限：片段更多 =
-#: 总调用数更少（免费配额友好），代价是密集批可能顶到 4096 输出护栏——
-#: 那由 facts 侧的拆半递归兜底（失败批二分重试，单片失败才弃天），所以
-#: 这里宁可大：封顶越保守，预先拆出的批越多、总调用越贵。
+#: Cap on fragments per extraction batch. This is an **optimistic** cap, not a safety cap: more fragments =
+#: fewer total calls (friendlier to free quotas), at the cost that dense batches may hit the 4096 output guard;
+#: the facts-side split-in-half recursion covers that (failed batches retry in halves; a day is dropped only when a single fragment fails),
+#: so err on the large side here: a tighter cap pre-splits more batches and makes total calls more expensive.
 MAX_FRAGMENTS_PER_EXTRACTION_BATCH = 40
 
 
