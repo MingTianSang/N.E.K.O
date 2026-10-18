@@ -446,6 +446,14 @@
                 ? 'image:' + source.params.imageId : '';
         }
 
+        /** 这一格上游绑的用户图片条目；图片已从库中删除时返回 null。 */
+        function boundImageFor(node) {
+            const key = imageSourceKey(node);
+            if (!key) return null;
+            const id = key.slice('image:'.length);
+            return userImages().find((entry) => entry.id === id) || null;
+        }
+
         function activeQuality(node) {
             return previewScene ? previewQuality : 'full';
         }
@@ -861,15 +869,21 @@
                 refs.row.setAttribute('aria-selected', String(chosen));
 
                 // 先前只给"正在编辑的那一格"取帧，其余七行一直是空白，要点一下才亮
+                const scene = node ? sceneNodeFor(node) : null;
+                const bound = node ? boundImageFor(node) : null;
                 const sourceScene = node ? committedScene(node) : '';
                 if (slice?.length) paintTileCanvas(refs.thumb, slice[0]);
-                else if (refs.thumb.firstChild === null && node && sourceScene
+                else if (refs.thumb.firstChild === null && node && bound) {
+                    // 绑了用户图片的格子缩略图走图片源；committedScene 给的是
+                    // root: 前缀，照旧路走会把这格永远哑成空白
+                    requestTileThumb(refs.thumb, `image:${bound.id}`);
+                } else if (refs.thumb.firstChild === null && node && sourceScene
                     && sourceScene.indexOf(ROOT_PREFIX) !== 0) {
                     requestTileThumb(refs.thumb, sourceScene);
                 }
 
-                const scene = node ? sceneNodeFor(node) : null;
-                const sub = scene ? (labels[scene.params.sceneId] || '—')
+                const sub = bound ? (bound.label || '—')
+                    : scene ? (labels[scene.params.sceneId] || '—')
                     : t('emoteMaker.stageFollowTag');
                 if (refs.sub.textContent !== sub) refs.sub.textContent = sub;
 
@@ -1149,6 +1163,11 @@
 
         function animationLabel(sceneId) {
             if (isDefaultSource(sceneId)) return t('emoteMaker.stageUseDefaults');
+            if (String(sceneId).indexOf('image:') === 0) {
+                const entry = userImages().find(
+                    (item) => item.id === String(sceneId).slice('image:'.length));
+                return entry ? (entry.label || '—') : '—';
+            }
             const found = animationsFor().find((item) => String(item.value) === String(sceneId));
             return found ? found.label : String(sceneId);
         }

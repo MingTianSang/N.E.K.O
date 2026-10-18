@@ -3783,6 +3783,35 @@
     // 内存里只留 dataURL 供预览与帧绘制；导出/清库跟模板副本同生共死。
     const stageUserImages = new Map();
     let stageUserImagesRestored = false;
+    // 原始文件名随 localStorage 走：副本管线只收 .png 字节，id 又是时间戳
+    // （CJK 文件名进 id 会被洗成横杠），名字必须单独记。单键 { id: name }。
+    const STAGE_IMAGE_NAMES_KEY = 'neko-emote-maker-stage-image-names';
+
+    function loadStageImageNames() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STAGE_IMAGE_NAMES_KEY) || '{}');
+            return saved && typeof saved === 'object' ? saved : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function rememberStageImageName(id, name) {
+        const names = loadStageImageNames();
+        names[id] = String(name || '').trim() || id;
+        try {
+            localStorage.setItem(STAGE_IMAGE_NAMES_KEY, JSON.stringify(names));
+        } catch (_) { /* 存不下就退回 id 当名字 */ }
+    }
+
+    function forgetStageImageName(id) {
+        const names = loadStageImageNames();
+        if (!(id in names)) return;
+        delete names[id];
+        try {
+            localStorage.setItem(STAGE_IMAGE_NAMES_KEY, JSON.stringify(names));
+        } catch (_) { /* 同上 */ }
+    }
     const stagePending = new Map();          // 队列键 -> Promise（同一份不重复排）
     /**
      * 所有采集排队串行跑。bakePackJobs 会暂停渲染器、改 state.selectedSceneId、
@@ -3920,6 +3949,7 @@
             });
             const id = stageImageId(file.name);
             stageUserImages.set(id, { name: file.name, dataUrl });
+            rememberStageImageName(id, file.name);
             persisted.push([id, stageUserImages.get(id)]);
         }
         try {
@@ -3955,7 +3985,9 @@
                     reader.onerror = () => resolve('');
                     reader.readAsDataURL(blob);
                 });
-                if (dataUrl) stageUserImages.set(id, { name: id, dataUrl });
+                const names = loadStageImageNames();
+                if (dataUrl) stageUserImages.set(
+                    id, { name: names[id] || id, dataUrl });
             }
             if (paths.length) pushStageUserImages();
         } catch (_) {
@@ -4117,6 +4149,7 @@
             onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
             onRemoveImage: (imageId) => {
                 stageUserImages.delete(imageId);
+                forgetStageImageName(imageId);
                 pushStageUserImages();
                 if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
                 // 副本上的文件也真删：不然每次打开表演台 restore 又拉回来
@@ -5077,6 +5110,7 @@
         const fps = previewFps || state.exportFps || GIF_EXPORT_FPS;
         const sceneList = getImportedScenes();
         const results = [];
+        let missingImages = 0;
         const previousSceneId = state.selectedSceneId;
         const previousAnimationId = state.animationId;
         try {
@@ -5085,7 +5119,11 @@
                 // 图片状态：没有场景，把用户图片按导出边长画成一帧
                 if (job.imageId) {
                     const image = stageUserImages.get(job.imageId);
-                    if (!image) continue;
+                    if (!image) {
+                        // 真缺图（图被删了还绑着）不再无声：导出时说一声缺了几个
+                        if (!previewFps) missingImages += 1;
+                        continue;
+                    }
                     if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                     const frames = await frameFromStageImage(image, edge);
                     if (!frames.length) continue;
@@ -5126,6 +5164,9 @@
             state.animationId = previousAnimationId;
             const back = sceneList.find((item) => item.id === previousSceneId);
             if (back) syncNativeScene(back, { autoplay: false });
+        }
+        if (missingImages > 0) {
+            showToast(interpolate(t('emoteMaker.stageImagesMissing'), { count: missingImages }));
         }
         return results;
     }
@@ -5223,6 +5264,11 @@
             showToast(t('emoteMaker.packLayeredUnavailable'));
             return null;
         }
+        // 图片槽位的字节在副本里，内存清单只在开表演台时恢复。刷新后直接导出
+        // 而没开过抽屉的话，清单是空的——所有图片槽会被烘包静默跳过。
+        // 先起恢复不 await：setPackBusy 之前不能有让渡点，否则双击会导出两份；
+        // 真正等它落在烘包前。
+        const stageImagesReady = restoreStageImages();
         const graph = currentBakeGraph();
         const model = window.NekoEmoteNodeGraph;
         if (!graph || !model) {
@@ -5304,6 +5350,7 @@
 
         setPackBusy(true);
         try {
+            await stageImagesReady;
             const baked = await bakePackJobs(jobs);
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));

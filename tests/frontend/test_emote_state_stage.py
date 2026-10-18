@@ -1005,6 +1005,67 @@ def test_assigned_rows_show_a_thumb_without_being_clicked(page: Page, running_se
     assert "happy_image" not in hot and "sad_image" not in hot, state
     assert ["walk", "wave"] == [c[0] for c in state["calls"] if c[1]], state
 
+
+def test_image_bound_rows_show_a_thumb_without_being_clicked(page: Page, running_server: str) -> None:
+    """绑了用户图片的行同样要不点击就有缩略图。committedScene 对绑图格子给的是
+    root: 前缀，旧逻辑把它排除在缩略图请求之外 → 图一直哑成空白（2026-10-18 用户抓的）。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        const png = (() => {
+            const c = document.createElement('canvas'); c.width = 24; c.height = 24;
+            const x = c.getContext('2d'); x.fillStyle = '#7a3fa0'; x.fillRect(0, 0, 24, 24);
+            return c.toDataURL('image/png');
+        })();
+        window.__THUMB_CALLS = [];
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: {
+                schemaVersion: 1,
+                nodes: [
+                    mk('source.default', {}, 'root'),
+                    mk('source.image', { imageId: 'img-x' }, 'img-node'),
+                    mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle'),
+                    mk('output.state', { stateKey: 'happy_image', seconds: 0 }, 'o-happy'),
+                ],
+                links: [
+                    { from: 'img-node', to: 'o-idle', fromSocket: 'look', toSocket: 'look' },
+                    { from: 'root', to: 'o-happy', fromSocket: 'look', toSocket: 'look' },
+                ],
+            },
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [{ value: 'walk', label: '散步' }],
+            userImages: () => [{ id: 'img-x', label: '图片.png', thumb: '' }],
+            thumbFor: (sceneId, hot) => {
+                window.__THUMB_CALLS.push([sceneId, hot === true]);
+                return Promise.resolve(png);
+            },
+            framesFor: () => [],
+        });
+        return true;
+    }""")
+    page.wait_for_timeout(700)
+    state = page.evaluate(
+        """() => {
+            const rows = {};
+            document.querySelectorAll('.st-tile').forEach((tile) => {
+                rows[tile.dataset.state] = Boolean(tile.querySelector('.st-tile-thumb img'));
+            });
+            const idleSub = document.querySelector(
+                '.st-tile[data-state="idle_image"] .st-tile-sub')?.textContent || '';
+            return { rows, calls: window.__THUMB_CALLS, idleSub };
+        }"""
+    )
+    assert state["rows"]["idle_image"] is True, state    # 绑图行要有图
+    assert state["rows"]["happy_image"] is False, state  # 跟随默认的行照旧不要
+    assert ["image:img-x", True] in state["calls"], state
+    assert state["idleSub"] == "图片.png", state
+
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
     """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
     _boot(page, running_server)

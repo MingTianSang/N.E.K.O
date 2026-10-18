@@ -4046,6 +4046,7 @@
         "stageImagesPngOnly": "Only PNG images are supported",
         "stageImagesImported": "Imported {{count}} images",
         "stageImagesSaveFailed": "Could not save images into the template copy: you may need to import them again",
+        "stageImagesMissing": "{{count}} image slot(s) skipped — the bound image is missing",
         "nodeSourceImage": "User image",
         "nodeSummary": "Nodes {nodes} · Links {links} · Outputs {outputs}",
         "nodeTextPlaceholder": "Text to show",

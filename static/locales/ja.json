@@ -4046,6 +4046,7 @@
         "stageImagesPngOnly": "PNG 画像のみ対応しています",
         "stageImagesImported": "{{count}} 枚の画像を取り込みました",
         "stageImagesSaveFailed": "テンプレートのコピーに保存できませんでした。再度取り込む必要があるかもしれません",
+        "stageImagesMissing": "画像が見つからないため、画像スロット {{count}} 枚分をスキップしました",
         "nodeSourceImage": "ユーザー画像",
         "nodeSummary": "ノード {nodes} · 接続 {links} · 出力 {outputs}",
         "nodeTextPlaceholder": "表示する文字",

@@ -161,6 +161,12 @@ def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str)
     }""")
     assert assigned == "img-mine", assigned
 
+    # 副标题跟着换：绑了图片的格子不能再报"跟随默认"
+    sub_after = page.evaluate(
+        "() => document.querySelector('.st-tile.is-selected .st-tile-sub')?.textContent || ''")
+    assert sub_after == "我的图片.png", sub_after
+    page.locator(".st-tile.is-selected").screenshot(path="shots/stage_tile_bound_image.png")
+
     # 删除钮：从清单里移除（赋格不受影响，节点还在图上）
     page.evaluate("""() => {
         window.__userImages.splice(0, 1);   // 同步清单

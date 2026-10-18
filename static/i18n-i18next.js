@@ -31,7 +31,7 @@
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并 Plugin API 设置入口与主动搭话喵宇宙社区来源新增 key；递增版本让 Electron、Docker 等长期缓存
     // 重新拉取完整语言包，避免界面把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-10-11-emote-group-export';
+    const LOCALE_VERSION = '2026-10-18-emote-stage-image-missing';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

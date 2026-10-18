@@ -4046,6 +4046,7 @@
         "stageImagesPngOnly": "Apenas imagens PNG são aceitas",
         "stageImagesImported": "{{count}} imagens importadas",
         "stageImagesSaveFailed": "Não foi possível salvar na cópia do modelo: talvez seja preciso importar de novo",
+        "stageImagesMissing": "{{count}} slots de imagem ignorados — a imagem vinculada está ausente",
         "nodeSourceImage": "Imagem do usuário",
         "nodeSummary": "Nós {nodes} · Ligações {links} · Saídas {outputs}",
         "nodeTextPlaceholder": "Texto a exibir",

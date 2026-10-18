@@ -4046,6 +4046,7 @@
         "stageImagesPngOnly": "只支持 PNG 图片",
         "stageImagesImported": "已导入 {{count}} 张图片",
         "stageImagesSaveFailed": "图片没存进模板副本：下次打开可能要重新导入",
+        "stageImagesMissing": "有 {{count}} 个图片槽位因图片丢失被跳过",
         "nodeSourceImage": "用户图片",
         "nodeSummary": "节点 {nodes} · 连线 {links} · 输出 {outputs}",
         "nodeTextPlaceholder": "要显示的文字",

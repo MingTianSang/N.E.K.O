@@ -4046,6 +4046,7 @@
         "stageImagesPngOnly": "Поддерживаются только PNG",
         "stageImagesImported": "Импортировано картинок: {{count}}",
         "stageImagesSaveFailed": "Не удалось сохранить в копию шаблона — возможно, придётся импортировать заново",
+        "stageImagesMissing": "Пропущено слотов изображений: {{count}} — привязанное изображение отсутствует",
         "nodeSourceImage": "Пользовательская картинка",
         "nodeSummary": "Узлы {nodes} · Связи {links} · Выходы {outputs}",
         "nodeTextPlaceholder": "Показываемый текст",
