@@ -5299,12 +5299,16 @@ class FactStore:
         cap, the oldest days that fit are imported and the rest are deferred
         (``deferred_days``): the caller reports a retryable partial result, and
         each re-import skips the finished days by fingerprint and continues
-        with the next ones, so any history converges in a few imports. Only a
-        single day that alone needs more calls than the cap raises
-        ``ExternalMemoryImportTooLargeError`` (retrying cannot make progress).
+        with the next ones, so any history converges in a few imports. Files
+        never imported before go first, then previously imported files whose
+        content changed (their facts often all dedupe and leave no fingerprint,
+        so putting them first would re-select them forever). A day that alone
+        needs more calls than the cap can never run; it is set aside
+        (``oversized_days``) instead of blocking later days, and only when
+        nothing else is left does ``ExternalMemoryImportTooLargeError`` raise.
 
         Returns ``{'added': int, 'days': int, 'failed_days': int,
-        'skipped_days': int, 'deferred_days': int}``.
+        'skipped_days': int, 'deferred_days': int, 'oversized_days': int}``.
         """
         from memory.external_markdown_import import batch_daily_fragments
         from memory.persona.fusion import ExternalMemoryImportTooLargeError
@@ -5366,34 +5370,53 @@ class FactStore:
         )
         total_batches = sum(len(b) for b in groups_by_file.values())
         deferred_days = 0
+        oversized_days = 0
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
-            # 分段续导：超过单次调用上限时，按日期从早到晚挑出放得下的天先导，
-            # 其余顺延到下次导入。已完成的天会被逐日指纹 skip，所以每次重导都
-            # 接着往后推进，任意长度的历史导几次就收敛（Molili 归档无法拆分，
-            # 整份拒绝会让长期用户永远导不进）。只有「单独一天就超上限」才是
-            # 重试也推进不了的情况，仍按 too_large 拒绝。
+            # 分段续导：超过单次调用上限时，挑出放得下的天先导，其余顺延到下次
+            # 导入。已完成的天会被逐日指纹 skip，所以每次重导都接着往后推进，
+            # 任意长度的历史导几次就收敛（Molili 归档无法拆分，整份拒绝会让长期
+            # 用户永远导不进）。
+            # - 单独一天就超上限的天单独拎出（oversized）：重试也推进不了，但不能
+            #   让它挡住后面的日期；只剩它们时才按 too_large 拒绝。
+            # - 先导「从没导过的文件」，再导「导过、这次内容改了」的文件，各自按
+            #   日期从早到晚：改过的旧日记抽出的事实常全部命中既有事实而去重，
+            #   这类天不记完成标记（见 _aload_imported_day_fps，为回滚自愈），
+            #   若排在前面会每次被重新选中、占满额度，让真正的新日期永远轮不到。
+            previously_imported_files = {
+                str(meta.get('file'))
+                for f in await self.aload_facts_full(lanlan_name)
+                if isinstance(meta := f.get('external_import'), dict) and meta.get('file')
+            }
             ordered = sorted(
-                groups_by_file, key=lambda f: (day_dates.get(f) or "", f),
+                groups_by_file,
+                key=lambda f: (f in previously_imported_files, day_dates.get(f) or "", f),
             )
-            first_calls = len(groups_by_file[ordered[0]])
-            if first_calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+            oversized = [
+                f for f in ordered if len(groups_by_file[f]) > EXTERNAL_IMPORT_DAILY_MAX_FILES
+            ]
+            oversized_set = set(oversized)
+            selectable = [f for f in ordered if f not in oversized_set]
+            if not selectable:
                 raise ExternalMemoryImportTooLargeError(
-                    f"daily journal {ordered[0]} alone needs {first_calls} extraction "
-                    f"calls (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
+                    f"daily journal {oversized[0]} alone needs "
+                    f"{len(groups_by_file[oversized[0]])} extraction calls "
+                    f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
                 )
             selected: list[str] = []
             used_calls = 0
-            for source_file in ordered:
+            for source_file in selectable:
                 calls = len(groups_by_file[source_file])
                 if used_calls + calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
                     break
                 selected.append(source_file)
                 used_calls += calls
-            deferred_days = len(pending) - len(selected)
+            deferred_days = len(selectable) - len(selected)
+            oversized_days = len(oversized)
             logger.info(
                 f"[FactStore] {lanlan_name}: 外部 daily 导入超过单次 "
-                f"{EXTERNAL_IMPORT_DAILY_MAX_FILES} 次调用上限，本次先导最早的 "
-                f"{len(selected)} 天（{used_calls} 次调用），{deferred_days} 天顺延到下次导入"
+                f"{EXTERNAL_IMPORT_DAILY_MAX_FILES} 次调用上限，本次先导 "
+                f"{len(selected)} 天（{used_calls} 次调用），{deferred_days} 天顺延到下次导入，"
+                f"{oversized_days} 天单独超上限"
             )
             pending = {source_file: pending[source_file] for source_file in selected}
             groups_by_file = {source_file: groups_by_file[source_file] for source_file in selected}
@@ -5603,6 +5626,7 @@ class FactStore:
             "failed_days": failed_days,
             "skipped_days": skipped_days,
             "deferred_days": deferred_days,
+            "oversized_days": oversized_days,
         }
 
     @staticmethod

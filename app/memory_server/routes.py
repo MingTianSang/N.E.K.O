@@ -924,6 +924,7 @@ async def _import_external_markdown(
         daily_added = daily_result["added"]
         failed_days = daily_result["failed_days"]
         deferred_days = daily_result.get("deferred_days", 0)
+        oversized_days = daily_result.get("oversized_days", 0)
         if failed_days or deferred_days:
             # 有日记天抽取失败或顺延到下次（分段续导）：不能回 success（客户端会
             # 当导入完成、剩余天永久丢失且无重试信号，Greptile P1）→ 返回可重试
@@ -953,6 +954,31 @@ async def _import_external_markdown(
                         "added_facts": memory_added + daily_added,
                         "failed_days": failed_days,
                         "remaining_days": deferred_days,
+                        "oversized_days": oversized_days,
+                    },
+                },
+            )
+        if oversized_days:
+            # 其余天都已导完，只剩单独超上限的天：重试推进不了 → too_large
+            # 引导拆分，并带上本次已落盘的计数（前端据此广播 memory_edited）。
+            logger.warning(
+                "External Markdown import: %s daily journal(s) alone exceed the call cap: "
+                "character=%s",
+                oversized_days, name,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"{oversized_days} daily journal(s) each need more extraction "
+                        "calls than one import allows; split those days"
+                    ),
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added + daily_added,
+                        "oversized_days": oversized_days,
                     },
                 },
             )
