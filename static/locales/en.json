@@ -2766,6 +2766,7 @@
         "moliliCommitTimeout":  "This import took longer than expected; the server is likely still processing it in the background. Wait about a minute, then run the import once more to finish: completed days are skipped automatically and only the remainder is filled in.",
         "moliliAttachmentsNote": "{{count}} attachments and the raw chats are not migrated; save them yourself beforehand if needed",
         "moliliChatsNote": "{{count}} raw chat messages are not migrated; save them yourself beforehand if needed",
+        "moliliOwnedItemsNote": "{{count}} owned items are not migrated",
         "moliliStageFusion": "Fusing personality...",
         "moliliStageDaily":  "Organizing memory batches {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Update your profile to the identity above (note: the profile is shared by all characters and this change affects them)",

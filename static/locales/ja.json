@@ -2766,6 +2766,7 @@
         "moliliCommitTimeout":  "このインポートには時間がかかっています。サーバーはバックグラウンドで処理を続けている可能性があります。約 1 分待ってからもう一度インポートを実行してください。完了済みの日付は自動的にスキップされ、残りだけが取り込まれます。",
         "moliliAttachmentsNote": "添付 {{count}} 件とチャット履歴は記憶に移行されません。必要なら事前に保存してください",
         "moliliChatsNote": "チャット履歴 {{count}} 件は記憶に移行されません。必要なら事前に保存してください",
+        "moliliOwnedItemsNote": "所持アイテム {{count}} 個は移行されません",
         "moliliStageFusion": "人格を融合中...",
         "moliliStageDaily":  "記憶バッチを整理中 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "上記の身元でプロフィールを更新（注意：プロフィールは全キャラクターで共有され、この変更はすべてに影響します）",

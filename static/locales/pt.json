@@ -2766,6 +2766,7 @@
         "moliliCommitTimeout":  "Esta importação está demorando mais do que o esperado; o servidor provavelmente ainda está processando em segundo plano. Aguarde cerca de 1 minuto e execute a importação novamente para concluir: os dias concluídos são pulados automaticamente e apenas o restante é preenchido.",
         "moliliAttachmentsNote": "{{count}} anexos e os chats brutos não são migrados com a memória; guarde-os antes se necessário",
         "moliliChatsNote": "{{count}} mensagens de chat brutas não são migradas com a memória; guarde-as antes se necessário",
+        "moliliOwnedItemsNote": "{{count}} itens adquiridos não são migrados",
         "moliliStageFusion": "Fundindo personalidade...",
         "moliliStageDaily":  "Organizando lotes de memória {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Atualizar o perfil para a identidade acima (atenção: o perfil é compartilhado por todos os personagens e esta alteração os afeta)",

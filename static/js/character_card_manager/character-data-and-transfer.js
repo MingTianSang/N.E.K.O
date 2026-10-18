@@ -1633,6 +1633,13 @@ function _showMoliliImportDialog(preview, archiveB64) {
                 `原始聊天 ${chatCount} 条不会随记忆迁移，如有需要请提前自行保存`,
                 { count: chatCount }));
         }
+        const ownedItemCount = Number(skipped.owned_items) || 0;
+        if (ownedItemCount > 0) {
+            // Molili 的道具是游戏数据，不迁移，用户需要知情
+            summaryLines.push(_moliliT('character.moliliOwnedItemsNote',
+                `道具 ${ownedItemCount} 个不会迁移`,
+                { count: ownedItemCount }));
+        }
         if ((preview.warning_count || 0) > 0) {
             summaryLines.push(_moliliT('character.moliliWarnings',
                 `⚠ 检测到 ${preview.warning_count} 条可疑指令模式，确认导入即代表知悉`,

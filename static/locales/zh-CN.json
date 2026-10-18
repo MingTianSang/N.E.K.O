@@ -2766,6 +2766,7 @@
         "moliliCommitTimeout":  "本次导入耗时较长，服务端可能仍在后台继续处理。请等待约 1 分钟后重新执行一次导入收尾：已完成的日期会自动跳过，只补剩余部分。",
         "moliliAttachmentsNote": "附件 {{count}} 个与原始聊天不会随记忆迁移，如有需要请提前自行保存",
         "moliliChatsNote": "原始聊天 {{count}} 条不会随记忆迁移，如有需要请提前自行保存",
+        "moliliOwnedItemsNote": "道具 {{count}} 个不会迁移",
         "moliliStageFusion": "融合人格中...",
         "moliliStageDaily":  "整理记忆批次 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "同步更新「我的档案」为以上身份（注意：我的档案为所有角色共享，此更改会影响它们）",

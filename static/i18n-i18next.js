@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Molili 归档导入（PR #3447）新增角色名超长提示文案，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-18-pr3447-name-length';
+    const LOCALE_VERSION = '2026-10-18-pr3447-owned-items';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
