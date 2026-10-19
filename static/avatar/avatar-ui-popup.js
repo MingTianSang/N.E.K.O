@@ -857,6 +857,34 @@ function createCatSettingsSidePanel(manager, prefix, popup) {
         }
     });
 
+    // 双入口同步：弹层 DOM 在页面加载时只创建一次，桌面壳聚合设置页回写状态层后
+    // （N.E.K.O.-PC petPreference 管线），复选框会停留在创建时的旧值。展开面板时
+    // 重读三个 getter 再刷样式，保证两个入口看到同一份状态。
+    const syncCheckedStates = () => {
+        [
+            ['auto-cat', window.nekoAutoGoodbye, 'isAutoCatEnabled'],
+            ['gravity-cat', window.nekoIdleCat1Playground, 'isGravityCatEnabled'],
+            ['cat-audio', window.nekoIdleCatAudio, 'isEnabled'],
+        ].forEach(([toggleId, host, getterName]) => {
+            if (!host || typeof host[getterName] !== 'function') return;
+            const checkbox = container.querySelector(`#${prefix}-${toggleId}`);
+            if (!checkbox) return;
+            const nextChecked = host[getterName]() === true;
+            if (checkbox.checked !== nextChecked) {
+                checkbox.checked = nextChecked;
+            }
+            const toggleItem = checkbox.closest(`.${prefix}-toggle-item`);
+            if (toggleItem && typeof toggleItem._nekoUpdateSettingsToggleStyle === 'function') {
+                toggleItem._nekoUpdateSettingsToggleStyle();
+            }
+        });
+    };
+    const originalExpand = container._expand;
+    container._expand = () => {
+        syncCheckedStates();
+        originalExpand();
+    };
+
     document.body.appendChild(container);
     return container;
 }

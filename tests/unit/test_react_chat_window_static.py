@@ -121,6 +121,34 @@ def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
     for sibling in ("'chat-settings'", "'animation-settings'", "'visit-settings'"):
         assert sibling in tutorial_guard_block
 
+    # 教程侧按 data-neko-sidepanel-type 找面板的两处列表也要覆盖 cat-settings。
+    repo_root = Path(__file__).resolve().parents[2]
+    for tutorial_relative_path in (
+        "static/tutorial/yui-guide/page-handoff.js",
+        "static/tutorial/visual/resistance-controllers.js",
+    ):
+        tutorial_source = (repo_root / tutorial_relative_path).read_text(encoding="utf-8")
+        assert '[data-neko-sidepanel-type="cat-settings"]' in tutorial_source, tutorial_relative_path
+
+    # 行为断言：初始化确实读状态层 getter 赋值、切换确实调 setter(isChecked)，
+    # 仅「字符串存在」级检查抓不到读错值 / 传错参数。
+    for toggle_id, getter, setter in (
+        ("'auto-cat'", "window.nekoAutoGoodbye.isAutoCatEnabled()", "window.nekoAutoGoodbye.setAutoCatEnabled(isChecked)"),
+        ("'gravity-cat'", "window.nekoIdleCat1Playground.isGravityCatEnabled()", "window.nekoIdleCat1Playground.setGravityCatEnabled(isChecked)"),
+        ("'cat-audio'", "window.nekoIdleCatAudio.isEnabled()", "window.nekoIdleCatAudio.setEnabled(isChecked)"),
+    ):
+        init_block = source.split(f"}} else if (toggle.id === {toggle_id}", 1)[1].split(
+            "const indicator = document.createElement('div');", 1
+        )[0]
+        assert getter in init_block, toggle_id
+        change_block = source.split(f"}} else if (toggle.id === {toggle_id}) {{", 1)[1].split("}", 1)[0]
+        assert setter in change_block, toggle_id
+
+    # 双入口同步：面板展开时重读 getter 同步复选框（桌面壳聚合设置页可回写状态层，
+    # 弹层 DOM 只在页面加载时创建一次）。
+    assert "syncCheckedStates" in cat_panel_block
+    assert "container._expand" in cat_panel_block
+
     assert "nekoAutoGoodbye.setAutoCatEnabled" in source
     assert "nekoIdleCat1Playground.setGravityCatEnabled" in source
     assert "nekoIdleCatAudio.setEnabled" in source
