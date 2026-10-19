@@ -842,8 +842,12 @@
                 host.replaceChildren(created);
                 return created;
             })();
+            const ctx = box.getContext('2d');
+            // putFrame 是 drawImage 合成、不清底：画布又是复用的，换绑动作/图片后
+            // 旧帧会整个压在新帧下面，透明背景的源叠成多重曝光。重画前必须清掉。
+            ctx.clearRect(0, 0, box.width, box.height);
             const k = Math.min(box.width / frame.width, box.height / frame.height);
-            putFrame(box.getContext('2d'), frame,
+            putFrame(ctx, frame,
                 (box.width - frame.width * k) / 2, (box.height - frame.height * k) / 2,
                 frame.width * k, frame.height * k);
         }

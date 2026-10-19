@@ -1263,6 +1263,71 @@ def test_state_tiles_capture_thumbs_at_their_start_frame(page: Page, running_ser
     assert ("walk", True, None) in flat, flat   # 没动过起点的格子照旧不带窗口
 
 
+def test_rebinding_a_tile_does_not_stack_the_previous_preview(page: Page, running_server: str) -> None:
+    """换绑后格子画布必须清底再画：putFrame 走 drawImage 合成、画布又是复用的，
+    透明背景的帧叠在上一绑定的帧上 = 多重曝光（2026-10-19 用户抓的）。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        const buildFrame = (r, g2, b, x, y) => {
+            const c = document.createElement('canvas'); c.width = 8; c.height = 8;
+            const x2 = c.getContext('2d');
+            x2.fillStyle = `rgba(${r},${g2},${b},1)`;
+            x2.fillRect(x, y, 2, 2);
+            return { width: 8, height: 8, delayMs: 100,
+                data: x2.getImageData(0, 0, 8, 8).data };
+        };
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: {
+                schemaVersion: 1,
+                nodes: [
+                    mk('source.default', {}, 'root'),
+                    mk('source.scene', { sceneId: 'anim-a' }, 's-a'),
+                    mk('source.scene', { sceneId: 'anim-b' }, 's-b'),
+                    mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle'),
+                ],
+                links: [
+                    { from: 's-a', to: 'o-idle', fromSocket: 'look', toSocket: 'look' },
+                ],
+            },
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [
+                { value: 'anim-a', label: '动作A' },
+                { value: 'anim-b', label: '动作B' },
+            ],
+            thumbFor: () => Promise.resolve(''),
+            framesFor: (source) => {
+                if (String(source) === 'anim-a') {
+                    return [buildFrame(255, 40, 40, 0, 0)];
+                }
+                return [buildFrame(40, 40, 255, 6, 6)];
+            },
+        });
+        return true;
+    }""")
+    page.evaluate("() => document.querySelector('.st-tile[data-state=\"idle_image\"]').click()")
+    page.wait_for_function("""() => {
+        const c = document.querySelector('.st-tile[data-state="idle_image"] .st-tile-thumb canvas');
+        if (!c) return false;
+        const d = c.getContext('2d').getImageData(2, 2, 1, 1).data;
+        return d[0] > 200 && d[3] > 200;   // 红块左上角
+    }""", timeout=8000)
+    page.evaluate("""() => window.__STAGE.assignScene('idle_image', 'anim-b')""")
+    page.wait_for_function("""() => {
+        const c = document.querySelector('.st-tile[data-state="idle_image"] .st-tile-thumb canvas');
+        if (!c) return false;
+        const blue = c.getContext('2d').getImageData(40, 40, 1, 1).data;
+        const red = c.getContext('2d').getImageData(2, 2, 1, 1).data;
+        return blue[2] > 200 && blue[3] > 200 && red[3] === 0;   // 蓝在、红没了
+    }""", timeout=8000)
+
+
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
     """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
     _boot(page, running_server)
