@@ -1978,6 +1978,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
+            'cat-settings',
             'visit-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',

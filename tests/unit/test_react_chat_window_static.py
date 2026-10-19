@@ -93,7 +93,7 @@ def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
     cat_panel_block = source.split("function createCatSettingsSidePanel(", 1)[1].split(
-        "function createVisitSettingsSidePanel(", 1
+        "function createTextGuardSlider(", 1
     )[0]
 
     # 自动变猫 / 重力猫猫 / 猫猫音效不再混入对话设置面板，改由独立「猫咪设置」
@@ -111,6 +111,15 @@ def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
     popup_content = source.split("function createSettingsPopupContent(", 1)[1]
     assert popup_content.index("animationSettings") < popup_content.index("catSettings")
     assert popup_content.index("catSettings") < popup_content.index("id: 'proactive-chat'")
+
+    # 教程护栏：猫咪面板必须与对话/动画面板同样受 isTutorialHoverDisabled 保护，
+    # 否则教程演示设置面板时悬停猫咪入口会展开交互面板、收掉演示中的面板。
+    tutorial_guard_block = source.split("const isTutorialHoverDisabled = () => {", 1)[1].split(
+        "].includes(sidePanelType);", 1
+    )[0]
+    assert "'cat-settings'" in tutorial_guard_block
+    for sibling in ("'chat-settings'", "'animation-settings'", "'visit-settings'"):
+        assert sibling in tutorial_guard_block
 
     assert "nekoAutoGoodbye.setAutoCatEnabled" in source
     assert "nekoIdleCat1Playground.setGravityCatEnabled" in source
