@@ -160,14 +160,11 @@
         const title = document.createElement('h2');
         title.className = 'st-title';
         title.textContent = t('emoteMaker.stageTitle');
-        const hint = document.createElement('p');
-        hint.className = 'st-hint';
-        hint.textContent = t('emoteMaker.stageHint');
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'st-close';
         closeBtn.textContent = t('emoteMaker.stageClose');
-        head.append(title, hint, closeBtn);
+        head.append(title, closeBtn);
 
         const body = document.createElement('div');
         body.className = 'st-body';

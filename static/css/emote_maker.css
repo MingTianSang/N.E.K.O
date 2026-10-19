@@ -3102,14 +3102,6 @@ which can otherwise override the browser's default [hidden] behaviour. */
     color: var(--st-ink);
 }
 
-.st-hint {
-    flex: 1 1 auto;
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--st-muted);
-}
-
 .st-close {
     flex: 0 0 auto;
     padding: 5px 12px;

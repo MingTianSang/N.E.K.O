@@ -31,7 +31,7 @@
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并 chat-sync 与表情制作两条线的新增 key 与文案修改；递增版本让 Electron、Docker 等
     // 长期缓存重新拉取完整语言包，避免界面把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-10-19-emote-copy-cleanup';
+    const LOCALE_VERSION = '2026-10-19-emote-stage-rename';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
