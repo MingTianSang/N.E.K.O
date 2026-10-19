@@ -5166,11 +5166,7 @@
                         if (!previewFps) missingImages += 1;
                         continue;
                     }
-                    if (!previewFps) {
-                        setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
-                        // 顶栏跟着走：烘到第几个就亮到哪
-                        if (window.NekoTopProgress) NekoTopProgress.progress(index / jobs.length);
-                    }
+                    if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                     const singles = [];
                     for (const image of sources) {
                         const one = await frameFromStageImage(image, edge);
@@ -5194,10 +5190,7 @@
                 }
                 const scene = sceneList.find((item) => item.id === job.sceneId);
                 if (!scene) continue;
-                if (!previewFps) {
-                    setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
-                    if (window.NekoTopProgress) NekoTopProgress.progress(index / jobs.length);
-                }
+                if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                 await yieldToBrowser();
                 applyLookToState(job.look);
                 const frames = await captureGifFrames({
@@ -5416,12 +5409,9 @@
         });
 
         setPackBusy(true);
-        // 页顶进度条：烘包是分钟级的长活，顶部得有东西告诉用户"活着、到哪了"
-        if (window.NekoTopProgress) NekoTopProgress.begin();
         try {
             await stageImagesReady;
             const baked = await bakePackJobs(jobs);
-            NekoTopProgress.progress && NekoTopProgress.progress(1);
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));
                 return null;
@@ -5444,7 +5434,6 @@
             showToast(t('emoteMaker.packZipFailed'));
             return null;
         } finally {
-            if (window.NekoTopProgress) NekoTopProgress.done();
             setPackBusy(false);
             renderAll();
         }
