@@ -10,9 +10,13 @@ import type { CompactChatState } from './message-schema';
  * 瞬时窗口失焦并自行 refocus。立即执行的强制折叠会把输入态折回胶囊，下一次点击再拉回输入态，
  * 形成用户可见的闪烁。
  *
- * 契约：window blur 触发的强制折叠延迟执行；执行时页面已重新持有焦点（瞬时抖动）则放弃折叠。
- * 焦点未回归（真实失焦，如切换应用）时仍按原语义折叠；Escape / 岛外 pointerdown 的立即折叠
- * 语义不变。
+ * 契约：
+ * - window blur 触发的强制折叠延迟执行；执行时页面已重新持有焦点（瞬时抖动）则放弃折叠。
+ * - 焦点未回归（真实失焦，如切换应用）时仍按原语义折叠；Escape / 岛外 pointerdown 的立即
+ *   折叠语义不变。
+ * - 同一时刻只保留一份 blur 折叠宽限：连续两次抖动按各自的宽限期独立分类。
+ * - 宽限期定时器到期时读取最新的折叠回调（扇面展开等守卫状态必须可见）。
+ * - 组件卸载时取消待执行的折叠定时器。
  */
 
 function renderControlledCompactInput() {
@@ -148,6 +152,28 @@ describe('compact input state click stability', () => {
     } finally {
       hasFocus.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it('uses the latest collapse closure so a fan opened during the grace window blocks the collapse', async () => {
+    // CodeRabbit round-2：定时器若持有 blur 时刻的旧闭包，宽限期内展开的工具扇
+    // 对它不可见，会绕过「扇面展开不折叠」守卫。断言定时器读到的是最新闭包。
+    const { stateChanges } = await renderFocusedCompactInput();
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+
+    try {
+      fireEvent.blur(window);
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 400)); // 越过 280ms 宽限期，焦点未回归
+      });
+
+      expect(stateChanges).toEqual([]);
+      // 确认扇面确实处于展开态（防假通过）。
+      expect(document.body.querySelector('.compact-input-tool-fan'))
+        .toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    } finally {
+      hasFocus.mockRestore();
     }
   });
 
