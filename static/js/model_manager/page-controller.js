@@ -8505,11 +8505,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                 formData.append('files', file, file.webkitRelativePath || file.name);
             }
 
-            const response = await fetch('/api/model/pngtuber/upload_model', {
-                method: 'POST',
-                body: formData
+            // 页顶进度条：字节上传段用 XHR 的 upload.onprogress（0→90%），
+            // 之后服务端解包写盘是不定态，直到响应回来。
+            if (window.NekoTopProgress) NekoTopProgress.begin();
+            if (window.NekoTopProgress) NekoTopProgress.progress(0);
+            const result = await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/model/pngtuber/upload_model');
+                xhr.responseType = 'json';
+                xhr.upload.onprogress = (event) => {
+                    if (!event.lengthComputable || !event.total) return;
+                    // 留 10% 给服务端解包写盘段（不定态），别让条在 100% 干等
+                    NekoTopProgress.progress((event.loaded / event.total) * 0.9);
+                };
+                xhr.upload.onload = () => {
+                    if (window.NekoTopProgress) NekoTopProgress.progress(null);
+                };
+                xhr.onload = () => resolve(xhr.response || { success: false, error: `HTTP ${xhr.status}` });
+                xhr.onerror = () => reject(new Error('网络错误，上传中断'));
+                xhr.send(formData);
             });
-            const result = await response.json();
+            if (window.NekoTopProgress) NekoTopProgress.progress(1);
 
             if (result.success) {
                 uploadStatus.textContent = `✓ ${t('live2d.pngtuberImportSuccess', 'PNGTuber model imported successfully.')}`;
@@ -8542,6 +8558,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             uploadStatus.style.color = '#dc3545';
             setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
         } finally {
+            if (window.NekoTopProgress) NekoTopProgress.done();
             uploadBtn.disabled = false;
             if (inputElement) {
                 inputElement.value = '';
