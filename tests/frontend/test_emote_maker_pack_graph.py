@@ -60,6 +60,20 @@ def test_the_old_card_tree_is_really_gone(page: Page, running_server: str) -> No
     assert not panel["leftoverTreeHost"], "#pack-states 容器应当已移除"
 
 
+def test_stage_open_button_is_flat(page: Page, running_server: str) -> None:
+    """打开状态表演台按钮压平成单色：渐变+大投影在面板圆角里被裁出硬边
+    （2026-10-19 用户抓的）。只看计算样式——这份 CSS 里同选择器有多个世代，
+    只有最后一条算数。"""
+    _open(page, running_server)
+    style = page.evaluate("""() => {
+        const btn = document.querySelector('#open-state-stage-btn');
+        const cs = getComputedStyle(btn);
+        return { image: cs.backgroundImage, shadow: cs.boxShadow };
+    }""")
+    assert style["image"] == "none", style
+    assert style["shadow"] == "none", style
+
+
 def test_empty_talking_scene_stays_quiet_instead_of_lying(page: Page, running_server: str) -> None:
     """留空的说话场景不再解释"继续播待机"——那行说明已按要求退役，宁可不说也不含糊。
     用户能看出来的部分：摘要行收起（隐藏/空），别处也不许再出现那两句。"""

@@ -3020,6 +3020,15 @@ which can otherwise override the browser's default [hidden] behaviour. */
     min-height: 40px;
     margin-top: 10px;
     font-size: 12px;
+    /* 渐变+大投影在这个面板的圆角里会被裁出硬边：压平成单色、收掉投影。
+       hover 的 translateY 照旧，只是不再放大阴影。 */
+    background: #26a2f4;
+    box-shadow: none;
+}
+
+.pack-editor-button:hover {
+    box-shadow: none;
+    filter: brightness(1.05);
 }
 
 /* 拖拽落点高亮：画布整块亮起，形象包区块用描边 */
