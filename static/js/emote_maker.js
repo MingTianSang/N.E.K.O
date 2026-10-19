@@ -5409,13 +5409,9 @@
         });
 
         setPackBusy(true);
-        // 页顶进度条：烘包是分钟级的长活，顶部得有东西告诉用户"活着、到哪了"。
-        // 「导入到模型管理」走同一条烘包路，它自己会在外面再 begin 一层嵌着。
-        if (window.NekoTopProgress) NekoTopProgress.begin();
         try {
             await stageImagesReady;
             const baked = await bakePackJobs(jobs);
-            NekoTopProgress.progress && NekoTopProgress.progress(1);
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));
                 return null;
@@ -5438,7 +5434,6 @@
             showToast(t('emoteMaker.packZipFailed'));
             return null;
         } finally {
-            if (window.NekoTopProgress) NekoTopProgress.done();
             setPackBusy(false);
             renderAll();
         }
@@ -6099,40 +6094,19 @@
     }
 
     async function importPngtuberPack() {
-        // 整段一根顶条：烘包段由 buildPngtuberPackage 自己 begin/done（这里
-        // 先包一层，两段连成一条不断）；上传段接字节进度 0→90%，服务端
-        // 解包写盘转不定态，响应回来收起。
-        if (window.NekoTopProgress) NekoTopProgress.begin();
         const built = await buildPngtuberPackage();
-        if (!built) {
-            if (window.NekoTopProgress) NekoTopProgress.done();
-            return;
-        }
+        if (!built) return;
         const packModule = window.NekoEmotePngtuberPack;
         try {
-            if (window.NekoTopProgress) NekoTopProgress.progress(0);
             // 一个文件一个 part、文件名带相对路径 —— 与模型管理选择文件夹时发出的
             // 请求完全同形，所以复用它的全部校验、限额、不覆盖和原子发布逻辑。
-            const payload = await new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', packModule.uploadUrl());
-                xhr.responseType = 'json';
-                xhr.upload.onprogress = (event) => {
-                    if (!event.lengthComputable || !event.total) return;
-                    // 留一段给服务端解包写盘（不定态），别让条在 90% 前走满
-                    if (window.NekoTopProgress) {
-                        NekoTopProgress.progress((event.loaded / event.total) * 0.9);
-                    }
-                };
-                xhr.upload.onload = () => {
-                    if (window.NekoTopProgress) NekoTopProgress.progress(null);
-                };
-                xhr.onload = () => resolve(xhr.response || { success: false, error: `HTTP ${xhr.status}` });
-                xhr.onerror = () => reject(new Error('网络错误，上传中断'));
-                xhr.send(packModule.appendMultipart(built.files));
+            const response = await fetch(packModule.uploadUrl(), {
+                method: 'POST',
+                body: packModule.appendMultipart(built.files),
+                credentials: 'same-origin',
             });
-            if (window.NekoTopProgress) NekoTopProgress.progress(1);
-            if (!payload.success) {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.success) {
                 const reason = payload.error || payload.detail || '';
                 showToast(reason
                     ? `${t('emoteMaker.packImportFailed')}：${reason}`
@@ -6142,8 +6116,6 @@
             showToast(t('emoteMaker.packImportSuccess'));
         } catch (_) {
             showToast(t('emoteMaker.packImportFailed'));
-        } finally {
-            if (window.NekoTopProgress) NekoTopProgress.done();
         }
     }
 
