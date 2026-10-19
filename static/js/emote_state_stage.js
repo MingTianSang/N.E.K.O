@@ -1219,11 +1219,18 @@
             return source && source.type === 'source.image' ? source : null;
         }
 
+        // 本模块拿到的 t 只做翻译不插值（页面约定插值走 interpolate）；
+        // 这里就地补一个同款，模板串的 {{x}} 有值就换。
+        function fillParams(text, values) {
+            return String(text || '').replace(/\{\{\s*(\w+)\s*\}\}/g,
+                (_, key) => String(values?.[key] ?? ''));
+        }
+
         /** 绑图格子的副标题/按钮文案：一张直呼其名，多张报"第一张 等 N 张"。 */
         function imageListLabel(entries) {
             if (!entries || !entries.length) return '—';
             if (entries.length === 1) return entries[0].label || '—';
-            return t('emoteMaker.stageImageMulti',
+            return fillParams(t('emoteMaker.stageImageMulti'),
                 { first: entries[0].label || '', count: entries.length });
         }
 
