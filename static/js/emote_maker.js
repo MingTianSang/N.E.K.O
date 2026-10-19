@@ -1060,9 +1060,13 @@
         open.append(label);
         // 单击=装回模板，双击=改名：不延迟的话，双击的头一下已经把模板切过去了。
         // 240ms 的延迟对一次重导入级的操作无感。当前使用中的那条点了没去处，就地挡住。
+        // 处理器放在**卡片层**而不是内层按钮上：卡片有 padding，点边缘时 target 是
+        // 卡片自己，绑在按钮上那 7~8px 的边就点不动。移除钮和改名框各自挡掉。
         let openTimer = 0;
-        open.addEventListener('click', () => {
-            if (isCurrent) return;
+        card.addEventListener('click', (event) => {
+            if (event.target.closest('.template-lib-remove')) return;
+            if (event.target.closest('.template-lib-rename')) return;
+            if (isCurrent || packBusy) return;
             clearTimeout(openTimer);
             openTimer = setTimeout(() => { void switchTemplate(entry.key); }, 240);
         });

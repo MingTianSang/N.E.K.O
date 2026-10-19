@@ -540,3 +540,27 @@ def test_double_click_renames_the_card_and_survives_a_reload(library_page: Page)
             ?.dataset.templateKey || ''""")
     assert current.startswith("second.zip::"), f"双击改名前的那两下 click 把模板切过去了: {current!r}"
     library_page.keyboard.press("Enter")
+
+
+def test_card_edge_click_switches_templates(library_page: Page) -> None:
+    """点卡片边缘（padding 区）也必须能打开模板：打开处理器在卡片层，
+    不是只有内层按钮那块才算数（2026-10-19 用户抓的：点边缘没反应）。"""
+    _import(library_page, "first.zip", "第一个", "A", scenes=1)
+    _import(library_page, "second.zip", "第二个", "B", scenes=1)
+    second_key = library_page.evaluate("""() => {
+        const card = [...document.querySelectorAll('#asset-grid .template-lib-card')]
+            .find((c) => c.dataset.templateKey.startsWith('second.zip::'));
+        return card ? card.dataset.templateKey : '';
+    }""")
+    assert second_key.startswith("second.zip::"), second_key
+    card = library_page.locator(
+        f'#asset-grid .template-lib-card[data-template-key="{second_key}"]')
+    box = card.bounding_box()
+    # 左上角往内 3px：那是卡片 padding 的地盘，内层按钮够不着
+    library_page.mouse.click(box["x"] + 3, box["y"] + 3)
+    library_page.wait_for_function(
+        """(key) => {
+            const card = [...document.querySelectorAll('#asset-grid .template-lib-card')]
+                .find((c) => c.dataset.templateKey === key);
+            return Boolean(card && card.querySelector('.template-lib-badge'));
+        }""", arg=second_key, timeout=15000)
