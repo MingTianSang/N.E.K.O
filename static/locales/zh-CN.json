@@ -2270,7 +2270,7 @@
         "roleSourceTooltip": "来源：{{source}}",
         "loading": "加载中...",
         "externalImportTitle": "导入外部记忆",
-        "externalImportNote": "将 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日记忆或工作区 ZIP 导入当前选中的角色。",
+        "externalImportNote": "将 OpenClaw、Hermes 或 Molili 的 USER.md、SOUL.md、MEMORY.md、每日记忆或数据 ZIP 导入当前选中的角色。",
         "externalImportFormat": "来源格式",
         "externalImportAuto": "自动识别",
         "externalImportPick": "选择 Markdown 或 ZIP",
