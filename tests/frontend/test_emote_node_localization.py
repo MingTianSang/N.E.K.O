@@ -26,7 +26,7 @@ def _referenced_keys() -> set[str]:
     —— 有一批键连中文兜底都没有，界面会直接露出裸键名。这里把范围扩到所有来源。
     """
     keys: set[str] = set()
-    for name in ('emote_maker.js', 'emote_node_editor.js', 'emote_node_graph.js',
+    for name in ('emote_maker.js', 'emote_node_graph.js',
                  'emote_state_stage.js',
                  'emote_pngtuber_pack.js', 'emote_pngtuber_layered.js', 'emote_sheet.js'):
         src = (ROOT / 'static' / 'js' / name).read_text(encoding='utf-8')
@@ -34,7 +34,7 @@ def _referenced_keys() -> set[str]:
         keys |= {m.split('emoteMaker.', 1)[1]
                  for m in re.findall(r'`(emoteMaker\.[A-Za-z0-9_.]+)\$\{', src)}
     # JS 兜底表里的键（形如 'emoteMaker.x': '…'）
-    for name in ('emote_maker.js', 'emote_node_editor.js', 'emote_node_graph.js',
+    for name in ('emote_maker.js', 'emote_node_graph.js',
                  'emote_state_stage.js',
                  'emote_pngtuber_pack.js', 'emote_pngtuber_layered.js', 'emote_sheet.js'):
         src = (ROOT / 'static' / 'js' / name).read_text(encoding='utf-8')

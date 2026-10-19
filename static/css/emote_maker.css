@@ -403,53 +403,6 @@ button {
     white-space: nowrap;
 }
 
-.asset-card-image img.is-reaction-base {
-    transform: scale(1.45);
-}
-
-.asset-card-image.is-empty {
-    border: 1px dashed #acd9ed;
-    background: rgba(235, 248, 254, 0.75);
-}
-
-.asset-card-image.is-empty::after {
-    content: '—';
-    color: #85b8d1;
-    font-size: 26px;
-}
-
-.asset-reaction-marker {
-    position: absolute;
-    z-index: 2;
-    right: 5px;
-    top: 4px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 4px;
-    border: 2px solid #5b1233;
-    border-radius: 999px;
-    background: #ffffff;
-    color: #28a9e8;
-    font-size: 12px;
-    font-weight: 900;
-    line-height: 1;
-    box-shadow: 0 2px 4px rgba(47, 110, 148, 0.16);
-}
-
-.asset-reaction-marker-sleepy,
-.asset-reaction-marker-confused {
-    color: #8d7bed;
-}
-
-.asset-reaction-marker-shy,
-.asset-reaction-marker-love,
-.asset-reaction-marker-angry {
-    color: #ef6e8e;
-}
-
 .asset-card-label {
     display: block;
     margin-top: 7px;
@@ -668,11 +621,6 @@ button {
     border-top: 1px solid #def0f8;
 }
 
-.selected-part-section {
-    padding-top: 0;
-    border-top: 0;
-}
-
 .section-label {
     display: block;
     margin-bottom: 9px;
@@ -683,33 +631,6 @@ button {
 
 .section-label-row .section-label {
     margin-bottom: 0;
-}
-
-.selected-part-card {
-    width: 100%;
-    min-height: 66px;
-    padding: 9px 12px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    border: 1px solid var(--emote-line);
-    border-radius: 13px;
-    background: #f7fcff;
-    cursor: default;
-}
-
-.selected-part-card img {
-    width: 48px;
-    height: 48px;
-    object-fit: contain;
-    border-radius: 10px;
-    background: #ffffff;
-}
-
-.selected-part-card span {
-    color: var(--emote-text);
-    font-size: 13px;
-    font-weight: 800;
 }
 
 .color-swatches {
@@ -857,100 +778,13 @@ button {
 
 .pack-actions .tool-button {
     width: 100%;
-}
-
-/* 长按拖拽时的跟随卡片。pointer-events:none 是必需的，否则 elementFromPoint
+}/* 长按拖拽时的跟随卡片。pointer-events:none 是必需的，否则 elementFromPoint
    永远只能命中它自己，落点检测会整个失效。 */
-.pack-state-row.is-drop-target,
-.pack-node.is-drop-target {
+.pack-state-row.is-drop-target {
     border-radius: 12px;
     background: var(--emote-accent-soft);
     outline: 2px dashed var(--emote-accent);
     outline-offset: 3px;
-}
-
-/* 形象包的节点图。轨道用边框画而不是 SVG 坐标：这一页的布局会随断点在并排和
-   堆叠之间重排，算坐标的连线会比这种更早错位。 */
-.pack-node {
-    position: relative;
-    margin-top: 10px;
-    padding: 10px 10px 8px;
-    border: 1px solid var(--emote-line);
-    border-radius: 12px;
-    background: var(--emote-surface);
-}
-
-.pack-node-root {
-    border-color: var(--emote-line-strong);
-}
-
-.pack-node-child {
-    margin-left: 24px;
-}
-
-/* 循环模式下的说话节点：它不产出任何图，所以画成虚线、不给控件。 */
-.pack-node-inert {
-    border-style: dashed;
-    opacity: 0.72;
-}
-
-.pack-node-child::before {
-    position: absolute;
-    top: -11px;
-    bottom: 50%;
-    left: -13px;
-    width: 12px;
-    border-right: 1px solid var(--emote-line-strong);
-    border-bottom: 1px solid var(--emote-line-strong);
-    border-bottom-right-radius: 8px;
-    content: "";
-    transform: scaleX(-1);
-}
-
-.pack-node-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--emote-text);
-    font-size: 11px;
-    font-weight: 700;
-}
-
-.pack-node-badge {
-    padding: 1px 6px;
-    border-radius: 999px;
-    background: var(--emote-accent-soft);
-    color: var(--emote-accent-strong);
-    font-size: 10px;
-}
-
-.pack-edge-note {
-    margin: 6px 0 0;
-    color: var(--emote-muted);
-    font-size: 10px;
-    line-height: 1.45;
-}
-
-.pack-node-row {
-    margin-top: 8px;
-}
-
-.pack-node-hint {
-    margin: 5px 0 0;
-    color: var(--emote-muted);
-    font-size: 10px;
-    line-height: 1.45;
-}
-
-.pack-seconds {
-    min-width: 0;
-    height: 28px;
-    padding: 0 6px;
-    border: 1px solid var(--emote-line);
-    border-radius: 8px;
-    background: var(--emote-surface-strong);
-    color: var(--emote-text);
-    font-size: 11px;
 }
 
 body.is-pack-dragging {
@@ -1025,29 +859,13 @@ body.is-pack-dragging {
 .emote-toast.is-visible {
     opacity: 1;
     transform: translate(-50%, 0);
-}
-
-/* EmoteLab-inspired editor affordances, expressed in N.E.K.O.'s own visual system. */
-.model-toolbar {
+}/* EmoteLab-inspired editor affordances {
     margin-top: 13px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 7px;
     align-items: end;
-}
-
-.model-select-label {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    color: var(--emote-muted);
-    font-size: 10px;
-    font-weight: 700;
-}
-
-.model-select-label select,
-.select-row select {
+}.select-row select {
     min-width: 0;
     height: 32px;
     padding: 0 8px;
@@ -1094,21 +912,11 @@ body.is-pack-dragging {
     border: 1px solid var(--emote-line);
     border-radius: 12px;
     background: linear-gradient(145deg, rgba(236, 250, 255, 0.9), rgba(255, 255, 255, 0.82));
-}
-
-.template-import-heading,
-.template-import-actions {
+}.template-import-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-}
-
-.template-import-heading h3 {
-    margin: 3px 0 0;
-    color: var(--emote-text);
-    font-size: 12px;
-    line-height: 1.25;
 }
 
 .template-runtime-badge {
@@ -1136,40 +944,11 @@ body.is-pack-dragging {
 
 .template-directory-button {
     opacity: 0.82;
-}
-
-.template-import-filename {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--emote-muted);
-    font-size: 9px;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.template-cache-actions {
-    margin-top: 6px;
-}
-
-.template-cache-hint {
-    margin: 6px 0 0;
-    color: var(--emote-muted);
-    font-size: 8px;
-    line-height: 1.35;
-}
-
-.template-import-status,
-.template-import-stats {
+}.template-import-status {
     margin: 8px 0 0;
     color: var(--emote-muted);
     font-size: 9px;
     line-height: 1.4;
-}
-
-.template-import-stats {
-    color: var(--emote-accent-strong);
-    font-weight: 800;
 }
 
 .asset-search {
@@ -1708,18 +1487,7 @@ body.is-resizing * {
 
 .speed-control input {
     width: 52px;
-}
-
-[data-theme="dark"] .model-select-label select,
-[data-theme="dark"] .select-row select,
-[data-theme="dark"] .template-scene-list-select,
-[data-theme="dark"] .icon-text-button,
-[data-theme="dark"] .asset-search,
-[data-theme="dark"] .part-group-row,
-[data-theme="dark"] .template-compat-row,
-[data-theme="dark"] .template-compat-row select,
-[data-theme="dark"] .color-mode-button,
-[data-theme="dark"] .animation-card {
+}[data-theme="dark"] .select-row select,[data-theme="dark"] .template-scene-list-select,[data-theme="dark"] .icon-text-button,[data-theme="dark"] .asset-search,[data-theme="dark"] .part-group-row,[data-theme="dark"] .template-compat-row,[data-theme="dark"] .template-compat-row select,[data-theme="dark"] .color-mode-button,[data-theme="dark"] .animation-card {
     background: #1b3b58;
 }
 
@@ -1790,14 +1558,7 @@ body.is-resizing * {
 [data-theme="dark"] .canvas-stage,
 [data-theme="dark"] .layer-actions button {
     background: #18364f;
-}
-
-[data-theme="dark"] .asset-card,
-[data-theme="dark"] .tool-button,
-[data-theme="dark"] .selected-part-card,
-[data-theme="dark"] .layer-item,
-[data-theme="dark"] .canvas-zoom,
-[data-theme="dark"] .custom-color-row input {
+}[data-theme="dark"] .asset-card,[data-theme="dark"] .tool-button,[data-theme="dark"] .layer-item,[data-theme="dark"] .canvas-zoom,[data-theme="dark"] .custom-color-row input {
     background: #1b3b58;
 }
 
@@ -1815,11 +1576,7 @@ body.is-resizing * {
 [data-theme="dark"] .asset-card.is-selected,
 [data-theme="dark"] .layer-item.is-selected {
     background: #164a68;
-}
-
-[data-theme="dark"] .asset-card-image,
-[data-theme="dark"] .selected-part-card img,
-[data-theme="dark"] .layer-thumb {
+}[data-theme="dark"] .asset-card-image,[data-theme="dark"] .layer-thumb {
     background: #eef8fc;
 }
 
@@ -1998,10 +1755,6 @@ body {
     border-radius: 13px;
 }
 
-.template-import-heading h3 {
-    font-size: 13px;
-}
-
 .template-import-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2014,20 +1767,7 @@ body {
     min-height: 36px;
     padding-inline: 7px;
     font-size: 10px;
-}
-
-.template-import-filename {
-    grid-column: 1 / -1;
-    font-size: 10px;
-}
-
-.template-cache-actions {
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-}
-
-.template-cache-hint,
-.template-import-status,
-.template-import-stats {
+}.template-import-status {
     font-size: 10px;
 }
 
@@ -2165,25 +1905,6 @@ body {
 
 .inspector-section {
     padding: 11px 0;
-}
-
-.selected-part-section {
-    padding-top: 11px;
-}
-
-.selected-part-card {
-    min-height: 58px;
-    padding: 7px 9px;
-    border-radius: 10px;
-}
-
-.selected-part-card img {
-    width: 42px;
-    height: 42px;
-}
-
-.selected-part-card span {
-    font-size: 12px;
 }
 
 .section-label {
@@ -2419,13 +2140,6 @@ select:focus-visible {
 .editor-empty .canvas-zoom {
     opacity: 0.55;
     pointer-events: none;
-}
-
-.template-metadata-row {
-    cursor: default;
-    pointer-events: none;
-    background: var(--emote-accent-soft);
-    border-style: dashed;
 }
 
 .template-compat-controls {
@@ -4915,7 +4629,6 @@ body.is-pack-dragging * {
 }
 
 /* 两颗收起/展开钮：占在面板列贴边的一角，默认透明，悬停面板或按钮时浮现 */
-
 
 /* ── 两侧面板贴边（收起功能已回退，保留贴边方角与紧凑间距）──────────────── */
 .asset-panel {

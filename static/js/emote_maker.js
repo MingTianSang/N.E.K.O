@@ -102,7 +102,6 @@
         groupPickerOpen: false,
         zoom: 1,
         recentColors: ['#5ec9ff', '#ffd563', '#ff9eaf', '#8b8df7'],
-        modelPreset: 'neko-default',
         assetQuery: '',
         animationId: 'idle',
         animationProgress: 0,
@@ -196,14 +195,12 @@
 
     const fallbackText = {
         'emoteMaker.title': '表情包制作',
-        'emoteMaker.subtitle': '选择二次元反应模板，再调整颜色与位置',
         'emoteMaker.assetLibrary': '素材库',
         'emoteMaker.categoryTemplate': '模板',
         'emoteMaker.categoryMood': '情绪',
         'emoteMaker.categoryAction': '动作',
         'emoteMaker.categoryDecoration': '装饰',
         'emoteMaker.categoryHair': '发型',
-        'emoteMaker.basicTemplates': '模板',
         'emoteMaker.noTemplates': '模板暂未添加',
         'emoteMaker.emptyLibraryHint': '模板库暂为空，等待添加新模板',
         'emoteMaker.selectTemplateFile': '选择模板文件',
@@ -231,17 +228,8 @@
         'emoteMaker.removeTemplate': "移除",
         'emoteMaker.templateSwitched': "已切换模板",
         'emoteMaker.templateImportHint': '支持模板文件或本地素材目录，系统会自动识别可用格式。',
-        'emoteMaker.moodTemplates': '情绪模板',
-        'emoteMaker.actionTemplates': '动作模板',
-        'emoteMaker.sceneTemplates': '场景模板',
-        'emoteMaker.more': '更多',
         'emoteMaker.previewTitle': '表情包制作',
-        'emoteMaker.previewSubtitle': '当前表情',
         'emoteMaker.modelPreset': '角色预设',
-        'emoteMaker.modelDefault': 'N.E.K.O. 默认',
-        'emoteMaker.modelSoft': 'N.E.K.O. 柔和',
-        'emoteMaker.modelNight': 'N.E.K.O. 夜色',
-        'emoteMaker.saveCharacter': '保存角色',
         'emoteMaker.searchParts': '搜索模板',
         'emoteMaker.addToGroup': "加入本组",
         'emoteMaker.saveShot': "存为取景",
@@ -258,7 +246,6 @@
         'emoteMaker.groupExportCancelled': "已停止，已完成的部分照样打包",
         'emoteMaker.groupExportFailed': "{{count}} 项没能烘出来",
         'emoteMaker.groupExportTruncated': "一次最多导出 {{count}} 张，多余的没导",
-        'emoteMaker.groupSection': "组",
         'emoteMaker.groupPickFirst': "组内暂无动作，去添加？",
         'emoteMaker.groupMemberShot': "取景",
         'emoteMaker.groupMemberMissing': "来源已不在当前模板里",
@@ -293,7 +280,6 @@
         'emoteMaker.animationProgressLabel': '动画进度',
         'emoteMaker.chooseParts': '选择模板',
         'emoteMaker.activeIndex': '当前变体',
-        'emoteMaker.partOff': '关闭',
         'emoteMaker.adjustments': '模板调整',
         'emoteMaker.overwrite': '覆盖默认值',
         'emoteMaker.positionX': '位置 X',
@@ -305,13 +291,11 @@
         'emoteMaker.tintColor': '单色 Tint',
         'emoteMaker.twoColorTint': '双色 Tint',
         'emoteMaker.tintBlack': '阴影颜色',
-        'emoteMaker.animationList': '动画列表',
         'emoteMaker.animationIdle': '待机',
         'emoteMaker.animationBounce': '弹跳',
         'emoteMaker.animationWiggle': '摇摆',
         'emoteMaker.animationCelebrate': '庆祝',
         'emoteMaker.speed': '速度',
-        'emoteMaker.exportSettings': '导出设置',
         'emoteMaker.exportFormat': '格式',
         'emoteMaker.exportStatic': '静态 PNG',
         'emoteMaker.exportAnimated': '动画 GIF',
@@ -322,9 +306,7 @@
         'emoteMaker.exportPngFailed': 'PNG 导出失败，请重试。',
         'emoteMaker.exportResolution': '分辨率',
         'emoteMaker.exportFps': '帧率',
-        'emoteMaker.saveCharacterFailed': '保存角色失败，可能是浏览器存储不可用。',
         'emoteMaker.packTitle': '形象包（PNGTuber）',
-        'emoteMaker.packHint': '为每个状态挑一个动作（支持从列表拖入）；未选择动作的状态将变为待机。',
         'emoteMaker.packDropNoScene': '这个动画没有被任何场景引用，无法作为状态拖入。',
         'emoteMaker.packSkipOption': '不导出',
         'emoteMaker.packStateIdle': '待机',
@@ -343,11 +325,6 @@
         'emoteMaker.packZipFailed': '形象包生成失败。',
         'emoteMaker.packImportSuccess': '形象包已导入模型管理。',
         'emoteMaker.packImportFailed': '形象包导入失败。',
-        'emoteMaker.packTalkingMouth': '口型交替',
-        'emoteMaker.packTalkingLoop': '循环播放',
-        'emoteMaker.packPlacement': '落位',
-        'emoteMaker.packMirror': '镜像',
-        'emoteMaker.packPlacementNote': '这里的偏移是 PNGTuber 自己的像素单位，与预览画布无关；改动只影响桌面上的摆放，不改变已烘出的画面。',
         'emoteMaker.segmentScenes': '场景',
         'emoteMaker.segmentAnimations': '动画',
         'emoteMaker.listModeAria': '列表内容',
@@ -359,23 +336,9 @@
         'emoteMaker.packFormatFlat': '平铺（GIF，通用兼容）',
         'emoteMaker.packFormatLayered': '分层（多状态，可驱动）',
         'emoteMaker.packLayeredUnavailable': '分层打包模块未加载。',
-        'emoteMaker.packRootBadge': '默认节点',
-        'emoteMaker.packNodeScene': '场景',
-        'emoteMaker.packNodeDuration': '时长（秒）',
-        'emoteMaker.packInheritRoot': '跟随默认节点',
-        'emoteMaker.packEdgeTalking': '说话时与默认节点交替，节奏 55–175ms 由运行时写死。',
-        'emoteMaker.packEdgeEmotion': '情绪显示 5 秒后自动清除，时长由运行时写死。',
-        'emoteMaker.packEdgeClick': '点击时短暂切到它，随后回落。',
-        'emoteMaker.packEdgeDrag': '拖动时切到它。',
-        'emoteMaker.packTalkingOmitted': '循环播放模式下不生成说话图：运行时不做口型交替，说话时继续播默认节点。',
-        'emoteMaker.nodeEditorTitle': '形象节点编辑',
-        'emoteMaker.nodeEditorOpen': '打开节点编辑',
         'emoteMaker.packModeAria': '编辑方式',
         'emoteMaker.packModeBasic': '基础',
-        'emoteMaker.packBasicTalkingScene': '说话场景（可留空）',
-        'emoteMaker.packBasicTalkingFollow': '跟随待机（不做口型交替）',
         'emoteMaker.packBasicMouthOn': "说话时切给你绑在「说话」上的那个动作。",
-        'emoteMaker.nodeEditorUnavailable': '节点编辑器未加载。',
         'emoteMaker.packModeGraph': "进阶",
         'emoteMaker.stageOpen': "打开进阶设置",
         'emoteMaker.stageTitle': "进阶设置",
@@ -393,7 +356,6 @@
         'emoteMaker.stageFollowTag': "跟随默认",
         'emoteMaker.stageStillTag': "定格",
         'emoteMaker.stageUseDefaults': "跟随默认外观",
-        'emoteMaker.stageDropHint': "松开时放到某一格上",
         'emoteMaker.stageGestureHint': "拖动旋转，滚轮缩放",
         'emoteMaker.stageLibrary': "动作库",
         'emoteMaker.stageUserImages': "图片库",
@@ -414,21 +376,6 @@
         'emoteMaker.graphCollapsedNotice': "已合并重复的槽位，保留你选过的动作",
         'emoteMaker.stageUnavailable': "状态表演台未加载。",
         'emoteMaker.packNeedsTemplate': "需要先载入模板并导入动画。",
-        'emoteMaker.nodeAddNode': '添加节点',
-        'emoteMaker.nodeFitView': '适应视图',
-        'emoteMaker.nodeResetGraph': '重置为默认图',
-        'emoteMaker.nodeExportJson': '导出节点 JSON',
-        'emoteMaker.nodeImportJson': '导入节点 JSON',
-        'emoteMaker.nodeClose': '关闭',
-        'emoteMaker.nodeDelete': '删除节点',
-        'emoteMaker.nodeCancel': '取消',
-        'emoteMaker.nodeNoOption': '未选择',
-        'emoteMaker.nodeSkinFollow': '跟随默认',
-        'emoteMaker.nodeSkinNone': '这个模板没有皮肤分组',
-        'emoteMaker.nodeTextPlaceholder': '要显示的文字',
-        'emoteMaker.nodeSocketLook': '外观',
-        'emoteMaker.nodeSideBehind': '文字在后',
-        'emoteMaker.nodeSideFront': '文字在前',
         'emoteMaker.nodeCat.source': '来源',
         'emoteMaker.nodeCat.modify': '加工',
         'emoteMaker.nodeCat.output': '输出',
@@ -456,17 +403,12 @@
         'emoteMaker.nodeParam.y': '偏移 Y',
         'emoteMaker.nodeParam.scale': '缩放',
         'emoteMaker.nodeParam.mirror': '镜像',
-        'emoteMaker.nodeSummary': '节点 {nodes} · 连线 {links} · 输出 {outputs}',
         'emoteMaker.nodeCycleWarning': '节点之间存在环，无法求值。',
         'emoteMaker.nodeNoOutput': '节点图里没有一个可用的输出（检查场景是否已选）。',
-        'emoteMaker.nodeImportEmpty': '这个 JSON 里没有可用节点。',
-        'emoteMaker.nodeImportBad': '无法解析这个节点 JSON。',
         'emoteMaker.undo': '撤销',
         'emoteMaker.redo': '重做',
         'emoteMaker.fitWindow': '适应窗口',
-        'emoteMaker.expressionPreview': '表情预览',
         'emoteMaker.partSettings': '模板设置',
-        'emoteMaker.color': '颜色',
         'emoteMaker.recentColors': '最近使用',
         'emoteMaker.layers': '图层顺序',
         'emoteMaker.visible': '显示',
@@ -474,14 +416,9 @@
         'emoteMaker.moveUp': '上移',
         'emoteMaker.moveDown': '下移',
         'emoteMaker.exportPng': '导出 PNG',
-        'emoteMaker.randomize': '随机搭配',
         'emoteMaker.transparentBackground': '透明背景',
         'emoteMaker.exportSuccess': 'PNG 已导出',
         'emoteMaker.reset': '重置',
-        'emoteMaker.noAccessory': '不添加配饰',
-        'emoteMaker.accessoryStar': '星光',
-        'emoteMaker.accessoryExclamation': '惊叹号',
-        'emoteMaker.accessoryBubble': '对话气泡',
         'emoteMaker.templates.cheer': '打气',
         'emoteMaker.templates.hello': '挥手',
         'emoteMaker.templates.sleepy': '困倦',
@@ -942,7 +879,6 @@
             recentColors: state.recentColors,
             adjustments: state.adjustments,
             adjustOverwrite: state.adjustOverwrite,
-            modelPreset: state.modelPreset,
             animationId: state.animationId,
             animationProgress: state.animationProgress,
             animationSpeed: state.animationSpeed,
@@ -1036,9 +972,7 @@
         }
     }
 
-    function getAssetLabel(asset) {
-        return asset?.nameKey ? t(asset.nameKey) : t('emoteMaker.noTemplates');
-    }
+
 
     function createTemplateLibraryCard(entry) {
         const card = document.createElement('div');
@@ -1170,8 +1104,6 @@
         if (!assetSectionTitle || !assetGrid) return;
         assetGrid.classList.add('is-template-library');
         assetSectionTitle.textContent = t('emoteMaker.templateLibrary');
-        const randomize = $('#randomize-btn');
-        if (randomize) randomize.hidden = true;
         const entries = templateLibraryModule && templateLibraryState
             ? [...templateLibraryState.entries] : [];
         const query = String(state.assetQuery || '').trim().toLocaleLowerCase();
@@ -1190,32 +1122,7 @@
         assetGrid.replaceChildren(...shown.map(createTemplateLibraryCard));
     }
 
-    function createSceneCard(scene) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'asset-card template-scene-card';
-        button.dataset.sceneId = scene.id;
-        if (scene.id === state.selectedSceneId) button.classList.add('is-selected');
-        button.setAttribute('aria-pressed', String(scene.id === state.selectedSceneId));
 
-        const imageBox = document.createElement('span');
-        imageBox.className = 'asset-card-image template-scene-icon';
-        const icon = document.createElement('img');
-        icon.src = `${ICON_ROOT}motion_play_icon.png`;
-        icon.alt = '';
-        imageBox.appendChild(icon);
-
-        const label = document.createElement('span');
-        label.className = 'asset-card-label';
-        label.textContent = scene.name || scene.animation?.id || t('emoteMaker.templateSceneList');
-        const meta = document.createElement('small');
-        meta.className = 'template-scene-meta';
-        meta.textContent = scene.animation?.id || '—';
-        button.append(imageBox, label, meta);
-        button.setAttribute('aria-label', `${label.textContent} (${meta.textContent})`);
-        button.addEventListener('click', () => selectImportedScene(scene));
-        return button;
-    }
 
     // 下拉只有一处构建者：以前这里和 renderGroupBar 各写一份，renderAnimations 之后
     // 跑到哪儿就把选项盖回哪份，界面上出现的是"场景列表 / ModelA (3)"这种老文案。
@@ -1428,8 +1335,6 @@
             document.querySelector('.asset-section-heading'),
             assetGrid,
         ].forEach((el) => { if (el) el.hidden = false; });
-        const randomize = $('#randomize-btn');
-        if (randomize) randomize.hidden = true;
         if (assetGrid) assetGrid.setAttribute('aria-labelledby', 'asset-section-title');
     }
 
@@ -1659,23 +1564,7 @@
         });
     }
 
-    function getVisibleImportedScenes() {
-        const scenes = getImportedScenes();
-        const group = activeGroup();
-        if (group && !group.readOnly) {
-            const wanted = group.items
-                .filter((item) => item.kind === 'scene')
-                .map((item) => item.ref);
-            // 刚建好的组还没选人：这时候筛就筛出一片空白，反而没法往里加了
-            if (!wanted.length) return scenes;
-            // 只放行组里点过的场景；它们并没有被删掉，切回"全部场景"还能看见
-            const set = new Set(wanted);
-            return scenes.filter((scene) => set.has(scene?.id));
-        }
-        if (!state.sceneListFilter) return scenes;
-        // 与 dock 上那个组下拉共用同一个过滤条件，否则两个入口会给出两份不一致的清单。
-        return scenes.filter((scene) => scene?.source?.sceneList === state.sceneListFilter);
-    }
+
 
     // ── 组（分组导出）─────────────────────────────────────────────────────────
     // 数据规则都在 emote_group_library.js；这一层只管"页面上的组"：谁被选中、选中时
@@ -3579,10 +3468,7 @@
         if (rows) rows.classList.remove('is-drop-hint');
     }
 
-    function prefersReducedMotion() {
-        return typeof matchMedia === 'function'
-            && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    }
+
 
     function setDropHighlight(target, on) {
         if (!target) return;
@@ -4470,16 +4356,7 @@
     }
 
     /** 导入之后才补的贴图单独合并进副本：不然重开一次就丢，正是副本要消掉的痛点。 */
-    async function persistArchiveTextures(key, textureFiles) {
-        if (!textureFiles || !textureFiles.length) return;
-        const response = await fetch(
-            `${TEMPLATE_LIBRARY_API}/textures?key=${encodeURIComponent(key)}`,
-            { method: 'POST', body: archiveTextureForm(textureFiles), credentials: 'same-origin' },
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.success) throw new Error(payload.error || 'textures-failed');
-        await refreshTemplateArchiveSizes();
-    }
+
 
     async function fetchArchiveTextureFiles(key) {
         const listResponse = await fetch(
@@ -5478,12 +5355,8 @@
         renderAnimations();
         renderLayers();
         applyZoom();
-        const modelPreset = $('#model-preset-select');
-        if (modelPreset) modelPreset.value = state.modelPreset;
         const secondaryColor = $('#secondary-color-input');
         if (secondaryColor) secondaryColor.value = state.secondaryColor;
-        const randomizeButton = $('#randomize-btn');
-        if (randomizeButton) randomizeButton.disabled = EXPRESSIONS.length === 0 && !templatePackage;
         const exportButton = $('#export-png-btn');
         if (exportButton) exportButton.disabled = EXPRESSIONS.length === 0 && !hasSpineRenderer();
         const exportLabel = exportButton?.querySelector('span');
@@ -5537,28 +5410,7 @@
             : text;
     }
 
-    function randomize() {
-        if (templatePackage) {
-            const scenes = getImportedScenes();
-            if (scenes.length) {
-                selectImportedScene(scenes[Math.floor(Math.random() * scenes.length)]);
-            }
-            return;
-        }
-        if (!EXPRESSIONS.length || !ACCESSORIES.length) {
-            showToast(t('emoteMaker.noTemplates'));
-            return;
-        }
-        recordChange(() => {
-            const expression = EXPRESSIONS[Math.floor(Math.random() * EXPRESSIONS.length)];
-            const accessory = ACCESSORIES[Math.floor(Math.random() * ACCESSORIES.length)];
-            state.expressionId = expression.id;
-            state.accessoryId = accessory.id;
-            state.selectedLayer = accessory.id === 'none' ? 'expression' : 'accessory';
-            state.colors.expression = COLOR_SWATCHES[Math.floor(Math.random() * COLOR_SWATCHES.length)];
-            state.colors.accessory = COLOR_SWATCHES[Math.floor(Math.random() * COLOR_SWATCHES.length)];
-        });
-    }
+
 
     function yieldToBrowser() {
         return new Promise((resolve) => {
@@ -6164,22 +6016,7 @@
         renderInspectorTabs();
     }
 
-    function saveCharacter() {
-        try {
-            const snapshot = cloneState();
-            if (templatePackage) {
-                snapshot.templateSource = {
-                    kind: templatePackage.source?.kind || 'emotelab',
-                    sharedModelKey: templatePackage.source?.sharedModelKey || '',
-                    sceneId: state.selectedSceneId
-                };
-            }
-            localStorage.setItem('neko-emote-maker-character', JSON.stringify(snapshot));
-            showToast(t('emoteMaker.saveCharacter'));
-        } catch (error) {
-            showToast(t('emoteMaker.saveCharacterFailed'));
-        }
-    }
+
 
     function cloneBinaryValue(value) {
         if (value instanceof Uint8Array) {
@@ -6656,10 +6493,8 @@
             else openGroupPicker();
         });
         $('#model-preset-select')?.addEventListener('change', (event) => {
-            state.modelPreset = event.target.value;
             showToast(t('emoteMaker.modelPreset'));
         });
-        $('#save-character-btn')?.addEventListener('click', saveCharacter);
         templateImportButton?.addEventListener('click', () => templateFileInput?.click());
         canvasImportButton?.addEventListener('click', () => templateFileInput?.click());
         templateFileInput?.addEventListener('change', (event) => {
@@ -6681,7 +6516,6 @@
         });
         $('#undo-btn')?.addEventListener('click', undo);
         $('#redo-btn')?.addEventListener('click', redo);
-        $('#randomize-btn')?.addEventListener('click', randomize);
         // 曾经这里也绑列表分段：那时代码会把形象包的「基础/进阶」按钮一起选中，
         // 点它们顺手把 listMode 写回 'scenes'。列表只剩一种之后不再需要这个开关。
         $('#export-format')?.addEventListener('change', (event) => {
