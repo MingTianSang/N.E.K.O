@@ -5173,11 +5173,16 @@
                         if (one.length) singles.push(one[0]);
                     }
                     if (!singles.length) continue;
-                    const total = Math.max(singles.length, Number(job.frames) || singles.length);
-                    const base = Math.floor(total / singles.length);
-                    const extra = total % singles.length;
+                    // 平铺包的说话位只定格第一张：与场景侧的 still 规则同源
+                    // （运行时换 src 重载多帧 GIF 的空窗问题），分层不受限。
+                    const still = job.stateKey === 'talking_image' && state.packFormat !== 'layered';
+                    const shown = still ? singles.slice(0, 1) : singles;
+                    const total = still ? 1
+                        : Math.max(shown.length, Number(job.frames) || shown.length);
+                    const base = Math.floor(total / shown.length);
+                    const extra = total % shown.length;
                     const frames = [];
-                    singles.forEach((frame, imageIndex) => {
+                    shown.forEach((frame, imageIndex) => {
                         const count = base + (imageIndex < extra ? 1 : 0);
                         for (let repeat = 0; repeat < count; repeat += 1) frames.push(frame);
                     });
@@ -5374,12 +5379,15 @@
                 : (output.imageId ? [output.imageId] : []);
             if (imageIds.length) {
                 // 图片状态：静态源，时间轴控总停留时长；多图 = 按序轮播，
-                // 总帧数均摊到每张图（保底每张至少一帧）
+                // 总帧数均摊到每张图（保底每张至少一帧）。平铺包的说话位照旧
+                // 只烘一帧：运行时按口型节奏换 src，多帧 GIF 每换一次就整条
+                // 重载，首帧解码前的空窗就是"有一帧空白"。
+                const still = output.stateKey === 'talking_image' && state.packFormat !== 'layered';
                 const hold = Math.max(0.05, Number(output.seconds) || 0.05);
                 return {
                     stateKey: output.stateKey,
                     imageIds,
-                    frames: Math.max(imageIds.length, Math.ceil(hold * fps)),
+                    frames: still ? 1 : Math.max(imageIds.length, Math.ceil(hold * fps)),
                     timeWindow: { from: 0, to: hold },
                     scale: output.scale,
                     rotation: output.rotation,
