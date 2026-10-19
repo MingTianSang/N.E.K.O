@@ -145,9 +145,11 @@ def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
         assert setter in change_block, toggle_id
 
     # 双入口同步：面板展开时重读 getter 同步复选框（桌面壳聚合设置页可回写状态层，
-    # 弹层 DOM 只在页面加载时创建一次）。
-    assert "syncCheckedStates" in cat_panel_block
-    assert "container._expand" in cat_panel_block
+    # 弹层 DOM 只在页面加载时创建一次）。切块到包装器函数体，断言同步调用真实存在——
+    # 只查标识符的话，删掉调用但留下定义的假实现仍会绿。
+    expand_wrapper_block = cat_panel_block.split("container._expand = () => {", 1)[1].split("};", 1)[0]
+    assert "syncCheckedStates();" in expand_wrapper_block
+    assert "originalExpand();" in expand_wrapper_block
 
     assert "nekoAutoGoodbye.setAutoCatEnabled" in source
     assert "nekoIdleCat1Playground.setGravityCatEnabled" in source
