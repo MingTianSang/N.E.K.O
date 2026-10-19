@@ -3982,7 +3982,6 @@
         "packFormatFlat": "Plano (GIF, compatible)",
         "packFormatLayered": "Capas (muchos estados, accionable)",
         "packLayeredUnavailable": "No se ha cargado el módulo de capas.",
-        "packTalkingMode": "Estilo de habla",
         "packTalkingMouth": "Alternar boca",
         "packTalkingLoop": "Reproducir en bucle",
         "packPlacement": "Ubicación",

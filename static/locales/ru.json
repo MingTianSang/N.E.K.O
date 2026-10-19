@@ -3982,7 +3982,6 @@
         "packFormatFlat": "Плоский (GIF, совместимый)",
         "packFormatLayered": "Слоёный (много состояний, управляемый)",
         "packLayeredUnavailable": "Модуль слоёного пакета не загружен.",
-        "packTalkingMode": "Стиль речи",
         "packTalkingMouth": "Чередование рта",
         "packTalkingLoop": "Цикл анимации",
         "packPlacement": "Размещение",

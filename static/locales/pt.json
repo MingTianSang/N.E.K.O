@@ -3982,7 +3982,6 @@
         "packFormatFlat": "Plano (GIF, compatível)",
         "packFormatLayered": "Camadas (vários estados, acionável)",
         "packLayeredUnavailable": "O módulo de camadas não foi carregado.",
-        "packTalkingMode": "Estilo de fala",
         "packTalkingMouth": "Alternar boca",
         "packTalkingLoop": "Reproduzir em loop",
         "packPlacement": "Posição",

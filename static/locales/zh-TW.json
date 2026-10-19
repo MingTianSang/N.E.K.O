@@ -3982,7 +3982,6 @@
         "packFormatFlat": "平铺（GIF，通用兼容）",
         "packFormatLayered": "分层（多状态，可驱动）",
         "packLayeredUnavailable": "分层打包模块未加载。",
-        "packTalkingMode": "說話方式",
         "packTalkingMouth": "口型交替",
         "packTalkingLoop": "循環播放",
         "packPlacement": "落位",

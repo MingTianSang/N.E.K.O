@@ -3982,7 +3982,6 @@
         "packFormatFlat": "평면(GIF, 범용)",
         "packFormatLayered": "레이어드(다상태, 구동 가능)",
         "packLayeredUnavailable": "레이어드 생성 모듈이 로드되지 않았습니다.",
-        "packTalkingMode": "말하기 방식",
         "packTalkingMouth": "입 모양 교대",
         "packTalkingLoop": "루프 재생",
         "packPlacement": "배치",

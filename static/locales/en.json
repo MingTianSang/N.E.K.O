@@ -3982,7 +3982,6 @@
         "packFormatFlat": "Flat (GIF, widely compatible)",
         "packFormatLayered": "Layered (many states, drivable)",
         "packLayeredUnavailable": "The layered pack module is not loaded.",
-        "packTalkingMode": "Talking style",
         "packTalkingMouth": "Mouth swap",
         "packTalkingLoop": "Loop animation",
         "packPlacement": "Placement",

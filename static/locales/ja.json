@@ -3982,7 +3982,6 @@
         "packFormatFlat": "フラット（GIF・汎用）",
         "packFormatLayered": "レイヤード（多状態・駆動可能）",
         "packLayeredUnavailable": "レイヤード生成モジュールが読み込まれていません。",
-        "packTalkingMode": "話し方",
         "packTalkingMouth": "口を切り替え",
         "packTalkingLoop": "ループ再生",
         "packPlacement": "配置",
