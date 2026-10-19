@@ -204,6 +204,10 @@ const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
+// 原生宿主在进入输入态后可能产生一次瞬时窗口失焦（Windows 实测：进入后 ~230ms blur，
+// 随后自行 refocus）。立即强制折叠会折回胶囊、下一次点击再拉回，形成可见闪烁；因此
+// 窗口 blur 触发的折叠延迟执行，执行时页面已重新持有焦点则视为瞬时抖动、放弃折叠。
+const COMPACT_WINDOW_BLUR_COLLAPSE_DELAY_MS = 280;
 const compactInputToolWheelDefaultVisibleSlots = [
   { angleDeg: 107.35, scale: 0.86 },
   { angleDeg: 75.82, scale: 0.98 },
@@ -4615,6 +4619,15 @@ function CompactChatApp({
     }, 0);
   }, [collapseCompactInputIfEmpty]);
 
+  // 窗口 blur 的折叠延迟 + 焦点回归检查：吸收原生层的瞬时失焦抖动，不改变 Escape /
+  // 岛外 pointerdown 的立即折叠语义（它们不经过此入口）。
+  const scheduleWindowBlurCompactInputCollapse = useCallback(() => {
+    window.setTimeout(() => {
+      if (document.hasFocus()) return;
+      collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
+    }, COMPACT_WINDOW_BLUR_COLLAPSE_DELAY_MS);
+  }, [collapseCompactInputIfEmpty]);
+
   useEffect(() => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
@@ -4644,7 +4657,7 @@ function CompactChatApp({
 
     const handleWindowBlur = () => {
       if (document.querySelector('.click-guide-layer.click-guide-native')) return;
-      scheduleForcedCompactInputCollapse();
+      scheduleWindowBlurCompactInputCollapse();
     };
 
     window.addEventListener('blur', handleWindowBlur);
@@ -4655,7 +4668,7 @@ function CompactChatApp({
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
+  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse, scheduleWindowBlurCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
