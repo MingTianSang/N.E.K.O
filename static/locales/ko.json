@@ -2270,7 +2270,7 @@
         "roleSourceTooltip": "출처: {{source}}",
         "loading": "로드 중...",
         "externalImportTitle": "외부 메모리 가져오기",
-        "externalImportNote": "OpenClaw, Hermes 또는 Molili의 USER.md, SOUL.md, MEMORY.md, 일일 메모나 데이터 ZIP을 선택한 캐릭터로 가져옵니다.",
+        "externalImportNote": "OpenClaw 또는 Hermes의 USER.md, SOUL.md, MEMORY.md, 일일 메모나 워크스페이스 ZIP, 또는 Molili 내보내기 ZIP을 선택한 캐릭터로 가져옵니다.",
         "externalImportFormat": "원본 형식",
         "externalImportAuto": "자동 감지",
         "externalImportPick": "Markdown 또는 ZIP 선택",

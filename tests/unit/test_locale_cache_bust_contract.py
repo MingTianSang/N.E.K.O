@@ -77,6 +77,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-17-pr3447-molili-origin-badge",
         "2026-10-18-pr3447-partial-day-notes",
         "2026-10-18-pr-molili-import-type-chooser",
+        "2026-10-19-pr-import-note-molili",
         "2026-10-17-pr3441-main-rebase",
         "2026-10-16-voice-activation-feedback",
         "2026-10-17-chat-sync-quota-split-oversized",

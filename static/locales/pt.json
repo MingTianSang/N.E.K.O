@@ -2270,7 +2270,7 @@
         "roleSourceTooltip": "Origem: {{source}}",
         "loading": "Carregando...",
         "externalImportTitle": "Importar memória externa",
-        "externalImportNote": "Importe USER.md, SOUL.md, MEMORY.md, notas diárias ou um ZIP de dados do OpenClaw, Hermes ou Molili para a personagem selecionada.",
+        "externalImportNote": "Importe USER.md, SOUL.md, MEMORY.md, notas diárias ou um ZIP do OpenClaw ou Hermes, ou um ZIP de exportação do Molili, para a personagem selecionada.",
         "externalImportFormat": "Formato de origem",
         "externalImportAuto": "Detectar automaticamente",
         "externalImportPick": "Selecionar Markdown ou ZIP",

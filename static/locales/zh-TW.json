@@ -2270,7 +2270,7 @@
         "roleSourceTooltip": "來源：{{source}}",
         "loading": "加載中...",
         "externalImportTitle": "匯入外部記憶",
-        "externalImportNote": "將 OpenClaw、Hermes 或 Molili 的 USER.md、SOUL.md、MEMORY.md、每日記憶或資料 ZIP 匯入目前選取的角色。",
+        "externalImportNote": "將 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日記憶或工作區 ZIP，或 Molili 的匯出 ZIP 匯入目前選取的角色。",
         "externalImportFormat": "來源格式",
         "externalImportAuto": "自動辨識",
         "externalImportPick": "選擇 Markdown 或 ZIP",
