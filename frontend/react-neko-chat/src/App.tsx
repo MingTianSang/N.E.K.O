@@ -4620,13 +4620,28 @@ function CompactChatApp({
   }, [collapseCompactInputIfEmpty]);
 
   // 窗口 blur 的折叠延迟 + 焦点回归检查：吸收原生层的瞬时失焦抖动，不改变 Escape /
-  // 岛外 pointerdown 的立即折叠语义（它们不经过此入口）。
+  // 岛外 pointerdown 的立即折叠语义（它们不经过此入口）。同一时刻只保留一份待执行的
+  // 折叠宽限：连续两次失焦抖动时，第二次 blur 重置第一次的定时器，让每次抖动按自己
+  // 的宽限期独立分类，避免旧定时器在第二次失焦期间误折叠。
+  const windowBlurCollapseTimerRef = useRef(0);
   const scheduleWindowBlurCompactInputCollapse = useCallback(() => {
-    window.setTimeout(() => {
+    if (windowBlurCollapseTimerRef.current) {
+      window.clearTimeout(windowBlurCollapseTimerRef.current);
+    }
+    windowBlurCollapseTimerRef.current = window.setTimeout(() => {
+      windowBlurCollapseTimerRef.current = 0;
       if (document.hasFocus()) return;
       collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
     }, COMPACT_WINDOW_BLUR_COLLAPSE_DELAY_MS);
   }, [collapseCompactInputIfEmpty]);
+
+  // 组件卸载时清掉待执行的 blur 折叠定时器：卸载后不再向宿主发送过期的折叠通知。
+  useEffect(() => () => {
+    if (windowBlurCollapseTimerRef.current) {
+      window.clearTimeout(windowBlurCollapseTimerRef.current);
+      windowBlurCollapseTimerRef.current = 0;
+    }
+  }, []);
 
   useEffect(() => {
     if (!isCompactSurface) return;

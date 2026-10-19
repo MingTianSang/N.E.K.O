@@ -115,4 +115,74 @@ describe('compact input state click stability', () => {
 
     expect(stateChanges).toEqual(['default']);
   });
+
+  it('reschedules the grace window on a second blur so consecutive jitters do not collapse', async () => {
+    // 用假定时器保证确定性：第二次 blur 必须落在第一次宽限期（280ms）内、早于旧定时器到期。
+    vi.useFakeTimers();
+    const hasFocus = vi.spyOn(document, 'hasFocus');
+    try {
+      const stateChanges = renderControlledCompactInput();
+      const input = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+      await act(async () => {
+        input.focus();
+      });
+
+      hasFocus.mockReturnValue(false);
+      fireEvent.blur(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(270); // 第一次宽限期还剩 10ms，旧定时器未到期
+      });
+      // 第二次抖动在第一次宽限期内到达：旧定时器必须被重置，
+      // 否则它会在第二次失焦期间读 hasFocus=false 而误折叠。
+      fireEvent.blur(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130); // t=400：第二次抖动仍失焦
+      });
+      hasFocus.mockReturnValue(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300); // t=700：越过第二次的宽限期（550ms），焦点已回归
+      });
+
+      expect(stateChanges).toEqual([]);
+      expect(screen.getByPlaceholderText('Type a message...')).toHaveFocus();
+    } finally {
+      hasFocus.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the pending blur collapse on unmount', async () => {
+    const stateChanges: CompactChatState[] = [];
+    function Harness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('input');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          onCompactChatStateChange={(next) => {
+            stateChanges.push(next);
+            setCompactChatState(next);
+          }}
+        />
+      );
+    }
+    const { unmount } = render(<Harness />);
+    const input = (await screen.findByPlaceholderText('Type a message...')) as HTMLTextAreaElement;
+    await act(async () => {
+      input.focus();
+    });
+
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      fireEvent.blur(window);
+      unmount();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      });
+
+      expect(stateChanges).toEqual([]);
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
 });
