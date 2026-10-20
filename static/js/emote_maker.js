@@ -338,7 +338,6 @@
         'emoteMaker.packLayeredUnavailable': "分层打包功能没加载出来，刷新再试。",
         'emoteMaker.packModeAria': '编辑方式',
         'emoteMaker.packModeBasic': '基础',
-        'emoteMaker.packBasicMouthOn': "说话时会切到「说话」格里的动作。",
         'emoteMaker.packModeGraph': "进阶",
         'emoteMaker.stageOpen': "打开进阶设置",
         'emoteMaker.stageTitle': "进阶设置",
@@ -4972,13 +4971,6 @@
             prioritySelect.value = state.packPriority === 'emotion' ? 'emotion' : 'talking';
         }
 
-        const summary = $('#pack-basic-summary');
-        if (summary) {
-            // 未绑说话场景的那句"继续播待机动画"没人需要读：收掉，绑了才说
-            const bound = Boolean(state.packSceneIds.talking_image);
-            summary.hidden = !bound;
-            summary.textContent = bound ? t('emoteMaker.packBasicMouthOn') : '';
-        }
         ['#pack-export-btn', '#pack-import-btn'].forEach((selector) => {
             const button = $(selector);
             if (button && !packBusy) button.disabled = !available;
