@@ -2041,10 +2041,18 @@ async function refreshTouchSetForLoadedModel(options = {}) {
     const manager = window.live2dManager
     if (!manager || typeof manager.getCurrentModel !== 'function') return false
     const model = manager.getCurrentModel()
-    if (!model || model.destroyed) return false
+    if (!model || model.destroyed) {
+        // 模型尚未就绪（如保存广播先于初始模型加载到达）：直接丢弃通知会让
+        // 启动初始化取走的保存前快照一直生效。记录待强制刷新标记，模型加载
+        // 完成钩子下次调用本函数时消费，保证本次保存最终生效。
+        manager._touchSetPendingForceRefetch = true
+        return false
+    }
 
+    const pendingForceRefetch = manager._touchSetPendingForceRefetch === true
+    manager._touchSetPendingForceRefetch = false
     const loadedAt = Number(manager._touchSetLoadedAt || 0)
-    const shouldRefetch = options.forceRefetch === true
+    const shouldRefetch = options.forceRefetch === true || pendingForceRefetch
         || (Date.now() - loadedAt) > TOUCH_SET_LOADED_REUSE_WINDOW_MS
 
     if (shouldRefetch) {

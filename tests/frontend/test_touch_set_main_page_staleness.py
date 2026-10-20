@@ -31,6 +31,9 @@ Fix (PR #3471):
      `allowLive2DReload` so stale `localStorage.modelType` /
      `vrm/mmdManager.currentModel` (the hot-switch path only pauses VRM/MMD
      rendering without clearing currentModel) cannot block the refresh.
+  E. A save broadcast that arrives before the model exists records a pending
+     force-refetch flag consumed by the next load-completion refresh, so the
+     pre-save startup snapshot cannot shadow it.
 
 The route probe below mirrors the onDragEnd click branch exactly
 (_getCustomTouchAreaIdAtPoint + _getPreferredTouchSetHitArea); every phase
@@ -464,7 +467,7 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
                     blockedKeys,
                     refilledKeys,
                     prevModelType,
-                    hadVrmManager: prevVrmManager !== undefined,
+                    hadVrmManager,
                 };
             } finally {
                 if (prevModelType === null) localStorage.removeItem('modelType');
@@ -487,4 +490,65 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
     )
     assert area_id in result["refilledKeys"], (
         f"with allowLive2DReload the refresh should apply: {result['refilledKeys']}"
+    )
+
+
+@pytest.mark.frontend
+def test_broadcast_while_model_loading_is_applied_once_model_ready(
+    mock_page: Page, running_server: str
+):
+    """Fix E: a save broadcast dropped during model load must still apply once ready.
+
+    # Codex round-4 finding: when the notification arrives before the initial
+    # Live2D model exists, the old code discarded it; the startup
+    # InitializationTouchSet had already fetched the pre-save snapshot and stamps
+    # it fresh, so the load-completion hook (running within 5s) would only rewire
+    # and the save stayed missing until another trigger. Now the dropped
+    # notification records a pending force-refetch flag that the next
+    # load-completion refresh consumes.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+
+    area_id = "custom_repro_pending_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    outcome = mock_page.evaluate(
+        """async () => {
+            const manager = window.live2dManager;
+            const realGetCurrentModel = manager.getCurrentModel;
+            try {
+                // Simulate the model-still-loading window.
+                manager.getCurrentModel = () => null;
+                const dropped = await window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
+                const pendingFlag = manager._touchSetPendingForceRefetch === true;
+                // Model becomes ready: the load-completion hook calls refresh
+                // again (without forceRefetch — freshness alone must not skip it).
+                manager.getCurrentModel = realGetCurrentModel;
+                const applied = await window.nekoRefreshLive2DTouchSet({});
+                const keys = Object.keys(manager.touchSet[manager.modelName] || {});
+                return {
+                    droppedResult: dropped,
+                    pendingFlag,
+                    appliedResult: applied,
+                    keys,
+                };
+            } finally {
+                manager.getCurrentModel = realGetCurrentModel;
+            }
+        }"""
+    )
+
+    assert outcome["droppedResult"] is False, (
+        f"refresh without a model should report False: {outcome}"
+    )
+    assert outcome["pendingFlag"] is True, (
+        f"dropped notification should record the pending force-refetch flag: {outcome}"
+    )
+    assert outcome["appliedResult"] is True, (
+        f"load-completion refresh should consume the flag and refetch: {outcome}"
+    )
+    assert area_id in outcome["keys"], (
+        f"the saved area should be applied once the model is ready: {outcome['keys']}"
     )
