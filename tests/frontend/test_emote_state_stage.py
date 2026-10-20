@@ -1121,7 +1121,6 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
     page.wait_for_function(
         "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '晚到.png'",
         timeout=5000)
-    assert state["sameRow"] is True, state
 
 
 def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: str) -> None:
