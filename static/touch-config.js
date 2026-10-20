@@ -288,7 +288,7 @@ async function InitializationTouchSet(characterJson) {
     }else{
         // 呃
     }
-    let model 
+    let model
     for(let i = 0;i<5;i++){
         model = window.live2dManager.getCurrentModel()
         if (model){
@@ -299,14 +299,25 @@ async function InitializationTouchSet(characterJson) {
         }
     }
 
+    const modelName = window.live2dManager.modelName || ''
     const touchSet = characterJson._reserved?.touch_set || {};
-    
-    if(!touchSet[window.live2dManager.modelName]){
-        touchSet[window.live2dManager.modelName] = {"default":{"motions": [], "expressions": []}}
+
+    if(modelName && !touchSet[modelName]){
+        touchSet[modelName] = {"default":{"motions": [], "expressions": []}}
     }
     window.live2dManager.touchSet = touchSet;
+    window.live2dManager._touchSetLoadedAt = Date.now()
     window.live2dManager.touchSetFilter = {}
     window.live2dManager.touchSetHitEventLock = false
+
+    if (!model) {
+        // 模型就绪前不能把 undefined 交给 setupHitAreaInteraction：那会让原生
+        // HitArea 监听在本页面会话里一直处于未接线状态且无人补救。触摸数据已经
+        // 生效（命中检测不依赖 hit 监听），接线由模型加载完成后的
+        // nekoRefreshLive2DTouchSet() 补上。
+        console.warn('[TouchSet] 等待期内模型未就绪，触摸数据已生效，HitArea 接线待模型加载完成后补上')
+        return;
+    }
 
     window.live2dManager.setupHitAreaInteraction(model)
 }
@@ -343,9 +354,10 @@ async function saveTouchSetToServer() {
         });
         
         const result = await response.json();
-        
+
         if (result.success) {
             syncTouchSetDataToManager(touchSetData);
+            broadcastTouchSetUpdated(modelName)
             console.log(`[TouchSet] 已保存模型 ${modelName} 的触摸配置到服务器`);
             return true;
         } else {
@@ -1994,6 +2006,79 @@ async function touchPage_init(){
         touchPage_open(d)
     }
 
+}
+
+// ===== 模型加载完成 / 跨窗口保存后的触摸配置刷新 =====
+// 主页面只在启动时快照一次 touch_set（InitializationTouchSet）。模型管理页保存
+// 的自定义触摸区域只落盘不推送，运行中的主页面永远看不到，直到手动刷新页面。
+// 这里提供两个刷新入口：
+//   1. nekoRefreshLive2DTouchSet：给"模型加载完成"的钩子用——数据刚拉取过就只给
+//      新模型补上原生 HitArea 接线，过期则重新拉取；
+//   2. neko_touch_set_channel：给"模型管理页保存成功"用——广播一个轻量信号，
+//      主页面收到后强制重拉，保存后无需刷新主页面即生效。
+
+const TOUCH_SET_LOADED_REUSE_WINDOW_MS = 5000
+
+async function refreshTouchSetForLoadedModel(options = {}) {
+    const manager = window.live2dManager
+    if (!manager || typeof manager.getCurrentModel !== 'function') return false
+    const model = manager.getCurrentModel()
+    if (!model || model.destroyed) return false
+
+    const loadedAt = Number(manager._touchSetLoadedAt || 0)
+    const shouldRefetch = options.forceRefetch === true
+        || (Date.now() - loadedAt) > TOUCH_SET_LOADED_REUSE_WINDOW_MS
+
+    if (shouldRefetch) {
+        await InitializationTouchSet()
+        return true
+    }
+
+    // 数据是刚拉取的（启动初始化刚完成），只需要给新加载的模型补上原生 HitArea 接线。
+    manager.touchSetFilter = {}
+    manager.touchSetHitEventLock = false
+    manager.setupHitAreaInteraction(model)
+    return true
+}
+
+window.nekoRefreshLive2DTouchSet = refreshTouchSetForLoadedModel
+
+const TOUCH_SET_SYNC_CHANNEL_NAME = 'neko_touch_set_channel'
+let touchSetSyncChannel = null
+try {
+    if (typeof BroadcastChannel !== 'undefined') {
+        touchSetSyncChannel = new BroadcastChannel(TOUCH_SET_SYNC_CHANNEL_NAME)
+    }
+} catch (_) {
+    touchSetSyncChannel = null
+}
+
+function broadcastTouchSetUpdated(modelName) {
+    try {
+        if (touchSetSyncChannel) {
+            touchSetSyncChannel.postMessage({
+                model_name: modelName || '',
+                timestamp: Date.now()
+            })
+        }
+    } catch (_) {}
+}
+
+if (touchSetSyncChannel) {
+    touchSetSyncChannel.onmessage = (event) => {
+        const message = event && event.data
+        if (!message || typeof message !== 'object') return
+        const manager = window.live2dManager
+        if (!manager) return
+        const incomingModel = String(message.model_name || '')
+        const currentModelName = String(manager.modelName || '')
+        // 消息指向别的模型时跳过：那个模型的配置会在 reload_model 完成后的
+        // 刷新钩子里生效，这里不提前把别模型的配置拉进来。
+        if (incomingModel && currentModelName && incomingModel !== currentModelName) return
+        refreshTouchSetForLoadedModel({ forceRefetch: true }).catch((error) => {
+            console.warn('[TouchSet] 响应保存通知刷新触摸配置失败:', error)
+        })
+    }
 }
 
 async function startTouchConfigAfterStorageBarrier() {
