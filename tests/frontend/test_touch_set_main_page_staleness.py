@@ -563,3 +563,97 @@ def test_broadcast_while_model_loading_is_applied_once_model_ready(
     assert area_id in outcome["keys"], (
         f"the saved area should be applied once the model is ready: {outcome['keys']}"
     )
+
+
+@pytest.mark.frontend
+def test_failed_force_refetch_re_arms_pending_flag(
+    mock_page: Page, running_server: str
+):
+    """Codex round-6: an explicit forceRefetch that fails to commit must re-arm the flag.
+
+    # The save-broadcast receiver is one-shot: when it calls refresh with
+    # forceRefetch and InitializationTouchSet cannot commit (transient
+    # page_config failure), the notification must not be lost. The flag is
+    # re-armed and the next plain refresh consumes it.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+
+    area_id = "custom_repro_force_fail_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    # Fail exactly one /api/config/page_config response so character-name
+    # resolution comes up empty and InitializationTouchSet commits nothing.
+    mock_page.evaluate(
+        """() => {
+            const realFetch = window.fetch;
+            window.__realFetch = realFetch;
+            window.__failNextPageConfig = false;
+            window.__pageConfigFailed = false;
+            window.fetch = async (url, opts) => {
+                let parsed;
+                try {
+                    parsed = new URL(String(url), window.location.href);
+                } catch (_) {
+                    return realFetch(url, opts);
+                }
+                if (parsed.pathname === '/api/config/page_config'
+                    && window.__failNextPageConfig === true) {
+                    window.__failNextPageConfig = false;
+                    window.__pageConfigFailed = true;
+                    return new Response(JSON.stringify({ success: false, error: 'forced' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return realFetch(url, opts);
+            };
+        }"""
+    )
+
+    try:
+        outcome = mock_page.evaluate(
+            """async () => {
+                const manager = window.live2dManager;
+                // Model is present; the broadcast path uses an explicit
+                // forceRefetch with no pending flag.
+                window.__failNextPageConfig = true;
+                const failedRefetch = await window.nekoRefreshLive2DTouchSet({
+                    forceRefetch: true
+                });
+                const reArmed = manager._touchSetPendingForceRefetch === true;
+                // Next plain refresh must consume the flag and apply the save
+                // (freshness is pinned so only the flag can drive the refetch).
+                manager._touchSetLoadedAt = Date.now();
+                const applied = await window.nekoRefreshLive2DTouchSet({});
+                const flagConsumed = manager._touchSetPendingForceRefetch !== true;
+                const keys = Object.keys(manager.touchSet[manager.modelName] || {});
+                return {
+                    failedRefetch,
+                    pageConfigFailed: window.__pageConfigFailed,
+                    reArmed,
+                    applied,
+                    flagConsumed,
+                    keys,
+                };
+            }"""
+        )
+        assert outcome["pageConfigFailed"] is True, (
+            f"the forced page_config failure did not trigger: {outcome}"
+        )
+        assert outcome["reArmed"] is True, (
+            f"a failed explicit forceRefetch must re-arm the pending flag: {outcome}"
+        )
+        assert outcome["flagConsumed"] is True, (
+            f"the next refresh should consume the re-armed flag: {outcome}"
+        )
+        assert area_id in outcome["keys"], (
+            f"the saved area should be applied by the retry: {outcome['keys']}"
+        )
+    finally:
+        mock_page.evaluate(
+            """() => {
+                if (window.__realFetch) window.fetch = window.__realFetch;
+            }"""
+        )

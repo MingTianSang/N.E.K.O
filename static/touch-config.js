@@ -2062,14 +2062,18 @@ async function refreshTouchSetForLoadedModel(options = {}) {
             const committed = await InitializationTouchSet(undefined, {
                 allowLive2DReload: options.allowLive2DReload === true
             })
-            // 未实际提交（角色名解析暂时失败、守卫拦截等）且本次由待刷新标记
-            // 驱动时，恢复标记让下一次加载完成钩子重试；正常提交则消费。
-            if (committed !== true && pendingForceRefetch) {
+            // 未实际提交（角色名解析暂时失败、守卫拦截等）且本次刷新承载着
+            // 一条保存通知（待刷新标记驱动，或调用方的显式 forceRefetch——
+            // 广播接收方是一次性的）时，恢复标记让下一次加载完成钩子重试；
+            // 正常提交则消费。
+            if (committed !== true && (pendingForceRefetch || options.forceRefetch === true)) {
                 manager._touchSetPendingForceRefetch = true
             }
         } catch (error) {
             // 重取抛错时同样恢复待刷新标记，保证这条保存通知最终会被重试。
-            if (pendingForceRefetch) manager._touchSetPendingForceRefetch = true
+            if (pendingForceRefetch || options.forceRefetch === true) {
+                manager._touchSetPendingForceRefetch = true
+            }
             throw error
         }
         return true
