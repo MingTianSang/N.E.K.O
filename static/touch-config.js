@@ -259,7 +259,7 @@ async function InitializationTouchSet(characterJson, options = {}) {
     // 旧值（热切换只暂停 VRM/MMD 渲染、不清 currentModel），守卫会误拦刷新。
     if (!options.allowLive2DReload && (modelType !== 'live2d' || isVRMActive || isMMDActive)) {
         console.log('[TouchSet] 当前模型类型不是 Live2D，跳过触摸配置初始化');
-        return;
+        return false;
     }
 
     // 世代号在类型守卫之后才递增：被守卫拦下的调用（如 VRM 残留状态下收到
@@ -289,7 +289,9 @@ async function InitializationTouchSet(characterJson, options = {}) {
         }
 
         if (!lanlanName) {
-            return;
+            // 角色名解析失败（如 page_config 瞬时故障）：未提交任何数据。
+            // 返回 false 让调用方（待刷新标记）保留重试机会。
+            return false;
         }
 
 
@@ -317,7 +319,7 @@ async function InitializationTouchSet(characterJson, options = {}) {
     // 防止较晚完成的旧 GET 覆盖较新的触摸配置
     if (initializationGeneration !== touchSetInitializationGeneration) {
         console.log('[TouchSet] 有更新的触摸配置刷新在途，丢弃本次过期结果')
-        return;
+        return false;
     }
 
     if(modelName && !touchSet[modelName]){
@@ -330,14 +332,14 @@ async function InitializationTouchSet(characterJson, options = {}) {
 
     if (!model) {
         // 模型就绪前不能把 undefined 交给 setupHitAreaInteraction：那会让原生
-        // HitArea 监听在本页面会话里一直处于未接线状态且无人补救。触摸数据已经
-        // 生效（命中检测不依赖 hit 监听），接线由模型加载完成后的
-        // nekoRefreshLive2DTouchSet() 补上。
+        // HitArea 监听在本页面会话里一直处于未接线状态且无人补救。触摸数据
+        // 已提交（返回 true），接线由模型加载完成后的 nekoRefreshLive2DTouchSet() 补上。
         console.warn('[TouchSet] 等待期内模型未就绪，触摸数据已生效，HitArea 接线待模型加载完成后补上')
-        return;
+        return true;
     }
 
     window.live2dManager.setupHitAreaInteraction(model)
+    return true;
 }
 
 const TOUCH_SET_SAVE_TIMEOUT_MS = 10000
@@ -2057,12 +2059,16 @@ async function refreshTouchSetForLoadedModel(options = {}) {
 
     if (shouldRefetch) {
         try {
-            await InitializationTouchSet(undefined, {
+            const committed = await InitializationTouchSet(undefined, {
                 allowLive2DReload: options.allowLive2DReload === true
             })
+            // 未实际提交（角色名解析暂时失败、守卫拦截等）且本次由待刷新标记
+            // 驱动时，恢复标记让下一次加载完成钩子重试；正常提交则消费。
+            if (committed !== true && pendingForceRefetch) {
+                manager._touchSetPendingForceRefetch = true
+            }
         } catch (error) {
-            // 重取失败时恢复待刷新标记，让下一次加载完成钩子重试；正常返回
-            //（包括被更新的刷新世代取代、无角色页早退）即视为已消费。
+            // 重取抛错时同样恢复待刷新标记，保证这条保存通知最终会被重试。
             if (pendingForceRefetch) manager._touchSetPendingForceRefetch = true
             throw error
         }
