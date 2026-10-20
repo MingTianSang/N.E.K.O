@@ -104,7 +104,7 @@ def test_dock_is_one_list_now_that_group_moved(page: Page, running_server: str) 
     _import(page, "first.zip", "第一个", "A", scenes=3)
     assert _shown(page, '.list-segment') is False, "场景/动画 两栏开关还在"
     assert _shown(page, '#anim-seg-scenes') is False
-    assert page.evaluate("() => document.querySelector('#anim-dock-title').textContent.trim()") == "动画"
+    assert page.evaluate("() => document.querySelector('#anim-dock-title').textContent.trim()") == "动作"
     # 组那一块不该在预览下方
     assert page.evaluate(
         """() => {
@@ -217,7 +217,7 @@ def test_picker_rows_are_blocked_with_a_reason_without_a_renderer(group_page: Pa
         };
     }""")
     assert state["allDisabled"] is True, "没有运行时却还能按整组导出"
-    assert "跑不起预览" in state["note"], f"灰掉却没说为什么: {state}"
+    assert "预览没跑起来" in state["note"], f"灰掉却没说为什么: {state}"
     assert state["noteShown"] is True
 
 
@@ -272,7 +272,7 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
         timeout=10000)
     kinds = group_page.evaluate(
         "() => [...document.querySelectorAll('#group-members .group-member-kind')].map(e => e.textContent)")
-    assert kinds == ["取景", "场景"], kinds
+    assert kinds == ["取景", "动作"], kinds
 
     # 移出第一条，剩下的那条还在（移的是行，不是整个组）
     group_page.evaluate("() => document.querySelector('.group-member-remove').click()")
@@ -571,7 +571,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
         arg=before, timeout=10000)
     kinds = group_page.evaluate(
         "() => [...document.querySelectorAll('#group-members .group-member-kind')].map(e => e.textContent)")
-    assert "场景" in kinds, f"右键加入的该是一个场景: {kinds}"
+    assert "动作" in kinds, f"右键加入的该是一个动作: {kinds}"
 
     # 再右键同一个：已经在组里，菜单要改成「移出」
     group_page.evaluate("() => document.querySelector('#select-all-btn').click()")
