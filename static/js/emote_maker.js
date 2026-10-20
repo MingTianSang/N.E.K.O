@@ -261,7 +261,7 @@
         'emoteMaker.groupContextAdd': "加入当前组",
         'emoteMaker.groupContextRemove': "移出当前组",
         'emoteMaker.newGroupFromCurrent': "按当前配置创建组",
-        'emoteMaker.newGroupHelp': "新建一个组，并把当前画面作为第一条存进去 —— 含你调好的大小、旋转角度、换装和滑杆。",
+        'emoteMaker.newGroupHelp': "新建一个组，并把当前动画作为第一条存入 —— 含你调好的大小、旋转角度等。",
         'emoteMaker.groupNonePicked': "还没选组",
         'emoteMaker.selectedCount': "已选 {{count}} 条",
         'emoteMaker.groupPickedMissing': "{{count}} 个动作没有对应的取景，没法加入",
