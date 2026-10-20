@@ -1,37 +1,40 @@
 # -*- coding: utf-8 -*-
-"""复现取证 + 修复回归：主页面内存里的 touch_set 是页面加载时的一次性快照，模型管理页的
-后续保存永远到不了运行中的主页面。
+"""Regression tests: the running main page must pick up touch_set saves without reload.
 
-用户报告的现象：在模型管理页配置 Live2D 自定义触摸区域并保存后，模型管理页
-回读显示已保存（PATCH /api/characters/catgirl/{name}/touch_set 立即落盘），
-但回到主页面点击自定义区域没有任何效果，刷新主页面后（或重启应用后）才生效。
+User-reported bug: a custom Live2D touch area saved in the model manager persists
+fine (PATCH /api/characters/catgirl/{name}/touch_set), but the running main page
+keeps using the touch_set snapshot taken at page load, so the custom area does
+nothing until the main page is reloaded.
 
-根因：touch-config.js 的 InitializationTouchSet() 只在页面启动时执行一次
-（startTouchConfigAfterStorageBarrier() → touchPage_init + InitializationTouchSet），
-把 /api/characters 的 _reserved.touch_set 快照进 window.live2dManager.touchSet。
-此后模型管理页保存只触发 reload_model 重载模型本身
-（bootstrap-resources-and-model-reload.js 全程没有重新拉取 touch_set），
-运行中的主页面/桌宠窗口继续拿旧快照做自定义区域命中检测
-（live2d-interaction.js 的 _getCustomTouchAreaIdAtPoint → touchSet 里没有新矩形
-→ customAreaId=null → 路由回 default/随机动画）。
+Root cause: touch-config.js `InitializationTouchSet()` runs once at page startup
+(startTouchConfigAfterStorageBarrier) and snapshots /api/characters's
+`_reserved.touch_set` into window.live2dManager.touchSet. Model-manager saves
+only trigger `reload_model` (model reload in
+bootstrap-resources-and-model-reload.js, which never refetches touch_set), so
+the running page keeps hit-testing against the stale snapshot
+(_getCustomTouchAreaIdAtPoint -> no rect -> routes to default/random animation).
 
-修复（2026-10-20）：
-  A. touch-config.js 新增 nekoRefreshLive2DTouchSet()：模型加载完成钩子——数据刚
-     拉取过只补原生 HitArea 接线，过期则重拉；InitializationTouchSet 修掉"等不到
-     模型仍拿 undefined 接线"和 modelName 为空时创建 "null" 垃圾键。
-  B. touch-config.js 保存成功后经 neko_touch_set_channel 广播，主页面收到即强制
-     重拉（BC 不可用时静默降级为旧行为：刷新主页面生效）。
-  C. live2d-init.js 初始加载完成、bootstrap-resources-and-model-reload.js 热切换
-     完成各接一个刷新钩子。
+Fix (PR #3471):
+  A. touch-config.js adds `nekoRefreshLive2DTouchSet()`: on model-load completion
+     hooks it rewires native HitArea listeners when the data is fresh (<5s), and
+     refetches when stale; `InitializationTouchSet` no longer passes `undefined`
+     to setupHitAreaInteraction when the model is not ready, and no longer
+     creates a junk `"null"` key when modelName is empty.
+  B. A successful save broadcasts on the `neko_touch_set_channel`
+     BroadcastChannel; the main page force-refetches on receipt (silently
+     degrades to the old refresh-to-apply behavior without BroadcastChannel).
+  C. live2d-init.js (initial load) and bootstrap-resources-and-model-reload.js
+     (hot switch) each hook the refresh after a Live2D model finishes loading.
+  D. Review fixes: a monotonically increasing generation discards stale
+     /api/characters responses when refreshes overlap (older response must never
+     clobber a newer one), and load-completion callers pass
+     `allowLive2DReload` so stale `localStorage.modelType` /
+     `vrm/mmdManager.currentModel` (the hot-switch path only pauses VRM/MMD
+     rendering without clearing currentModel) cannot block the refresh.
 
-本测试在真实服务端 + 真实主页面上验证：
-  - fresh-load 基线：直接 PATCH 落盘后冷启动页面，同一点命中自定义区域；
-  - fix-broadcast：PATCH + 真实 broadcastTouchSetUpdated 信号 → 不刷新页面即生效；
-  - fix-reload-hook：PATCH + 真实 handleModelReload → 切换完成后自动生效；
-  - fix-rebind：慢加载场景模拟——接线被清空、数据过期后调用刷新钩子，
-    原生 HitArea 监听被重新接到当前模型上。
-判定序列均与 onDragEnd 点击分支一致（_getCustomTouchAreaIdAtPoint +
-_getPreferredTouchSetHitArea），每阶段重复 n=3 次。
+The route probe below mirrors the onDragEnd click branch exactly
+(_getCustomTouchAreaIdAtPoint + _getPreferredTouchSetHitArea); every phase
+repeats n=3 times per the repo's attribution-experiment standard.
 """
 
 import time
@@ -41,7 +44,7 @@ from playwright.sync_api import Page
 
 CUSTOM_AREA_ID = "custom_repro_stale_area_1"
 CUSTOM_RECT = {"x": 0.4, "y": 0.3, "width": 0.2, "height": 0.2}
-PROBE_NX = 0.5  # 矩形中心的归一化坐标
+PROBE_NX = 0.5  # probe point = rect center, normalized within model bounds
 PROBE_NY = 0.4
 REPEATS = 3
 
@@ -58,7 +61,8 @@ def _wait_main_page_ready(page: Page, timeout_ms: int = 60000):
 
 
 def _wait_probe_hits(page: Page, area_id: str, timeout_ms: int = 15000):
-    """轮询路由探测，直到给定自定义区域在矩形中心点被命中（不刷新页面）。"""
+    # Poll the route probe until the custom area is hit at the rect center
+    # (without reloading the page).
     deadline = time.monotonic() + timeout_ms / 1000
     last_probe = None
     while time.monotonic() < deadline:
@@ -71,17 +75,14 @@ def _wait_probe_hits(page: Page, area_id: str, timeout_ms: int = 15000):
             return last_probe
         page.wait_for_timeout(300)
     raise AssertionError(
-        f"{timeout_ms}ms 内自定义区域 {area_id} 未被命中，最后一次探测: {last_probe}"
+        f"custom area {area_id} not hit within {timeout_ms}ms, last probe: {last_probe}"
     )
 
 
 def _route_probe(page: Page):
-    """在自定义矩形中心点执行与 onDragEnd 点击分支一致的判定序列。
-
-    对应 live2d-interaction.js onDragEnd：
-      customAreaId = _getCustomTouchAreaIdAtPoint(x, y)
-      UseBlock     = _getPreferredTouchSetHitArea(hitAreas, customAreaId)
-    """
+    # Runs the same decision sequence as the onDragEnd click branch:
+    #   customAreaId = _getCustomTouchAreaIdAtPoint(x, y)
+    #   useBlock     = _getPreferredTouchSetHitArea(hitAreas, customAreaId)
     return page.evaluate(
         """({ nx, ny }) => {
             const manager = window.live2dManager;
@@ -106,7 +107,8 @@ def _route_probe(page: Page):
 
 
 def _patch_touch_set_as_model_manager_does(page: Page, area_id: str = CUSTOM_AREA_ID) -> dict:
-    """模拟模型管理页保存：整模型替换 touch_set[modelName]，含一个自定义区域。"""
+    # Mimics the model-manager save: replace touch_set[modelName] wholesale,
+    # including one custom area.
     return page.evaluate(
         """async ({ areaId, rect }) => {
             const lanlan = new URLSearchParams(window.location.search).get('lanlan_name')
@@ -155,34 +157,36 @@ def _server_has_custom_area(page: Page) -> bool:
 def test_custom_touch_area_saved_in_model_manager_reaches_main_page_only_after_reload(
     mock_page: Page, running_server: str
 ):
-    """冷启动基线：服务端已保存的自定义区域，主页面冷启动后即可命中。n=3。
+    """Cold-start baseline: a persisted custom area is hit right after a fresh page load.
 
-    （历史版本曾断言"不刷新页面必须保持陈旧"；修复引入加载完成/保存信号两个
-    合法刷新路径后，页面会自愈，该断言不再成立，已被三个修复验证用例取代。）
+    # (History: an earlier revision asserted the page MUST stay stale without a
+    # notification; after the fix introduced two legitimate refresh paths
+    # (load completion + save broadcast) the page self-heals, so that assertion
+    # no longer holds and has been superseded by the fix-verification tests.)
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
 
-    # ── 模拟模型管理页保存 ────────────────────────────────────────────────
+    # Simulate the model-manager save.
     patch_result = _patch_touch_set_as_model_manager_does(mock_page)
-    assert patch_result.get("success"), f"PATCH 保存失败: {patch_result}"
-    assert _server_has_custom_area(mock_page), "服务端未落盘自定义区域（保存侧应无问题）"
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+    assert _server_has_custom_area(mock_page), "custom area not persisted server-side"
 
-    # ── 冷启动后同一点应命中（与 onDragEnd 点击分支一致的判定序列） ──────
+    # Cold start: the same data must route to the custom area.
     mock_page.reload(wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
 
     for attempt in range(REPEATS):
         probe = _route_probe(mock_page)
-        assert "error" not in probe, f"第 {attempt + 1} 次探测失败: {probe}"
+        assert "error" not in probe, f"probe {attempt + 1} failed: {probe}"
         assert CUSTOM_AREA_ID in probe["inMemoryTouchSetKeys"], (
-            f"第 {attempt + 1} 次：冷启动后内存快照应包含自定义区域: {probe}"
+            f"attempt {attempt + 1}: in-memory snapshot should contain the area: {probe}"
         )
         assert probe["customAreaId"] == CUSTOM_AREA_ID, (
-            f"第 {attempt + 1} 次：冷启动后同一点应命中自定义区域: {probe}"
+            f"attempt {attempt + 1}: the same point should hit the custom area: {probe}"
         )
         assert probe["useBlock"] == CUSTOM_AREA_ID, (
-            f"第 {attempt + 1} 次：冷启动后路由应指向自定义区域: {probe}"
+            f"attempt {attempt + 1}: routing should target the custom area: {probe}"
         )
         mock_page.wait_for_timeout(1000)
 
@@ -191,29 +195,34 @@ def test_custom_touch_area_saved_in_model_manager_reaches_main_page_only_after_r
 def test_touch_set_broadcast_reaches_running_main_page_without_reload(
     mock_page: Page, running_server: str
 ):
-    """修复 B：保存成功后的 neko_touch_set_channel 信号必须让运行中的主页面立即生效。
+    """Fix B: a save broadcast on neko_touch_set_channel applies without page reload.
 
-    通过 API 落盘（等价模型管理页的 PATCH），再调用页面上真实的
-    broadcastTouchSetUpdated() 发出保存信号——主页面不刷新，探测即应命中。
-    n=3。
+    # The signal is posted through a SECOND BroadcastChannel object with the same
+    # name, simulating the model-manager window. (BroadcastChannel never delivers
+    # a message back to the sending channel object itself — review finding.)
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
 
     area_id = "custom_repro_fix_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
-    assert patch_result.get("success"), f"PATCH 保存失败: {patch_result}"
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
 
     mock_page.evaluate(
         """() => {
-            broadcastTouchSetUpdated(window.live2dManager.modelName);
+            const sender = new BroadcastChannel('neko_touch_set_channel');
+            sender.postMessage({
+                model_name: window.live2dManager.modelName || '',
+                timestamp: Date.now()
+            });
+            setTimeout(() => { try { sender.close(); } catch (_) {} }, 100);
         }"""
     )
 
     for attempt in range(REPEATS):
         probe = _wait_probe_hits(mock_page, area_id)
         assert area_id in probe["inMemoryTouchSetKeys"], (
-            f"第 {attempt + 1} 次：内存快照应已包含新区域: {probe['inMemoryTouchSetKeys']}"
+            f"attempt {attempt + 1}: snapshot should contain the area: {probe['inMemoryTouchSetKeys']}"
         )
         mock_page.wait_for_timeout(1000)
 
@@ -222,18 +231,13 @@ def test_touch_set_broadcast_reaches_running_main_page_without_reload(
 def test_model_reload_hook_refetches_touch_set(
     mock_page: Page, running_server: str
 ):
-    """修复 C：handleModelReload 完成后的刷新钩子必须让新保存的区域在切换后生效。
-
-    通过 API 落盘一个新自定义区域（不发广播信号），然后走真实的
-    window.handleModelReload 热切换——完成后探测应命中，证明钩子在切换后
-    重新拉取了 touch_set。n=3。
-    """
+    """Fix C: after a real handleModelReload, a newly saved area applies without reload."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
 
     area_id = "custom_repro_reload_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
-    assert patch_result.get("success"), f"PATCH 保存失败: {patch_result}"
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
 
     reload_result = mock_page.evaluate(
         """async () => {
@@ -246,7 +250,7 @@ def test_model_reload_hook_refetches_touch_set(
             return { success: true };
         }"""
     )
-    assert reload_result.get("success"), f"模型热切换失败: {reload_result}"
+    assert reload_result.get("success"), f"model hot switch failed: {reload_result}"
 
     _wait_main_page_ready(mock_page)
     for attempt in range(REPEATS):
@@ -259,11 +263,10 @@ def test_model_reload_hook_refetches_touch_set(
 def test_refresh_hook_rewires_native_hit_area_listener(
     mock_page: Page, running_server: str
 ):
-    """修复 A（缺陷 2）：模型晚于启动初始化就绪时，刷新钩子必须补上原生 HitArea 接线。
+    """Fix A: the refresh hook rewires the native HitArea listener for the current model.
 
-    在已就绪的主页面上模拟"接线从未成功"的状态（清空 _touchSetHitModel/
-    _touchSetHitHandler、把数据标记为过期），调用真实刷新钩子后，
-    监听必须重新绑定到当前模型实例上。n=3。
+    # Simulates the slow-load state: wiring was never done and the data is marked
+    # stale, so the refresh takes the full refetch path.
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
@@ -274,11 +277,11 @@ def test_refresh_hook_rewires_native_hit_area_listener(
                 const manager = window.live2dManager;
                 manager._touchSetHitModel = null;
                 manager._touchSetHitHandler = null;
-                manager._touchSetLoadedAt = 0;  // 标记数据过期 → 刷新走完整重拉路径
+                manager._touchSetLoadedAt = 0;  // stale marker -> full refetch path
                 return { modelName: manager.modelName };
             }"""
         )
-        assert state["modelName"], "主页面模型名不应为空"
+        assert state["modelName"], "main page model name should not be empty"
 
         refreshed = mock_page.evaluate(
             """async () => {
@@ -288,7 +291,7 @@ def test_refresh_hook_rewires_native_hit_area_listener(
                 return { success: await window.nekoRefreshLive2DTouchSet() === true };
             }"""
         )
-        assert refreshed.get("success"), f"刷新钩子执行失败: {refreshed}"
+        assert refreshed.get("success"), f"refresh hook failed: {refreshed}"
 
         wired = mock_page.evaluate(
             """() => {
@@ -300,9 +303,157 @@ def test_refresh_hook_rewires_native_hit_area_listener(
                 };
             }"""
         )
-        assert wired["hasHandler"], f"第 {attempt + 1} 次：原生 HitArea 监听未被重新接线: {wired}"
+        assert wired["hasHandler"], f"attempt {attempt + 1}: listener not rewired: {wired}"
         assert wired["boundToCurrentModel"], (
-            f"第 {attempt + 1} 次：监听应绑定到当前模型实例: {wired}"
+            f"attempt {attempt + 1}: listener should bind to the current model: {wired}"
         )
-        assert wired["loadedAtFresh"], f"第 {attempt + 1} 次：触摸数据应被重新拉取: {wired}"
+        assert wired["loadedAtFresh"], (
+            f"attempt {attempt + 1}: touch data should be refetched: {wired}"
+        )
         mock_page.wait_for_timeout(500)
+
+
+@pytest.mark.frontend
+def test_concurrent_refresh_discards_stale_response(
+    mock_page: Page, running_server: str
+):
+    """Fix D (race): an older /api/characters response must never clobber a newer one.
+
+    # Overlapping refreshes (rapid saves / save + hot switch) each call
+    # InitializationTouchSet independently. Without the generation guard, the
+    # older GET resolving last would overwrite touchSet with older data and mark
+    # it fresh. Here the first response is artificially delayed and stripped of
+    # the custom area; the guard must discard it.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+
+    area_id = "custom_repro_race_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    # Intercept /api/characters: response #1 is delayed 1.5s and stripped of the
+    # custom area (simulating an older snapshot); later responses return fast.
+    mock_page.evaluate(
+        """(areaId) => {
+            const realFetch = window.fetch;
+            window.__realFetch = realFetch;
+            window.__charFetchCount = 0;
+            window.fetch = async (url, opts) => {
+                const u = String(url);
+                if (u.includes('/api/characters')) {
+                    window.__charFetchCount += 1;
+                    const callNo = window.__charFetchCount;
+                    const resp = await realFetch(url, opts);
+                    const data = await resp.json();
+                    const lanlan = new URLSearchParams(window.location.search).get('lanlan_name')
+                        || window.lanlan_config?.lanlan_name;
+                    const modelName = window.live2dManager.modelName;
+                    if (callNo === 1) {
+                        await new Promise(r => setTimeout(r, 1500));
+                        try {
+                            delete data['猫娘'][lanlan]._reserved.touch_set[modelName][areaId];
+                        } catch (_) {}
+                    } else {
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+                    return new Response(JSON.stringify(data), {
+                        status: resp.status,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return realFetch(url, opts);
+            };
+        }""",
+        area_id,
+    )
+
+    try:
+        overlap = mock_page.evaluate(
+            """async () => {
+                const r1 = window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
+                await new Promise(r => setTimeout(r, 200));  // let request #1 go out
+                const r2 = window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
+                await r2;
+                await r1;
+                return { charFetchCount: window.__charFetchCount };
+            }"""
+        )
+        assert overlap.get("charFetchCount", 0) >= 2, (
+            f"expected two /api/characters calls, got: {overlap}"
+        )
+
+        probe = _route_probe(mock_page)
+        assert "error" not in probe, f"probe failed: {probe}"
+        assert area_id in probe["inMemoryTouchSetKeys"], (
+            f"stale response was applied; snapshot keys: {probe['inMemoryTouchSetKeys']}"
+        )
+    finally:
+        mock_page.evaluate(
+            """() => {
+                if (window.__realFetch) window.fetch = window.__realFetch;
+            }"""
+        )
+
+
+@pytest.mark.frontend
+def test_live2d_reload_hook_bypasses_stale_type_guards(
+    mock_page: Page, running_server: str
+):
+    """Fix D (guards): load-completion refresh must bypass stale type-guard state.
+
+    # A VRM->Live2D hot switch only pauses VRM rendering; localStorage.modelType
+    # and vrmManager.currentModel can stay stale and trip the type guard. With
+    # allowLive2DReload the refresh must still apply; without the flag the guard
+    # blocks the refetch (BC-notification path keeps the guard).
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+
+    area_id = "custom_repro_guard_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    result = mock_page.evaluate(
+        """async (areaId) => {
+            const manager = window.live2dManager;
+            const prevModelType = localStorage.getItem('modelType');
+            const prevVrmManager = window.vrmManager;
+            // Forge the stale guard state: type says live3d, VRM "in use".
+            localStorage.setItem('modelType', 'live3d');
+            if (!window.vrmManager) window.vrmManager = {};
+            window.vrmManager.currentModel = {};
+            // Wipe the in-memory config so a refill is observable.
+            delete manager.touchSet[manager.modelName];
+            try {
+                // 1) Without the bypass: the stale guard must block the refetch.
+                await window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
+                const blockedKeys = Object.keys(manager.touchSet[manager.modelName] || {});
+                // 2) With the bypass: the refresh must apply.
+                await window.nekoRefreshLive2DTouchSet({
+                    forceRefetch: true,
+                    allowLive2DReload: true
+                });
+                const refilledKeys = Object.keys(manager.touchSet[manager.modelName] || {});
+                return {
+                    blockedKeys,
+                    refilledKeys,
+                    prevModelType,
+                    hadVrmManager: prevVrmManager !== undefined,
+                };
+            } finally {
+                if (prevModelType === null) localStorage.removeItem('modelType');
+                else localStorage.setItem('modelType', prevModelType);
+                if (prevVrmManager === undefined) delete window.vrmManager;
+                else window.vrmManager.currentModel = (prevVrmManager && prevVrmManager.currentModel) || null;
+            }
+        }""",
+        area_id,
+    )
+
+    assert area_id not in result["blockedKeys"], (
+        f"without bypass the stale guard should block the refill: {result['blockedKeys']}"
+    )
+    assert area_id in result["refilledKeys"], (
+        f"with allowLive2DReload the refresh should apply: {result['refilledKeys']}"
+    )

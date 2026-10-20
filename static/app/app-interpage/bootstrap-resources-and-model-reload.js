@@ -1523,7 +1523,7 @@ I.mod = window.appInterpage;
                             // 只落盘不推送，主页面启动快照不会自动更新；切换后强制重拉一次，
                             // 让新保存的自定义触摸区域无需手动刷新主页面即生效。
                             if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
-                                window.nekoRefreshLive2DTouchSet({ forceRefetch: true }).catch(function (touchSetError) {
+                                window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true }).catch(function (touchSetError) {
                                     console.warn('[Model] 刷新触摸配置失败:', touchSetError)
                                 })
                             }

@@ -241,8 +241,14 @@ function touchPage_open(){
     }
 }
 
-async function InitializationTouchSet(characterJson) {
-    
+// 并发刷新世代号：连续保存/保存+热切换会同时跑多个 InitializationTouchSet，
+// 较早发出的 /api/characters GET 可能较晚返回；提交前丢弃非最新世代的结果，
+// 防止旧快照覆盖新配置。
+let touchSetInitializationGeneration = 0
+
+async function InitializationTouchSet(characterJson, options = {}) {
+    const initializationGeneration = ++touchSetInitializationGeneration
+
     while(typeof window.t !== 'function'){
         await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -250,7 +256,10 @@ async function InitializationTouchSet(characterJson) {
     const modelType = localStorage.getItem('modelType') || 'live2d';
     const isVRMActive = window.vrmManager && window.vrmManager.currentModel;
     const isMMDActive = window.mmdManager && window.mmdManager.currentModel;
-    if (modelType !== 'live2d' || isVRMActive || isMMDActive) {
+    // allowLive2DReload：调用方刚完成 Live2D 模型加载/热切换时使用。此场景下
+    // localStorage.modelType 和 vrm/mmdManager.currentModel 可能还是切换前的
+    // 旧值（热切换只暂停 VRM/MMD 渲染、不清 currentModel），守卫会误拦刷新。
+    if (!options.allowLive2DReload && (modelType !== 'live2d' || isVRMActive || isMMDActive)) {
         console.log('[TouchSet] 当前模型类型不是 Live2D，跳过触摸配置初始化');
         return;
     }
@@ -301,6 +310,13 @@ async function InitializationTouchSet(characterJson) {
 
     const modelName = window.live2dManager.modelName || ''
     const touchSet = characterJson._reserved?.touch_set || {};
+
+    // 过期响应丢弃：已有更新的刷新在途时，本次旧结果不得提交，
+    // 防止较晚完成的旧 GET 覆盖较新的触摸配置
+    if (initializationGeneration !== touchSetInitializationGeneration) {
+        console.log('[TouchSet] 有更新的触摸配置刷新在途，丢弃本次过期结果')
+        return;
+    }
 
     if(modelName && !touchSet[modelName]){
         touchSet[modelName] = {"default":{"motions": [], "expressions": []}}
@@ -2030,7 +2046,9 @@ async function refreshTouchSetForLoadedModel(options = {}) {
         || (Date.now() - loadedAt) > TOUCH_SET_LOADED_REUSE_WINDOW_MS
 
     if (shouldRefetch) {
-        await InitializationTouchSet()
+        await InitializationTouchSet(undefined, {
+            allowLive2DReload: options.allowLive2DReload === true
+        })
         return true
     }
 

@@ -849,7 +849,7 @@ async function _initLive2DModelInner() {
         // 接线，过期则顺带重拉。模型管理页自己管理 touchSet（见 page-controller），
         // 不走此钩子。
         if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
-            window.nekoRefreshLive2DTouchSet().catch((touchSetError) => {
+            window.nekoRefreshLive2DTouchSet({ allowLive2DReload: true }).catch((touchSetError) => {
                 console.warn('[Live2D Init] 刷新触摸配置失败:', touchSetError)
             })
         }
