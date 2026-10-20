@@ -1124,8 +1124,8 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
 
 
 def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: str) -> None:
-    """台面淡蓝框 = 导出可见区提示：透明边距看不出内容边界，框补上这个信息。
-    内容外的框内像素应有淡蓝填充（alpha>8），框外像素保持全透明。"""
+    """台面淡蓝虚线框 + 网格线 = 导出可见区提示：透明边距看不出内容边界，
+    框补上这个信息。虚线框边缘有描边、框内有网格线、框外保持全透明。"""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1154,30 +1154,44 @@ def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: st
             framesFor: () => [frame],
         });
     }""")
-    page.wait_for_function("""() => {
+    found = False
+    dump = {}
+    for _ in range(40):
+        dump = page.evaluate("""() => {
+            const c = document.querySelector('.st-stage');
+            const fit = Math.min(c.width / 64, c.height / 64) * 0.88;
+            const half = 32 * fit;
+            const cx = c.width / 2, cy = c.height / 2;
+            const row = [];
+            for (let x = 0; x < c.width; x += 1) {
+                row.push(c.getContext('2d').getImageData(
+                    x, Math.round(cy - half), 1, 1).data[3]);
+            }
+            const maxTop = Math.max(...row);
+            const argTop = row.indexOf(maxTop);
+            return { w: c.width, h: c.height, dpr: window.devicePixelRatio,
+                maxTop, argTop, half, maxRowData:
+                Array.from(c.getContext('2d').getImageData(
+                    Math.max(0, argTop - 2), Math.round(cy - half), 5, 1).data) };
+        }""")
+        if dump.get("maxTop", 0) > 60:
+            found = True
+            break
+        page.wait_for_timeout(200)
+    print("EZ-DUMP:", dump)
+    assert found is True, f"顶边整行扫描没有找到虚线描边: {dump}"
+    # 网格线竖线贯穿到顶边行：轮询找到的亮像素 x 就是一条竖线，向下采中部验证
+    state = page.evaluate("""(argTop) => {
         const c = document.querySelector('.st-stage');
-        if (!c || !c.width) return false;
-        const fit = Math.min(c.width / 64, c.height / 64) * 0.88;
-        const half = 32 * fit;
-        const cx = c.width / 2, cy = c.height / 2;
-        const d = c.getContext('2d').getImageData(
-            Math.round(cx + half - 3), Math.round(cy), 1, 1).data;
-        return d[3] > 8;   // 框内、内容外的淡蓝填充出现了
-    }""", timeout=8000)
-    state = page.evaluate("""() => {
-        const c = document.querySelector('.st-stage');
-        const fit = Math.min(c.width / 64, c.height / 64) * 0.88;
-        const half = 32 * fit;
-        const cx = c.width / 2, cy = c.height / 2;
-        const px = (x, y) => c.getContext('2d').getImageData(
-            Math.round(x), Math.round(y), 1, 1).data;
-        return {
-            insideBox: Array.from(px(cx + half - 3, cy)),
-            outsideBox: Array.from(px(10, cy)),
-        };
-    }""")
-    assert state["insideBox"][3] > 8, state   # 框内淡蓝填充
-    assert state["outsideBox"][3] == 0, state  # 框外仍是透明的
+        const cy = c.height / 2;
+        const maxAlpha = (x, y) => Math.max(...Array.from(
+            c.getContext('2d').getImageData(Math.round(x - 2), Math.round(y), 5, 1).data
+                .filter((_, i) => i % 4 === 3)));
+        return { midColumn: maxAlpha(argTop, cy),
+            outside: Array.from(c.getContext('2d').getImageData(10, Math.round(cy), 1, 1).data) };
+    }""", dump["argTop"])
+    assert state["midColumn"] > 60, state         # 竖线贯穿（网格线连续）
+    assert state["outside"][3] == 0, state        # 框外保持全透明
 
 
 def test_stage_close_button_sits_at_the_right_edge(page: Page, running_server: str) -> None:
