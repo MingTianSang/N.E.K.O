@@ -809,28 +809,26 @@
             const fit = Math.min(stageSize / frame.width, stageSize / frame.height) * 0.88;
             drawPivot(ctx);
             if (stageDrag) drawTransformBox(ctx, frame, fit);
-            // 导出可见区提示：淡蓝虚线框 + 网格线标出这一格的内容边界。
-            // 透明边距在台面上看不出来，没有这个框就不知道导出的方里到底有什么。
-            ctx.save();
-            ctx.translate(stageSize / 2, stageSize / 2);
-            ctx.rotate(degrees * Math.PI / 180);
-            ctx.scale(fit * scale, fit * scale);
-            const px = 1 / (fit * scale);           // 线宽恒为 1 设备像素
-            const halfW = frame.width / 2, halfH = frame.height / 2;
+            // 导出可见区提示：淡蓝虚线框 + 网格线标出导出方的内容边界。
+            // 框是"导出的那一个方"，固定不转不缩——你在台上调的大小/角度
+            // 套在内容上（分层格式由运行时应用），方本身不动。
+            const px = 1 / dpr();                   // 线宽恒为 1 设备像素
+            const halfW = (frame.width * fit) / 2;
+            const halfH = (frame.height * fit) / 2;
             ctx.strokeStyle = 'rgba(79, 140, 255, 0.45)';
             ctx.lineWidth = px;
             for (let i = 1; i < 6; i += 1) {        // 网格线填充（不含边框）
-                const gx = -halfW + (frame.width * i) / 6;
-                const gy = -halfH + (frame.height * i) / 6;
+                const gx = stageSize / 2 - halfW + (frame.width * fit * i) / 6;
+                const gy = stageSize / 2 - halfH + (frame.height * fit * i) / 6;
                 ctx.beginPath();
-                ctx.moveTo(gx, -halfH); ctx.lineTo(gx, halfH);
-                ctx.moveTo(-halfW, gy); ctx.lineTo(halfW, gy);
+                ctx.moveTo(gx, stageSize / 2 - halfH); ctx.lineTo(gx, stageSize / 2 + halfH);
+                ctx.moveTo(stageSize / 2 - halfW, gy); ctx.lineTo(stageSize / 2 + halfW, gy);
                 ctx.stroke();
             }
             ctx.setLineDash([6 * px, 5 * px]);
-            ctx.strokeRect(-halfW, -halfH, frame.width, frame.height);
+            ctx.strokeRect(stageSize / 2 - halfW, stageSize / 2 - halfH,
+                frame.width * fit, frame.height * fit);
             ctx.setLineDash([]);
-            ctx.restore();
             ctx.save();
             ctx.translate(stageSize / 2, stageSize / 2);
             ctx.rotate(degrees * Math.PI / 180);
