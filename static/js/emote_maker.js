@@ -363,6 +363,7 @@
         'emoteMaker.stageImagesPngOnly': "只支持 PNG 图片",
         'emoteMaker.stageImagesImported': "已导入 {{count}} 张图片",
         'emoteMaker.stageImagesSaveFailed': "图片没存进模板副本：下次打开可能要重新导入",
+        'emoteMaker.stageImagesMissing': "{{count}} 个状态绑的图片不见了，已跳过",
         'emoteMaker.nodeSourceImage': "用户图片",
         'emoteMaker.stageSearch': "搜索动作",
         'emoteMaker.packPlanSkipped': "已跳过未设置的槽位",

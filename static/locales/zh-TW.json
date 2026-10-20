@@ -3966,7 +3966,7 @@
         "nodeNoOutput": "還沒給任何狀態挑動作，先設定再匯出。",
         "packBasicFollowRoot": "跟随待机",
         "packFormatLabel": "包格式",
-        "packFormatFlat": "平铺（GIF，通用兼容）",
+        "packFormatFlat": "平鋪（GIF，通用相容）",
         "packFormatLayered": "分層（多狀態動作）",
         "packLayeredUnavailable": "分層打包功能沒載入出來，重新整理再試。",
         "segmentScenes": "動作",
