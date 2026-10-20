@@ -74,6 +74,29 @@ def test_stage_open_button_is_flat(page: Page, running_server: str) -> None:
     assert style["shadow"] == "none", style
 
 
+def test_input_focus_and_select_styling(page: Page, running_server: str) -> None:
+    """3px 粗蓝焦点描边退役：输入/下拉焦点 = accent 描边 + 柔光环；
+    下拉 appearance:none + 自绘箭头（不再用原生外观）。只看计算样式。"""
+    _open(page, running_server)
+    page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
+    page.click("#pack-name")   # 真实交互聚焦；文本框任何聚焦方式都算 focus-visible
+    state = page.evaluate("""() => {
+        const name = document.querySelector('#pack-name');
+        const cs = getComputedStyle(name);
+        const sel = document.querySelector('#pack-basic-rows select')
+            || document.querySelector('select');
+        const scs = getComputedStyle(sel);
+        return { outlineStyle: cs.outlineStyle, shadow: cs.boxShadow,
+            borderColor: cs.borderColor, appearance: scs.appearance,
+            bgImage: scs.backgroundImage.slice(0, 60) };
+    }""")
+    assert state["outlineStyle"] == "none", state       # 3px 蓝描边退役
+    assert "rgba(32, 168, 239, 0.18)" in state["shadow"], state   # 柔光环在
+    assert state["borderColor"] in ("rgb(36, 170, 244)", "rgb(32, 168, 239)"), state
+    assert state["appearance"] == "none", state         # 原生下拉外观退役
+    assert "svg" in state["bgImage"], state             # 自绘箭头在
+
+
 def test_empty_talking_scene_stays_quiet_instead_of_lying(page: Page, running_server: str) -> None:
     """留空的说话场景不再解释"继续播待机"——那行说明已按要求退役，宁可不说也不含糊。
     用户能看出来的部分：摘要行收起（隐藏/空），别处也不许再出现那两句。"""

@@ -5123,3 +5123,47 @@ body.is-pack-dragging * {
 .st-bound-clear {
     flex: none;
 }
+
+/* ── 输入控件焦点与下拉外观统一：3px 粗蓝 outline 退役 ────────────────────
+   输入/下拉的焦点指示改为 accent 描边 + 柔光环（可访问性指示保留，
+   视觉重量降下来）；按钮保持 outline 但收细。 */
+input:focus-visible,
+select:focus-visible {
+    outline: none;
+    border-color: var(--emote-accent);
+    box-shadow: 0 0 0 2px rgba(32, 168, 239, 0.18);
+}
+
+button:focus-visible {
+    outline: 2px solid rgba(32, 168, 239, 0.4);
+    outline-offset: 2px;
+}
+
+/* 原生下拉外观退役：自绘箭头 + hover 反馈。background-image 用 EOF 同
+   特异度压过各家族的 background 简写；暗色由同组规则再压一次。 */
+select,
+.select-row select,
+.template-scene-list-select,
+.template-compat-row select,
+.ne-field select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 20px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23808fa0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 10px 10px;
+    cursor: pointer;
+}
+
+select:hover {
+    border-color: var(--emote-accent);
+}
+
+[data-theme="dark"] select,
+[data-theme="dark"] .select-row select,
+[data-theme="dark"] .template-scene-list-select,
+[data-theme="dark"] .template-compat-row select,
+[data-theme="dark"] .ne-field select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23a9bccb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
