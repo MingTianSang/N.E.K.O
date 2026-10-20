@@ -200,56 +200,6 @@ button {
     overflow: hidden;
 }
 
-.category-tabs {
-    margin-top: 16px;
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 4px;
-    padding: 5px;
-    border-radius: 14px;
-    background: #edf8fe;
-}
-
-.category-tab {
-    min-width: 0;
-    min-height: 54px;
-    padding: 7px 3px 6px;
-    border: 1px solid transparent;
-    border-radius: 10px;
-    background: transparent;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    color: var(--emote-muted);
-    font-size: 11px;
-    transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
-}
-
-.category-tab img {
-    width: 20px;
-    height: 20px;
-    object-fit: contain;
-}
-
-.category-tab:hover {
-    color: var(--emote-accent-strong);
-    background: rgba(255, 255, 255, 0.74);
-}
-
-.category-tab.is-active {
-    color: #ffffff;
-    background: linear-gradient(150deg, #48c8fb, #188cf2);
-    border-color: rgba(255, 255, 255, 0.8);
-    box-shadow: 0 7px 16px rgba(25, 143, 239, 0.22);
-}
-
-.category-tab.is-active img {
-    filter: brightness(0) invert(1);
-}
-
 .asset-section-heading,
 .section-label-row,
 .quick-preview-heading {
@@ -303,7 +253,6 @@ button {
 }
 
 .text-button:disabled,
-.category-tab:disabled,
 .primary-button:disabled {
     cursor: not-allowed;
     opacity: 0.46;
@@ -1553,7 +1502,6 @@ body.is-resizing * {
         url('/static/icons/steam_shop_bg.png');
 }
 
-[data-theme="dark"] .category-tabs,
 [data-theme="dark"] .asset-tip,
 [data-theme="dark"] .canvas-stage,
 [data-theme="dark"] .layer-actions button {
@@ -1729,24 +1677,6 @@ body {
 
 .panel-heading h2 {
     font-size: 20px;
-}
-
-.category-tabs {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px;
-    margin-top: 13px;
-    padding: 4px;
-}
-
-.category-tab {
-    min-height: 46px;
-    padding: 6px 3px;
-    font-size: 11px;
-}
-
-.category-tab img {
-    width: 18px;
-    height: 18px;
 }
 
 .template-import-card {
@@ -2243,9 +2173,6 @@ which can otherwise override the browser's default [hidden] behaviour. */
 
 .canvas-stage {
     min-height: 0;
-}
-.quick-preview-heading {
-    margin-bottom: 8px;
 }
 .animation-dock {
     min-height: 0;

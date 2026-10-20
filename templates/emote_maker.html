@@ -82,29 +82,10 @@
                     <input id="asset-search-input" type="search" autocomplete="off" data-i18n-placeholder="emoteMaker.searchParts" placeholder="搜索部件">
                 </label>
 
-                <div class="category-tabs" role="tablist" aria-label="素材分类">
-                    <button id="category-tab-template" class="category-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="asset-grid" data-category="template">
-                        <img src="/static/icons/character_icon.png" alt="" aria-hidden="true">
-                        <span data-i18n="emoteMaker.categoryTemplate">模板</span>
-                    </button>
-                    <button id="category-tab-mood" class="category-tab" type="button" role="tab" aria-selected="false" aria-controls="asset-grid" data-category="mood">
-                        <img src="/static/icons/star.png" alt="" aria-hidden="true">
-                        <span data-i18n="emoteMaker.categoryMood">情绪</span>
-                    </button>
-                    <button id="category-tab-action" class="category-tab" type="button" role="tab" aria-selected="false" aria-controls="asset-grid" data-category="action">
-                        <img src="/static/icons/motion_select_icon.png" alt="" aria-hidden="true">
-                        <span data-i18n="emoteMaker.categoryAction">动作</span>
-                    </button>
-                    <button id="category-tab-decoration" class="category-tab" type="button" role="tab" aria-selected="false" aria-controls="asset-grid" data-category="decoration">
-                        <img src="/static/icons/star.png" alt="" aria-hidden="true">
-                        <span data-i18n="emoteMaker.categoryDecoration">装饰</span>
-                    </button>
-                </div>
-
                 <div class="asset-section-heading">
                     <h3 id="asset-section-title" data-i18n="emoteMaker.noTemplates">模板暂未添加</h3>
                 </div>
-                <div id="asset-grid" class="asset-grid" role="tabpanel" aria-labelledby="category-tab-template" tabindex="0"></div>
+                <div id="asset-grid" class="asset-grid" role="tabpanel" aria-labelledby="asset-section-title" tabindex="0"></div>
 
                 <div id="asset-tip" class="asset-tip">
                     <img src="/static/icons/star.png" alt="" aria-hidden="true">

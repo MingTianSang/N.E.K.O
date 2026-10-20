@@ -96,7 +96,11 @@ def test_left_panel_is_the_library_and_the_dock_stops_duping_it(library_page: Pa
         dockScenes: document.querySelectorAll('#animation-list .scene-card').length,
         dockAnimations: document.querySelectorAll('#animation-list [data-animation-id]').length,
         libraryCards: document.querySelectorAll('#asset-grid .template-lib-card').length,
-        tabsVisible: getComputedStyle(document.querySelector('.category-tabs')).display !== 'none',
+        // 分类页签已整块删除：元素不存在即视为不可见
+        tabsVisible: (() => {
+            const el = document.querySelector('.category-tabs');
+            return Boolean(el) && getComputedStyle(el).display !== 'none';
+        })(),
     })""")
     assert counts["gridScenes"] == 0, f"左侧还在渲染场景列表: {counts}"
     assert counts["dockScenes"] == 0, f"预览下方还摆着一份场景清单: {counts}"

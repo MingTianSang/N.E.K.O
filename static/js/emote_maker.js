@@ -1323,13 +1323,10 @@
         }));
     }
 
-    function renderCategoryTabs() {
-        // 「模板/情绪/动作/装饰」这四个分类、随机搭配全部依赖 EXPRESSIONS / ACCESSORIES
-        // 这两个部件源，而它们是两处 const []，全文件没有任何地方往里写：与其摆一排
-        // 点不动的东西，不如收掉。搜索/标题/清单则不再看"有没有加载模板"——
-        // 没加载时左侧就是模板库本身，点一条 = 从本地副本装回来。
-        const tabStrip = document.querySelector('.category-tabs');
-        if (tabStrip) tabStrip.hidden = true;
+    function renderLibraryControls() {
+        // 分类页签（模板/情绪/动作/装饰）连同它们唯一的部件源（两处 const []）已经
+        // 删除：这个函数现在只负责把搜索/标题/清单亮出来——没加载模板时左侧就是
+        // 模板库本身，点一条 = 从本地副本装回来。
         [
             document.querySelector('.asset-search'),
             document.querySelector('.asset-section-heading'),
@@ -5341,7 +5338,7 @@
             }
         }
         bindTipKeys();
-        renderCategoryTabs();
+        renderLibraryControls();
         renderInspectorTabs();
         syncExportControls();
         renderPackPanel();
