@@ -26,7 +26,7 @@
 
     // 一次批量导出会把所有产物攒在内存里再压成一个 zip（Electron 下 <a download> 是唯一
     // 能落盘的通道），所以必须有上限：几百张 GIF 直接把页面压死。
-    const MAX_BATCH = 100;
+    const MAX_BATCH = 150;
     const MAX_GROUP_NAME = 40;
     const MAX_ITEMS_PER_GROUP = 400;
     const IMPORTED_PREFIX = 'list:';
