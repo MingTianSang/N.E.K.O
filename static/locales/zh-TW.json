@@ -4032,7 +4032,7 @@
         "stagePlayWhole": "整段播放",
         "stageResetPose": "重設大小和角度",
         "stagePoseNeedsLayered": "平鋪包不儲存每個狀態的大小和角度；換成「分層」格式才會生效。",
-        "stageNoFrames": "這個狀態還沒有畫面——先在左邊挑一條動作。",
+        "stageNoFrames": "這個狀態還沒有畫面——先在左邊挑一個動作。",
         "stageScale": "大小",
         "stageAngle": "角度",
         "stageFollowTag": "跟隨預設",

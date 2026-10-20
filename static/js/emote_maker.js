@@ -349,7 +349,7 @@
         'emoteMaker.stagePlayWhole': "整段播放",
         'emoteMaker.stageResetPose': "复位大小和角度",
         'emoteMaker.stagePoseNeedsLayered': "平铺包不保存每个状态的大小和角度；换成「分层」格式才会生效。",
-        'emoteMaker.stageNoFrames': "这个状态还没有画面——先在左边挑一条动作。",
+        'emoteMaker.stageNoFrames': "这个状态还没有画面——先在左边挑一个动作。",
         'emoteMaker.stageScale': "大小",
         'emoteMaker.stageAngle': "角度",
         'emoteMaker.stageFollowTag': "跟随默认",
