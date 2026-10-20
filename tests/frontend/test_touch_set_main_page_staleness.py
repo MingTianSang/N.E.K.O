@@ -437,7 +437,10 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
             const manager = window.live2dManager;
             const prevModelType = localStorage.getItem('modelType');
             const prevVrmManager = window.vrmManager;
-            const hadVrmManager = prevVrmManager !== undefined;
+            // The main page starts with window.vrmManager = null and only
+            // assigns the real manager once the VRM scripts finish loading, so
+            // both null and undefined mean "absent" here.
+            const hadVrmManager = prevVrmManager !== null && prevVrmManager !== undefined;
             // Save before mutating: prevVrmManager IS window.vrmManager, so
             // reading its currentModel later would read back the forged value.
             const prevVrmCurrentModel = hadVrmManager ? prevVrmManager.currentModel : undefined;
@@ -466,8 +469,14 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
             } finally {
                 if (prevModelType === null) localStorage.removeItem('modelType');
                 else localStorage.setItem('modelType', prevModelType);
-                if (!hadVrmManager) delete window.vrmManager;
-                else window.vrmManager.currentModel = prevVrmCurrentModel;
+                if (!hadVrmManager) {
+                    // Restore the true original: undefined means it never
+                    // existed, null means the VRM scripts had not run yet.
+                    if (prevVrmManager === undefined) delete window.vrmManager;
+                    else window.vrmManager = prevVrmManager;
+                } else {
+                    window.vrmManager.currentModel = prevVrmCurrentModel;
+                }
             }
         }""",
         area_id,
