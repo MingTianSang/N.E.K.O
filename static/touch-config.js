@@ -2056,9 +2056,16 @@ async function refreshTouchSetForLoadedModel(options = {}) {
         || (Date.now() - loadedAt) > TOUCH_SET_LOADED_REUSE_WINDOW_MS
 
     if (shouldRefetch) {
-        await InitializationTouchSet(undefined, {
-            allowLive2DReload: options.allowLive2DReload === true
-        })
+        try {
+            await InitializationTouchSet(undefined, {
+                allowLive2DReload: options.allowLive2DReload === true
+            })
+        } catch (error) {
+            // 重取失败时恢复待刷新标记，让下一次加载完成钩子重试；正常返回
+            //（包括被更新的刷新世代取代、无角色页早退）即视为已消费。
+            if (pendingForceRefetch) manager._touchSetPendingForceRefetch = true
+            throw error
+        }
         return true
     }
 

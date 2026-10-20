@@ -526,12 +526,20 @@ def test_broadcast_while_model_loading_is_applied_once_model_ready(
                 // Model becomes ready: the load-completion hook calls refresh
                 // again (without forceRefetch — freshness alone must not skip it).
                 manager.getCurrentModel = realGetCurrentModel;
+                                // Model becomes ready: the load-completion hook calls refresh
+                // again (without forceRefetch — freshness alone must not skip it).
+                manager.getCurrentModel = realGetCurrentModel;
+                // Pin freshness so the refetch can only be triggered by the
+                // pending flag, not by the 5s staleness window.
+                manager._touchSetLoadedAt = Date.now();
                 const applied = await window.nekoRefreshLive2DTouchSet({});
+                const flagConsumed = manager._touchSetPendingForceRefetch !== true;
                 const keys = Object.keys(manager.touchSet[manager.modelName] || {});
                 return {
                     droppedResult: dropped,
                     pendingFlag,
                     appliedResult: applied,
+                    flagConsumed,
                     keys,
                 };
             } finally {
@@ -548,6 +556,9 @@ def test_broadcast_while_model_loading_is_applied_once_model_ready(
     )
     assert outcome["appliedResult"] is True, (
         f"load-completion refresh should consume the flag and refetch: {outcome}"
+    )
+    assert outcome["flagConsumed"] is True, (
+        f"load-completion refresh should clear the pending flag: {outcome}"
     )
     assert area_id in outcome["keys"], (
         f"the saved area should be applied once the model is ready: {outcome['keys']}"
