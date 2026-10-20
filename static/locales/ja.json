@@ -3945,7 +3945,7 @@
         "exportResolution": "解像度",
         "exportFps": "フレームレート",
         "packTitle": "PNGTuber パック",
-        "packDropNoScene": "この項目に対応するアクションがなく、状態にはドラッグできません。",
+        "packDropNoScene": "アクションを特定できません",
         "packSkipOption": "出力しない",
         "packStateIdle": "待機",
         "packStateTalking": "会話",

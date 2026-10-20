@@ -307,7 +307,7 @@
         'emoteMaker.exportResolution': '分辨率',
         'emoteMaker.exportFps': '帧率',
         'emoteMaker.packTitle': '形象包（PNGTuber）',
-        'emoteMaker.packDropNoScene': "这一项没有对应的动作，拖不进状态格。",
+        'emoteMaker.packDropNoScene': "无法解析动作",
         'emoteMaker.packSkipOption': '不导出',
         'emoteMaker.packStateIdle': '待机',
         'emoteMaker.packStateTalking': '说话',

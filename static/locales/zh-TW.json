@@ -3945,7 +3945,7 @@
         "exportResolution": "解析度",
         "exportFps": "幀率",
         "packTitle": "形象包（PNGTuber）",
-        "packDropNoScene": "這一項沒有對應的動作，拖不進狀態格。",
+        "packDropNoScene": "無法解析動作",
         "packSkipOption": "不匯出",
         "packStateIdle": "待機",
         "packStateTalking": "說話",

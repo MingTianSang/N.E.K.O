@@ -3945,7 +3945,7 @@
         "exportResolution": "Resolution",
         "exportFps": "FPS",
         "packTitle": "PNGTuber pack",
-        "packDropNoScene": "This item has no matching action and can't be dropped on a state.",
+        "packDropNoScene": "Couldn't resolve an action",
         "packSkipOption": "Not exported",
         "packStateIdle": "Idle",
         "packStateTalking": "Talking",

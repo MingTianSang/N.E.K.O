@@ -3945,7 +3945,7 @@
         "exportResolution": "Resolução",
         "exportFps": "FPS",
         "packTitle": "Pacote PNGTuber",
-        "packDropNoScene": "Este item não tem ação correspondente e não pode ser solto no estado.",
+        "packDropNoScene": "Não foi possível identificar uma ação",
         "packSkipOption": "Não exportar",
         "packStateIdle": "Ocioso",
         "packStateTalking": "Falando",

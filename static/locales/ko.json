@@ -3945,7 +3945,7 @@
         "exportResolution": "해상도",
         "exportFps": "FPS",
         "packTitle": "PNGTuber 패키지",
-        "packDropNoScene": "이 항목에 대응하는 동작이 없어 상태에 드롭할 수 없습니다.",
+        "packDropNoScene": "동작을 확인할 수 없습니다",
         "packSkipOption": "내보내지 않음",
         "packStateIdle": "대기",
         "packStateTalking": "대화",

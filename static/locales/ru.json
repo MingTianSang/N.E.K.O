@@ -3945,7 +3945,7 @@
         "exportResolution": "Разрешение",
         "exportFps": "Частота кадров",
         "packTitle": "Пакет PNGTuber",
-        "packDropNoScene": "У этого элемента нет соответствующего действия — перетащить в состояние нельзя.",
+        "packDropNoScene": "Не удалось определить действие",
         "packSkipOption": "Не экспортировать",
         "packStateIdle": "Ожидание",
         "packStateTalking": "Разговор",
