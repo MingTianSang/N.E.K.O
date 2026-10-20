@@ -1126,6 +1126,38 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
     assert has_thumb is True, "刷新后缩略图也要跟上"
 
 
+def test_stage_close_button_sits_at_the_right_edge(page: Page, running_server: str) -> None:
+    """关闭按钮必须在头部右缘。st-hint 删除后推力改由 st-title 的
+    margin-right:auto 承担——回归就是它贴到了标题旁边（2026-10-20 用户抓的）。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: g.defaultGraph(),
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [], thumbFor: () => Promise.resolve(''),
+            framesFor: () => [],
+        });
+    }""")
+    page.wait_for_timeout(300)
+    state = page.evaluate("""() => {
+        const title = document.querySelector('.st-title').getBoundingClientRect();
+        const close = document.querySelector('.st-close').getBoundingClientRect();
+        const panel = document.querySelector('.st-panel').getBoundingClientRect();
+        return { gap: close.left - title.right,
+                 closeToPanelRight: panel.right - close.right,
+                 sameRow: Math.abs(close.top - title.top) < 8 };
+    }""")
+    assert state["gap"] > 100, f"关闭按钮贴着标题，没有被推到右侧: {state}"
+    assert state["closeToPanelRight"] < 40, f"关闭按钮没贴住面板右缘: {state}"
+    assert state["sameRow"] is True, state
+
+
 def test_image_carousel_appends_and_removes(page: Page, running_server: str) -> None:
     """轮播：同一格再赋一张 = 追加不是替换；已绑图片行可摘单张、可清空。
     追加走 assignImage（拖拽/点击同一入口），删减只在这一行做。"""

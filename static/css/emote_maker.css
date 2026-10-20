@@ -3096,6 +3096,8 @@ which can otherwise override the browser's default [hidden] behaviour. */
 
 .st-title {
     margin: 0;
+    /* 原来靠 .st-hint（flex:1）把关闭按钮推到右侧；提示删除后由它接管推力 */
+    margin-right: auto;
     font-size: 15px;
     font-weight: 650;
     letter-spacing: 0.005em;
