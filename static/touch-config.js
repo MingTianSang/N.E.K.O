@@ -247,8 +247,6 @@ function touchPage_open(){
 let touchSetInitializationGeneration = 0
 
 async function InitializationTouchSet(characterJson, options = {}) {
-    const initializationGeneration = ++touchSetInitializationGeneration
-
     while(typeof window.t !== 'function'){
         await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -264,7 +262,11 @@ async function InitializationTouchSet(characterJson, options = {}) {
         return;
     }
 
-            
+    // 世代号在类型守卫之后才递增：被守卫拦下的调用（如 VRM 残留状态下收到
+    // 保存广播）不得让更早在途的有效刷新（VRM→Live2D 切换窗口内的加载钩子
+    // 读）被判为过期丢弃。
+    const initializationGeneration = ++touchSetInitializationGeneration
+
     if (!characterJson){
         // // 获取角色名称
         // const lanlanName = await getLanlanName();
@@ -2093,7 +2095,14 @@ if (touchSetSyncChannel) {
         // 消息指向别的模型时跳过：那个模型的配置会在 reload_model 完成后的
         // 刷新钩子里生效，这里不提前把别模型的配置拉进来。
         if (incomingModel && currentModelName && incomingModel !== currentModelName) return
-        refreshTouchSetForLoadedModel({ forceRefetch: true }).catch((error) => {
+        // 绕过守卫与否按真实启用的渲染器定：lanlan_config.model_type 由热切换
+        // Live2D 分支回写，比 localStorage/vrmManager 的残留指针可靠。Live2D
+        // 真正在用时才旁路；VRM/PNGTuber 在用时保留守卫（触摸配置无需生效）。
+        const activeType = String(window.lanlan_config?.model_type || 'live2d').toLowerCase()
+        refreshTouchSetForLoadedModel({
+            forceRefetch: true,
+            allowLive2DReload: activeType === 'live2d'
+        }).catch((error) => {
             console.warn('[TouchSet] 响应保存通知刷新触摸配置失败:', error)
         })
     }

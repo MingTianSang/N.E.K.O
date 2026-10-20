@@ -332,16 +332,25 @@ def test_concurrent_refresh_discards_stale_response(
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
     assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
 
-    # Intercept /api/characters: response #1 is delayed 1.5s and stripped of the
-    # custom area (simulating an older snapshot); later responses return fast.
+    # Intercept GET /api/characters (exact path): response #1 is delayed 1.5s
+    # and stripped of the custom area (simulating an older snapshot); later
+    # responses return fast. The interceptor records whether stripping actually
+    # happened so the test cannot pass vacuously.
     mock_page.evaluate(
         """(areaId) => {
             const realFetch = window.fetch;
             window.__realFetch = realFetch;
             window.__charFetchCount = 0;
+            window.__firstResponseStripped = false;
             window.fetch = async (url, opts) => {
-                const u = String(url);
-                if (u.includes('/api/characters')) {
+                let parsed;
+                try {
+                    parsed = new URL(String(url), window.location.href);
+                } catch (_) {
+                    return realFetch(url, opts);
+                }
+                const method = String((opts && opts.method) || 'GET').toUpperCase();
+                if (parsed.pathname === '/api/characters' && method === 'GET') {
                     window.__charFetchCount += 1;
                     const callNo = window.__charFetchCount;
                     const resp = await realFetch(url, opts);
@@ -351,9 +360,11 @@ def test_concurrent_refresh_discards_stale_response(
                     const modelName = window.live2dManager.modelName;
                     if (callNo === 1) {
                         await new Promise(r => setTimeout(r, 1500));
-                        try {
-                            delete data['猫娘'][lanlan]._reserved.touch_set[modelName][areaId];
-                        } catch (_) {}
+                        const bucket = data['猫娘']?.[lanlan]?._reserved?.touch_set?.[modelName];
+                        if (bucket && areaId in bucket) {
+                            delete bucket[areaId];
+                            window.__firstResponseStripped = true;
+                        }
                     } else {
                         await new Promise(r => setTimeout(r, 50));
                     }
@@ -376,11 +387,18 @@ def test_concurrent_refresh_discards_stale_response(
                 const r2 = window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
                 await r2;
                 await r1;
-                return { charFetchCount: window.__charFetchCount };
+                return {
+                    charFetchCount: window.__charFetchCount,
+                    firstResponseStripped: window.__firstResponseStripped,
+                };
             }"""
         )
         assert overlap.get("charFetchCount", 0) >= 2, (
             f"expected two /api/characters calls, got: {overlap}"
+        )
+        assert overlap.get("firstResponseStripped") is True, (
+            "interceptor failed to strip the custom area from response #1; "
+            "the test would be vacuous"
         )
 
         probe = _route_probe(mock_page)
@@ -419,9 +437,13 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
             const manager = window.live2dManager;
             const prevModelType = localStorage.getItem('modelType');
             const prevVrmManager = window.vrmManager;
+            const hadVrmManager = prevVrmManager !== undefined;
+            // Save before mutating: prevVrmManager IS window.vrmManager, so
+            // reading its currentModel later would read back the forged value.
+            const prevVrmCurrentModel = hadVrmManager ? prevVrmManager.currentModel : undefined;
             // Forge the stale guard state: type says live3d, VRM "in use".
             localStorage.setItem('modelType', 'live3d');
-            if (!window.vrmManager) window.vrmManager = {};
+            if (!hadVrmManager) window.vrmManager = {};
             window.vrmManager.currentModel = {};
             // Wipe the in-memory config so a refill is observable.
             delete manager.touchSet[manager.modelName];
@@ -444,8 +466,8 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
             } finally {
                 if (prevModelType === null) localStorage.removeItem('modelType');
                 else localStorage.setItem('modelType', prevModelType);
-                if (prevVrmManager === undefined) delete window.vrmManager;
-                else window.vrmManager.currentModel = (prevVrmManager && prevVrmManager.currentModel) || null;
+                if (!hadVrmManager) delete window.vrmManager;
+                else window.vrmManager.currentModel = prevVrmCurrentModel;
             }
         }""",
         area_id,
