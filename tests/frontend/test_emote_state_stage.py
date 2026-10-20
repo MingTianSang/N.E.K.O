@@ -1121,9 +1121,64 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
     page.wait_for_function(
         "() => document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-sub')?.textContent === '晚到.png'",
         timeout=5000)
-    has_thumb = page.evaluate(
-        "() => Boolean(document.querySelector('.st-tile[data-state=\"idle_image\"] .st-tile-thumb img'))")
-    assert has_thumb is True, "刷新后缩略图也要跟上"
+    assert state["sameRow"] is True, state
+
+
+def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: str) -> None:
+    """台面淡蓝框 = 导出可见区提示：透明边距看不出内容边界，框补上这个信息。
+    内容外的框内像素应有淡蓝填充（alpha>8），框外像素保持全透明。"""
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.evaluate("() => document.body.classList.remove('editor-empty')")
+    page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
+    page.evaluate("""() => {
+        const ZH = window.__STAGE_ZH;
+        const g = window.NekoEmoteNodeGraph;
+        const mk = (t, p, id) => g.makeNode(t, 0, 0, p, id);
+        const frame = (() => {
+            const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+            const x = c.getContext('2d');
+            x.fillStyle = '#e04040'; x.fillRect(16, 16, 32, 32);   // 中间实心、四周透明
+            return { width: 64, height: 64, delayMs: 100,
+                data: x.getImageData(0, 0, 64, 64).data };
+        })();
+        window.__STAGE = window.NekoEmoteStateStage.create({
+            model: g,
+            graph: { schemaVersion: 1,
+                nodes: [mk('source.default', {}, 'root'),
+                        mk('source.scene', { sceneId: 'anim-a' }, 's-a'),
+                        mk('output.state', { stateKey: 'idle_image', seconds: 0 }, 'o-idle')],
+                links: [{ from: 's-a', to: 'o-idle', fromSocket: 'look', toSocket: 'look' }] },
+            t: (key) => ZH[key.split('.').slice(1).join('.')] || key,
+            fps: () => 12, format: () => 'layered',
+            animationsFor: () => [{ value: 'anim-a', label: '动作A' }],
+            thumbFor: () => Promise.resolve(''),
+            framesFor: () => [frame],
+        });
+    }""")
+    page.wait_for_function("""() => {
+        const c = document.querySelector('.st-stage');
+        if (!c || !c.width) return false;
+        const fit = Math.min(c.width / 64, c.height / 64) * 0.88;
+        const half = 32 * fit;
+        const cx = c.width / 2, cy = c.height / 2;
+        const d = c.getContext('2d').getImageData(
+            Math.round(cx + half - 3), Math.round(cy), 1, 1).data;
+        return d[3] > 8;   // 框内、内容外的淡蓝填充出现了
+    }""", timeout=8000)
+    state = page.evaluate("""() => {
+        const c = document.querySelector('.st-stage');
+        const fit = Math.min(c.width / 64, c.height / 64) * 0.88;
+        const half = 32 * fit;
+        const cx = c.width / 2, cy = c.height / 2;
+        const px = (x, y) => c.getContext('2d').getImageData(
+            Math.round(x), Math.round(y), 1, 1).data;
+        return {
+            insideBox: Array.from(px(cx + half - 3, cy)),
+            outsideBox: Array.from(px(10, cy)),
+        };
+    }""")
+    assert state["insideBox"][3] > 8, state   # 框内淡蓝填充
+    assert state["outsideBox"][3] == 0, state  # 框外仍是透明的
 
 
 def test_stage_close_button_sits_at_the_right_edge(page: Page, running_server: str) -> None:

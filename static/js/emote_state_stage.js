@@ -809,6 +809,18 @@
             const fit = Math.min(stageSize / frame.width, stageSize / frame.height) * 0.88;
             drawPivot(ctx);
             if (stageDrag) drawTransformBox(ctx, frame, fit);
+            // 导出可见区提示：淡蓝框标出这一格的内容边界。透明边距在台面上
+            // 看不出来，没有这个框就不知道导出的方里到底有什么。
+            ctx.save();
+            ctx.translate(stageSize / 2, stageSize / 2);
+            ctx.rotate(degrees * Math.PI / 180);
+            ctx.scale(fit * scale, fit * scale);
+            ctx.fillStyle = 'rgba(79, 140, 255, 0.07)';
+            ctx.strokeStyle = 'rgba(79, 140, 255, 0.5)';
+            ctx.lineWidth = 1 / (fit * scale);
+            ctx.fillRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height);
+            ctx.strokeRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height);
+            ctx.restore();
             ctx.save();
             ctx.translate(stageSize / 2, stageSize / 2);
             ctx.rotate(degrees * Math.PI / 180);
