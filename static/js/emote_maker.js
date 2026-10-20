@@ -245,7 +245,7 @@
         'emoteMaker.groupExportDone': "整组已导出",
         'emoteMaker.groupExportCancelled': "已停止，已完成的部分照样打包",
         'emoteMaker.groupExportFailed': "有 {{count}} 项导出失败",
-        'emoteMaker.groupExportTruncated': "一次最多导 {{count}} 张，其余的没导",
+        'emoteMaker.groupExportTruncated': "一次最多导出 {{count}} 张，其余可另建新组",
         'emoteMaker.groupPickFirst': "组内暂无动作，去添加？",
         'emoteMaker.groupMemberShot': "取景",
         'emoteMaker.groupMemberMissing': "来源已不在当前模板里",

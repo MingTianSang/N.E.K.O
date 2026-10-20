@@ -3885,7 +3885,7 @@
         "groupExportDone": "整组已导出",
         "groupExportCancelled": "已停止，已完成的部分照样打包",
         "groupExportFailed": "有 {{count}} 项导出失败",
-        "groupExportTruncated": "一次最多导 {{count}} 张，其余的没导",
+        "groupExportTruncated": "一次最多导出 {{count}} 张，其余可另建新组",
         "groupPickFirst": "组内暂无内容，去添加？",
         "groupMemberShot": "取景",
         "groupMemberMissing": "来源已不在当前模板里",

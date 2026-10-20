@@ -3885,7 +3885,7 @@
         "groupExportDone": "Group exported",
         "groupExportCancelled": "Stopped - finished items are still packed",
         "groupExportFailed": "{{count}} item(s) failed to export",
-        "groupExportTruncated": "Max {{count}} per export - the rest were skipped",
+        "groupExportTruncated": "Max {{count}} per export - put the rest in a new group",
         "groupPickFirst": "This group is empty - add something?",
         "groupMemberShot": "Framing",
         "groupMemberMissing": "source is not in this template",

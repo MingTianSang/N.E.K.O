@@ -3885,7 +3885,7 @@
         "groupExportDone": "整組已導出",
         "groupExportCancelled": "已停止，已完成的部分照樣打包",
         "groupExportFailed": "有 {{count}} 項匯出失敗",
-        "groupExportTruncated": "一次最多匯 {{count}} 張，其餘的沒匯",
+        "groupExportTruncated": "一次最多匯出 {{count}} 張，其餘可另建新組",
         "groupPickFirst": "組內暫無內容，去新增？",
         "groupMemberShot": "取景",
         "groupMemberMissing": "來源已不在當前模板裡",

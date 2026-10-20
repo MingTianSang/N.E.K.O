@@ -3885,7 +3885,7 @@
         "groupExportDone": "Grupo exportado",
         "groupExportCancelled": "Parado; o que terminou foi empacotado mesmo assim",
         "groupExportFailed": "{{count}} itens falharam na exportação",
-        "groupExportTruncated": "Máximo de {{count}} por exportação - o resto foi ignorado",
+        "groupExportTruncated": "Máximo de {{count}} por exportação - coloque o resto em um grupo novo",
         "groupPickFirst": "O grupo está vazio. Adicionar algo?",
         "groupMemberShot": "Captura",
         "groupMemberMissing": "a origem não está mais neste modelo",

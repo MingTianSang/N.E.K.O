@@ -3885,7 +3885,7 @@
         "groupExportDone": "Группа экспортирована",
         "groupExportCancelled": "Остановлено; готовое всё равно упаковано",
         "groupExportFailed": "Не удалось экспортировать элементов: {{count}}",
-        "groupExportTruncated": "За один раз экспортируется не более {{count}} — остальное пропущено",
+        "groupExportTruncated": "За один раз экспортируется не более {{count}} — остальное вынесите в новую группу",
         "groupPickFirst": "В группе пока пусто - добавить?",
         "groupMemberShot": "Кадр",
         "groupMemberMissing": "источника нет в этом шаблоне",

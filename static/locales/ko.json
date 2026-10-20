@@ -3885,7 +3885,7 @@
         "groupExportDone": "그룹을 내보냈습니다",
         "groupExportCancelled": "중지했습니다. 끝난 부분은 그대로 압축했습니다",
         "groupExportFailed": "{{count}}개 항목의 내보내기가 실패했습니다",
-        "groupExportTruncated": "한 번에 최대 {{count}}장까지 내보낼 수 있어 나머지는 건너뛰었습니다",
+        "groupExportTruncated": "한 번에 최대 {{count}}장까지 내보낼 수 있습니다. 나머지는 새 그룹으로 만드세요",
         "groupPickFirst": "그룹이 비어 있습니다. 추가할까요?",
         "groupMemberShot": "구도",
         "groupMemberMissing": "원본이 현재 템플릿에 없습니다",

@@ -3885,7 +3885,7 @@
         "groupExportDone": "グループを書き出しました",
         "groupExportCancelled": "停止しました。完了分はまとめてあります",
         "groupExportFailed": "{{count}} 件の書き出しに失敗しました",
-        "groupExportTruncated": "1回に書き出せるのは {{count}} 枚までです。残りはスキップしました",
+        "groupExportTruncated": "1回に書き出せるのは {{count}} 枚までです。残りは新しいグループで出力してください",
         "groupPickFirst": "グループは空です。追加しますか？",
         "groupMemberShot": "画面",
         "groupMemberMissing": "元データが現在のテンプレートにありません",

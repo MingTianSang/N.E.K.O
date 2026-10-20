@@ -3885,7 +3885,7 @@
         "groupExportDone": "Grupo exportado",
         "groupExportCancelled": "Detenido; lo terminado se empaqueta igual",
         "groupExportFailed": "{{count}} elementos no se pudieron exportar",
-        "groupExportTruncated": "Máximo {{count}} por exportación: el resto se omitió",
+        "groupExportTruncated": "Máximo {{count}} por exportación: pon el resto en un grupo nuevo",
         "groupPickFirst": "El grupo está vacío. ¿Añadir algo?",
         "groupMemberShot": "Toma",
         "groupMemberMissing": "la fuente ya no está en esta plantilla",
