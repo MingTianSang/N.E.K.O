@@ -271,10 +271,13 @@ async function InitializationTouchSet(characterJson, options = {}) {
         // // 获取角色名称
         // const lanlanName = await getLanlanName();
 
-        // 显式指定优先（角色切换钩子传入新角色名——切角色后 URL 上的
-        // lanlan_name 还是旧角色，不能作为依据），其次 URL，最后 page_config。
+        // 解析优先级：显式指定（角色切换钩子传入新角色名）> 本页面当前角色
+        // （lanlan_config 会随原地切角色更新；URL 在切角色后是旧值）> URL >
+        // page_config。模型管理页没有 lanlan_config，按其 URL/服务端当前角色
+        // 解析，行为不变。
         const urlParams = new URLSearchParams(window.location.search);
         let lanlanName = String(options.lanlanName || '').trim()
+            || String(window.lanlan_config?.lanlan_name || '').trim()
             || urlParams.get('lanlan_name') || '';
         // 如果 URL 中没有，从 API 获取（使用 RequestHelper）
         if (!lanlanName) {
@@ -2076,7 +2079,16 @@ async function refreshTouchSetForLoadedModel(options = {}) {
             manager._touchSetPendingForceRefetch = true
         }
         if (!options.isRetry) {
+            // 重试绑定发起时的角色：1.5s 后若已再次切换角色，这条旧角色的
+            // 重试必须作废——否则它会以更新的世代号把旧角色的配置提交到
+            // 新角色的模型上。
+            const retryLanlanName = String(options.lanlanName || window.lanlan_config?.lanlan_name || '')
             setTimeout(() => {
+                const currentName = String(window.lanlan_config?.lanlan_name || '')
+                if (retryLanlanName && currentName && retryLanlanName !== currentName) {
+                    console.log('[TouchSet] 已切换角色，丢弃过期角色的触摸配置重试:', retryLanlanName)
+                    return
+                }
                 refreshTouchSetForLoadedModel(Object.assign({}, options, { isRetry: true }))
                     .catch((retryError) => {
                         console.warn('[TouchSet] 触摸配置重取重试失败:', retryError)

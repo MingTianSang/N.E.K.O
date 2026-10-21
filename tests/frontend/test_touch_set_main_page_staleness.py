@@ -647,14 +647,17 @@ def test_failed_force_refetch_re_arms_pending_flag(
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
     assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
 
-    # Fail exactly one /api/config/page_config response so character-name
-    # resolution comes up empty and InitializationTouchSet commits nothing.
+    # Fail exactly one stack-filtered /api/characters GET with an empty
+    # character table, so InitializationTouchSet resolves no character and
+    # commits nothing. (Since the resolution prefers lanlan_config, page_config
+    # is no longer fetched on a booted main page and cannot be the injection
+    # point.)
     mock_page.evaluate(
         """() => {
             const realFetch = window.fetch;
             window.__realFetch = realFetch;
-            window.__failNextPageConfig = false;
-            window.__pageConfigFailed = false;
+            window.__failNextCharFetch = false;
+            window.__charFetchFailed = false;
             window.fetch = async (url, opts) => {
                 let parsed;
                 try {
@@ -662,14 +665,18 @@ def test_failed_force_refetch_re_arms_pending_flag(
                 } catch (_) {
                     return realFetch(url, opts);
                 }
-                if (parsed.pathname === '/api/config/page_config'
-                    && window.__failNextPageConfig === true) {
-                    window.__failNextPageConfig = false;
-                    window.__pageConfigFailed = true;
-                    return new Response(JSON.stringify({ success: false, error: 'forced' }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' }
-                    });
+                const method = String((opts && opts.method) || 'GET').toUpperCase();
+                if (parsed.pathname === '/api/characters' && method === 'GET'
+                    && window.__failNextCharFetch === true) {
+                    const stack = new Error().stack || '';
+                    if (stack.includes('InitializationTouchSet')) {
+                        window.__failNextCharFetch = false;
+                        window.__charFetchFailed = true;
+                        return new Response(JSON.stringify({ '猫娘': {} }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
                 }
                 return realFetch(url, opts);
             };
@@ -682,7 +689,7 @@ def test_failed_force_refetch_re_arms_pending_flag(
                 const manager = window.live2dManager;
                 // Model is present; the broadcast path uses an explicit
                 // forceRefetch with no pending flag.
-                window.__failNextPageConfig = true;
+                window.__failNextCharFetch = true;
                 const failedRefetch = await window.nekoRefreshLive2DTouchSet({
                     forceRefetch: true
                 });
@@ -695,7 +702,7 @@ def test_failed_force_refetch_re_arms_pending_flag(
                 const keys = Object.keys(manager.touchSet[manager.modelName] || {});
                 return {
                     failedRefetch,
-                    pageConfigFailed: window.__pageConfigFailed,
+                    pageConfigFailed: window.__charFetchFailed,
                     reArmed,
                     applied,
                     flagConsumed,
@@ -743,14 +750,14 @@ def test_failed_non_forced_refresh_is_retried(
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
     assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
 
-    # Fail exactly one /api/config/page_config response so the hook-style
-    # (non-forced) refresh commits nothing; the fetch stub is then restored so
-    # the scheduled retry succeeds.
+    # Fail exactly one stack-filtered /api/characters GET with an empty
+    # character table so the hook-style (non-forced) refresh commits nothing;
+    # the fetch stub is then restored so the scheduled retry succeeds.
     mock_page.evaluate(
         """() => {
             const realFetch = window.fetch;
             window.__realFetch = realFetch;
-            window.__allowPageConfigFailures = 0;
+            window.__allowCharFetchFailures = 0;
             window.fetch = async (url, opts) => {
                 let parsed;
                 try {
@@ -758,13 +765,17 @@ def test_failed_non_forced_refresh_is_retried(
                 } catch (_) {
                     return realFetch(url, opts);
                 }
-                if (parsed.pathname === '/api/config/page_config'
-                    && window.__allowPageConfigFailures > 0) {
-                    window.__allowPageConfigFailures -= 1;
-                    return new Response(JSON.stringify({ success: false, error: 'forced' }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' }
-                    });
+                const method = String((opts && opts.method) || 'GET').toUpperCase();
+                if (parsed.pathname === '/api/characters' && method === 'GET'
+                    && window.__allowCharFetchFailures > 0) {
+                    const stack = new Error().stack || '';
+                    if (stack.includes('InitializationTouchSet')) {
+                        window.__allowCharFetchFailures -= 1;
+                        return new Response(JSON.stringify({ '猫娘': {} }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
                 }
                 return realFetch(url, opts);
             };
@@ -777,21 +788,21 @@ def test_failed_non_forced_refresh_is_retried(
                 const manager = window.live2dManager;
                 // Hook-style call: non-forced, driven by the staleness window.
                 manager._touchSetLoadedAt = 0;
-                window.__allowPageConfigFailures = 1;
+                window.__allowCharFetchFailures = 1;
                 const first = await window.nekoRefreshLive2DTouchSet({
                     allowLive2DReload: true
                 });
-                const pageConfigFailed = window.__allowPageConfigFailures === 0;
+                const charFetchFailed = window.__allowCharFetchFailures === 0;
                 // The retry is scheduled by now; restore the fetch so it succeeds.
                 window.fetch = window.__realFetch;
                 // > TOUCH_SET_RETRY_DELAY_MS (1.5s) plus margin.
                 await new Promise(r => setTimeout(r, 2600));
                 const keys = Object.keys(manager.touchSet[manager.modelName] || {});
-                return { first, pageConfigFailed, keys };
+                return { first, charFetchFailed, keys };
             }"""
         )
-        assert outcome["pageConfigFailed"] is True, (
-            f"the forced page_config failure did not trigger: {outcome}"
+        assert outcome["charFetchFailed"] is True, (
+            f"the forced character-fetch failure did not trigger: {outcome}"
         )
         assert outcome["first"] is True, f"refresh should report handled: {outcome}"
         assert area_id in outcome["keys"], (
@@ -874,3 +885,148 @@ def test_initialization_touch_set_honors_explicit_lanlan_name(
     assert outcome["keysBefore"] == outcome["keysAfter"], (
         f"an unresolvable override must not touch the in-memory snapshot: {outcome}"
     )
+
+
+@pytest.mark.frontend
+def test_touch_set_resolution_prefers_current_character_over_url(
+    mock_page: Page, running_server: str
+):
+    """Coderabbit round-10: a stale URL lanlan_name must not win over the live one.
+
+    # After an in-place catgirl switch, window.lanlan_config.lanlan_name holds
+    # the NEW character while the URL keeps the old one. A later hot-switch
+    # refresh (no explicit name) must resolve the CURRENT character; otherwise
+    # it commits the previous character's touch set onto the current model.
+    """
+    mock_page.goto(f"{running_server}/?lanlan_name=YUI", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
+
+    outcome = mock_page.evaluate(
+        """async () => {
+            const manager = window.live2dManager;
+            window.lanlan_config.lanlan_name = '__switched_away__';
+            const keysBefore = JSON.stringify(
+                Object.keys(manager.touchSet[manager.modelName] || {})
+            );
+            const result = await InitializationTouchSet(undefined, {
+                allowLive2DReload: true,
+            });
+            const keysAfter = JSON.stringify(
+                Object.keys(manager.touchSet[manager.modelName] || {})
+            );
+            return { result, keysBefore, keysAfter };
+        }"""
+    )
+    try:
+        assert outcome["result"] is False, (
+            f"resolution should prefer lanlan_config over the stale URL and "
+            f"fail on the unknown character: {outcome}"
+        )
+        assert outcome["keysBefore"] == outcome["keysAfter"], (
+            f"an unresolvable current character must not commit: {outcome}"
+        )
+    finally:
+        mock_page.evaluate(
+            "() => { window.lanlan_config.lanlan_name = 'YUI'; }"
+        )
+
+
+@pytest.mark.frontend
+def test_stale_character_retry_is_cancelled(
+    mock_page: Page, running_server: str
+):
+    """Codex round-11: a retry must be cancelled when its character is no longer active.
+
+    # Scenario: character B's switch refresh fails and schedules a 1.5s retry;
+    # the user switches to C before it fires. Without the cancellation the retry
+    # would run with a newer generation and commit B's touch set onto C's model.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
+
+    area_id = "custom_repro_cancel_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    # Count /api/characters GETs issued from inside InitializationTouchSet only
+    # (same stack filter as the race test), so unrelated page traffic is ignored.
+    # Fail exactly one such GET with an empty character table so the refresh
+    # commits nothing and schedules the retry (page_config is no longer fetched
+    # once lanlan_config is set, so it cannot be the injection point).
+    mock_page.evaluate(
+        """() => {
+            const realFetch = window.fetch;
+            window.__realFetch = realFetch;
+            window.__initCharFetches = 0;
+            window.__failNextCharFetch = false;
+            window.fetch = async (url, opts) => {
+                let parsed;
+                try {
+                    parsed = new URL(String(url), window.location.href);
+                } catch (_) {
+                    return realFetch(url, opts);
+                }
+                if (parsed.pathname === '/api/characters'
+                    && String((opts && opts.method) || 'GET').toUpperCase() === 'GET') {
+                    const stack = new Error().stack || '';
+                    if (stack.includes('InitializationTouchSet')) {
+                        window.__initCharFetches += 1;
+                        if (window.__failNextCharFetch === true) {
+                            window.__failNextCharFetch = false;
+                            return new Response(JSON.stringify({ '猫娘': {} }), {
+                                status: 200,
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        }
+                    }
+                }
+                return realFetch(url, opts);
+            };
+        }"""
+    )
+
+    try:
+        outcome = mock_page.evaluate(
+            """async () => {
+                const manager = window.live2dManager;
+                // Character "B" is current when the refresh fails and the
+                // retry is scheduled.
+                window.lanlan_config.lanlan_name = '__charB__';
+                window.__failNextCharFetch = true;
+                const failedRefetch = await window.nekoRefreshLive2DTouchSet({
+                    forceRefetch: true,
+                    lanlanName: '__charB__',
+                });
+                const fetchesAfterFailure = window.__initCharFetches;
+                // User switches to C before the 1.5s retry fires.
+                window.lanlan_config.lanlan_name = '__charC__';
+                // > TOUCH_SET_RETRY_DELAY_MS (1.5s).
+                await new Promise(r => setTimeout(r, 2200));
+                return {
+                    failedRefetch,
+                    fetchesAfterFailure,
+                    fetchesAfterRetryWindow: window.__initCharFetches,
+                    pendingFlag: manager._touchSetPendingForceRefetch === true,
+                };
+            }"""
+        )
+        assert outcome["failedRefetch"] is True, (
+            f"refresh should report handled: {outcome}"
+        )
+        assert outcome["fetchesAfterFailure"] == 1, (
+            f"expected exactly one counted /api/characters GET from the failed "
+            f"refresh (the empty-character injection must precede it): {outcome}"
+        )
+        assert outcome["fetchesAfterRetryWindow"] == 1, (
+            f"the stale-character retry must be cancelled and issue no further "
+            f"/api/characters GET: {outcome}"
+        )
+    finally:
+        mock_page.evaluate(
+            """() => {
+                if (window.__realFetch) window.fetch = window.__realFetch;
+                window.lanlan_config.lanlan_name = 'YUI';
+            }"""
+        )
