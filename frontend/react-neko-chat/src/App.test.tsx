@@ -8049,6 +8049,51 @@ describe('App', () => {
     }
   });
 
+  it('clears compact tool hover when a touch lifts on the button it just tapped', async () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+
+    try {
+      fireEvent.pointerMove(fan, {
+        pointerId: 82,
+        ...pointerAtSelectedSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+      const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+
+      fireEvent.pointerLeave(fan, {
+        pointerId: 82,
+        ...pointerAtSelectedSlot,
+        pointerType: 'touch',
+      });
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+
+      const touchMouseMove = new MouseEvent('mousemove', {
+        bubbles: true,
+        cancelable: true,
+        ...pointerAtSelectedSlot,
+      });
+      Object.defineProperty(touchMouseMove, 'sourceCapabilities', {
+        value: { firesTouchEvents: true },
+      });
+      window.dispatchEvent(touchMouseMove);
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
   it('retargets every visible compact tool hover to the visual button under the pointer', async () => {
     render(
       <App

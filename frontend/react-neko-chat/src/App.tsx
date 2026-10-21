@@ -5206,6 +5206,12 @@ function CompactChatApp({
     const handleHoverMove = (event: PointerEvent | MouseEvent) => {
       if (compactToolOriginDragRef.current || !compactInputToolFanOpenRef.current) return;
       if ('pointerType' in event && event.pointerType && event.pointerType !== 'mouse') return;
+      // 触屏抬手后 Chromium 会补发没有 pointerType 的 mousemove，坐标仍在刚点过的按钮上。
+      const touchCompatMouse = !('pointerType' in event)
+        && Boolean((event as MouseEvent & {
+          sourceCapabilities?: { firesTouchEvents?: boolean };
+        }).sourceCapabilities?.firesTouchEvents);
+      if (touchCompatMouse) return;
       recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
       syncCompactInputToolWheelPointerHover({
         clientX: event.clientX,
@@ -5398,9 +5404,14 @@ function CompactChatApp({
         handleCompactInputToolHoverEnter(event);
       }}
       onPointerLeave={(event) => {
-        // 命中测试离开轮盘时，指针可能仍停在视觉按钮上。按坐标重算，避免气泡被清掉。
-        recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
-        syncCompactInputToolWheelPointerHover({ clientX: event.clientX, clientY: event.clientY });
+        if (event.pointerType === 'mouse') {
+          // 鼠标命中测试离开轮盘时，指针可能仍停在视觉按钮上。按坐标重算，避免气泡被清掉。
+          recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
+          syncCompactInputToolWheelPointerHover({ clientX: event.clientX, clientY: event.clientY });
+        } else {
+          // 触屏抬手的 pointerleave 坐标仍落在刚点过的按钮上，按坐标重算会把气泡挂住。
+          clearCompactInputToolWheelPointerHover();
+        }
         handleCompactInputToolHoverLeave(event);
       }}
       onFocus={() => {
