@@ -2038,6 +2038,7 @@ async function touchPage_init(){
 //      主页面收到后强制重拉，保存后无需刷新主页面即生效。
 
 const TOUCH_SET_LOADED_REUSE_WINDOW_MS = 5000
+const TOUCH_SET_RETRY_DELAY_MS = 1500
 
 async function refreshTouchSetForLoadedModel(options = {}) {
     const manager = window.live2dManager
@@ -2057,23 +2058,34 @@ async function refreshTouchSetForLoadedModel(options = {}) {
     const shouldRefetch = options.forceRefetch === true || pendingForceRefetch
         || (Date.now() - loadedAt) > TOUCH_SET_LOADED_REUSE_WINDOW_MS
 
+    // 未实际提交（角色名解析暂时失败、守卫拦截、被更新刷新世代取代等）时的
+    // 收尾：按既有规则恢复承载保存通知的标记，并安排一次有界重试——本刷新
+    // 可能抢占了仍在途的启动初始化（世代号已使其失效），若本刷新又瞬时失败，
+    // 页面会既无触摸数据也无原生接线，直到下次重载。
+    const handleUncommitted = () => {
+        if (pendingForceRefetch || options.forceRefetch === true) {
+            manager._touchSetPendingForceRefetch = true
+        }
+        if (!options.isRetry) {
+            setTimeout(() => {
+                refreshTouchSetForLoadedModel(Object.assign({}, options, { isRetry: true }))
+                    .catch((retryError) => {
+                        console.warn('[TouchSet] 触摸配置重取重试失败:', retryError)
+                    })
+            }, TOUCH_SET_RETRY_DELAY_MS)
+        }
+    }
+
     if (shouldRefetch) {
         try {
             const committed = await InitializationTouchSet(undefined, {
                 allowLive2DReload: options.allowLive2DReload === true
             })
-            // 未实际提交（角色名解析暂时失败、守卫拦截等）且本次刷新承载着
-            // 一条保存通知（待刷新标记驱动，或调用方的显式 forceRefetch——
-            // 广播接收方是一次性的）时，恢复标记让下一次加载完成钩子重试；
-            // 正常提交则消费。
-            if (committed !== true && (pendingForceRefetch || options.forceRefetch === true)) {
-                manager._touchSetPendingForceRefetch = true
+            if (committed !== true) {
+                handleUncommitted()
             }
         } catch (error) {
-            // 重取抛错时同样恢复待刷新标记，保证这条保存通知最终会被重试。
-            if (pendingForceRefetch || options.forceRefetch === true) {
-                manager._touchSetPendingForceRefetch = true
-            }
+            handleUncommitted()
             throw error
         }
         return true

@@ -63,6 +63,22 @@ def _wait_main_page_ready(page: Page, timeout_ms: int = 60000):
     )
 
 
+def _wait_boot_settled(page: Page, timeout_ms: int = 60000):
+    """Wait out the page's own startup model hot-switch so timing-sensitive
+    scenarios are not interleaved with a background reload + touch-set commit.
+
+    # The app's boot flow runs handleModelReload once the character config is
+    # ready; its completion hook force-commits a touch-set refresh. Tests that
+    # pin freshness or intercept /api/characters must run after it settles.
+    """
+    page.wait_for_function(
+        "() => window._modelReloadInFlight !== true",
+        timeout=timeout_ms,
+    )
+    page.wait_for_timeout(2500)
+    _wait_main_page_ready(page)
+
+
 def _wait_probe_hits(page: Page, area_id: str, timeout_ms: int = 15000):
     # Poll the route probe until the custom area is hit at the rect center
     # (without reloading the page).
@@ -169,6 +185,7 @@ def test_custom_touch_area_saved_in_model_manager_reaches_main_page_only_after_r
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     # Simulate the model-manager save.
     patch_result = _patch_touch_set_as_model_manager_does(mock_page)
@@ -206,6 +223,7 @@ def test_touch_set_broadcast_reaches_running_main_page_without_reload(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_fix_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -237,6 +255,7 @@ def test_model_reload_hook_refetches_touch_set(
     """Fix C: after a real handleModelReload, a newly saved area applies without reload."""
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_reload_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -273,6 +292,7 @@ def test_refresh_hook_rewires_native_hit_area_listener(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     for attempt in range(REPEATS):
         state = mock_page.evaluate(
@@ -330,6 +350,7 @@ def test_concurrent_refresh_discards_stale_response(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_race_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -338,11 +359,14 @@ def test_concurrent_refresh_discards_stale_response(
     # Intercept GET /api/characters (exact path): response #1 is delayed 1.5s
     # and stripped of the custom area (simulating an older snapshot); later
     # responses return fast. The interceptor records whether stripping actually
-    # happened so the test cannot pass vacuously.
+    # happened so the test cannot pass vacuously. Unrelated page requests are
+    # passed through untouched until the test arms the interceptor, so an
+    # in-flight pre-PATCH GET cannot steal the callNo===1 slot.
     mock_page.evaluate(
         """(areaId) => {
             const realFetch = window.fetch;
             window.__realFetch = realFetch;
+            window.__raceArmed = false;
             window.__charFetchCount = 0;
             window.__firstResponseStripped = false;
             window.fetch = async (url, opts) => {
@@ -354,6 +378,13 @@ def test_concurrent_refresh_discards_stale_response(
                 }
                 const method = String((opts && opts.method) || 'GET').toUpperCase();
                 if (parsed.pathname === '/api/characters' && method === 'GET') {
+                    if (!window.__raceArmed) return realFetch(url, opts);
+                    // 只拦截来自 InitializationTouchSet 的请求：无关页面代码的
+                    // 同路径 GET 原样放行，不能占用 callNo===1 的延迟/剥离名额。
+                    const stack = new Error().stack || '';
+                    if (!stack.includes('InitializationTouchSet')) {
+                        return realFetch(url, opts);
+                    }
                     window.__charFetchCount += 1;
                     const callNo = window.__charFetchCount;
                     const resp = await realFetch(url, opts);
@@ -383,6 +414,9 @@ def test_concurrent_refresh_discards_stale_response(
     )
 
     try:
+        # Arm only now: every /api/characters GET from this point on belongs to
+        # the scenario (the PATCH above used a sub-path and is never matched).
+        mock_page.evaluate("() => { window.__raceArmed = true; }")
         overlap = mock_page.evaluate(
             """async () => {
                 const r1 = window.nekoRefreshLive2DTouchSet({ forceRefetch: true });
@@ -430,6 +464,7 @@ def test_live2d_reload_hook_bypasses_stale_type_guards(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_guard_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -509,6 +544,7 @@ def test_broadcast_while_model_loading_is_applied_once_model_ready(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_pending_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -578,6 +614,7 @@ def test_failed_force_refetch_re_arms_pending_flag(
     """
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
     _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
 
     area_id = "custom_repro_force_fail_area_1"
     patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
@@ -650,6 +687,88 @@ def test_failed_force_refetch_re_arms_pending_flag(
         )
         assert area_id in outcome["keys"], (
             f"the saved area should be applied by the retry: {outcome['keys']}"
+        )
+    finally:
+        mock_page.evaluate(
+            """() => {
+                if (window.__realFetch) window.fetch = window.__realFetch;
+            }"""
+        )
+
+
+@pytest.mark.frontend
+def test_failed_non_forced_refresh_is_retried(
+    mock_page: Page, running_server: str
+):
+    """Codex round-8: a failed non-forced replacement refresh must be retried.
+
+    # When the load-completion hook's non-forced refresh preempts the in-flight
+    # startup call (the generation check discards it) and then transiently fails
+    # to commit, the page would be left without touch data or native wiring
+    # until another reload. refreshTouchSetForLoadedModel now schedules one
+    # bounded retry (1.5s) whenever a refetch fails to commit.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
+
+    area_id = "custom_repro_retry_area_1"
+    patch_result = _patch_touch_set_as_model_manager_does(mock_page, area_id)
+    assert patch_result.get("success"), f"PATCH save failed: {patch_result}"
+
+    # Fail exactly one /api/config/page_config response so the hook-style
+    # (non-forced) refresh commits nothing; the fetch stub is then restored so
+    # the scheduled retry succeeds.
+    mock_page.evaluate(
+        """() => {
+            const realFetch = window.fetch;
+            window.__realFetch = realFetch;
+            window.__allowPageConfigFailures = 0;
+            window.fetch = async (url, opts) => {
+                let parsed;
+                try {
+                    parsed = new URL(String(url), window.location.href);
+                } catch (_) {
+                    return realFetch(url, opts);
+                }
+                if (parsed.pathname === '/api/config/page_config'
+                    && window.__allowPageConfigFailures > 0) {
+                    window.__allowPageConfigFailures -= 1;
+                    return new Response(JSON.stringify({ success: false, error: 'forced' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return realFetch(url, opts);
+            };
+        }"""
+    )
+
+    try:
+        outcome = mock_page.evaluate(
+            """async () => {
+                const manager = window.live2dManager;
+                // Hook-style call: non-forced, driven by the staleness window.
+                manager._touchSetLoadedAt = 0;
+                window.__allowPageConfigFailures = 1;
+                const first = await window.nekoRefreshLive2DTouchSet({
+                    allowLive2DReload: true
+                });
+                const pageConfigFailed = window.__allowPageConfigFailures === 0;
+                // The retry is scheduled by now; restore the fetch so it succeeds.
+                window.fetch = window.__realFetch;
+                // > TOUCH_SET_RETRY_DELAY_MS (1.5s) plus margin.
+                await new Promise(r => setTimeout(r, 2600));
+                const keys = Object.keys(manager.touchSet[manager.modelName] || {});
+                return { first, pageConfigFailed, keys };
+            }"""
+        )
+        assert outcome["pageConfigFailed"] is True, (
+            f"the forced page_config failure did not trigger: {outcome}"
+        )
+        assert outcome["first"] is True, f"refresh should report handled: {outcome}"
+        assert area_id in outcome["keys"], (
+            f"the scheduled retry should have committed the saved area: {outcome['keys']}"
         )
     finally:
         mock_page.evaluate(
