@@ -5247,3 +5247,146 @@ select option {
 [data-theme="dark"] select option:checked {
     background: #24507c;
 }
+
+/* ── 自绘下拉（emote_select.js）：打开时现读现画，无镜像状态 ───────────── */
+.neko-select-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.neko-dd {
+    position: relative;
+    display: inline-flex;
+    width: 100%;
+}
+
+.group-picker-row .neko-dd {
+    flex: 1 1 120px;
+    width: auto;
+}
+
+.neko-dd-header {
+    width: 100%;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 30px 4px 14px;
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    background-color: #fff;
+    color: var(--emote-text);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    text-align: left;
+}
+
+.neko-dd-header:hover,
+.neko-dd-header:focus-visible {
+    border-color: var(--emote-accent);
+    outline: none;
+}
+
+.neko-dd-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.neko-dd-caret {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-right: 1.7px solid #808fa0;
+    border-bottom: 1.7px solid #808fa0;
+    transform: rotate(45deg) translateY(-1px);
+    transition: transform 0.18s ease;
+}
+
+.neko-dd.is-open .neko-dd-caret {
+    transform: rotate(225deg) translateY(-1px);
+}
+
+.neko-list {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 60;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid #dfe9f2;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 14px 30px rgba(15, 40, 80, 0.16);
+}
+
+.neko-dd.open-up .neko-list {
+    top: auto;
+    bottom: calc(100% + 6px);
+}
+
+.neko-dd-option {
+    padding: 7px 12px;
+    border-radius: 9px;
+    font-size: 11px;
+    color: var(--emote-text);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+}
+
+.neko-dd-option:hover,
+.neko-dd-option:focus {
+    background: #eef7ff;
+    outline: none;
+}
+
+.neko-dd-option.is-selected {
+    color: var(--emote-accent-strong, #188cf2);
+    font-weight: 800;
+    background: #e6f4ff;
+}
+
+.neko-dd-option.is-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+[data-theme="dark"] .neko-dd-header {
+    border-color: #2a527a;
+    background-color: #1b3b58;
+}
+
+[data-theme="dark"] .neko-dd-caret {
+    border-color: #a9bccb;
+}
+
+[data-theme="dark"] .neko-list {
+    border-color: #2a527a;
+    background: #16324a;
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .neko-dd-option {
+    color: #d7e6f5;
+}
+
+[data-theme="dark"] .neko-dd-option:hover,
+[data-theme="dark"] .neko-dd-option:focus {
+    background: #24507c;
+}
+
+[data-theme="dark"] .neko-dd-option.is-selected {
+    color: #7fd0ff;
+    background: #1d4368;
+}
