@@ -1706,6 +1706,16 @@ test('very small models stay flush with the contacted screen edge', async () => 
             width: 8,
             height: 16
         });
+        const drawableInset = 2;
+        manager.getModelDrawableScreenRects = () => {
+            const bounds = model.getBounds();
+            return [{
+                left: bounds.left + drawableInset,
+                top: bounds.top + drawableInset,
+                width: bounds.width - drawableInset * 2,
+                height: bounds.height - drawableInset * 2
+            }];
+        };
         manager.getHeadScreenAnchor = () => model.transformPoint(4, 3);
         manager.getHeadDetectionGeometryInfo = () => {
             const anchor = model.transformPoint(4, 3);
@@ -1721,18 +1731,20 @@ test('very small models stay flush with the contacted screen edge', async () => 
         assert.equal(await enterPromise, true, `${item.edge} should enter`);
         assert.equal(manager._live2DPeekState.edge, item.edge);
 
-        const bounds = model.getBounds();
+        const drawable = manager.getModelDrawableScreenRects({ padding: 0 }, model)[0];
+        const drawableRight = drawable.left + drawable.width;
+        const drawableBottom = drawable.top + drawable.height;
         if (item.edge === 'left' || item.edge.endsWith('-left')) {
-            assert.ok(Math.abs(bounds.left) <= 0.5, `${item.edge} should touch the left edge, left=${bounds.left}`);
+            assert.ok(Math.abs(drawable.left) <= 0.5, `${item.edge} drawable should touch the left edge, left=${drawable.left}`);
         }
         if (item.edge === 'right' || item.edge.endsWith('-right')) {
-            assert.ok(Math.abs(bounds.right - 1000) <= 0.5, `${item.edge} should touch the right edge, right=${bounds.right}`);
+            assert.ok(Math.abs(drawableRight - 1000) <= 0.5, `${item.edge} drawable should touch the right edge, right=${drawableRight}`);
         }
         if (item.edge.startsWith('top')) {
-            assert.ok(Math.abs(bounds.top) <= 0.5, `${item.edge} should touch the top edge, top=${bounds.top}`);
+            assert.ok(Math.abs(drawable.top) <= 0.5, `${item.edge} drawable should touch the top edge, top=${drawable.top}`);
         }
         if (item.edge.startsWith('bottom')) {
-            assert.ok(Math.abs(bounds.bottom - 800) <= 0.5, `${item.edge} should touch the bottom edge, bottom=${bounds.bottom}`);
+            assert.ok(Math.abs(drawableBottom - 800) <= 0.5, `${item.edge} drawable should touch the bottom edge, bottom=${drawableBottom}`);
         }
     }
 });
