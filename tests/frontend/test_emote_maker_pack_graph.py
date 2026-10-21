@@ -80,6 +80,7 @@ def test_input_focus_and_select_styling(page: Page, running_server: str) -> None
     _open(page, running_server)
     page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
     page.click("#pack-name")   # 真实交互聚焦；文本框任何聚焦方式都算 focus-visible
+    page.wait_for_timeout(350)   # 等 0.2s 描边过渡落地再量
     state = page.evaluate("""() => {
         const name = document.querySelector('#pack-name');
         const cs = getComputedStyle(name);
@@ -87,13 +88,17 @@ def test_input_focus_and_select_styling(page: Page, running_server: str) -> None
             || document.querySelector('select');
         const scs = getComputedStyle(sel);
         return { outlineStyle: cs.outlineStyle, shadow: cs.boxShadow,
-            borderColor: cs.borderColor, appearance: scs.appearance,
-            bgImage: scs.backgroundImage.slice(0, 60) };
+            borderColor: cs.borderColor, radius: cs.borderRadius,
+            appearance: scs.appearance, selRadius: scs.borderRadius,
+            selBorder: scs.borderColor, bgImage: scs.backgroundImage.slice(0, 60) };
     }""")
     assert state["outlineStyle"] == "none", state       # 3px 蓝描边退役
-    assert "rgba(32, 168, 239, 0.18)" in state["shadow"], state   # 柔光环在
-    assert state["borderColor"] in ("rgb(36, 170, 244)", "rgb(32, 168, 239)"), state
+    assert state["shadow"] == "none", state             # 药丸上不带柔光环
+    assert state["borderColor"] == "rgb(32, 168, 239)", state  # accent（末代世代值）
+    assert float(state["radius"].split("px")[0]) >= 20, state  # 药丸圆角
     assert state["appearance"] == "none", state         # 原生下拉外观退役
+    assert float(state["selRadius"].split("px")[0]) >= 20, state
+    assert state["selBorder"] == "rgb(179, 229, 252)", state  # 浅蓝药丸描边
     assert "svg" in state["bgImage"], state             # 自绘箭头在
 
 

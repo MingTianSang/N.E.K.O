@@ -5167,3 +5167,66 @@ select:hover {
 [data-theme="dark"] .ne-field select {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23a9bccb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
+
+/* ── 药丸化：输入框/下拉对齐角色卡管理的语言偏好与搜索样式 ────────────────
+   容器/控件本体画 2px 浅蓝描边 + 全圆角，聚焦时描边变 accent；
+   焦点柔光环在药丸上是异物，一并撤掉。 */
+.asset-search {
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    background: #fff;
+    transition: border-color 0.2s;
+}
+
+.asset-search:focus-within {
+    border-color: var(--emote-accent);
+}
+
+.select-row input,
+.select-row select,
+#pack-basic-rows select,
+.template-scene-list-select,
+.template-compat-row select {
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    background-color: #fff;   /* background-color，别用简写冲掉自绘箭头 */
+    padding-left: 14px;
+    padding-right: 30px;
+    transition: border-color 0.2s;
+}
+
+.select-row input:hover,
+.select-row select:hover,
+#pack-basic-rows select:hover,
+.template-scene-list-select:hover,
+.template-compat-row select:hover,
+.select-row input:focus-visible,
+.select-row select:focus-visible,
+#pack-basic-rows select:focus-visible,
+.template-scene-list-select:focus-visible,
+.template-compat-row select:focus-visible {
+    border-color: var(--emote-accent);
+    box-shadow: none;
+}
+
+.asset-search input:focus-visible,
+.asset-search select:focus-visible {
+    border: none;
+    box-shadow: none;
+}
+
+[data-theme="dark"] .asset-search,
+[data-theme="dark"] .select-row input,
+[data-theme="dark"] .select-row select,
+[data-theme="dark"] #pack-basic-rows select,
+[data-theme="dark"] .template-scene-list-select,
+[data-theme="dark"] .template-compat-row select {
+    border-color: #2a527a;
+    background-color: #1b3b58;
+}
+
+[data-theme="dark"] .asset-search:focus-within,
+[data-theme="dark"] .select-row input:focus-visible,
+[data-theme="dark"] .select-row select:focus-visible {
+    border-color: var(--emote-accent);
+}
