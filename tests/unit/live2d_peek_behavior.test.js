@@ -1693,7 +1693,7 @@ test('very small models stay flush with the contacted screen edge', async () => 
         { edge: 'left', x: 0, y: 360, scaleX: 1 },
         { edge: 'right', x: 1000, y: 360, scaleX: -1 },
         { edge: 'top-left', x: 0, y: 0, scaleX: 1 },
-        { edge: 'bottom-right', x: 1000, y: 720, scaleX: -1 }
+        { edge: 'bottom-right', x: 1000, y: 784, scaleX: -1 }
     ];
 
     for (const item of cases) {
@@ -1703,16 +1703,16 @@ test('very small models stay flush with the contacted screen edge', async () => 
             x: item.x,
             y: item.y,
             scaleX: item.scaleX,
-            width: 40,
-            height: 80
+            width: 8,
+            height: 16
         });
-        manager.getHeadScreenAnchor = () => model.transformPoint(20, 16);
+        manager.getHeadScreenAnchor = () => model.transformPoint(4, 3);
         manager.getHeadDetectionGeometryInfo = () => {
-            const anchor = model.transformPoint(20, 16);
+            const anchor = model.transformPoint(4, 3);
             return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
         };
         manager.getBodyScreenRectInfo = () => {
-            const waist = model.transformPoint(20, 48);
+            const waist = model.transformPoint(4, 10);
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 
@@ -1723,16 +1723,16 @@ test('very small models stay flush with the contacted screen edge', async () => 
 
         const bounds = model.getBounds();
         if (item.edge === 'left' || item.edge.endsWith('-left')) {
-            assert.ok(bounds.left <= 0.5, `${item.edge} should touch the left edge, left=${bounds.left}`);
+            assert.ok(Math.abs(bounds.left) <= 0.5, `${item.edge} should touch the left edge, left=${bounds.left}`);
         }
         if (item.edge === 'right' || item.edge.endsWith('-right')) {
-            assert.ok(bounds.right >= 999.5, `${item.edge} should touch the right edge, right=${bounds.right}`);
+            assert.ok(Math.abs(bounds.right - 1000) <= 0.5, `${item.edge} should touch the right edge, right=${bounds.right}`);
         }
         if (item.edge.startsWith('top')) {
-            assert.ok(bounds.top <= 0.5, `${item.edge} should touch the top edge, top=${bounds.top}`);
+            assert.ok(Math.abs(bounds.top) <= 0.5, `${item.edge} should touch the top edge, top=${bounds.top}`);
         }
         if (item.edge.startsWith('bottom')) {
-            assert.ok(bounds.bottom >= 799.5, `${item.edge} should touch the bottom edge, bottom=${bounds.bottom}`);
+            assert.ok(Math.abs(bounds.bottom - 800) <= 0.5, `${item.edge} should touch the bottom edge, bottom=${bounds.bottom}`);
         }
     }
 });
