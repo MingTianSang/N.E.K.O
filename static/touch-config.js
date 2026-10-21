@@ -316,10 +316,12 @@ async function InitializationTouchSet(characterJson, options = {}) {
     const touchSet = characterJson._reserved?.touch_set || {};
 
     // 过期响应丢弃：已有更新的刷新在途时，本次旧结果不得提交，
-    // 防止较晚完成的旧 GET 覆盖较新的触摸配置
+    // 防止较晚完成的旧 GET 覆盖较新的触摸配置。返回 'superseded' 让调用方
+    // 区分：新调用接管提交与失败重试，旧调用不得安排重试（重试的世代号
+    // 递增会丢弃新调用的在途结果）。
     if (initializationGeneration !== touchSetInitializationGeneration) {
         console.log('[TouchSet] 有更新的触摸配置刷新在途，丢弃本次过期结果')
-        return false;
+        return 'superseded';
     }
 
     if(modelName && !touchSet[modelName]){
@@ -2081,6 +2083,11 @@ async function refreshTouchSetForLoadedModel(options = {}) {
             const committed = await InitializationTouchSet(undefined, {
                 allowLive2DReload: options.allowLive2DReload === true
             })
+            if (committed === 'superseded') {
+                // 被更新刷新取代：提交与失败重试均由新调用接管；此处安排重试
+                // 反而会以旧世代号丢弃新调用的在途结果。
+                return true
+            }
             if (committed !== true) {
                 handleUncommitted()
             }

@@ -40,7 +40,9 @@ The route probe below mirrors the onDragEnd click branch exactly
 repeats n=3 times per the repo's attribution-experiment standard.
 """
 
+import re
 import time
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page
@@ -68,9 +70,21 @@ def _wait_boot_settled(page: Page, timeout_ms: int = 60000):
     scenarios are not interleaved with a background reload + touch-set commit.
 
     # The app's boot flow runs handleModelReload once the character config is
-    # ready; its completion hook force-commits a touch-set refresh. Tests that
-    # pin freshness or intercept /api/characters must run after it settles.
+    # ready; its completion hook force-commits a touch-set refresh. That
+    # hot-switch is triggered by server-side character loading and can fire long
+    # after page load, so "no reload in flight right now" is not enough — wait
+    # until the boot reload has actually COMPLETED (_lastModelReloadAt set) and
+    # nothing is in flight, then leave a stability window.
     """
+    try:
+        page.wait_for_function(
+            "() => Number(window._lastModelReloadAt || 0) > 0",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        # Some boots may skip the hot-switch entirely; fall back to the
+        # in-flight check + stability window instead of hard-failing.
+        pass
     page.wait_for_function(
         "() => window._modelReloadInFlight !== true",
         timeout=timeout_ms,
@@ -438,6 +452,16 @@ def test_concurrent_refresh_discards_stale_response(
             "the test would be vacuous"
         )
 
+        # 被取代的刷新不得安排幻影重试：r1 已被 r2 取代，其重试的世代号递增
+        # 会丢弃 r2 的在途结果（coderabbit 第 9 轮）。等过 1.5s 重试窗口后，
+        # 计数必须仍为 2。
+        mock_page.wait_for_timeout(1800)
+        count_after_retry_window = mock_page.evaluate("() => window.__charFetchCount")
+        assert count_after_retry_window == 2, (
+            f"a superseded refresh scheduled a phantom retry; "
+            f"expected count to stay 2, got {count_after_retry_window}"
+        )
+
         probe = _route_probe(mock_page)
         assert "error" not in probe, f"probe failed: {probe}"
         assert area_id in probe["inMemoryTouchSetKeys"], (
@@ -775,4 +799,30 @@ def test_failed_non_forced_refresh_is_retried(
             """() => {
                 if (window.__realFetch) window.fetch = window.__realFetch;
             }"""
+        )
+
+
+@pytest.mark.frontend_contract
+def test_character_switch_load_sites_wire_touch_refresh_hook():
+    """Codex round-9: the character-switch Live2D loader must wire the refresh hook.
+
+    # The catgirl-switch path loads models directly (primary + fallback loadModel
+    # sites) without going through handleModelReload or live2d-init, so without
+    # the hook the switched-to character keeps the previous character's in-memory
+    # touch set and unwired native HitAreas.
+    """
+    app_character = Path(__file__).resolve().parents[2] / "static" / "app" / "app-character.js"
+    source = app_character.read_text(encoding="utf-8")
+    load_sites = [m.start() for m in re.finditer(
+        r"await window\.live2dManager\.loadModel\(", source
+    )]
+    assert len(load_sites) == 2, (
+        f"expected two loadModel sites in app-character.js, found {len(load_sites)}; "
+        "update this contract if a new load site is added"
+    )
+    for start in load_sites:
+        window_after = source[start:start + 1500]
+        assert "nekoRefreshLive2DTouchSet" in window_after, (
+            "a character-switch loadModel site is missing the touch-set "
+            "refresh hook after completion"
         )
