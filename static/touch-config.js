@@ -270,10 +270,12 @@ async function InitializationTouchSet(characterJson, options = {}) {
     if (!characterJson){
         // // 获取角色名称
         // const lanlanName = await getLanlanName();
-        
-        // 优先从 URL 获取
+
+        // 显式指定优先（角色切换钩子传入新角色名——切角色后 URL 上的
+        // lanlan_name 还是旧角色，不能作为依据），其次 URL，最后 page_config。
         const urlParams = new URLSearchParams(window.location.search);
-        let lanlanName = urlParams.get('lanlan_name') || '';
+        let lanlanName = String(options.lanlanName || '').trim()
+            || urlParams.get('lanlan_name') || '';
         // 如果 URL 中没有，从 API 获取（使用 RequestHelper）
         if (!lanlanName) {
             try {
@@ -298,6 +300,11 @@ async function InitializationTouchSet(characterJson, options = {}) {
         const response = await fetch('/api/characters');
         const charactersJson = await response.json();
         characterJson = charactersJson.猫娘[lanlanName]
+        if (!characterJson) {
+            // 角色不存在/数据缺失：同样视为未提交，避免 undefined 解引用。
+            console.warn('[TouchSet] 未找到角色的触摸配置数据:', lanlanName)
+            return false;
+        }
     }else{
         // 呃
     }
@@ -2081,7 +2088,8 @@ async function refreshTouchSetForLoadedModel(options = {}) {
     if (shouldRefetch) {
         try {
             const committed = await InitializationTouchSet(undefined, {
-                allowLive2DReload: options.allowLive2DReload === true
+                allowLive2DReload: options.allowLive2DReload === true,
+                lanlanName: options.lanlanName
             })
             if (committed === 'superseded') {
                 // 被更新刷新取代：提交与失败重试均由新调用接管；此处安排重试

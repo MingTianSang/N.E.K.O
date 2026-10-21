@@ -77,9 +77,12 @@ def _wait_boot_settled(page: Page, timeout_ms: int = 60000):
     # nothing is in flight, then leave a stability window.
     """
     try:
+        # The hot-switch normally lands within a few seconds of the model being
+        # ready; a boot that only did the direct initial load never sets the
+        # marker, so cap this wait instead of burning the full timeout.
         page.wait_for_function(
             "() => Number(window._lastModelReloadAt || 0) > 0",
-            timeout=timeout_ms,
+            timeout=10000,
         )
     except Exception:
         # Some boots may skip the hot-switch entirely; fall back to the
@@ -826,3 +829,48 @@ def test_character_switch_load_sites_wire_touch_refresh_hook():
             "a character-switch loadModel site is missing the touch-set "
             "refresh hook after completion"
         )
+        assert "lanlanName: newCatgirl" in window_after, (
+            "the hook must pass the new character's name (the URL keeps the "
+            "old lanlan_name after a switch, so the refresh would fetch the "
+            "previous character's touch set)"
+        )
+
+
+@pytest.mark.frontend
+def test_initialization_touch_set_honors_explicit_lanlan_name(
+    mock_page: Page, running_server: str
+):
+    """Greptile round-10: an explicit lanlanName override must take precedence.
+
+    # After a catgirl switch the URL keeps the OLD lanlan_name; the switch hook
+    # passes the new name explicitly. Calling InitializationTouchSet with a
+    # nonexistent override must resolve against that name and return false
+    # gracefully (character missing), not fall back to the URL/page_config
+    # character and commit their data.
+    """
+    mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
+    _wait_main_page_ready(mock_page)
+    _wait_boot_settled(mock_page)
+
+    outcome = mock_page.evaluate(
+        """async () => {
+            const manager = window.live2dManager;
+            const keysBefore = JSON.stringify(
+                Object.keys(manager.touchSet[manager.modelName] || {})
+            );
+            const result = await InitializationTouchSet(undefined, {
+                lanlanName: '__no_such_character__',
+                allowLive2DReload: true,
+            });
+            const keysAfter = JSON.stringify(
+                Object.keys(manager.touchSet[manager.modelName] || {})
+            );
+            return { result, keysBefore, keysAfter };
+        }"""
+    )
+    assert outcome["result"] is False, (
+        f"nonexistent explicit character should resolve to no-commit: {outcome}"
+    )
+    assert outcome["keysBefore"] == outcome["keysAfter"], (
+        f"an unresolvable override must not touch the in-memory snapshot: {outcome}"
+    )
