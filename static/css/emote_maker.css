@@ -5230,3 +5230,20 @@ select:hover {
 [data-theme="dark"] .select-row select:focus-visible {
     border-color: var(--emote-accent);
 }
+
+/* ── 原生下拉弹层主题化：option 着色跟随主题（暗色弹层不再白底刺眼） ── */
+select option {
+    background: #ffffff;
+    color: var(--emote-text);
+    font-size: 12px;
+    padding: 6px;
+}
+
+[data-theme="dark"] select option {
+    background: #1b3b58;
+    color: #d7e6f5;
+}
+
+[data-theme="dark"] select option:checked {
+    background: #24507c;
+}
