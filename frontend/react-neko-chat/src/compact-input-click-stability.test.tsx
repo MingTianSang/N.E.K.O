@@ -40,6 +40,10 @@ async function renderFocusedCompactInput() {
 }
 
 describe('compact input state click stability', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('keeps input state for a plain click on the focused textarea', async () => {
     const { stateChanges, input } = await renderFocusedCompactInput();
 
@@ -57,6 +61,7 @@ describe('compact input state click stability', () => {
 
   it('collapses empty input as soon as the window blurs', async () => {
     const { stateChanges } = await renderFocusedCompactInput();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
 
     fireEvent.blur(window);
     await act(async () => {
@@ -64,6 +69,48 @@ describe('compact input state click stability', () => {
     });
 
     expect(stateChanges).toEqual(['default']);
+  });
+
+  it('keeps empty input when the blur stays inside the document', async () => {
+    const { stateChanges } = await renderFocusedCompactInput();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+
+    fireEvent.blur(window);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(stateChanges).toEqual([]);
+  });
+
+  it('does not collapse after unmount if the window has already blurred', async () => {
+    const stateChanges: CompactChatState[] = [];
+    function Harness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('input');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          onCompactChatStateChange={(next) => {
+            stateChanges.push(next);
+            setCompactChatState(next);
+          }}
+        />
+      );
+    }
+    const view = render(<Harness />);
+    const input = (await screen.findByPlaceholderText('Type a message...')) as HTMLTextAreaElement;
+    await act(async () => {
+      input.focus();
+    });
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    fireEvent.blur(window);
+    view.unmount();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(stateChanges).toEqual([]);
   });
 
   it('still collapses when the pointer press starts outside the input island', async () => {

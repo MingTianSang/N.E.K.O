@@ -4663,6 +4663,7 @@ function CompactChatApp({
     }, 0);
   }, [collapseCompactInputIfEmpty]);
 
+  const windowBlurCollapseTimerRef = useRef(0);
   const scheduleForcedCompactInputCollapse = useCallback(() => {
     window.setTimeout(() => {
       collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
@@ -4699,18 +4700,32 @@ function CompactChatApp({
 
     const handleWindowBlur = () => {
       if (document.querySelector('.click-guide-layer.click-guide-native')) return;
-      scheduleForcedCompactInputCollapse();
+      if (windowBlurCollapseTimerRef.current) {
+        window.clearTimeout(windowBlurCollapseTimerRef.current);
+      }
+      // Next tick, not a grace period. Leaving the app reports hasFocus false.
+      // Moving into a history-card iframe blurs this window while the document
+      // still has focus, and that must not fold the input.
+      windowBlurCollapseTimerRef.current = window.setTimeout(() => {
+        windowBlurCollapseTimerRef.current = 0;
+        if (document.hasFocus()) return;
+        collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
+      }, 0);
     };
 
     window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
+      if (windowBlurCollapseTimerRef.current) {
+        window.clearTimeout(windowBlurCollapseTimerRef.current);
+        windowBlurCollapseTimerRef.current = 0;
+      }
       window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
+  }, [collapseCompactInputIfEmpty, effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;

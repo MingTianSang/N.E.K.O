@@ -10120,6 +10120,7 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     input.focus();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     fireEvent(window, new Event('blur'));
 
     await act(async () => {
