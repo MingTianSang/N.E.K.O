@@ -10120,14 +10120,18 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     input.focus();
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
-    fireEvent(window, new Event('blur'));
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    try {
+      fireEvent(window, new Event('blur'));
 
-    await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
 
-    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      hasFocus.mockRestore();
+    }
   });
 
   it.each([false, true])('preserves native guide input and tools across desktop outside events (wheel open: %s)', async (wheelOpen) => {
