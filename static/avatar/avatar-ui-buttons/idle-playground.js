@@ -610,8 +610,8 @@ function _readNekoIdleCat1PlaygroundWorkArea(snapshot) {
     if (![areaX, areaY, areaWidth, areaHeight].every(Number.isFinite) || areaWidth <= 0 || areaHeight <= 0) {
         return null;
     }
-    const originX = Number(origin && origin.x);
-    const originY = Number(origin && origin.y);
+    const originX = Number(origin?.x);
+    const originY = Number(origin?.y);
     const screenX = Number.isFinite(originX) ? originX : (Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0);
     const screenY = Number.isFinite(originY) ? originY : (Number.isFinite(Number(window.screenY)) ? Number(window.screenY) : 0);
     return {
@@ -661,6 +661,7 @@ function _requestNekoIdleCat1PlaygroundViewportBottom(attempt) {
     const electronScreen = window.electronScreen;
     if (!electronScreen || typeof electronScreen.getDesktopCoordinateSnapshot !== 'function') {
         _clearNekoIdleCat1PlaygroundWorkArea();
+        _reclampActiveNekoIdleCat1PlaygroundBodies();
         return Promise.resolve(_getNekoIdleCat1PlaygroundViewportBottomPx());
     }
     const seq = ++_nekoIdleCat1PlaygroundViewportBottomRefreshSeq;
@@ -672,6 +673,7 @@ function _requestNekoIdleCat1PlaygroundViewportBottom(attempt) {
             }
             if (Number(snapshot && snapshot.version) !== 2) {
                 _clearNekoIdleCat1PlaygroundWorkArea();
+                _reclampActiveNekoIdleCat1PlaygroundBodies();
                 return _getNekoIdleCat1PlaygroundViewportBottomPx();
             }
             if (snapshot.window && snapshot.window.settled === false && attempt < 8) {
@@ -688,12 +690,7 @@ function _requestNekoIdleCat1PlaygroundViewportBottom(attempt) {
             _reclampActiveNekoIdleCat1PlaygroundBodies();
             return viewportBottom;
         })
-        .catch(() => {
-            if (seq === _nekoIdleCat1PlaygroundViewportBottomRefreshSeq) {
-                _clearNekoIdleCat1PlaygroundWorkArea();
-            }
-            return _getNekoIdleCat1PlaygroundViewportBottomPx();
-        });
+        .catch(() => _getNekoIdleCat1PlaygroundViewportBottomPx());
 }
 
 function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
@@ -1333,6 +1330,11 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
         }
     });
 
+    const desktopCatBeforePairs = state.bodies.get('cat');
+    const desktopBorderBeforePairs = desktopCatBeforePairs && !desktopCatBeforePairs.dragging
+        ? { x: desktopCatBeforePairs.x, y: desktopCatBeforePairs.y }
+        : null;
+
     if (_resolveNekoIdleCat1PlaygroundBodyCollisions(state)) {
         allGrounded = true;
         state.bodies.forEach((body) => {
@@ -1346,6 +1348,20 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                 needsNextFrame = true;
             }
         });
+    }
+
+    if (desktopBorderBeforePairs && desktopCatBeforePairs && !desktopCatBeforePairs.dragging
+        && (desktopCatBeforePairs.x !== desktopBorderBeforePairs.x || desktopCatBeforePairs.y !== desktopBorderBeforePairs.y)
+        && window.NekoDesktopWindowGravity?.collideDesktopBody?.(
+            button, desktopCatBeforePairs, dt, desktopBorderBeforePairs)) {
+        _setNekoIdleCat1PlaygroundBodyPosition(
+            desktopCatBeforePairs,
+            desktopCatBeforePairs.x,
+            desktopCatBeforePairs.y,
+            { force: desktopCatBeforePairs.grounded || desktopCatBeforePairs.desktop }
+        );
+        needsNextFrame = true;
+        if (!desktopCatBeforePairs.grounded) allGrounded = false;
     }
 
     const catBody = state.bodies.get('cat');
