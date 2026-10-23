@@ -75,8 +75,8 @@ def test_stage_open_button_is_flat(page: Page, running_server: str) -> None:
 
 
 def test_input_focus_and_select_styling(page: Page, running_server: str) -> None:
-    """3px 粗蓝焦点描边退役：输入/下拉焦点 = accent 描边 + 柔光环；
-    下拉 appearance:none + 自绘箭头（不再用原生外观）。只看计算样式。"""
+    """输入框保持药丸焦点。下拉闭合控件是同款药丸，展开后是自绘菜单：
+    点选项写回 select，隐藏项不进菜单，脚本改 value 时按钮文字跟着变。"""
     _open(page, running_server)
     page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
     page.click("#pack-name")   # 真实交互聚焦；文本框任何聚焦方式都算 focus-visible
@@ -84,22 +84,70 @@ def test_input_focus_and_select_styling(page: Page, running_server: str) -> None
     state = page.evaluate("""() => {
         const name = document.querySelector('#pack-name');
         const cs = getComputedStyle(name);
-        const sel = document.querySelector('#pack-basic-rows select')
-            || document.querySelector('select');
-        const scs = getComputedStyle(sel);
+        const trigger = document.querySelector('#export-format-trigger');
+        const tcs = getComputedStyle(trigger);
         return { outlineStyle: cs.outlineStyle, shadow: cs.boxShadow,
             borderColor: cs.borderColor, radius: cs.borderRadius,
-            appearance: scs.appearance, selRadius: scs.borderRadius,
-            selBorder: scs.borderColor, bgImage: scs.backgroundImage.slice(0, 60) };
+            selRadius: tcs.borderRadius, selBorder: tcs.borderTopColor,
+            selWidth: tcs.borderTopWidth, caret: !!trigger.querySelector('.emote-select-caret') };
     }""")
     assert state["outlineStyle"] == "none", state       # 3px 蓝描边退役
     assert state["shadow"] == "none", state             # 药丸上不带柔光环
     assert state["borderColor"] == "rgb(32, 168, 239)", state  # accent（末代世代值）
     assert float(state["radius"].split("px")[0]) >= 20, state  # 药丸圆角
-    assert state["appearance"] == "none", state         # 原生下拉外观退役
     assert float(state["selRadius"].split("px")[0]) >= 20, state
     assert state["selBorder"] == "rgb(179, 229, 252)", state  # 浅蓝药丸描边
-    assert "svg" in state["bgImage"], state             # 自绘箭头在
+    assert state["selWidth"] == "2px", state
+    assert state["caret"], state
+
+    page.click("#export-format-trigger")
+    page.wait_for_selector("#export-format-menu.is-open")
+    page.locator("#export-format-menu .emote-select-option", has_text="GIF").click()
+    assert page.evaluate("() => document.querySelector('#export-format').value") == "gif"
+    assert page.locator("#export-format-menu.is-open").count() == 0
+    synced = page.evaluate("""() => {
+        const select = document.querySelector('#export-format');
+        select.value = 'png';
+        const label = document.querySelector('#export-format-trigger .emote-select-value').textContent;
+        const option = select.options[select.selectedIndex].textContent.trim();
+        return label === option && select.value === 'png';
+    }""")
+    assert synced
+
+    # 选完格式会 renderAll，空编辑器把检查器面板藏起来。菜单本身挂在 body 上，
+    # 用脚本点开即可核对隐藏项，不必跟面板的空态抢可见性。
+    page.evaluate("() => document.querySelector('#export-resolution-trigger').click()")
+    page.wait_for_selector("#export-resolution-menu.is-open")
+    labels = page.evaluate("""() => [...document.querySelectorAll('#export-resolution-menu .emote-select-option')].map(el => el.textContent)""")
+    assert any("240" in text for text in labels), labels
+    assert all("1024" not in text for text in labels), labels
+
+
+def test_opening_batch_export_does_not_squeeze_the_panel(page: Page, running_server: str) -> None:
+    """展开批量导出会把右侧面板撑出滚动条。滚动条若是临时冒出来的，
+    内容宽度会少掉一截，格式药丸之类会一起变短。"""
+    _open(page, running_server)
+    page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
+    metrics = page.evaluate("""() => {
+        const section = document.querySelector('#group-section');
+        const panel = document.querySelector('#inspector-panel-export');
+        const trigger = document.querySelector('#export-format-trigger');
+        section.hidden = false;
+        section.open = false;
+        const before = trigger.getBoundingClientRect().width;
+        section.open = true;
+        const after = trigger.getBoundingClientRect().width;
+        return {
+            before, after,
+            overflows: panel.scrollHeight > panel.clientHeight + 1,
+            overflowX: panel.scrollWidth - panel.clientWidth,
+            pageScroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+    }""")
+    assert metrics["overflows"], metrics
+    assert abs(metrics["before"] - metrics["after"]) < 1, metrics
+    assert metrics["overflowX"] <= 1, metrics
+    assert metrics["pageScroll"] <= 1, metrics
 
 
 def test_empty_talking_scene_stays_quiet_instead_of_lying(page: Page, running_server: str) -> None:

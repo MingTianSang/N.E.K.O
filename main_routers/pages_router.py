@@ -582,7 +582,7 @@ async def get_card_maker_page(request: Request):
 async def get_emote_maker_page(request: Request):
     """Preset-based emote maker page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/emote_maker.html", {
+    return templates.TemplateResponse(request, "templates/emote_maker.html", {
         "request": request,
         **_static_assets_ctx(),
     })

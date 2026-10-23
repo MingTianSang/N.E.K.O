@@ -24,8 +24,8 @@
 }(typeof window !== 'undefined' ? window : globalThis, function () {
     'use strict';
 
-    // 一次批量导出会把所有产物攒在内存里再压成一个 zip（Electron 下 <a download> 是唯一
-    // 能落盘的通道），所以必须有上限：几百张 GIF 直接把页面压死。
+    // 选不了目录时，成品只能攒在内存里再一次性 zip。这道栏只护那条退路。
+    // 选了目录之后逐张落盘，上限改用 MAX_ITEMS_PER_GROUP。
     const MAX_BATCH = 150;
     const MAX_GROUP_NAME = 40;
     const MAX_ITEMS_PER_GROUP = 400;
@@ -247,31 +247,46 @@
     }
 
     /**
-     * 导出引擎：把"计划里每一项"变成"zip 里一个文件"。
+     * 导出引擎：把"计划里每一项"变成一个文件。
      *
-     * produce / zip 都是注入进来的 —— 页面给真的烘焙器和 fflate，测试给假的。这样
-     * 引擎本身的规则（顺序、进度、单张失败不拖垮整批、能中断）不需要 Spine 运行时
-     * 就能验；反过来页面只剩"怎么烘一张"这一件事。
+     * produce / zip / store 都是注入进来的。没有目录可写时，zip 拿到全部字节再打包。
+     * 有 store 时每张写完就丢掉字节，最后把文件名交给 zipStored，由页面从磁盘逐张读出来压缩。
      */
     async function runGroupExport(options) {
         const {
-            plan, produce, zip, onProgress, shouldAbort,
+            plan, produce, zip, store, zipStored, onProgress, shouldAbort,
         } = options || {};
         const items = (plan && Array.isArray(plan.items)) ? plan.items : [];
-        if (typeof produce !== 'function' || typeof zip !== 'function') {
+        const canStore = typeof store === 'function';
+        if (typeof produce !== 'function' || (typeof zip !== 'function' && !canStore)) {
             throw new Error('导出引擎缺少 produce / zip');
         }
         const files = [];
+        const stored = [];
         const failed = [];
+
+        async function packStored() {
+            if (!stored.length || typeof zipStored !== 'function') return undefined;
+            return zipStored(stored.slice());
+        }
+
         for (let index = 0; index < items.length; index += 1) {
             if (typeof shouldAbort === 'function' && shouldAbort()) {
-                return { aborted: true, files, failed, done: index, total: items.length };
+                const blob = await packStored();
+                return {
+                    aborted: true, files, failed, stored, blob,
+                    savedToFolder: stored.length > 0 && typeof zipStored === 'function',
+                    done: index, total: items.length,
+                };
             }
             const item = items[index];
             try {
                 const bytes = await produce(item);
                 if (!bytes || !bytes.length) {
                     failed.push({ file: item.file, reason: 'empty' });
+                } else if (canStore) {
+                    await store({ path: item.file, data: bytes });
+                    stored.push(item.file);
                 } else {
                     files.push({ path: item.file, data: bytes });
                 }
@@ -281,6 +296,14 @@
             if (typeof onProgress === 'function') {
                 onProgress({ done: index + 1, total: items.length, file: item.file });
             }
+        }
+        if (canStore) {
+            const blob = await packStored();
+            return {
+                aborted: false, files, failed, stored, blob,
+                savedToFolder: stored.length > 0,
+                done: items.length, total: items.length,
+            };
         }
         if (!files.length) return { aborted: false, files, failed, done: items.length, total: items.length };
         const blob = await zip(files);

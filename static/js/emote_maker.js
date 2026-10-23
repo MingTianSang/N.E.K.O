@@ -246,6 +246,10 @@
         'emoteMaker.groupExportCancelled': "已停止，已完成的部分照样打包",
         'emoteMaker.groupExportFailed': "有 {{count}} 项导出失败",
         'emoteMaker.groupExportTruncated': "一次最多导出 {{count}} 张，其余可另建新组",
+        'emoteMaker.groupExportZipping': "正在打包…",
+        'emoteMaker.groupExportFolderDone': "已写入所选文件夹，并打好压缩包",
+        'emoteMaker.groupExportFolderFailed': "没法在这个目录里建文件夹",
+        'emoteMaker.groupExportZipFailed': "打包失败，已经写好的文件还在文件夹里",
         'emoteMaker.groupPickFirst': "组内暂无动作，去添加？",
         'emoteMaker.groupMemberShot': "取景",
         'emoteMaker.groupMemberMissing': "来源已不在当前模板里",
@@ -2160,6 +2164,78 @@
         });
     }
 
+    async function pickExportDirectory() {
+        if (typeof window.showDirectoryPicker !== 'function') return null;
+        try {
+            return await window.showDirectoryPicker({
+                mode: 'readwrite',
+                id: 'neko-emote-batch-export',
+            });
+        } catch (error) {
+            if (error && error.name === 'AbortError') return 'cancelled';
+            console.warn('[emote-maker] 选择导出目录失败', error);
+            showToast(t('emoteMaker.groupExportFolderFailed'));
+            return 'cancelled';
+        }
+    }
+
+    async function uniqueChildName(parent, name) {
+        const taken = new Set();
+        for await (const [key] of parent.entries()) taken.add(key);
+        if (!taken.has(name)) return name;
+        const dot = name.lastIndexOf('.');
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const ext = dot > 0 ? name.slice(dot) : '';
+        let index = 2;
+        let candidate = `${stem} ${index}${ext}`;
+        while (taken.has(candidate)) {
+            index += 1;
+            candidate = `${stem} ${index}${ext}`;
+        }
+        return candidate;
+    }
+
+    async function writeStoredZip(parent, folder, names, zipName) {
+        const fflate = window.fflate;
+        if (!fflate || typeof fflate.Zip !== 'function' || typeof fflate.ZipDeflate !== 'function') {
+            throw new Error('zip-unavailable');
+        }
+        const fileName = await uniqueChildName(parent, zipName);
+        const handle = await parent.getFileHandle(fileName, { create: true });
+        const writable = await handle.createWritable();
+        const chunks = [];
+        let failed = null;
+        const zip = new fflate.Zip((err, data) => {
+            if (err) {
+                failed = err;
+                return;
+            }
+            if (data && data.length) chunks.push(data);
+        });
+        const flush = async () => {
+            while (chunks.length) await writable.write(chunks.shift());
+            if (failed) throw failed;
+        };
+        try {
+            for (const name of names) {
+                const fileHandle = await folder.getFileHandle(name);
+                const file = await fileHandle.getFile();
+                const bytes = new Uint8Array(await file.arrayBuffer());
+                const entry = new fflate.ZipDeflate(name, { level: 6 });
+                zip.add(entry);
+                entry.push(bytes, true);
+                await flush();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            zip.end();
+            await flush();
+            await writable.close();
+        } catch (error) {
+            try { await writable.abort(); } catch (_) { /* 半成品丢掉，别留一个打不开的 zip */ }
+            throw error;
+        }
+    }
+
     /** 导出气泡/按钮真正要导的那一组 —— 由气泡里的行决定，不是"当前下拉选中的那组"。 */
     async function exportGroup(group, exportTrigger) {
         if (groupExportBusy) return;
@@ -2175,12 +2251,35 @@
             const scene = getImportedScenes().find((entry) => entry.id === ref);
             return scene ? (scene.name || scene.id) : '';
         };
+        const canPick = typeof window.showDirectoryPicker === 'function';
         const plan = groupLibrary.planGroupExport({
-            group, shots: ownShots(), ext: format, nameOf: sceneName,
+            group,
+            shots: ownShots(),
+            ext: format,
+            nameOf: sceneName,
+            limit: canPick ? groupLibrary.MAX_ITEMS_PER_GROUP : groupLibrary.MAX_BATCH,
         });
         if (!plan.ready) {
             showToast(t('emoteMaker.groupExportEmpty'));
             return;
+        }
+        // 选目录必须是这次点击之后的第一个 await，否则浏览器会拒绝弹窗。
+        const parent = canPick ? await pickExportDirectory() : null;
+        if (parent === 'cancelled') return;
+        let folder = null;
+        let folderName = '';
+        if (parent) {
+            try {
+                folderName = await uniqueChildName(
+                    parent,
+                    groupLibrary.sanitizeFileName(group.name, 'group'),
+                );
+                folder = await parent.getDirectoryHandle(folderName, { create: true });
+            } catch (error) {
+                console.warn('[emote-maker] 创建导出文件夹失败', error);
+                showToast(t('emoteMaker.groupExportFolderFailed'));
+                return;
+            }
         }
         groupExportBusy = true;
         groupExportAbort = false;
@@ -2197,6 +2296,21 @@
             result = await groupLibrary.runGroupExport({
                 plan,
                 produce: (item) => produceGroupFile(item, format),
+                store: folder ? async (file) => {
+                    const handle = await folder.getFileHandle(file.path, { create: true });
+                    const stream = await handle.createWritable();
+                    try {
+                        await stream.write(file.data);
+                        await stream.close();
+                    } catch (error) {
+                        try { await stream.abort(); } catch (_) { /* 这张没写完就丢掉 */ }
+                        throw error;
+                    }
+                } : undefined,
+                zipStored: folder ? async (names) => {
+                    setGroupExportStatus(t('emoteMaker.groupExportZipping'));
+                    await writeStoredZip(parent, folder, names, `${folderName}.zip`);
+                } : undefined,
                 zip: async (files) => {
                     const entries = {};
                     files.forEach((file) => { entries[file.path] = file.data; });
@@ -2206,6 +2320,9 @@
                 onProgress: ({ done, total }) => setGroupExportStatus(
                     interpolate(t('emoteMaker.groupExporting'), { done, total })),
             });
+        } catch (error) {
+            console.warn('[emote-maker] 整组导出失败', error);
+            showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : 'emoteMaker.exportGifFailed'));
         } finally {
             groupExportBusy = false;
             setPackBusy(false);
@@ -2225,6 +2342,8 @@
                 result.blob,
                 `${groupLibrary.sanitizeFileName(group.name, 'group')}.zip`,
                 'emoteMaker.groupExportDone', 'emoteMaker.exportGifFailed');
+        } else if (result.savedToFolder && !result.aborted) {
+            showToast(t('emoteMaker.groupExportFolderDone'));
         }
         if (result.aborted) showToast(t('emoteMaker.groupExportCancelled'));
         const lost = result.failed.length + plan.skipped.length;
@@ -6464,7 +6583,7 @@
         $('#save-shot-btn')?.addEventListener('click', () => saveCurrentAsShot());
         $('#export-group-open-btn')?.addEventListener('click', () => {
             if (groupExportBusy) {
-                // 同一颗按钮在跑的时候就是停止：一批最多 100 张，得能中途停
+                // 同一颗按钮在跑的时候就是停止：一批可能上百张，得能中途停
                 groupExportAbort = true;
                 return;
             }

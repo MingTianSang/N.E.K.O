@@ -2158,9 +2158,13 @@ body {
 .inspector-tab-panel.is-active {
     min-height: 0;
     flex: 1 1 auto;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     padding-right: 4px;
     scrollbar-width: thin;
+    /* 展开批量导出才会溢出。滚动条若临时出现，内容宽度会被吃掉一截，
+       药丸和按钮会一起变短。槽位先留好，开合时宽度不再跳。 */
+    scrollbar-gutter: stable;
 }
 
 .inspector-section {
@@ -4206,6 +4210,8 @@ body.is-pack-dragging * {
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .group-picker-row .template-scene-list-select {
@@ -5139,38 +5145,8 @@ button:focus-visible {
     outline-offset: 2px;
 }
 
-/* 原生下拉外观退役：自绘箭头 + hover 反馈。background-image 用 EOF 同
-   特异度压过各家族的 background 简写；暗色由同组规则再压一次。 */
-select,
-.select-row select,
-.template-scene-list-select,
-.template-compat-row select,
-.ne-field select {
-    appearance: none;
-    -webkit-appearance: none;
-    padding-right: 20px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23808fa0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 6px center;
-    background-size: 10px 10px;
-    cursor: pointer;
-}
-
-select:hover {
-    border-color: var(--emote-accent);
-}
-
-[data-theme="dark"] select,
-[data-theme="dark"] .select-row select,
-[data-theme="dark"] .template-scene-list-select,
-[data-theme="dark"] .template-compat-row select,
-[data-theme="dark"] .ne-field select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23a9bccb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-}
-
-/* ── 药丸化：输入框/下拉对齐角色卡管理的语言偏好与搜索样式 ────────────────
-   容器/控件本体画 2px 浅蓝描边 + 全圆角，聚焦时描边变 accent；
-   焦点柔光环在药丸上是异物，一并撤掉。 */
+/* ── 药丸化：输入框对齐角色卡管理的语言偏好与搜索样式 ──────────────────────
+   下拉不画在原生 select 上，见文末 .emote-select。 */
 .asset-search {
     border: 2px solid #b3e5fc;
     border-radius: 999px;
@@ -5182,29 +5158,17 @@ select:hover {
     border-color: var(--emote-accent);
 }
 
-.select-row input,
-.select-row select,
-#pack-basic-rows select,
-.template-scene-list-select,
-.template-compat-row select {
+.select-row input:not([type="checkbox"]) {
     border: 2px solid #b3e5fc;
     border-radius: 999px;
-    background-color: #fff;   /* background-color，别用简写冲掉自绘箭头 */
+    background-color: #fff;
     padding-left: 14px;
-    padding-right: 30px;
+    padding-right: 14px;
     transition: border-color 0.2s;
 }
 
-.select-row input:hover,
-.select-row select:hover,
-#pack-basic-rows select:hover,
-.template-scene-list-select:hover,
-.template-compat-row select:hover,
-.select-row input:focus-visible,
-.select-row select:focus-visible,
-#pack-basic-rows select:focus-visible,
-.template-scene-list-select:focus-visible,
-.template-compat-row select:focus-visible {
+.select-row input:not([type="checkbox"]):hover,
+.select-row input:not([type="checkbox"]):focus-visible {
     border-color: var(--emote-accent);
     box-shadow: none;
 }
@@ -5216,19 +5180,190 @@ select:hover {
 }
 
 [data-theme="dark"] .asset-search,
-[data-theme="dark"] .select-row input,
-[data-theme="dark"] .select-row select,
-[data-theme="dark"] #pack-basic-rows select,
-[data-theme="dark"] .template-scene-list-select,
-[data-theme="dark"] .template-compat-row select {
+[data-theme="dark"] .select-row input:not([type="checkbox"]) {
     border-color: #2a527a;
     background-color: #1b3b58;
 }
 
 [data-theme="dark"] .asset-search:focus-within,
-[data-theme="dark"] .select-row input:focus-visible,
-[data-theme="dark"] .select-row select:focus-visible {
+[data-theme="dark"] .select-row input:not([type="checkbox"]):focus-visible {
     border-color: var(--emote-accent);
+}
+
+/* ── 下拉：闭合药丸对齐角色卡语言偏好，展开菜单对齐 API 设置 ──────────────
+   原生 select 只负责存值。菜单 position:fixed 挂在 body 上，
+   面板的 overflow 和 backdrop-filter 裁不到它。 */
+.emote-select {
+    position: relative;
+    min-width: 0;
+    width: 100%;
+}
+
+.emote-select-native {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.emote-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    height: 32px;
+    min-height: 32px;
+    padding: 0 12px 0 14px;
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    background: #fff;
+    color: var(--emote-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.emote-select-trigger:hover:not(:disabled),
+.emote-select-trigger:focus-visible,
+.group-picker-row .emote-select-trigger:focus-visible {
+    outline: none;
+    border-color: var(--emote-accent);
+    box-shadow: none;
+}
+
+.emote-select.is-disabled .emote-select-trigger,
+.emote-select-trigger:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.emote-select-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.emote-select-caret {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    margin-right: 2px;
+    border-right: 2px solid #40C5F1;
+    border-bottom: 2px solid #40C5F1;
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.emote-select-trigger[aria-expanded="true"] .emote-select-caret {
+    transform: translateY(2px) rotate(225deg);
+}
+
+.template-compat-row .emote-select-trigger,
+.ne-field .emote-select-trigger {
+    height: 27px;
+    min-height: 27px;
+    font-size: 10px;
+}
+
+.group-picker-row .emote-select:has(.template-scene-list-select) {
+    flex: 1 1 120px;
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+}
+
+.emote-select-menu {
+    position: fixed;
+    z-index: 80;
+    display: none;
+    max-height: 240px;
+    padding: 6px;
+    overflow: auto;
+    border: 1px solid #bfe8f8;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 16px 32px rgba(42, 144, 180, 0.16);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(64, 197, 241, 0.45) transparent;
+}
+
+.emote-select-menu.is-open {
+    display: block;
+}
+
+.emote-select-option,
+.emote-select-empty {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--emote-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: left;
+    white-space: normal;
+}
+
+.emote-select-option {
+    cursor: pointer;
+}
+
+.emote-select-option:hover:not(:disabled),
+.emote-select-option:focus-visible,
+.emote-select-option.is-selected {
+    outline: none;
+    background: linear-gradient(135deg, rgba(64, 197, 241, 0.2), rgba(64, 197, 241, 0.08));
+    color: #137ee8;
+}
+
+.emote-select-option:disabled,
+.emote-select-empty {
+    color: #8bbfd0;
+    cursor: default;
+}
+
+[data-theme="dark"] .emote-select-trigger {
+    border-color: #2a527a;
+    background: #1b3b58;
+    color: #d7e6f5;
+}
+
+[data-theme="dark"] .emote-select-trigger:hover:not(:disabled),
+[data-theme="dark"] .emote-select-trigger:focus-visible {
+    border-color: var(--emote-accent);
+}
+
+[data-theme="dark"] .emote-select-menu {
+    border-color: #2a527a;
+    background: #16324a;
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .emote-select-option {
+    color: #d7e6f5;
+}
+
+[data-theme="dark"] .emote-select-option:hover:not(:disabled),
+[data-theme="dark"] .emote-select-option:focus-visible,
+[data-theme="dark"] .emote-select-option.is-selected {
+    background: rgba(36, 170, 244, 0.22);
+    color: #9ad8ff;
 }
 
 

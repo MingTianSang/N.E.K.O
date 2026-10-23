@@ -239,3 +239,48 @@ test('缺少注入就立刻报错，不要跑到一半才崩', async () => {
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), zip: async () => 'x' }), /produce/);
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), produce: async () => new Uint8Array([1]) }), /zip/);
 });
+
+test('写进目录时不把字节留到最后，压缩只拿到文件名', async () => {
+    const stored = [];
+    let zipped = null;
+    let memoryZip = 0;
+    const result = await groups.runGroupExport({
+        plan: plan([
+            { kind: 'scene', name: '甲', ext: 'gif' },
+            { kind: 'scene', name: '乙', ext: 'gif' },
+        ]),
+        produce: async () => new Uint8Array([4, 5]),
+        store: async (file) => {
+            stored.push({ path: file.path, length: file.data.length });
+        },
+        zipStored: async (names) => { zipped = names; return null; },
+        zip: async () => { memoryZip += 1; return 'nope'; },
+    });
+    assert.deepEqual(stored.map((file) => file.path), ['01_甲.gif', '02_乙.gif']);
+    assert.deepEqual(stored.map((file) => file.length), [2, 2]);
+    assert.equal(result.files.length, 0, '字节不该再留在内存清单里');
+    assert.deepEqual(zipped, ['01_甲.gif', '02_乙.gif']);
+    assert.equal(memoryZip, 0);
+    assert.equal(result.savedToFolder, true);
+    assert.equal(result.blob, null);
+});
+
+test('写到一半停下时，已经落盘的那些仍然打包', async () => {
+    let abort = false;
+    const stored = [];
+    let zipped = null;
+    const result = await groups.runGroupExport({
+        plan: plan(Array.from({ length: 4 }, (unused, index) => ({ kind: 'scene', name: `s${index}`, ext: 'png' }))),
+        produce: async (item) => {
+            if (stored.length === 1) abort = true;
+            return new Uint8Array([item.name.length]);
+        },
+        store: async (file) => { stored.push(file.path); },
+        zipStored: async (names) => { zipped = names; },
+        shouldAbort: () => abort,
+    });
+    assert.equal(result.aborted, true);
+    assert.deepEqual(stored, ['01_s0.png', '02_s1.png']);
+    assert.deepEqual(zipped, stored);
+    assert.equal(result.done, 2);
+});
