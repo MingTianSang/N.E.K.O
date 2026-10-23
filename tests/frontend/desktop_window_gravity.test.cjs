@@ -602,6 +602,21 @@ test('raising the covered window takes a cat that sits in both', () => {
   assert.equal(r.state().windowKey, front.key, 'raising the other window takes the cat back');
 });
 
+test('a window raised during a stationary press becomes the owner on release', () => {
+  const r = runtime();
+  const covered = sceneWindow(1, { x: 180, y: 140, width: 640, height: 640 });
+  const front = sceneWindow(2, { x: 160, y: 80, width: 680, height: 560 });
+  r.sample(front.rect, { windows: [front, covered] });
+  r.settle();
+  assert.equal(r.state().windowKey, front.key);
+  r.drag('return-ball-drag-start');
+  r.sample(covered.rect, { windows: [covered, front] });
+  assert.equal(r.state().windowKey, front.key, 'a held cat keeps the window it was resting on');
+  r.drag('return-ball-drag-end');
+  assert.equal(r.state().windowKey, covered.key, 'release adopts the window raised during the press');
+  contained(r.state());
+});
+
 test('visible foreground borders act as platforms, while occluded borders cannot catch a cat', () => {
   const outer = sceneWindow(1, { x: 0, y: 0, width: 1200, height: 900 });
   const platform = sceneWindow(2, { x: 200, y: 450, width: 600, height: 120 });
@@ -1048,6 +1063,22 @@ test('minimizing the window under a desktop cat releases the invisible floor', (
   assert.equal(body.grounded, false, 'losing that window must resume the fall');
   assert.equal(body.y, 278);
   assert.equal(r.state().phase, 'idle');
+});
+
+test('an invalid sensing result releases a desktop cat resting on a window', () => {
+  const r = runtime();
+  const body = attachPlaygroundBody(r, {
+    x: 300, y: 278, vx: 0, vy: 0, grounded: true, floorY: 778,
+    width: 122, height: 122,
+    visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+  });
+  const support = sceneWindow(1, { x: 200, y: 400, width: 400, height: 200 });
+  r.rawSample(support.rect, { windows: [support] });
+  assert.equal(body.grounded, true);
+  assert.equal(r.state().phase, 'idle');
+  r.rawSample(undefined, { status: 'unavailable', reason: 'read-failed' });
+  assert.equal(body.grounded, false, 'a failed scene read must resume the fall');
+  assert.equal(body.y, 278);
 });
 
 test('a cat already on the desktop floor stays grounded when every window disappears', () => {

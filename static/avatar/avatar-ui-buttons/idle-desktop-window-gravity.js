@@ -752,6 +752,7 @@
             if (result && result.sessionId) sceneUnavailable = true;
             clearPendingAdmission();
             cancel(null);
+            releaseUnsupportedDesktopCats();
             return false;
         }
         if (pendingRead) {
@@ -794,6 +795,7 @@
             latest = null;
             clearPendingAdmission();
             cancel(null);
+            releaseUnsupportedDesktopCats();
             return false;
         }
         const previousScene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : null;
@@ -825,6 +827,23 @@
         // the throw at pointer release, not when that asynchronous work finishes.
         const releasedAt = Number.isFinite(detail.releasedAt) ? detail.releasedAt : Date.now();
         return _getNekoIdleDragReleaseVelocity(drag, releasedAt, false);
+    }
+
+    function reconcilePausedOwner(state) {
+        if (!state || !Array.isArray(state.scene)) return false;
+        const body = getBody(state.button);
+        const probe = body && !body.dragging ? { ...state, x: body.x, y: body.y } : state;
+        const front = containerAt(state.scene, probe, state.size);
+        if (!front || front.target.key === state.windowKey) return false;
+        state.windowKey = front.target.key;
+        state.bounds = front.bounds;
+        state.borders = buildBorders(state.scene, state.windowKey);
+        if (body && !body.dragging) {
+            body.floorY = state.bounds.bottom;
+            body.wallLeft = state.bounds.left;
+            body.wallRight = state.bounds.right;
+        }
+        return true;
     }
 
     function handleManualMove(event) {
@@ -860,6 +879,9 @@
             if (velocity && !getBody(state.button)) {
                 Object.assign(state, velocity, { grounded: false });
             }
+            // A window raised while the press froze owner selection is already
+            // in the committed scene. Adopt it before the next sample arrives.
+            reconcilePausedOwner(state);
             // Also reconcile a box moved during a stationary press, without
             // treating the accumulated displacement as a shake.
             collide(state);
@@ -1119,7 +1141,10 @@
         } else if (options.admit !== true) {
             if (pendingAdmission && pendingAdmission.body === body) clearPendingAdmission(false);
         }
-        if (current && current.button === button) current.lastStepAt = now();
+        if (current && current.button === button) {
+            current.lastStepAt = now();
+            reconcilePausedOwner(current);
+        }
         return syncBody(body);
     }
 
