@@ -630,9 +630,10 @@ function _applyNekoIdleCat1PlaygroundWorkArea(workArea) {
     }
     const bottom = Math.min(windowBottom, workArea.bottom);
     const right = Math.min(windowRight, workArea.right);
+    const left = Number.isFinite(workArea.left) ? Math.max(0, workArea.left) : 0;
     _nekoIdleCat1PlaygroundViewportBottomPx = bottom > 0 ? bottom : windowBottom;
-    _nekoIdleCat1PlaygroundViewportLeftPx = Number.isFinite(workArea.left) ? workArea.left : 0;
-    _nekoIdleCat1PlaygroundViewportRightPx = right > _nekoIdleCat1PlaygroundViewportLeftPx ? right : windowRight;
+    _nekoIdleCat1PlaygroundViewportLeftPx = left;
+    _nekoIdleCat1PlaygroundViewportRightPx = right > left ? right : windowRight;
     return _nekoIdleCat1PlaygroundViewportBottomPx;
 }
 
@@ -648,7 +649,7 @@ function _reclampActiveNekoIdleCat1PlaygroundBodies() {
     });
 }
 
-function _refreshNekoIdleCat1PlaygroundViewportBottom() {
+function _refreshNekoIdleCat1PlaygroundViewportBottom(attempt = 0) {
     const electronScreen = window.electronScreen;
     if (!electronScreen || typeof electronScreen.getDesktopCoordinateSnapshot !== 'function') {
         _clearNekoIdleCat1PlaygroundWorkArea();
@@ -663,6 +664,16 @@ function _refreshNekoIdleCat1PlaygroundViewportBottom() {
             }
             if (Number(snapshot && snapshot.version) !== 2) {
                 _clearNekoIdleCat1PlaygroundWorkArea();
+                return _getNekoIdleCat1PlaygroundViewportBottomPx();
+            }
+            if (snapshot.window && snapshot.window.settled === false && attempt < 8) {
+                return new Promise((resolve) => {
+                    setTimeout(() => {
+                        resolve(_refreshNekoIdleCat1PlaygroundViewportBottom(attempt + 1));
+                    }, 50);
+                });
+            }
+            if (snapshot.window && snapshot.window.settled === false) {
                 return _getNekoIdleCat1PlaygroundViewportBottomPx();
             }
             const viewportBottom = _applyNekoIdleCat1PlaygroundWorkArea(_readNekoIdleCat1PlaygroundWorkArea(snapshot));
@@ -976,14 +987,18 @@ function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
 function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
     if (!body) return;
     const wasGrounded = !!body.grounded;
+    const previousFloor = Number(body.floorY);
     _updateNekoIdleCat1PlaygroundBodyBounds(body);
     body.x = Math.max(body.wallLeft, Math.min(body.x, body.wallRight));
-    if (wasGrounded) {
+    if (body.y > body.floorY) {
         body.y = body.floorY;
         body.vy = 0;
         body.grounded = true;
-    } else {
-        body.y = Math.min(body.y, body.floorY);
+    } else if (wasGrounded && Number.isFinite(previousFloor)
+        && Math.abs(body.y - previousFloor) <= 0.5
+        && body.floorY > previousFloor + 0.5) {
+        body.grounded = false;
+    } else if (!wasGrounded) {
         body.grounded = body.y >= body.floorY - 0.5;
     }
     _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });
@@ -1276,8 +1291,13 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                     body.y = body.floorY;
                     const reduceMotion = window.matchMedia
                         && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-                    if (!reduceMotion && body.vy > _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC) {
-                        body.vy = -body.vy * _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION;
+                    const wasAirborne = !body.grounded;
+                    const bouncedVy = -body.vy * _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION;
+                    const nextRise = bouncedVy * dt + 0.5 * state.gravityPxPerSecond2 * dt * dt;
+                    if (wasAirborne && !reduceMotion
+                        && body.vy > _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC
+                        && nextRise < 0) {
+                        body.vy = bouncedVy;
                         body.grounded = false;
                     } else {
                         body.vy = 0;

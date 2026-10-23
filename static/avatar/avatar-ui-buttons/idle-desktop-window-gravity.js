@@ -27,6 +27,7 @@
     const insets = Object.freeze({ left: 89 / 512, top: 49 / 512, right: 118 / 512, bottom: 19 / 512 });
     let current = null;
     let latest = null;
+    let lastFreeDesktopSceneAt = 0;
     // Only an explicit pointer release may hand the cat to a window.
     // A held drag is free, while a throw and a fresh native scene must never
     // claim a stationary cat.
@@ -715,7 +716,7 @@
         const previousScene = state.scene;
         state.scene = scene;
         state.sceneSignature = signature;
-        if (sceneChanged) state.borders = buildBorders(scene, state.windowKey);
+        if (sceneChanged || ownerChanged) state.borders = buildBorders(scene, state.windowKey);
         if (paused(state)) return;
         if (!geometryChanged && !sceneChanged) return;
         const walls = {};
@@ -1086,11 +1087,14 @@
     function collideFreeDesktopCats(previousScene) {
         if (!playgroundActive || current || typeof document === 'undefined'
             || typeof document.querySelectorAll !== 'function') return;
+        const sampleAt = now();
+        const elapsed = lastFreeDesktopSceneAt > 0 ? (sampleAt - lastFreeDesktopSceneAt) / 1000 : 0;
+        lastFreeDesktopSceneAt = sampleAt;
         document.querySelectorAll('.neko-idle-return-btn').forEach((button) => {
             const body = getBody(button);
             if (!body || body.dragging) return;
             const before = { x: body.x, y: body.y };
-            if (!collideDesktopBody(button, body, 1 / 60, before, previousScene)) return;
+            if (!collideDesktopBody(button, body, elapsed, before, previousScene)) return;
             if (typeof _setNekoIdleCat1PlaygroundBodyPosition === 'function') {
                 _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: true });
             }
