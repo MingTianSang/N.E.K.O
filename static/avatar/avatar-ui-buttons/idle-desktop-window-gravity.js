@@ -594,10 +594,11 @@
         return true;
     }
 
-    function containerAt(scene, state) {
+    function containerAt(scene, state, size = null) {
+        const measured = size || state.size;
         for (const target of scene) {
             if (target.collisionOnly === true) continue;
-            const bounds = boundsFor(target.rect, state.size, getBody(state.button));
+            const bounds = boundsFor(target.rect, measured, getBody(state.button));
             if (!contains(bounds, state)) continue;
             return { target, bounds };
         }
@@ -669,7 +670,7 @@
         const size = rect(state.container.getBoundingClientRect());
         // Scene order is front to back. A window raised over the cat becomes
         // the container; the buried window must not keep the floor.
-        const front = paused(state) ? null : containerAt(scene, state);
+        const front = paused(state) ? null : containerAt(scene, state, size);
         const ownerChanged = !!(front && front.target.key !== state.windowKey);
         if (ownerChanged) {
             target = front.target;

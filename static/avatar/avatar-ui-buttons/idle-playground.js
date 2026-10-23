@@ -629,11 +629,15 @@ function _applyNekoIdleCat1PlaygroundWorkArea(workArea) {
         return _getNekoIdleCat1PlaygroundViewportBottomPx();
     }
     const bottom = Math.min(windowBottom, workArea.bottom);
-    const right = Math.min(windowRight, workArea.right);
-    const left = Number.isFinite(workArea.left) ? Math.max(0, workArea.left) : 0;
+    let left = Number.isFinite(workArea.left) ? Math.max(0, workArea.left) : 0;
+    let right = Number.isFinite(workArea.right) ? Math.min(windowRight, workArea.right) : windowRight;
+    if (!(right > left)) {
+        left = 0;
+        right = windowRight;
+    }
     _nekoIdleCat1PlaygroundViewportBottomPx = bottom > 0 ? bottom : windowBottom;
     _nekoIdleCat1PlaygroundViewportLeftPx = left;
-    _nekoIdleCat1PlaygroundViewportRightPx = right > left ? right : windowRight;
+    _nekoIdleCat1PlaygroundViewportRightPx = right;
     return _nekoIdleCat1PlaygroundViewportBottomPx;
 }
 
@@ -649,7 +653,11 @@ function _reclampActiveNekoIdleCat1PlaygroundBodies() {
     });
 }
 
-function _refreshNekoIdleCat1PlaygroundViewportBottom(attempt = 0) {
+function _refreshNekoIdleCat1PlaygroundViewportBottom() {
+    return _requestNekoIdleCat1PlaygroundViewportBottom(0);
+}
+
+function _requestNekoIdleCat1PlaygroundViewportBottom(attempt) {
     const electronScreen = window.electronScreen;
     if (!electronScreen || typeof electronScreen.getDesktopCoordinateSnapshot !== 'function') {
         _clearNekoIdleCat1PlaygroundWorkArea();
@@ -669,7 +677,7 @@ function _refreshNekoIdleCat1PlaygroundViewportBottom(attempt = 0) {
             if (snapshot.window && snapshot.window.settled === false && attempt < 8) {
                 return new Promise((resolve) => {
                     setTimeout(() => {
-                        resolve(_refreshNekoIdleCat1PlaygroundViewportBottom(attempt + 1));
+                        resolve(_requestNekoIdleCat1PlaygroundViewportBottom(attempt + 1));
                     }, 50);
                 });
             }
@@ -1794,7 +1802,7 @@ function _installNekoIdleCat1PlaygroundPointerListeners(button) {
     });
     bind(window, 'resize', () => {
         if (!_isNekoIdleCat1PlaygroundDropActive(button)) return;
-        _refreshNekoIdleCat1PlaygroundViewportBottom(button);
+        _refreshNekoIdleCat1PlaygroundViewportBottom();
         state.bodies.forEach(_reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange);
         _startNekoIdleCat1PlaygroundPhysics(button);
     });
@@ -1922,7 +1930,7 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
         return false;
     }
     _installNekoIdleCat1PlaygroundPointerListeners(button);
-    _refreshNekoIdleCat1PlaygroundViewportBottom(button);
+    _refreshNekoIdleCat1PlaygroundViewportBottom();
     _startNekoIdleCat1PlaygroundPhysics(button);
     return true;
 }
