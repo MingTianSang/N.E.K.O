@@ -286,3 +286,36 @@ test('取请求头期间开始输入则取消语音搭话', async () => {
     assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
     assert.ok(pet.scheduledDelay() !== null);
 });
+
+test('输入取消屏幕搭话时不消耗视觉冷却', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    const releaseHeaders = holdMutationHeaders(pet);
+    pet.window.proactiveVisionEnabled = true;
+    pet.window.appScreen = {
+        acquireOrReuseCachedStream: async () => null,
+        fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),
+    };
+    pet.appState.proactiveNewsChatEnabled = false;
+    pet.appState.proactiveVisionChatEnabled = true;
+    pet.appState.proactiveVisionInterval = 120;
+    pet.appState._lastProactiveChatScreenTime = 0;
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    const pending = pet.fire();
+    for (let i = 0; i < 20 && typeof releaseHeaders() !== 'function'; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(typeof releaseHeaders(), 'function');
+    assert.notEqual(pet.appState._lastProactiveChatScreenTime, 0, '截图准备期间会先占上冷却');
+    pet.document.activeElement = pet.input;
+    pet.emit('input', pet.input);
+    releaseHeaders()();
+    await pending;
+    assert.equal(pet.fetches.filter((url) => url === '/api/proactive_chat').length, 0);
+    assert.equal(pet.appState._lastProactiveChatScreenTime, 0, '请求没发出去，视觉冷却要还回去');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+});

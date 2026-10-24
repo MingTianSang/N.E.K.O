@@ -1173,6 +1173,7 @@
 
     async function triggerProactiveChat() {
         var requestSent = false;
+        var proactiveScreenTimeBeforeInputCancel = null;
         try {
             // Capture before any await: clearing chat or switching character retires
             // this response's card offers even when its dialogue already committed.
@@ -1525,8 +1526,10 @@
                     return;
                 }
 
-                // 更新屏幕感知时间戳（仅当 vision/window 实际保留时才消耗冷却）
+                // 先占上冷却，避免截图还在飞时下一轮又抓一帧。若请求最终没发出
+                // （例如取请求头期间用户开始输入），下面会把这个时间戳还回去。
                 if (availableModes.includes('vision') || availableModes.includes('window')) {
+                    proactiveScreenTimeBeforeInputCancel = S._lastProactiveChatScreenTime || 0;
                     S._lastProactiveChatScreenTime = Date.now();
                 }
             }
@@ -1587,6 +1590,9 @@
 
             var response = await _sendProactive();
             if (!response) {
+                if (proactiveScreenTimeBeforeInputCancel !== null) {
+                    S._lastProactiveChatScreenTime = proactiveScreenTimeBeforeInputCancel;
+                }
                 console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
                 return false;
             }
