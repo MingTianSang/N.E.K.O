@@ -85,17 +85,27 @@ function _handleNekoIdleCat1GravityCatActiveChange(event) {
     });
 }
 
+function _scheduleNekoIdleCat1GravityEntryRecheck() {
+    // The visual-tier listener in this file runs before the presentation
+    // bridge writes data-neko-idle-tier. Recheck on the next frame so a
+    // return from sleep sees the restored CAT1 button.
+    const schedule = typeof window.requestAnimationFrame === 'function'
+        ? window.requestAnimationFrame
+        : (callback) => window.setTimeout(callback, 0);
+    schedule(() => {
+        if (!_isNekoIdleCat1GravityCatEnabled()) return;
+        if (_getNekoGoodbyeIdleAppearance() !== 'cat') return;
+        _requestNekoIdleCat1GravityEntry('gravity-cat-auto-entry');
+    });
+}
+
 function _handleNekoIdleCat1GravityCatTierChange(event) {
     const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
     if (detail.type !== 'visual-tier') return;
     const tier = typeof detail.tier === 'string' ? detail.tier : '';
     if (tier) _nekoIdleCat1GravityCurrentTier = tier;
-    if (_isNekoIdleCat1GravityCatEnabled()
-        && _nekoIdleCat1GravityCurrentActive
-        && _nekoIdleCat1GravityCurrentAppearance === 'cat'
-        && _nekoIdleCat1GravityCurrentTier === _NEKO_IDLE_TIER_CAT1) {
-        _requestNekoIdleCat1GravityEntry('gravity-cat-auto-entry');
-    }
+    if (tier !== _NEKO_IDLE_TIER_CAT1 || !_isNekoIdleCat1GravityCatEnabled()) return;
+    _scheduleNekoIdleCat1GravityEntryRecheck();
 }
 
 function _getNekoIdleCat1PlaygroundDropState(button) {

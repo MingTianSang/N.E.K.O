@@ -699,6 +699,26 @@ test('gravity preference on an ordinary model waits for active CAT1 and ignores 
   assert.equal(entries.length, 1, 'queued activation must recheck the saved preference');
 });
 
+test('waking from sleep restores gravity after the tier attribute is written', () => {
+  const r = runtime();
+  const { api, entries } = installPlaygroundSetting(r);
+  api.setGravityCatEnabled(true);
+  assert.equal(entries.length, 1);
+  r.button.setAttribute('data-neko-idle-tier', 'cat3');
+  r.emit('neko:auto-goodbye:state-change', { type: 'visual-tier', tier: 'cat3' });
+  r.frame();
+  assert.equal(entries.length, 1, 'sleep must not start another drop');
+  r.emit('neko:auto-goodbye:state-change', { type: 'visual-tier', tier: 'cat1' });
+  r.button.setAttribute('data-neko-idle-tier', 'cat1');
+  r.frame();
+  assert.equal(entries.length, 2, 'waking must re-enter even without a cached active event');
+  assert.equal(entries[1].detail.source, 'gravity-cat-auto-entry');
+  api.setGravityCatEnabled(false);
+  r.emit('neko:auto-goodbye:state-change', { type: 'visual-tier', tier: 'cat1' });
+  r.frame();
+  assert.equal(entries.length, 2, 'a wake queued after OFF must not enter');
+});
+
 test('CAT2/CAT3 and hidden CAT1 cannot be entered by the manual gravity setting', () => {
   for (const tier of ['cat2', 'cat3']) {
     const r = runtime();
