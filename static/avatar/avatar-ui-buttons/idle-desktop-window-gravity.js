@@ -37,6 +37,7 @@
     let disposed = false;
     let removalObserver = null;
     let dragMotions = new WeakMap();
+    let cachedBorders = null;
     // A stationary press sets body.dragging, so a window that disappears during
     // the press cannot drop the cat until the pointer is released.
     let lostDesktopSupport = new WeakSet();
@@ -133,6 +134,9 @@
     }
 
     function buildBorders(scene, ownerKey) {
+        const origin = screenOrigin();
+        const cacheKey = `${ownerKey == null ? '\0' : ownerKey}|${origin.x},${origin.y}|${window.innerWidth},${window.innerHeight}|${sceneSignature(scene)}`;
+        if (cachedBorders && cachedBorders.key === cacheKey) return cachedBorders.borders;
         const borders = [];
         const windows = scene.map(item => ({ ...item, rect: localRect(item.rect) }));
         windows.forEach((item, index) => {
@@ -165,6 +169,7 @@
                 }
             }
         });
+        cachedBorders = { key: cacheKey, borders };
         return borders;
     }
 
