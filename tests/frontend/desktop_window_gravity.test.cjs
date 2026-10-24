@@ -1065,6 +1065,57 @@ test('minimizing the window under a desktop cat releases the invisible floor', (
   assert.equal(r.state().phase, 'idle');
 });
 
+test('releasing a stationary press drops a desktop cat whose window vanished', () => {
+  const r = runtime();
+  const body = attachPlaygroundBody(r, {
+    x: 300, y: 278, vx: 0, vy: 0, grounded: true, floorY: 778, dragging: true,
+    width: 122, height: 122,
+    visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+  });
+  const support = sceneWindow(1, { x: 200, y: 400, width: 400, height: 200 });
+  r.rawSample(support.rect, { windows: [support] });
+  r.rawSample(undefined, { status: 'unavailable', reason: 'read-failed' });
+  assert.equal(body.grounded, true, 'a held cat keeps its pose until release');
+  assert.equal(body.y, 278);
+  body.dragging = false;
+  r.window.NekoDesktopWindowGravity.releaseBody(r.button, body, { admit: false });
+  assert.equal(body.grounded, false, 'release resumes the fall from the vanished edge');
+  assert.equal(body.y, 278);
+});
+
+test('a busy sample during a stationary press keeps the desktop cat grounded', () => {
+  const r = runtime();
+  const body = attachPlaygroundBody(r, {
+    x: 300, y: 278, vx: 0, vy: 0, grounded: true, floorY: 778, dragging: true,
+    width: 122, height: 122,
+    visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+  });
+  const support = sceneWindow(1, { x: 200, y: 400, width: 400, height: 200 });
+  r.rawSample(support.rect, { windows: [support] });
+  r.rawSample(undefined, { status: 'pending', reason: 'busy' });
+  body.dragging = false;
+  r.window.NekoDesktopWindowGravity.releaseBody(r.button, body, { admit: false });
+  assert.equal(body.grounded, true);
+  assert.equal(body.y, 278);
+});
+
+test('a window that returns before the press ends keeps the desktop cat grounded', () => {
+  const r = runtime();
+  const body = attachPlaygroundBody(r, {
+    x: 300, y: 278, vx: 0, vy: 0, grounded: true, floorY: 778, dragging: true,
+    width: 122, height: 122,
+    visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+  });
+  const support = sceneWindow(1, { x: 200, y: 400, width: 400, height: 200 });
+  r.rawSample(support.rect, { windows: [support] });
+  r.rawSample(undefined, { status: 'unavailable', reason: 'read-failed' });
+  r.rawSample(support.rect, { windows: [support] });
+  body.dragging = false;
+  r.window.NekoDesktopWindowGravity.releaseBody(r.button, body, { admit: false });
+  assert.equal(body.grounded, true);
+  assert.equal(body.y, 278);
+});
+
 test('an invalid sensing result releases a desktop cat resting on a window', () => {
   const r = runtime();
   const body = attachPlaygroundBody(r, {
@@ -1888,6 +1939,31 @@ test('playground uses one gravity clock, preserves body impulses and shares movi
   r.sample(); r.advance(200); r.sample({ x: 200, y: 20, width: 600, height: 650 });
   assert.ok(body.vy < -400); assert.equal(body.vy, r.state().vy);
   contained(r.state());
+});
+
+test('a ceiling that passes a grounded desktop cat clears the stale landing', () => {
+  const r = runtime();
+  const body = {
+    id: 'cat', x: 300, y: 40, vx: 0, vy: 0, grounded: true,
+    width: 122, height: 122, floorY: 778, ceilingY: 0, wallLeft: 0, wallRight: 400,
+  };
+  Object.assign(r.context, {
+    _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx: () => ({ left: 0, right: 0, top: 0, bottom: 0 }),
+    _getNekoIdleCat1PlaygroundViewportBottomPx: () => 900,
+    _getNekoIdleCat1PlaygroundViewportTopPx: () => 120,
+    _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
+    _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
+    _setNekoIdleCat1PlaygroundBodyPosition: () => {},
+  });
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  for (const name of ['_updateNekoIdleCat1PlaygroundBodyBounds', '_reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange']) {
+    const start = source.indexOf(`function ${name}(`);
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+  }
+  r.context._reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body);
+  assert.equal(body.y, 120);
+  assert.equal(body.vy, 0);
+  assert.equal(body.grounded, false);
 });
 
 test('a desktop landing bounces, and a soft or reduced-motion landing settles', () => {

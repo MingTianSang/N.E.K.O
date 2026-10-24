@@ -37,6 +37,9 @@
     let disposed = false;
     let removalObserver = null;
     let dragMotions = new WeakMap();
+    // A stationary press sets body.dragging, so a window that disappears during
+    // the press cannot drop the cat until the pointer is released.
+    let lostDesktopSupport = new WeakSet();
 
     function now() {
         return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -1114,15 +1117,42 @@
         const scene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : [];
         document.querySelectorAll('.neko-idle-return-btn').forEach((button) => {
             const body = getBody(button);
-            if (!body || body.dragging || !body.grounded) return;
-            const floor = Number(body.floorY);
-            if (!Number.isFinite(floor) || body.y >= floor - CONTACT_EPSILON) return;
-            if (supportedByScene(body, scene)) return;
-            body.grounded = false;
-            if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
-                _startNekoIdleCat1PlaygroundPhysics(button);
-            }
+            if (!body || !body.grounded) return;
+            releaseUnsupportedDesktopCat(button, body, scene);
         });
+    }
+
+    function releaseUnsupportedDesktopCat(button, body, scene) {
+        const floor = Number(body.floorY);
+        const unsupported = Number.isFinite(floor) && body.y < floor - CONTACT_EPSILON
+            && !supportedByScene(body, scene);
+        if (!unsupported) {
+            lostDesktopSupport.delete(body);
+            return;
+        }
+        if (body.dragging) {
+            lostDesktopSupport.add(body);
+            return;
+        }
+        lostDesktopSupport.delete(body);
+        body.grounded = false;
+        if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+            _startNekoIdleCat1PlaygroundPhysics(button);
+        }
+    }
+
+    function releaseDeferredDesktopSupport(button, body) {
+        if (!body || body.dragging || !lostDesktopSupport.has(body)) return;
+        lostDesktopSupport.delete(body);
+        if (!body.grounded) return;
+        const scene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : [];
+        const floor = Number(body.floorY);
+        if (!Number.isFinite(floor) || body.y >= floor - CONTACT_EPSILON) return;
+        if (supportedByScene(body, scene)) return;
+        body.grounded = false;
+        if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+            _startNekoIdleCat1PlaygroundPhysics(button);
+        }
     }
 
     function collideFreeDesktopCats(previousScene) {
@@ -1162,6 +1192,8 @@
         if (current && current.button === button) {
             current.lastStepAt = now();
             reconcilePausedOwner(current);
+        } else if (!current) {
+            releaseDeferredDesktopSupport(button, body);
         }
         return syncBody(body);
     }

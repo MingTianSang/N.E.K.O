@@ -1012,6 +1012,7 @@ function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
     if (Number.isFinite(body.ceilingY) && body.y < body.ceilingY) {
         body.y = body.ceilingY;
         body.vy = 0;
+        if (body.y < body.floorY - 0.5) body.grounded = false;
     }
     if (body.y > body.floorY) {
         body.y = body.floorY;
