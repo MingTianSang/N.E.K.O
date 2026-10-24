@@ -2130,6 +2130,58 @@ test('Playground window closure ends at the desktop floor and cannot admit a lat
   assert.equal(r.state().phase, 'idle', 'scene alone cannot restart the ended owner');
 });
 
+test('closing the last window keeps the work-area ceiling and side edges', () => {
+  const r = runtime();
+  attachPlaygroundBody(r, {
+    width: 122, height: 122, vy: -400,
+    visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+  });
+  r.context._getNekoIdleCat1PlaygroundViewportTopPx = () => 48;
+  r.context._getNekoIdleCat1PlaygroundViewportBottomPx = () => 860;
+  r.context._getNekoIdleCat1PlaygroundViewportLeftPx = () => 12;
+  r.context._getNekoIdleCat1PlaygroundViewportRightPx = () => 1100;
+  r.sample();
+  r.rawSample(undefined, { status: 'unavailable', reason: 'no-window' });
+  assert.equal(r.state().bounds.top, 48);
+  assert.equal(r.state().bounds.left, 12);
+  assert.equal(r.state().bounds.right, 1100 - 122);
+  assert.equal(r.state().bounds.bottom, 860 - 122);
+});
+
+test('a lateral work-area clamp drops a cat that lost its window edge', () => {
+  function reclamped(windowRect, startX, left) {
+    const r = runtime();
+    const body = attachPlaygroundBody(r, {
+      x: startX, y: 278, vx: 0, vy: 0, grounded: true, floorY: 778,
+      width: 122, height: 122,
+      visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
+    });
+    r.rawSample(windowRect, { windows: [sceneWindow(1, windowRect)] });
+    Object.assign(r.context, {
+      _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx: () => ({ left: 0, right: 0, top: 0, bottom: 0 }),
+      _getNekoIdleCat1PlaygroundViewportBottomPx: () => 900,
+      _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
+      _getNekoIdleCat1PlaygroundViewportLeftPx: () => left,
+      _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
+      _setNekoIdleCat1PlaygroundBodyPosition: () => {},
+    });
+    const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+    for (const name of ['_updateNekoIdleCat1PlaygroundBodyBounds', '_reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange']) {
+      const start = source.indexOf(`function ${name}(`);
+      vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+    }
+    r.context._reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body);
+    return body;
+  }
+  const dropped = reclamped({ x: 200, y: 400, width: 150, height: 80 }, 200, 400);
+  assert.equal(dropped.x, 400);
+  assert.equal(dropped.y, 278);
+  assert.equal(dropped.grounded, false);
+  const held = reclamped({ x: 0, y: 400, width: 1200, height: 80 }, 0, 20);
+  assert.equal(held.x, 20);
+  assert.equal(held.grounded, true);
+});
+
 test('Playground closure lands at its work-area floor without a jump on handoff', () => {
   for (const floorHeight of [860, 780]) {
     const r = runtime();

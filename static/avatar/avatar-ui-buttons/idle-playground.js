@@ -1008,7 +1008,9 @@ function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
     const wasGrounded = !!body.grounded;
     const previousFloor = Number(body.floorY);
     _updateNekoIdleCat1PlaygroundBodyBounds(body);
+    const previousX = body.x;
     body.x = Math.max(body.wallLeft, Math.min(body.x, body.wallRight));
+    const shiftedLaterally = Math.abs(body.x - previousX) > 0.5;
     if (Number.isFinite(body.ceilingY) && body.y < body.ceilingY) {
         body.y = body.ceilingY;
         body.vy = 0;
@@ -1024,6 +1026,10 @@ function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
         body.grounded = false;
     } else if (!wasGrounded) {
         body.grounded = body.y >= body.floorY - 0.5;
+    }
+    const supported = body.id === 'cat' ? window.NekoDesktopWindowGravity?.isDesktopSupported?.(body) : null;
+    if (shiftedLaterally && wasGrounded && body.y < body.floorY - 0.5 && supported === false) {
+        body.grounded = false;
     }
     _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });
 }

@@ -330,6 +330,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     )
     assert "const wasGrounded = !!body.grounded;" in reclamp_block
     assert "if (body.y < body.floorY - 0.5) body.grounded = false;" in reclamp_block
+    assert "isDesktopSupported" in reclamp_block
     assert "body.y = body.floorY;" in reclamp_block
     assert "_setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });" in reclamp_block
     assert "getImageData" not in source

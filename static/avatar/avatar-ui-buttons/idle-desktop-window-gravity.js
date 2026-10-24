@@ -629,9 +629,20 @@
         const size = rect(state.container.getBoundingClientRect());
         const origin = screenOrigin();
         const body = getBody(state.button);
-        const floorHeight = body && typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
+        const workTop = typeof _getNekoIdleCat1PlaygroundViewportTopPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportTopPx() : 0;
+        const workBottom = typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
             ? _getNekoIdleCat1PlaygroundViewportBottomPx() : window.innerHeight;
-        const bounds = boundsFor({ ...origin, width: window.innerWidth, height: floorHeight }, size, body);
+        const workLeft = typeof _getNekoIdleCat1PlaygroundViewportLeftPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportLeftPx() : 0;
+        const workRight = typeof _getNekoIdleCat1PlaygroundViewportRightPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportRightPx() : window.innerWidth;
+        const bounds = boundsFor({
+            x: origin.x + workLeft,
+            y: origin.y + workTop,
+            width: Math.max(0, workRight - workLeft),
+            height: Math.max(0, workBottom - workTop),
+        }, size, body, origin);
         if (!bounds) { cancel(state.button); return; }
         const scene = sceneFor(result);
         const signature = sceneSignature(scene);
@@ -1202,6 +1213,11 @@
         return current && current.container === container ? { ...current.bounds } : null;
     }
 
+    function isDesktopSupported(body) {
+        if (!body || !latest || !Array.isArray(latest.windows)) return null;
+        return supportedByScene(body, sceneFor(latest));
+    }
+
     function isActive(button) {
         return !!(current && (!button || current.button === button));
     }
@@ -1219,7 +1235,7 @@
 
     window.NekoDesktopWindowGravity = Object.freeze({
         isActive, isMoving, cancel, getState, applyPosition, constrainTarget, stepBody, syncBody, releaseBody, dragBody, getBounds,
-        collideDesktopBody,
+        collideDesktopBody, isDesktopSupported,
         requestAdmission,
         canWalk, usesContinuousDrag,
         createDragSampleSession: _createNekoIdleDragSampleSession,
