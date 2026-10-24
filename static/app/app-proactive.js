@@ -478,6 +478,10 @@
         scheduleProactiveChat();
     }
 
+    function _inputSlowdownStillBlocksSend() {
+        return _chatInputSlowdownUntil - Date.now() > PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS;
+    }
+
     function _deferProactiveChatForInputSlowdown(label, retry) {
         const remaining = _chatInputSlowdownUntil - Date.now();
         if (remaining <= PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS) {
@@ -1234,6 +1238,10 @@
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
+                    // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                    if (_inputSlowdownStillBlocksSend()) {
+                        return null;
+                    }
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1242,6 +1250,10 @@
                 }
 
                 var resp = await _sendVoiceProactive();
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
+                }
 
                 // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
                 // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
@@ -1255,6 +1267,10 @@
                         await voiceProactiveSec.refreshToken();
                         resp = await _sendVoiceProactive();
                     } catch (_) { /* fall through to 403 handling below */ }
+                }
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
                 }
 
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1553,6 +1569,10 @@
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
+                // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                if (_inputSlowdownStillBlocksSend()) {
+                    return null;
+                }
                 // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
                 if (discardVisionRevokedSince(requestBody, visionRevocationSeqAtCapture)) {
                     console.log('截图后视觉授权被撤回过，本次请求不带截图和窗口信息');
@@ -1566,6 +1586,10 @@
             }
 
             var response = await _sendProactive();
+            if (!response) {
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
+            }
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1579,6 +1603,10 @@
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
                 } catch (_) { /* fall through to 403 handling below */ }
+            }
+            if (!response) {
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
             }
 
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /

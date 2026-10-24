@@ -231,3 +231,58 @@ test('间隔长于 30 秒时，输入不额外拉长排程', () => {
     assert.equal(pet.appState.proactiveChatTimer, timer);
     assert.equal(pet.scheduledDelay(), delay);
 });
+
+function holdMutationHeaders(pet) {
+    let release;
+    pet.window.nekoLocalMutationSecurity = {
+        getMutationHeaders() {
+            return new Promise((resolve) => {
+                release = () => resolve({});
+            });
+        },
+    };
+    return () => release;
+}
+
+test('取请求头期间开始输入则取消文本搭话', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    const releaseHeaders = holdMutationHeaders(pet);
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    const pending = pet.fire();
+    assert.equal(typeof releaseHeaders(), 'function');
+    pet.document.activeElement = pet.input;
+    pet.emit('input', pet.input);
+    releaseHeaders()();
+    await pending;
+    assert.equal(pet.fetches.length, 0, '输入窗口重新打开后不得发送');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+    assert.ok(pet.scheduledDelay() >= 30000, '取消后按新的输入窗口重新排定');
+});
+
+test('取请求头期间开始输入则取消语音搭话', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    const releaseHeaders = holdMutationHeaders(pet);
+    pet.appState.isRecording = true;
+    pet.appState._voiceProactiveNoResponseCount = 0;
+    pet.window.scheduleProactiveChat();
+    assert.equal(pet.scheduledDelay(), 10000);
+    clock.now += 10000;
+    const pending = pet.fire();
+    assert.equal(typeof releaseHeaders(), 'function');
+    pet.document.activeElement = pet.input;
+    pet.emit('input', pet.input);
+    releaseHeaders()();
+    await pending;
+    assert.equal(pet.fetches.length, 0);
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
+    assert.ok(pet.scheduledDelay() !== null);
+});
