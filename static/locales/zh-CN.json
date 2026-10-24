@@ -4070,8 +4070,6 @@
         "templatePendingPreview": "待预览",
         "renameTemplate": "重命名模板",
         "templateFolderIncomplete": "这个目录缺东西，请选完整的模板目录。",
-        "workshopCharacterNeedsModel": "「{{name}}」是创意工坊角色包，这个目录里没有模型。它要套在「{{model}}」上。请先导入那个模型，再选这个目录。",
-        "workshopCharacterApplied": "已套用创意工坊角色「{{name}}」",
         "templateFolderCancelled": "未选择模板目录",
         "templateNoRuntime": "预览暂不可用",
         "templateLibrary": "已有模板",

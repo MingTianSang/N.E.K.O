@@ -157,8 +157,6 @@
         'emoteMaker.templatePendingPreview': '待预览',
         'emoteMaker.renameTemplate': '重命名模板',
         'emoteMaker.templateFolderIncomplete': "这个目录缺东西，请选完整的模板目录。",
-        'emoteMaker.workshopCharacterNeedsModel': "「{{name}}」是创意工坊角色包，这个目录里没有模型。它要套在「{{model}}」上。请先导入那个模型，再选这个目录。",
-        'emoteMaker.workshopCharacterApplied': "已套用创意工坊角色「{{name}}」",
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
         'emoteMaker.templateLibrary': "已有模板",
@@ -507,7 +505,6 @@
         });
     }
     function importFailureMessage(error) {
-        if (error?.code === 'workshop_character') return String(error.message || '');
         if (isIncompleteTemplateError(error)) {
             return t('emoteMaker.templateFolderIncomplete');
         }
@@ -5868,7 +5865,6 @@
     }
 
 
-    /** 浏览器的目录选择能看见 .elpack。宿主那个选择器只认解压开的模型目录，工坊包会被它丢掉。 */
     function chooseTemplateDirectory() {
         templateDirectoryInput?.click();
     }
@@ -6068,60 +6064,6 @@
         }
     }
 
-    async function applyWorkshopCharacter(packed) {
-        const character = packed.workshopCharacter || {};
-        const needed = String(character.sharedModelKey || '');
-        const loaded = String(templatePackage?.model?.id || templatePackage?.source?.sharedModelKey || '');
-        const same = Boolean(needed) && needed.toLowerCase() === loaded.toLowerCase();
-        if (!same) {
-            const error = new Error(interpolate(t('emoteMaker.workshopCharacterNeedsModel'), {
-                name: character.displayName || packed.sourceName || needed,
-                model: needed,
-            }));
-            error.code = 'workshop_character';
-            throw error;
-        }
-        state.templateSkins = (character.skins || []).map((item) => ({ ...item }));
-        state.templateSliders = (character.sliders || []).map((item) => ({ ...item }));
-        state.templateSliderDefaults = state.templateSliders.map((item) => ({ ...item }));
-        state.templateSlots = (character.slots || []).map((item) => ({
-            ...item,
-            tintColor: item?.tintColor ? { ...item.tintColor } : null,
-            tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
-        }));
-        state.templateSlotDefaults = state.templateSlots.map((item) => ({
-            ...item,
-            tintColor: item?.tintColor ? { ...item.tintColor } : null,
-            tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
-        }));
-        if (state.templateSlots[0]) state.templateSlotGroup = state.templateSlots[0].name;
-        textureCacheFiles = Array.isArray(character.textureFiles) ? character.textureFiles : [];
-        if (templateAssetStore && typeof templateAssetStore.setFiles === 'function') {
-            templateAssetStore.setFiles(textureCacheFiles);
-        } else {
-            templateAssetStore = buildTemplateAssetStore(templateAssetStore, textureCacheFiles);
-        }
-        templatePackage.character = {
-            ...(templatePackage.character || {}),
-            sharedModelKey: needed,
-            skins: state.templateSkins,
-            sliders: state.templateSliders,
-            slots: state.templateSlots,
-            customTexture: textureCacheFiles.length > 0,
-            customTextureCache: {
-                required: textureCacheFiles.length > 0,
-                provided: textureCacheFiles.length > 0,
-            },
-        };
-        persistTemplateSession();
-        renderAll();
-        setTemplateImportStatus('');
-        showToast(interpolate(t('emoteMaker.workshopCharacterApplied'), {
-            name: character.displayName || packed.sourceName || needed,
-        }));
-        void activateNativeSpineRenderer();
-    }
-
     /** 目录导入的默认名＝文件夹名：来源是每个文件的 webkitRelativePath 第一段。 */
     function folderNameFromFiles(files) {
         for (const file of Array.from(files || [])) {
@@ -6145,10 +6087,6 @@
             const packed = await directoryApi.pack(selectedFiles, {
                 filename: 'template-directory.zip',
             });
-            if (packed.workshopCharacter) {
-                await applyWorkshopCharacter(packed);
-                return;
-            }
             if (packed.completeness && !packed.completeness.complete) {
                 throw incompleteTemplateError();
             }
@@ -6159,7 +6097,7 @@
             await importTemplateFile(file, {
                 textureFiles: packed.textureFiles || [],
                 kind: 'directory',
-                sourceName: packed.sourceName || folderNameFromFiles(selectedFiles),
+                sourceName: folderNameFromFiles(selectedFiles),
             });
         } catch (error) {
             reportImportFailure(error);
