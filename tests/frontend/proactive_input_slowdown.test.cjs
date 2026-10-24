@@ -319,3 +319,55 @@ test('输入取消屏幕搭话时不消耗视觉冷却', async () => {
     assert.equal(pet.appState._lastProactiveChatScreenTime, 0, '请求没发出去，视觉冷却要还回去');
     assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
 });
+
+test('CSRF 重试期间开始输入也会退还视觉冷却', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    let releaseRefresh;
+    pet.window.nekoLocalMutationSecurity = {
+        getMutationHeaders: async () => ({}),
+        refreshToken() {
+            return new Promise((resolve) => { releaseRefresh = resolve; });
+        },
+    };
+    pet.window.fetch = async (url) => {
+        pet.fetches.push(url);
+        if (url === '/api/proactive_chat') {
+            return {
+                ok: false,
+                status: 403,
+                clone() { return this; },
+                json: async () => ({ error_code: 'csrf_validation_failed' }),
+            };
+        }
+        return { ok: true, status: 200, json: async () => ({ success: false }) };
+    };
+    pet.window.proactiveVisionEnabled = true;
+    pet.window.appScreen = {
+        acquireOrReuseCachedStream: async () => null,
+        fetchBackendScreenshot: async () => ({ dataUrl: 'data:image/jpeg;base64,aa' }),
+    };
+    pet.appState.proactiveNewsChatEnabled = false;
+    pet.appState.proactiveVisionChatEnabled = true;
+    pet.appState.proactiveVisionInterval = 120;
+    pet.appState._lastProactiveChatScreenTime = 0;
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    const pending = pet.fire();
+    for (let i = 0; i < 20 && typeof releaseRefresh !== 'function'; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(typeof releaseRefresh, 'function');
+    assert.equal(pet.fetches.filter((url) => url === '/api/proactive_chat').length, 1);
+    assert.notEqual(pet.appState._lastProactiveChatScreenTime, 0);
+    pet.document.activeElement = pet.input;
+    pet.emit('input', pet.input);
+    releaseRefresh();
+    await pending;
+    assert.equal(pet.fetches.filter((url) => url === '/api/proactive_chat').length, 1, '重试不应再发送');
+    assert.equal(pet.appState._lastProactiveChatScreenTime, 0, '重试被输入取消后也要退还视觉冷却');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+});

@@ -1174,6 +1174,11 @@
     async function triggerProactiveChat() {
         var requestSent = false;
         var proactiveScreenTimeBeforeInputCancel = null;
+        function restoreScreenCooldownAfterInputCancel() {
+            if (proactiveScreenTimeBeforeInputCancel !== null) {
+                S._lastProactiveChatScreenTime = proactiveScreenTimeBeforeInputCancel;
+            }
+        }
         try {
             // Capture before any await: clearing chat or switching character retires
             // this response's card offers even when its dialogue already committed.
@@ -1590,9 +1595,7 @@
 
             var response = await _sendProactive();
             if (!response) {
-                if (proactiveScreenTimeBeforeInputCancel !== null) {
-                    S._lastProactiveChatScreenTime = proactiveScreenTimeBeforeInputCancel;
-                }
+                restoreScreenCooldownAfterInputCancel();
                 console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
                 return false;
             }
@@ -1611,6 +1614,7 @@
                 } catch (_) { /* fall through to 403 handling below */ }
             }
             if (!response) {
+                restoreScreenCooldownAfterInputCancel();
                 console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
                 return false;
             }
