@@ -78,7 +78,7 @@ function createWindow(pathname) {
         },
         setTimeout(fn, delay) {
             const id = nextTimer++;
-            timers.set(id, { fn, delay });
+            timers.set(id, { fn, delay, due: clock.now + delay });
             return id;
         },
         clearTimeout(id) { timers.delete(id); },
@@ -111,13 +111,14 @@ function createWindow(pathname) {
         async fire() {
             const timer = timers.get(appState.proactiveChatTimer);
             assert.ok(timer, '应有待触发的主动搭话定时器');
+            assert.ok(clock.now >= timer.due, '定时器尚未到期');
             timers.delete(appState.proactiveChatTimer);
             await timer.fn();
         },
     };
 }
 
-test('持续输入会刷新判定窗口，到点时窗口未结束则不搭话', async () => {
+test('持续输入会刷新判定窗口，到期后才搭话', async () => {
     channels.length = 0;
     queue.length = 0;
     clock.now = 1_000_000;
@@ -142,14 +143,61 @@ test('持续输入会刷新判定窗口，到点时窗口未结束则不搭话',
     assert.notEqual(pet.appState.proactiveChatTimer, focusedTimer, '继续输入必须重新排定');
     assert.ok(pet.scheduledDelay() >= 30000, '输入后从当前时刻再给一个完整输入窗口');
 
+    clock.now += pet.scheduledDelay();
     await pet.fire();
-    assert.equal(pet.fetches.length, 0, '输入窗口还没结束时不得发送主动搭话');
-    assert.equal(pet.appState.proactiveChatBackoffLevel, 0, '跳过本次不得升级退避');
-    assert.ok(pet.scheduledDelay() >= 20000, '跳过后要重新排定下一次判定');
+    assert.equal(pet.fetches.length, 1, '续期窗口到期后应正常搭话');
+});
 
-    clock.now += 31000;
+test('聚焦后 300ms 内输入只补到新的截止时间', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    pet.document.activeElement = pet.input;
+    pet.emit('focusin', pet.input);
+    const focusedTimer = pet.appState.proactiveChatTimer;
+    const focusDelay = pet.scheduledDelay();
+    assert.ok(focusDelay >= 30000 && focusDelay < 31000);
+
+    clock.now += 300;
+    pet.emit('input', pet.input);
+    assert.equal(pet.appState.proactiveChatTimer, focusedTimer, '400ms 内的输入合并进当前定时器');
+
+    clock.now += focusDelay - 300;
     await pet.fire();
-    assert.equal(pet.fetches.length, 1, '输入窗口结束后应正常搭话');
+    assert.equal(pet.fetches.length, 0, '旧定时器早于新截止时间，不得搭话');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+    const retryDelay = pet.scheduledDelay();
+    assert.ok(retryDelay > 250 && retryDelay <= 400, '只等待剩余窗口，不重开 30 秒');
+
+    clock.now += retryDelay;
+    await pet.fire();
+    assert.equal(pet.fetches.length, 1);
+});
+
+test('语音模式在输入窗口结束前不发送，且不增加无回复计数', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    pet.appState.isRecording = true;
+    pet.appState._voiceProactiveNoResponseCount = 0;
+    pet.document.activeElement = pet.input;
+    pet.emit('focusin', pet.input);
+    assert.equal(pet.scheduledDelay(), 10000);
+
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.fetches.length, 0, '输入窗口未结束时语音搭话也不发送');
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
+    assert.ok(pet.scheduledDelay() > 15000 && pet.scheduledDelay() <= 20000);
+
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.fetches.length, 1);
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 1);
 });
 
 test('只聚焦不继续输入时，窗口结束后仍会搭话', async () => {

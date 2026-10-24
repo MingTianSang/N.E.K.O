@@ -439,26 +439,14 @@
         return element.disabled !== true && element.readOnly !== true;
     }
 
-    function _getFocusedChatInputElement() {
-        try {
-            const active = document.activeElement;
-            if (!active || !_isChatInputElement(active)) return null;
-            if (document.hasFocus && !document.hasFocus()) return null;
-            return active;
-        } catch (_) {
-            return null;
-        }
-    }
-
     function _getChatInputSlowdownDelay(baseIntervalSeconds) {
         const interval = Number(baseIntervalSeconds);
         if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
             return 0;
         }
-        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
-        return _getFocusedChatInputElement()
-            ? minDelay
-            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+        // 截止时间只在聚焦或实际输入时刷新。复查和再次排程都取剩余时间，
+        // 输入框还聚焦也不能把等待重置成完整的 30 秒。
+        return Math.max(0, _chatInputSlowdownUntil - Date.now());
     }
 
     function _markChatInputSlowdownWindow(baseIntervalSeconds) {
@@ -490,12 +478,15 @@
         scheduleProactiveChat();
     }
 
-    function _deferProactiveChatForInputSlowdown(label) {
-        if (_chatInputSlowdownUntil - Date.now() <= PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS) {
+    function _deferProactiveChatForInputSlowdown(label, retry) {
+        const remaining = _chatInputSlowdownUntil - Date.now();
+        if (remaining <= PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS) {
             return false;
         }
+        // 短合并可能留下一个比新截止时间更早的定时器。这里只补到窗口结束再判定，
+        // 不走 scheduleProactiveChat：那条路径在输入框仍聚焦时会再给一整段最小延迟。
         console.log(label);
-        scheduleProactiveChat();
+        S.proactiveChatTimer = setTimeout(retry, remaining);
         return true;
     }
 
@@ -908,7 +899,7 @@
             var delay = S.proactiveChatInterval * 1000;
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
-            S.proactiveChatTimer = setTimeout(async function () {
+            S.proactiveChatTimer = setTimeout(async function retryProactiveVoiceTick() {
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
@@ -932,7 +923,7 @@
                     scheduleProactiveChat();
                     return;
                 }
-                if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 语音模式：用户仍在输入，本次跳过，重新判定')) {
+                if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 语音模式：用户仍在输入，本次跳过，重新判定', retryProactiveVoiceTick)) {
                     return;
                 }
                 S.isProactiveChatRunning = true;
@@ -1069,7 +1060,7 @@
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         }
 
-        S.proactiveChatTimer = setTimeout(async function () {
+        S.proactiveChatTimer = setTimeout(async function retryProactiveTextTick() {
             // setTimeout firing does not clear our stored handle.
             S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -1090,7 +1081,7 @@
             }
             // 输入发生在本次排程之后时，旧定时器仍可能到点。这里再看一次截止时间：
             // 窗口还有效就重新排定，不把已经在打的字打断。仅聚焦且窗口已结束时照常触发。
-            if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 文本模式：用户仍在输入，本次跳过，重新判定')) {
+            if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 文本模式：用户仍在输入，本次跳过，重新判定', retryProactiveTextTick)) {
                 return;
             }
 
