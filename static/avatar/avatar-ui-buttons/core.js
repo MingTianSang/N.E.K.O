@@ -608,6 +608,7 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
+let _nekoIdleCat1PlaygroundViewportTopPx = null;
 let _nekoIdleCat1PlaygroundViewportLeftPx = null;
 let _nekoIdleCat1PlaygroundViewportRightPx = null;
 let _nekoIdleCat1PlaygroundViewportBottomRefreshSeq = 0;

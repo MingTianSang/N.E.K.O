@@ -313,10 +313,12 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "snapshot.display.workArea" in playground_bounds_block
     assert "renderer.screenOrigin" in playground_bounds_block
     assert "areaY + areaHeight - screenY" in playground_bounds_block
+    assert "top: areaY - screenY" in playground_bounds_block
     assert "Math.min(windowBottom, workArea.bottom)" in playground_bounds_block
     assert "window.innerHeight - body.height" not in source
     assert "visibleInsetRatios: _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(options.visibleInsetRatios)" in source
     assert "body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);" in source
+    assert "body.ceilingY = _getNekoIdleCat1PlaygroundViewportTopPx() - (Number(insets.top) || 0);" in source
     assert "body.wallLeft = _getNekoIdleCat1PlaygroundViewportLeftPx() - insets.left;" in source
     assert "body.wallRight = Math.max(body.wallLeft, _getNekoIdleCat1PlaygroundViewportRightPx() - body.width + insets.right);" in source
     assert "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)" in source

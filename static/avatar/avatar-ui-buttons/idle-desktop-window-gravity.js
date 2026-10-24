@@ -64,12 +64,14 @@
         };
     }
 
-    function boundsFor(windowRect, size, body = null) {
+    function boundsFor(windowRect, size, body = null, origin = null) {
         const target = rect(windowRect);
         const viewportWidth = Number(window.innerWidth);
         const viewportHeight = Number(window.innerHeight);
         if (!target || !size || !Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight)) return null;
-        const origin = screenOrigin();
+        const sampleOrigin = origin && Number.isFinite(origin.x) && Number.isFinite(origin.y)
+            ? origin : screenOrigin();
+        origin = sampleOrigin;
         const hull = body && body.visibleInsetRatios || insets;
         // The collision hull excludes transparent GIF margins. Keep its visible
         // part on screen even when the native window extends beyond the display.
@@ -594,11 +596,11 @@
         return true;
     }
 
-    function containerAt(scene, state, size = null) {
+    function containerAt(scene, state, size = null, origin = null) {
         const measured = size || state.size;
         for (const target of scene) {
             if (target.collisionOnly === true) continue;
-            const bounds = boundsFor(target.rect, measured, getBody(state.button));
+            const bounds = boundsFor(target.rect, measured, getBody(state.button), origin);
             if (!contains(bounds, state)) continue;
             return { target, bounds };
         }
@@ -668,15 +670,25 @@
         let target = scene.find(item => item.key === state.windowKey && item.collisionOnly !== true);
         if (!target) { continueAfterWindowClosed(state, result); return; }
         const size = rect(state.container.getBoundingClientRect());
+        // One snapshot has to correct the cat and measure every window. The
+        // old origin would otherwise miss the front window after the pet moves.
+        // Physics still steps in the previous frame; only the containment probe
+        // uses the corrected position.
+        const origin = screenOrigin();
+        const originDx = state.origin.x - origin.x;
+        const originDy = state.origin.y - origin.y;
+        const probe = originDx || originDy
+            ? { ...state, x: state.x + originDx, y: state.y + originDy }
+            : state;
         // Scene order is front to back. A window raised over the cat becomes
         // the container; the buried window must not keep the floor.
-        const front = paused(state) ? null : containerAt(scene, state, size);
+        const front = paused(state) ? null : containerAt(scene, probe, size, origin);
         const ownerChanged = !!(front && front.target.key !== state.windowKey);
         if (ownerChanged) {
             target = front.target;
             state.windowKey = target.key;
         }
-        const next = ownerChanged ? front.bounds : boundsFor(target.rect, size, getBody(state.button));
+        const next = ownerChanged ? front.bounds : boundsFor(target.rect, size, getBody(state.button), origin);
         if (!next || !isCat(state.button, state.container) || isReturning(state.button)) {
             cancel(state.button);
             return;
@@ -684,7 +696,6 @@
         const elapsed = (sampleAt - state.lastSampleAt) / 1000;
         state.lastSampleAt = sampleAt;
         state.revision = result.revision;
-        const origin = screenOrigin();
         const body = getBody(state.button);
         const hull = body && body.visibleInsetRatios || insets;
         const coordinateChange = origin.x !== state.origin.x || origin.y !== state.origin.y
@@ -708,8 +719,15 @@
         // a fresh sample. Resetting lastStepAt here without stepping discards
         // most falling time when window updates arrive as often as RAFs.
         if ((geometryChanged || sceneChanged) && !paused(state)) advancePhysics(state, sampleAt);
-        state.x += state.origin.x - origin.x;
-        state.y += state.origin.y - origin.y;
+        if (originDx || originDy) {
+            state.x += originDx;
+            state.y += originDy;
+            const alignedBody = body && !body.dragging ? body : null;
+            if (alignedBody) {
+                if (Number.isFinite(alignedBody.x)) alignedBody.x += originDx;
+                if (Number.isFinite(alignedBody.y)) alignedBody.y += originDy;
+            }
+        }
         state.origin = origin;
         state.size = size;
         state.hull = hull;

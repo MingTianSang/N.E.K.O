@@ -579,6 +579,11 @@ function _getNekoIdleCat1PlaygroundViewportBottomPx() {
     return windowBottom;
 }
 
+function _getNekoIdleCat1PlaygroundViewportTopPx() {
+    const cachedTop = Number(_nekoIdleCat1PlaygroundViewportTopPx);
+    return Number.isFinite(cachedTop) ? Math.max(0, cachedTop) : 0;
+}
+
 function _getNekoIdleCat1PlaygroundViewportLeftPx() {
     const cachedLeft = Number(_nekoIdleCat1PlaygroundViewportLeftPx);
     return Number.isFinite(cachedLeft) ? cachedLeft : 0;
@@ -596,6 +601,7 @@ function _getNekoIdleCat1PlaygroundViewportRightPx() {
 
 function _clearNekoIdleCat1PlaygroundWorkArea() {
     _nekoIdleCat1PlaygroundViewportBottomPx = null;
+    _nekoIdleCat1PlaygroundViewportTopPx = null;
     _nekoIdleCat1PlaygroundViewportLeftPx = null;
     _nekoIdleCat1PlaygroundViewportRightPx = null;
 }
@@ -617,6 +623,7 @@ function _readNekoIdleCat1PlaygroundWorkArea(snapshot) {
     return {
         left: areaX - screenX,
         right: areaX + areaWidth - screenX,
+        top: areaY - screenY,
         bottom: areaY + areaHeight - screenY
     };
 }
@@ -629,13 +636,17 @@ function _applyNekoIdleCat1PlaygroundWorkArea(workArea) {
         return _getNekoIdleCat1PlaygroundViewportBottomPx();
     }
     const bottom = Math.min(windowBottom, workArea.bottom);
+    const appliedBottom = bottom > 0 ? bottom : windowBottom;
+    let top = Number.isFinite(workArea.top) ? Math.max(0, workArea.top) : 0;
     let left = Number.isFinite(workArea.left) ? Math.max(0, workArea.left) : 0;
     let right = Number.isFinite(workArea.right) ? Math.min(windowRight, workArea.right) : windowRight;
     if (!(right > left)) {
         left = 0;
         right = windowRight;
     }
-    _nekoIdleCat1PlaygroundViewportBottomPx = bottom > 0 ? bottom : windowBottom;
+    if (!(appliedBottom > top)) top = 0;
+    _nekoIdleCat1PlaygroundViewportBottomPx = appliedBottom;
+    _nekoIdleCat1PlaygroundViewportTopPx = top;
     _nekoIdleCat1PlaygroundViewportLeftPx = left;
     _nekoIdleCat1PlaygroundViewportRightPx = right;
     return _nekoIdleCat1PlaygroundViewportBottomPx;
@@ -726,6 +737,7 @@ function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
         dragging: false,
         grounded: false,
         floorY: Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - height),
+        ceilingY: _getNekoIdleCat1PlaygroundViewportTopPx(),
         wallLeft: 0,
         wallRight: Math.max(0, window.innerWidth - width),
         screenOffsetX: Number.isFinite(Number(window.screenX)) ? Number(window.screenX) : 0,
@@ -970,6 +982,7 @@ function _updateNekoIdleCat1PlaygroundBodyBounds(body) {
     if (!body) return;
     const insets = _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
     body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);
+    body.ceilingY = _getNekoIdleCat1PlaygroundViewportTopPx() - (Number(insets.top) || 0);
     body.wallLeft = _getNekoIdleCat1PlaygroundViewportLeftPx() - insets.left;
     body.wallRight = Math.max(body.wallLeft, _getNekoIdleCat1PlaygroundViewportRightPx() - body.width + insets.right);
     const windowBounds = body.id === 'cat' && !body.dragging
@@ -978,6 +991,7 @@ function _updateNekoIdleCat1PlaygroundBodyBounds(body) {
         body.floorY = windowBounds.bottom;
         body.wallLeft = windowBounds.left;
         body.wallRight = windowBounds.right;
+        if (Number.isFinite(windowBounds.top)) body.ceilingY = windowBounds.top;
     }
 }
 
@@ -985,7 +999,7 @@ function _clampNekoIdleCat1PlaygroundBodyToBounds(body) {
     if (!body) return;
     _updateNekoIdleCat1PlaygroundBodyBounds(body);
     body.x = Math.max(body.wallLeft, Math.min(body.x, body.wallRight));
-    body.y = Math.min(body.y, body.floorY);
+    body.y = Math.max(body.ceilingY, Math.min(body.y, body.floorY));
     body.grounded = body.y >= body.floorY - 0.5;
 }
 
@@ -995,6 +1009,10 @@ function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body) {
     const previousFloor = Number(body.floorY);
     _updateNekoIdleCat1PlaygroundBodyBounds(body);
     body.x = Math.max(body.wallLeft, Math.min(body.x, body.wallRight));
+    if (Number.isFinite(body.ceilingY) && body.y < body.ceilingY) {
+        body.y = body.ceilingY;
+        body.vy = 0;
+    }
     if (body.y > body.floorY) {
         body.y = body.floorY;
         body.vy = 0;
@@ -1290,6 +1308,11 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                 if (body.x >= body.wallRight) {
                     body.x = body.wallRight;
                     body.vx = -Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                }
+
+                if (Number.isFinite(body.ceilingY) && body.y <= body.ceilingY) {
+                    body.y = body.ceilingY;
+                    body.vy = Math.abs(body.vy) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
                 }
 
                 if (body.y >= body.floorY) {
@@ -1662,7 +1685,7 @@ function _handleNekoIdleCat1PlaygroundPointerMove(button, event) {
     body.vx = 0;
     body.vy = 0;
     const clampedX = Math.max(body.wallLeft, Math.min(nextX, body.wallRight));
-    const clampedY = Math.min(nextY, body.floorY);
+    const clampedY = Math.max(body.ceilingY, Math.min(nextY, body.floorY));
     _setNekoIdleCat1PlaygroundBodyPosition(
         body,
         clampedX,

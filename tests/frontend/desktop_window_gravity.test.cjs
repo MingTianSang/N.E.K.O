@@ -1661,6 +1661,22 @@ test('native coordinates use DIP once and all avatar providers share the same ru
   }
 });
 
+test('an origin change keeps the cat on the window under its corrected position', () => {
+  const r = runtime({ x: 300 });
+  const front = sceneWindow(1, { x: 250, y: 80, width: 200, height: 700 });
+  const back = sceneWindow(2, { x: 0, y: 0, width: 1200, height: 900 });
+  r.sample(front.rect, { windows: [front, back] });
+  r.settle();
+  assert.equal(r.state().windowKey, front.key);
+  const beforeX = r.state().x;
+  r.window.screenX = 100;
+  r.advance(200);
+  r.sample(front.rect, { windows: [front, back] });
+  assert.equal(r.state().windowKey, front.key, 'the corrected position still sits in the front window');
+  assert.equal(r.state().x + 100, beforeX);
+  contained(r.state());
+});
+
 test('a renderer origin change preserves desktop position without treating it as a moving wall', () => {
   const r = runtime(); r.sample(); r.settle(); r.sample();
   const before = r.state();
@@ -1883,6 +1899,7 @@ test('a desktop landing bounces, and a soft or reduced-motion landing settles', 
     Object.assign(r.context, {
       _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx: () => ({ left: 0, right: 0, bottom: 0 }),
       _getNekoIdleCat1PlaygroundViewportBottomPx: () => 900,
+      _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
       _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
       _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
       _shouldNekoIdleCat1PlaygroundBodySettleRotation: () => true,
@@ -1934,6 +1951,7 @@ test('the production playground loop delegates the contained cat and still simul
   Object.assign(r.context, {
     _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx: () => ({ left: 0, right: 0, bottom: 0 }),
     _getNekoIdleCat1PlaygroundViewportBottomPx: () => 900,
+    _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
     _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
     _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
     _shouldNekoIdleCat1PlaygroundBodySettleRotation: () => false,
@@ -2043,6 +2061,7 @@ test('Playground closure lands at its work-area floor without a jump on handoff'
       width: 122, height: 122, visibleInsetRatios: { left: 0, top: 0, right: 0, bottom: 0 },
     });
     r.context._getNekoIdleCat1PlaygroundViewportBottomPx = () => floorHeight;
+    r.context._getNekoIdleCat1PlaygroundViewportTopPx = () => 0;
     r.context._getNekoIdleCat1PlaygroundViewportLeftPx = () => 0;
     r.context._getNekoIdleCat1PlaygroundViewportRightPx = () => r.window.innerWidth;
     r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx = () => ({ left: 0, right: 0, bottom: 0 });
