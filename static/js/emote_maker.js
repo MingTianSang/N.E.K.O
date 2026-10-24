@@ -1,10 +1,7 @@
 /*
  * emote_maker.js
  *
- * A small, local-first preset composer for the N.E.K.O. emote maker.
- * The template library is intentionally empty while the character direction
- * is being reviewed. The editor keeps an explicit empty state so unfinished
- * or mismatched artwork is never shown as a finished template.
+ * Local editor for an imported template: library, groups, look, and export.
  */
 (function () {
     'use strict';
@@ -26,52 +23,12 @@
     const GIF_EXPORT_MAX_BYTES = 1000000;
     const GIF_EXPORT_MAX_FRAMES = 120;
     const ICON_ROOT = '/static/icons/';
-    const DEFAULT_COLORS = {
-        expression: '#ffffff',
-        accessory: '#ffd563'
-    };
-    const COLOR_SWATCHES = [
-        '#ffffff', '#5ec9ff', '#8b8df7', '#ff9eaf', '#ffd563', '#9bd89b', '#2a4664',
-        '#c4e8f6', '#f4c5de', '#ffbd7b', '#b9a0ff', '#68d6bf', '#f2f4f7', '#ef6e8e'
-    ];
-
-    // The previous YUI drafts are intentionally disabled until the character
-    // template direction is approved. Keep the editor shell available with an
-    // explicit empty library instead of silently showing mismatched artwork.
-    const EXPRESSIONS = [];
-    const ACCESSORIES = [];
-
-    const EMPTY_EXPRESSION = { id: '', src: '', overlay: null, marker: '', nameKey: 'emoteMaker.noTemplates' };
-    const EMPTY_ACCESSORY = { id: '', src: '', nameKey: 'emoteMaker.noTemplates', placement: null };
-
-    // The groups are filters over the original template pack. They keep the
-    // editor easy to scan without pretending that a finished reaction PNG is
-    // an interchangeable eye, mouth or hair layer.
-    const PART_GROUPS = [
-        { id: 'template', labelKey: 'emoteMaker.categoryTemplate', kind: 'expression', items: EXPRESSIONS },
-        { id: 'mood', labelKey: 'emoteMaker.categoryMood', kind: 'expression', items: EXPRESSIONS.slice(0, 5) },
-        { id: 'action', labelKey: 'emoteMaker.categoryAction', kind: 'expression', items: EXPRESSIONS.slice(5) },
-        { id: 'decoration', labelKey: 'emoteMaker.categoryDecoration', kind: 'accessory', items: ACCESSORIES }
-    ];
-
-    const ANIMATIONS = [
-        { id: 'idle', nameKey: 'emoteMaker.animationIdle', duration: 4 },
-        { id: 'bounce', nameKey: 'emoteMaker.animationBounce', duration: 2 },
-        { id: 'wiggle', nameKey: 'emoteMaker.animationWiggle', duration: 2.5 },
-        { id: 'celebrate', nameKey: 'emoteMaker.animationCelebrate', duration: 3 }
-    ];
 
     const state = {
-        category: 'template',
-        expressionId: '',
-        accessoryId: '',
-        selectedLayer: 'expression',
         inspectorTab: 'parts',
-        colors: { ...DEFAULT_COLORS },
+        colors: { expression: '#ffffff' },
         secondaryColor: '#2a4664',
         colorMode: 'default',
-        layerVisible: { background: false, expression: true, accessory: true },
-        layerOrder: ['background', 'expression', 'accessory'],
         adjustments: { x: 0, y: 0, rotation: 0, scale: 100 },
         adjustOverwrite: true,
         // 导出设置刻意放在 state 里但不进 cloneState()，所以不进撤销栈 ——
@@ -101,7 +58,6 @@
         // 底部「批量导出」那颗按钮的气泡开合：只是当前浏览状态，不存盘
         groupPickerOpen: false,
         zoom: 1,
-        recentColors: ['#5ec9ff', '#ffd563', '#ff9eaf', '#8b8df7'],
         assetQuery: '',
         animationId: 'idle',
         animationProgress: 0,
@@ -115,6 +71,7 @@
         shots: [],
         templateSkins: [],
         templateSliders: [],
+        templateSliderDefaults: [],
         templateSlots: [],
         templateSlotDefaults: [],
         templateSlotGroup: ''
@@ -131,6 +88,7 @@
     const groupLibrary = window.NekoEmoteGroupLibrary;
     // 整组导出会一路烘到底，中途不接受再来一次导出或改设置
     let groupExportBusy = false;
+    let groupExportPicking = false;
     let groupExportAbort = false;
     // 预览列表里的多选集合（动画 id）。批量加组靠它，不然一个个右键点太累。
     const pickedAnimations = new Set();
@@ -145,11 +103,7 @@
 
     const history = [];
     const future = [];
-    const imageCache = new Map();
-    let renderToken = 0;
     let toastTimer = null;
-    let animationFrameHandle = null;
-    let animationLastTimestamp = 0;
     let spineRenderer = null;
     let spineRendererGeneration = 0;
     let spineAnimationFrameHandle = null;
@@ -164,23 +118,17 @@
     const canvasFrame = $('#canvas-frame');
     const canvasStage = $('.canvas-stage');
     const assetGrid = $('#asset-grid');
-    const assetTip = $('#asset-tip');
     const assetSectionTitle = $('#asset-section-title');
     const animationDock = document.querySelector('.animation-dock');
-    const layerList = $('#layer-list');
-    const colorSwatches = $('#color-swatches');
     const templateSlotControls = $('#template-slot-controls');
     const zoomValue = $('#zoom-value');
     const toast = $('#emote-toast');
-    const partGroupList = $('#part-group-list');
-    const partGroupHint = document.querySelector('.part-groups-section .part-group-hint');
     const animationList = $('#animation-list');
     const animationProgress = $('#animation-progress');
     const animationTime = $('#animation-time');
     const animationSpeed = $('#animation-speed');
     const templateFileInput = $('#emotelab-template-file');
     const templateDirectoryInput = $('#emotelab-template-directory');
-    const templateImportButton = $('#select-emotelab-template-btn');
     const templateDirectoryButton = $('#select-emotelab-template-directory-btn');
     const templateImportStatus = $('#template-import-status');
     const templateRuntimeBadge = $('#template-runtime-badge');
@@ -196,14 +144,8 @@
     const fallbackText = {
         'emoteMaker.title': '表情包制作',
         'emoteMaker.assetLibrary': '素材库',
-        'emoteMaker.categoryTemplate': '模板',
-        'emoteMaker.categoryMood': '情绪',
-        'emoteMaker.categoryAction': '动作',
-        'emoteMaker.categoryDecoration': '装饰',
-        'emoteMaker.categoryHair': '发型',
         'emoteMaker.noTemplates': '模板暂未添加',
         'emoteMaker.emptyLibraryHint': "模板库还是空的，导入一个试试",
-        'emoteMaker.selectTemplateFile': '选择模板文件',
         'emoteMaker.selectTemplateFolder': '选择模板目录',
         'emoteMaker.importingTemplate': '正在读取模板…',
         'emoteMaker.importFailed': '模板添加失败',
@@ -215,6 +157,8 @@
         'emoteMaker.templatePendingPreview': '待预览',
         'emoteMaker.renameTemplate': '重命名模板',
         'emoteMaker.templateFolderIncomplete': "这个目录缺东西，请选完整的模板目录。",
+        'emoteMaker.workshopCharacterNeedsModel': "「{{name}}」是创意工坊角色包，这个目录里没有模型。它要套在「{{model}}」上。请先导入那个模型，再选这个目录。",
+        'emoteMaker.workshopCharacterApplied': "已套用创意工坊角色「{{name}}」",
         'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
         'emoteMaker.templateLibrary': "已有模板",
@@ -227,20 +171,21 @@
         'emoteMaker.templateInUse': "使用中",
         'emoteMaker.removeTemplate': "移除",
         'emoteMaker.templateSwitched': "已切换模板",
-        'emoteMaker.templateImportHint': '支持模板文件或本地素材目录，系统会自动识别可用格式。',
+        'emoteMaker.templateImportHint': '选择本地的模板目录，系统会自动识别里面的素材。',
         'emoteMaker.previewTitle': '表情包制作',
-        'emoteMaker.modelPreset': '角色预设',
         'emoteMaker.searchParts': '搜索模板',
         'emoteMaker.addToGroup': "加入本组",
-        'emoteMaker.saveShot': "存为取景",
         'emoteMaker.groupExportCancel': "停止导出",
         'emoteMaker.groupNameDefault': "未命名组",
         'emoteMaker.groupCreated': "已新建组",
+        'emoteMaker.groupRename': "改名",
+        'emoteMaker.groupDelete': "删除",
+        'emoteMaker.groupDeleteConfirm': "删除「{{name}}」？这一组里的条目会一起去掉。",
+        'emoteMaker.groupDeleted': "已删除这个组",
         'emoteMaker.groupReadOnly': "导入的组改不了，想改就先新建一个",
         'emoteMaker.groupSceneAdded': "已加入本组",
-        'emoteMaker.groupShotSaved': "已把当前画面存为取景",
         'emoteMaker.groupExportNoRuntime': "预览没跑起来的模板没法整组导出",
-        'emoteMaker.groupExportEmpty': "这一组还是空的：先挑几个动作，或把当前画面存为取景。",
+        'emoteMaker.groupExportEmpty': "这一组还是空的：右键中间的动作列表，就能加进来。",
         'emoteMaker.groupExporting': "正在导出 {{done}}/{{total}}…",
         'emoteMaker.groupExportDone': "整组已导出",
         'emoteMaker.groupExportCancelled': "已停止，已完成的部分照样打包",
@@ -249,6 +194,8 @@
         'emoteMaker.groupExportZipping': "正在打包…",
         'emoteMaker.groupExportFolderDone': "已写入所选文件夹，并打好压缩包",
         'emoteMaker.groupExportFolderFailed': "没法在这个目录里建文件夹",
+        'emoteMaker.groupExportPickFolder': "选择导出位置",
+        'emoteMaker.groupExportPickFailed': "选不了导出位置，改成直接下载",
         'emoteMaker.groupExportZipFailed': "打包失败，已经写好的文件还在文件夹里",
         'emoteMaker.groupPickFirst': "组内暂无动作，去添加？",
         'emoteMaker.groupMemberShot': "取景",
@@ -264,8 +211,9 @@
         'emoteMaker.groupContextTitle': "批量导出组",
         'emoteMaker.groupContextAdd': "加入当前组",
         'emoteMaker.groupContextRemove': "移出当前组",
+        'emoteMaker.groupContextHint': "右键中间的动作列表，就能加入当前组。",
         'emoteMaker.newGroupFromCurrent': "按当前配置创建组",
-        'emoteMaker.newGroupHelp': "新建一个组，并把当前动作作为第一条存入 —— 含你调好的大小、旋转角度等。",
+        'emoteMaker.newGroupHelp': "新建一个组，记下当前的大小、旋转和换装。之后加进组里的动作，预览和导出都用这一套。",
         'emoteMaker.groupNonePicked': "还没选组",
         'emoteMaker.selectedCount': "已选 {{count}} 条",
         'emoteMaker.groupPickedMissing': "{{count}} 个动作没有对应的取景，没法加入",
@@ -283,7 +231,6 @@
         'emoteMaker.editorPanels': '编辑器面板',
         'emoteMaker.animationProgressLabel': "动作进度",
         'emoteMaker.chooseParts': '选择模板',
-        'emoteMaker.activeIndex': '当前变体',
         'emoteMaker.adjustments': '模板调整',
         'emoteMaker.overwrite': '覆盖默认值',
         'emoteMaker.positionX': '位置 X',
@@ -292,13 +239,7 @@
         'emoteMaker.scale': '缩放',
         'emoteMaker.colorMode': '着色模式',
         'emoteMaker.defaultColor': '原色',
-        'emoteMaker.tintColor': '单色 Tint',
-        'emoteMaker.twoColorTint': '双色 Tint',
         'emoteMaker.tintBlack': '阴影颜色',
-        'emoteMaker.animationIdle': '待机',
-        'emoteMaker.animationBounce': '弹跳',
-        'emoteMaker.animationWiggle': '摇摆',
-        'emoteMaker.animationCelebrate': '庆祝',
         'emoteMaker.speed': '速度',
         'emoteMaker.exportFormat': '格式',
         'emoteMaker.exportStatic': '静态 PNG',
@@ -331,7 +272,6 @@
         'emoteMaker.packImportFailed': '形象包导入失败。',
         'emoteMaker.segmentScenes': "动作",
         'emoteMaker.segmentAnimations': "动作",
-        'emoteMaker.listModeAria': '列表内容',
         'emoteMaker.resizeLibraryAria': '调整素材库宽度',
         'emoteMaker.resizeInspectorAria': '调整部件设置宽度',
         'emoteMaker.resizeListAria': '调整列表高度',
@@ -342,6 +282,7 @@
         'emoteMaker.packLayeredUnavailable': "分层打包功能没加载出来，刷新再试。",
         'emoteMaker.packModeAria': '编辑方式',
         'emoteMaker.packModeBasic': '基础',
+        'emoteMaker.packBasicDragHint': '长按中间的动作，拖到下面某一行，就能快速应用。',
         'emoteMaker.packModeGraph': "进阶",
         'emoteMaker.stageOpen': "打开进阶设置",
         'emoteMaker.stageTitle': "进阶设置",
@@ -413,12 +354,6 @@
         'emoteMaker.redo': '重做',
         'emoteMaker.fitWindow': '适应窗口',
         'emoteMaker.partSettings': '模板设置',
-        'emoteMaker.recentColors': '最近使用',
-        'emoteMaker.layers': '图层顺序',
-        'emoteMaker.visible': '显示',
-        'emoteMaker.hidden': '隐藏',
-        'emoteMaker.moveUp': '上移',
-        'emoteMaker.moveDown': '下移',
         'emoteMaker.exportPng': '导出 PNG',
         'emoteMaker.transparentBackground': '透明背景',
         'emoteMaker.exportSuccess': 'PNG 已导出',
@@ -467,9 +402,7 @@
     let playableMemo = { key: '', value: false };
 
     function hasPlayableAnimations() {
-        if (!templatePackage) {
-            return EXPRESSIONS.length > 0 || ACCESSORIES.length > 0;
-        }
+        if (!templatePackage) return false;
         const key = listsSignature(getVisibleImportedAnimations(), 'anim');
         if (playableMemo.key !== key) {
             playableMemo = { key, value: getVisibleImportedAnimations().length > 0 };
@@ -531,11 +464,6 @@
 
     function stopAnimationLoops() {
         stopSpineAnimationLoop();
-        if (animationFrameHandle) {
-            window.cancelAnimationFrame(animationFrameHandle);
-            animationFrameHandle = null;
-        }
-        animationLastTimestamp = 0;
     }
 
     function disposeSpineRenderer() {
@@ -579,6 +507,7 @@
         });
     }
     function importFailureMessage(error) {
+        if (error?.code === 'workshop_character') return String(error.message || '');
         if (isIncompleteTemplateError(error)) {
             return t('emoteMaker.templateFolderIncomplete');
         }
@@ -671,10 +600,26 @@
         return options && typeof options === 'object' ? options : {};
     }
 
+    // 组里存的换装/位移只覆盖画布预览和整组导出。动作列表、形象包读编辑器自己的 state。
+    let groupPreview = null;
+    let captureLook = null;
+    let capturingFrames = false;
+
+    function renderLook() {
+        if (captureLook) return captureLook;
+        if (capturingFrames) return null;
+        return groupPreview?.look || null;
+    }
+
     function applyNativeCharacterState({ render = true } = {}) {
         if (!hasSpineRenderer()) return false;
         try {
-            spineRenderer.setCharacterState({
+            const look = renderLook();
+            spineRenderer.setCharacterState(look ? {
+                skins: (look.skins || []).map((item) => ({ ...item })),
+                sliders: (look.sliders || []).map((item) => ({ ...item })),
+                slots: (look.slots || []).map((item) => ({ ...item })),
+            } : {
                 skins: getTemplateSkinSelections(),
                 sliders: getTemplateSliderValues(),
                 slots: getTemplateSlotStyles(),
@@ -686,6 +631,16 @@
     }
 
     function getNativeTransform() {
+        const look = renderLook();
+        if (look?.transform) {
+            const transform = look.transform;
+            return {
+                x: Number(transform.x) || 0,
+                y: Number(transform.y) || 0,
+                rotation: Number(transform.rotation) || 0,
+                scale: Math.max(0.01, Number(transform.scale) || 1),
+            };
+        }
         const adjustments = state.adjustOverwrite ? state.adjustments : null;
         return {
             x: Number(adjustments?.x) || 0,
@@ -695,16 +650,21 @@
         };
     }
 
-    function syncNativeScene(scene = getSelectedScene(), { autoplay = state.animationPlaying } = {}) {
+    function syncNativeScene(scene = getSelectedScene(), options = {}) {
         if (!hasSpineRenderer() || !scene) return false;
-        const animationId = state.animationId || scene.animation?.id;
+        const autoplay = options.autoplay ?? state.animationPlaying;
+        const commit = options.commit !== false;
+        const animationId = options.animationId || state.animationId || scene.animation?.id;
         if (!animationId || !spineRenderer.animationNames().includes(animationId)) return false;
         const duration = getImportedAnimationDuration(animationId);
         const sceneTime = Number(scene.animation?.time) || 0;
+        const progressValue = options.progress == null
+            ? (Number(state.animationProgress) || 0)
+            : (Number(options.progress) || 0);
         const progressTime = duration > 0
-            ? duration * Math.max(0, Math.min(100, Number(state.animationProgress) || 0)) / 100
+            ? duration * Math.max(0, Math.min(100, progressValue)) / 100
             : sceneTime;
-        const time = state.animationProgress > 0 ? progressTime : sceneTime;
+        const time = progressValue > 0 ? progressTime : sceneTime;
         try {
             spineRenderer.setScene(scene, { render: false });
             spineRenderer.setTransform(getNativeTransform(), { render: false });
@@ -717,14 +677,31 @@
             if (autoplay) spineRenderer.play();
             else spineRenderer.pause();
             applyNativeCharacterState({ render: false });
-            state.animationId = animationId;
-            if (duration > 0) state.animationProgress = (time / duration) * 100;
+            if (commit) {
+                state.animationId = animationId;
+                if (duration > 0) state.animationProgress = (time / duration) * 100;
+            }
             spineRenderer.render();
             renderNativeOverlays();
             return true;
         } catch (_) {
             return false;
         }
+    }
+
+    /** 画布回到「正在预览的组成员」，没有预览时回到动作列表选中的那条。 */
+    function syncLiveCanvas({ autoplay = state.animationPlaying } = {}) {
+        if (groupPreview?.scene) {
+            syncNativeScene(groupPreview.scene, {
+                autoplay,
+                animationId: groupPreview.animationId,
+                progress: groupPreview.progress,
+                commit: false,
+            });
+            return;
+        }
+        const scene = getSelectedScene();
+        if (scene) syncNativeScene(scene, { autoplay });
     }
 
     function syncNativeTimeFromProgress() {
@@ -753,15 +730,18 @@
         if (!spineAnimationLastTimestamp) spineAnimationLastTimestamp = timestamp;
         const elapsed = Math.max(0, Math.min(250, timestamp - spineAnimationLastTimestamp));
         spineAnimationLastTimestamp = timestamp;
-        const sceneSpeed = Number(getSelectedScene()?.animation?.speed) || 1;
+        const sceneSpeed = Number((groupPreview?.scene || getSelectedScene())?.animation?.speed) || 1;
         try {
             const frame = spineRenderer.tick(
                 (elapsed / 1000) * Math.max(0.05, state.animationSpeed) * sceneSpeed,
                 { render: true },
             );
             renderNativeOverlays();
-            const duration = getImportedAnimationDuration(state.animationId);
-            if (duration > 0) state.animationProgress = ((frame.time % duration) / duration) * 100;
+            // 组预览在播自己的动作，进度写回 state 会把动作列表的进度条拖走
+            if (!groupPreview) {
+                const duration = getImportedAnimationDuration(state.animationId);
+                if (duration > 0) state.animationProgress = ((frame.time % duration) / duration) * 100;
+            }
             updateAnimationControls();
         } catch (_) {
             state.animationPlaying = false;
@@ -861,17 +841,10 @@
 
     function cloneState() {
         return JSON.parse(JSON.stringify({
-            category: state.category,
-            expressionId: state.expressionId,
-            accessoryId: state.accessoryId,
-            selectedLayer: state.selectedLayer,
             inspectorTab: state.inspectorTab,
             colors: state.colors,
             secondaryColor: state.secondaryColor,
             colorMode: state.colorMode,
-            layerVisible: state.layerVisible,
-            layerOrder: state.layerOrder,
-            recentColors: state.recentColors,
             adjustments: state.adjustments,
             adjustOverwrite: state.adjustOverwrite,
             animationId: state.animationId,
@@ -882,6 +855,7 @@
             sceneListFilter: state.sceneListFilter,
             templateSkins: state.templateSkins,
             templateSliders: state.templateSliders,
+            templateSliderDefaults: state.templateSliderDefaults,
             templateSlots: state.templateSlots,
             templateSlotDefaults: state.templateSlotDefaults,
             templateSlotGroup: state.templateSlotGroup
@@ -889,17 +863,29 @@
     }
 
     function restoreState(snapshot) {
+        const hadPreview = Boolean(groupPreview);
+        groupPreview = null;
         Object.assign(state, JSON.parse(JSON.stringify(snapshot)));
         renderAll();
+        if (hadPreview) {
+            const scene = getSelectedScene();
+            if (scene) syncNativeScene(scene, { autoplay: false });
+        }
     }
 
     function recordChange(mutator) {
+        const hadPreview = Boolean(groupPreview);
+        groupPreview = null;
         const before = cloneState();
         mutator();
         history.push(before);
         future.length = 0;
         if (history.length > 40) history.shift();
         renderAll();
+        if (hadPreview) {
+            const scene = getSelectedScene();
+            if (scene) syncNativeScene(scene, { autoplay: state.animationPlaying });
+        }
     }
 
     function undo() {
@@ -916,26 +902,9 @@
         updateHistoryButtons();
     }
 
-    function getExpression() {
-        return EXPRESSIONS.find((item) => item.id === state.expressionId) || EMPTY_EXPRESSION;
-    }
 
-    function getAccessory() {
-        return ACCESSORIES.find((item) => item.id === state.accessoryId) || EMPTY_ACCESSORY;
-    }
 
-    function getSelectedColor() {
-        return state.colors[state.selectedLayer] || state.colors.expression;
-    }
 
-    function setSelectedColor(color) {
-        if (!color) return;
-        recordChange(() => {
-            state.colors[state.selectedLayer] = color;
-            state.colorMode = 'tint';
-            state.recentColors = [color, ...state.recentColors.filter((item) => item.toLowerCase() !== color.toLowerCase())].slice(0, 6);
-        });
-    }
 
     function hexToColor(value, fallback = { r: 1, g: 1, b: 1, a: 1 }) {
         const text = String(value || '').trim().replace(/^#/, '');
@@ -953,7 +922,7 @@
         try {
             spineRenderer.setColorMode({
                 mode: state.colorMode,
-                primary: hexToColor(state.colors[state.selectedLayer] || state.colors.expression),
+                primary: hexToColor(state.colors.expression),
                 secondary: hexToColor(state.secondaryColor, { r: 0, g: 0, b: 0, a: 1 }),
             }, { render: false });
             spineRenderer.setTransform(getNativeTransform(), { render: false });
@@ -1133,10 +1102,16 @@
             ? []
             : [new Option(t('emoteMaker.groupEmptyList'), '')];
         groups.forEach((group) => {
-            options.push(new Option(
+            const option = new Option(
                 group.readOnly && group.count ? `${group.name} · ${group.count}` : group.name,
                 group.id,
-            ));
+            );
+            if (!group.readOnly) {
+                option.dataset.writable = '1';
+                option.dataset.renameLabel = t('emoteMaker.groupRename');
+                option.dataset.deleteLabel = t('emoteMaker.groupDelete');
+            }
+            options.push(option);
         });
         templateSceneListSelect.replaceChildren(...options);
         templateSceneListSelect.value = state.groupId;
@@ -1150,33 +1125,8 @@
         renderTemplateLibraryGrid();
     }
 
-    function getPartGroup(groupId) {
-        return PART_GROUPS.find((group) => group.id === groupId) || PART_GROUPS[0];
-    }
 
-    function getPartIndex(group) {
-        const selectedId = group.kind === 'expression' ? state.expressionId : state.accessoryId;
-        const index = group.items.findIndex((item) => item.id === selectedId);
-        return index >= 0 ? index : -1;
-    }
 
-    function cyclePart(groupId, delta) {
-        const group = getPartGroup(groupId);
-        if (!group || !group.items.length) return;
-        recordChange(() => {
-            let index = getPartIndex(group);
-            index = (index + delta + group.items.length) % group.items.length;
-            const item = group.items[index];
-            if (group.kind === 'expression') {
-                state.expressionId = item.id;
-                state.selectedLayer = 'expression';
-            } else {
-                state.accessoryId = item.id;
-                state.selectedLayer = 'accessory';
-            }
-            state.category = groupId;
-        });
-    }
 
     function normalizeTemplateToken(value) {
         return String(value || '')
@@ -1198,16 +1148,13 @@
             : [];
         const selections = getTemplateSkinSelections();
         const runtimeOptions = getTemplateSkinOptions();
-        const heading = document.createElement('div');
-        heading.className = 'template-compat-heading';
-        heading.textContent = t('emoteMaker.categoryHair');
         const search = document.createElement('input');
         search.className = 'template-compat-search';
         search.type = 'search';
         search.placeholder = t('emoteMaker.searchParts');
         search.setAttribute('aria-label', t('emoteMaker.searchParts'));
         const rows = [];
-        const children = [heading, search];
+        const children = [search];
         groups.forEach((group) => {
             const groupId = String(group?.id || group?.displayName || '');
             if (!groupId) return;
@@ -1262,60 +1209,7 @@
     }
 
     function renderPartGroups() {
-        if (!partGroupList) return;
-        if (templatePackage) {
-            // Imported catalogs are metadata, not an additional navigation
-            // layer. Showing four static cards here made them look clickable
-            // and pushed the actual skin controls far below the fold.
-            partGroupList.hidden = true;
-            partGroupList.replaceChildren();
-            if (partGroupHint) partGroupHint.hidden = true;
-            renderTemplateSkinControls();
-            return;
-        }
-        partGroupList.hidden = false;
-        if (partGroupHint) partGroupHint.hidden = false;
         renderTemplateSkinControls();
-        if (!PART_GROUPS.some((group) => group.items.length)) {
-            const empty = document.createElement('div');
-            empty.className = 'empty-template-state';
-            empty.setAttribute('role', 'status');
-            empty.textContent = t('emoteMaker.noTemplates');
-            partGroupList.replaceChildren(empty);
-            return;
-        }
-        partGroupList.replaceChildren(...PART_GROUPS.map((group) => {
-            const row = document.createElement('div');
-            row.className = 'part-group-row';
-            row.dataset.groupId = group.id;
-
-            const title = document.createElement('span');
-            title.className = 'part-group-name';
-            title.textContent = t(group.labelKey);
-
-            const index = document.createElement('output');
-            index.className = 'part-group-index';
-            const selectedIndex = getPartIndex(group);
-            index.textContent = selectedIndex < 0 ? `—/${group.items.length}` : `${selectedIndex + 1}/${group.items.length}`;
-
-            const controls = document.createElement('span');
-            controls.className = 'part-group-controls';
-            const previous = document.createElement('button');
-            previous.type = 'button';
-            previous.className = 'part-nav-button';
-            previous.textContent = '‹';
-            previous.setAttribute('aria-label', `${t(group.labelKey)} ${t('common.prevPage')}`);
-            previous.addEventListener('click', () => cyclePart(group.id, -1));
-            const next = document.createElement('button');
-            next.type = 'button';
-            next.className = 'part-nav-button';
-            next.textContent = '›';
-            next.setAttribute('aria-label', `${t(group.labelKey)} ${t('common.nextPage')}`);
-            next.addEventListener('click', () => cyclePart(group.id, 1));
-            controls.append(previous, next);
-            row.append(title, index, controls);
-            return row;
-        }));
     }
 
     function renderLibraryControls() {
@@ -1349,13 +1243,15 @@
     let templateSliderRowsSignature = '';
 
     function templateSliderRowSignature(entries) {
-        // 只描述"有哪些行、哪行可用"：数值不在里面，数值变了走就地更新，不重建 DOM
+        // 只描述"有哪些行、哪行可用"：数值不在里面，数值变了走就地更新，不重建 DOM。
+        // 预览还没起来时必须单独记成 wait。记成 on 的话，骨骼就绪、滑杆其实能驱动之后
+        // 签名不变，就地更新会跳过，整列会一直停在导入时的禁用状态。
+        const ready = hasSpineRenderer() && typeof spineRenderer.sliderMapping === 'function';
         return entries.map((entry) => {
             const name = String(entry?.id || '');
-            const mapping = hasSpineRenderer() && typeof spineRenderer.sliderMapping === 'function'
-                ? spineRenderer.sliderMapping(name)
-                : null;
-            return `${name}:${mapping && mapping.supported === false ? 'off' : 'on'}`;
+            if (!ready) return `${name}:wait`;
+            const supported = spineRenderer.sliderMapping(name)?.supported === true;
+            return `${name}:${supported ? 'on' : 'off'}`;
         }).join('|');
     }
 
@@ -1363,9 +1259,9 @@
         const valueMap = new Map(getTemplateSliderValues().map((item) => [String(item.name), Number(item.value)]));
         templateSliderControls.querySelectorAll('input[data-template-slider-name]').forEach((input) => {
             const name = input.dataset.templateSliderName;
-            if (!valueMap.has(name)) return;
-            const next = Math.max(0, Math.min(2, valueMap.get(name)));
-            if (Number(input.value) === next) return;
+            const raw = valueMap.has(name) ? valueMap.get(name) : templateSliderBaseline(name);
+            const next = clampTemplateSlider(raw);
+            if (next == null || Number(input.value) === next) return;
             input.value = String(next);
             const output = input.parentElement?.querySelector('output');
             if (output) output.textContent = next.toFixed(2);
@@ -1432,10 +1328,18 @@
             }
             input.addEventListener('input', () => {
                 output.textContent = Number(input.value).toFixed(2);
+                const hadPreview = Boolean(groupPreview);
+                groupPreview = null;
                 const next = getTemplateSliderValues().filter((item) => String(item.name) !== name);
                 next.push({ name, value: Number(input.value) });
                 state.templateSliders = next;
-                applyNativeCharacterState();
+                if (hadPreview) {
+                    const scene = getSelectedScene();
+                    if (scene) syncNativeScene(scene, { autoplay: state.animationPlaying });
+                } else {
+                    applyNativeCharacterState();
+                }
+                syncAdjustmentReadouts();
             });
             input.addEventListener('change', () => {
                 const snapshot = getTemplateSliderValues();
@@ -1462,11 +1366,40 @@
 
     // 读数 + "有没有东西可复位"。拖动滑杆时每帧都要走这里，所以绝不能顺手动 DOM 结构：
     // 重建滑块区会让滚动容器内容瞬间变矮，scrollTop 被夹小 —— 就是"一拖就跳回顶部"。
+    function clampTemplateSlider(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return null;
+        return Math.max(0, Math.min(2, number));
+    }
+
+    /** 这一列的出厂值：角色文件里写的那份。没写过的，用骨骼约束的 setup，再没有就是 1。 */
+    function templateSliderBaseline(name) {
+        const saved = (state.templateSliderDefaults || []).find((item) => String(item?.name || '') === name);
+        const savedValue = clampTemplateSlider(saved?.value);
+        if (savedValue != null) return savedValue;
+        const native = hasSpineRenderer() && typeof spineRenderer.sliderDefaultValue === 'function'
+            ? clampTemplateSlider(spineRenderer.sliderDefaultValue(name))
+            : null;
+        return native == null ? 1 : native;
+    }
+
+    function templateSliderValuesDiffer() {
+        const current = new Map(
+            getTemplateSliderValues().map((item) => [String(item.name), Number(item.value)]),
+        );
+        for (const [name, value] of current) {
+            if (!name) continue;
+            if (Math.abs(value - templateSliderBaseline(name)) > 0.001) return true;
+        }
+        return false;
+    }
+
     function adjustmentValuesDiffer() {
         return Math.round(state.adjustments.x) !== 0
             || Math.round(state.adjustments.y) !== 0
             || Math.round(state.adjustments.rotation) !== 0
-            || Math.round(state.adjustments.scale) !== 100;
+            || Math.round(state.adjustments.scale) !== 100
+            || templateSliderValuesDiffer();
     }
 
     function syncAdjustmentReadouts() {
@@ -1505,21 +1438,7 @@
     }
 
     function renderColorMode() {
-        const genericColorControls = [
-            document.querySelector('.color-mode-list'),
-            colorSwatches,
-            document.querySelector('.custom-color-row'),
-            document.querySelector('.secondary-color-row'),
-        ].filter(Boolean);
-        genericColorControls.forEach((element) => {
-            element.hidden = Boolean(templatePackage);
-        });
         renderTemplateSlotControls();
-        document.querySelectorAll('.color-mode-button').forEach((button) => {
-            button.classList.toggle('is-active', button.dataset.colorMode === state.colorMode);
-        });
-        const secondary = $('.secondary-color-row');
-        if (secondary) secondary.hidden = Boolean(templatePackage) || state.colorMode !== 'two-tone';
         applyNativeVisualState();
     }
 
@@ -1618,22 +1537,56 @@
         if (!groupLibrary || !templatePackage) return null;
         const fresh = groupLibrary.makeGroup({
             name: groupLibrary.uniqueGroupName(ownGroups(), t('emoteMaker.groupNameDefault')),
+            look: currentLookDefaults(),
         });
         writeGroups([...ownGroups(), fresh], state.shots);
         selectGroup(fresh.id);
         return allGroups().find((group) => group.id === fresh.id) || fresh;
     }
 
+    function renameGroupById(id, name) {
+        if (!groupLibrary) return;
+        const group = ownGroups().find((item) => item.id === id);
+        const nextName = String(name || '').trim();
+        if (!group || group.readOnly || !nextName || nextName === group.name) return;
+        writeGroups(groupLibrary.renameGroup(ownGroups(), group.id, nextName), state.shots);
+        renderGroupBar();
+    }
+
+    async function deleteGroupById(id) {
+        if (!groupLibrary) return;
+        const group = ownGroups().find((item) => item.id === id);
+        if (!group || group.readOnly) return;
+        const confirmed = await confirmModal(
+            interpolate(t('emoteMaker.groupDeleteConfirm'), { name: group.name }),
+        );
+        if (!confirmed) return;
+        const next = groupLibrary.deleteGroup(ownGroups(), ownShots(), group.id);
+        writeGroups(next.groups, next.shots);
+        groupPreview = null;
+        const scene = getSelectedScene();
+        if (scene) syncNativeScene(scene, { autoplay: false });
+        if (state.groupId === group.id) {
+            const fallback = allGroups()[0] || null;
+            selectGroup(fallback ? fallback.id : '');
+        } else {
+            renderGroupBar();
+        }
+        showToast(t('emoteMaker.groupDeleted'));
+    }
+
     /**
-     * 「按当前配置创建组」：建组的同时把当前画面作为第一条成员存进去。
-     * 存的是取景（shot）而不是裸场景 —— 因为用户说的"保留当前设置的大小、旋转角度"
-     * 就活在调整值/换装里，裸场景引用不带这些。
+     * 「按当前配置创建组」：把当前换装/位移记在组上，并把它作为第一条成员存进去。
+     * 之后右键加进来的动作不再各记一份，预览和导出都用组上这一套，避免被后来的滑杆带走。
+     * 名字先用「未命名组」，要改就在下拉里点那支笔。
      */
     function createGroup() {
         if (!groupLibrary || !templatePackage) return null;
         const groups = ownGroups();
+        const look = currentLookDefaults();
         const group = groupLibrary.makeGroup({
             name: groupLibrary.uniqueGroupName(groups, t('emoteMaker.groupNameDefault')),
+            look,
         });
         const scene = getSelectedScene();
         let shots = ownShots();
@@ -1643,7 +1596,7 @@
                 name: `${scene.name || scene.id} · ${Math.round(Number(state.animationProgress) || 0)}%`,
                 sourceSceneId: scene.id,
                 progress: Number(state.animationProgress) || 0,
-                look: currentLookDefaults(),
+                look,
             });
             shots = [...shots, shot];
             withMember = groupLibrary.addItem(group, 'shot', shot.id);
@@ -1741,7 +1694,17 @@
     }
 
     function showGroupContextMenu(event, animationId) {
-        pickedAnimations.add(String(animationId));
+        const id = String(animationId);
+        // 再右键一次同一条 = 取消多选。菜单是「对当前选中做加入/移出」，
+        // 取消本身不是这个动作，所以不再弹出。
+        if (pickedAnimations.has(id)) {
+            pickedAnimations.delete(id);
+            updateAnimationCardPicked();
+            updateListSelectRow();
+            hideGroupContextMenu();
+            return;
+        }
+        pickedAnimations.add(id);
         updateAnimationCardPicked();
         updateListSelectRow();
         const menu = $('#group-context-menu');
@@ -1799,38 +1762,53 @@
         showToast(t('emoteMaker.groupSceneAdded'));
     }
 
-    /** 把当前画面存成一条"取景"：来源场景 + 当时的换装/滑杆/色组/位移。 */
-    function saveCurrentAsShot() {
-        const group = activeGroup();
-        if (!group || group.readOnly || !groupLibrary) {
-            showToast(t('emoteMaker.groupReadOnly'));
-            return;
-        }
-        const scene = getSelectedScene();
-        if (!scene) return;
-        const shot = groupLibrary.makeShot({
-            // 用进度当区分，不额外要一个"后缀"文案键：同一个场景存两遍取景时，
-            // 名字要能看出停在第几帧
-            name: `${scene.name || scene.id} · ${Math.round(Number(state.animationProgress) || 0)}%`,
-            sourceSceneId: scene.id,
-            progress: Number(state.animationProgress) || 0,
-            look: currentLookDefaults(),
-        });
-        const shots = [...ownShots(), shot];
-        const next = groupLibrary.addItem(group, 'shot', shot.id);
-        writeGroups(ownGroups().map((item) => (item.id === group.id ? next : item)), shots);
-        renderAnimations();
-        renderGroupBar();
-        showToast(t('emoteMaker.groupShotSaved'));
+    /**
+     * 组自己记下的换装/位移。旧组没这个字段时，用第一条取景上的那份。
+     * 导入的只读组没有这份记录，预览就还是编辑器当前的数值。
+     */
+    function recordedGroupLook(group) {
+        if (!group || group.readOnly) return null;
+        if (group.look && group.look.transform) return group.look;
+        const firstShot = (group.items || []).find((item) => item.kind === 'shot');
+        return firstShot ? (findShotById(firstShot.ref)?.look || null) : null;
     }
 
-    function applyShotLook(shot) {
-        const scene = getImportedScenes().find((entry) => entry.id === shot.sourceSceneId) || null;
+    /**
+     * 点组成员：用组记下的数值画这条动作。
+     * 不写 state，动作列表和形象包继续用编辑器里那一套。
+     */
+    function previewGroupMember(item, look) {
+        let scene = null;
+        let progress = 0;
+        if (item.kind === 'shot') {
+            const shot = findShotById(item.ref);
+            if (!shot) return false;
+            scene = getImportedScenes().find((entry) => entry.id === shot.sourceSceneId) || null;
+            progress = Number(shot.progress) || 0;
+        } else {
+            scene = getImportedScenes().find((entry) => entry.id === item.ref) || null;
+        }
         if (!scene) return false;
-        applyLookToState({ ...shot.look, sceneId: scene.id });
-        state.selectedSceneId = scene.id;
-        state.animationId = scene.animation?.id || state.animationId;
-        state.animationProgress = shot.progress || 0;
+        groupPreview = {
+            look: look || {},
+            scene,
+            animationId: scene.animation?.id || state.animationId,
+            progress,
+        };
+        stopAnimationLoops();
+        const synced = syncNativeScene(scene, {
+            autoplay: true,
+            animationId: groupPreview.animationId,
+            progress: groupPreview.progress,
+            commit: false,
+        });
+        if (!synced) {
+            groupPreview = null;
+            return false;
+        }
+        state.animationPlaying = true;
+        startSpineAnimationLoop();
+        updateAnimationControls();
         return true;
     }
 
@@ -1901,16 +1879,16 @@
             pick.setAttribute('aria-disabled', String(info.missing));
             if (!info.missing) {
                 pick.addEventListener('click', () => {
-                    if (item.kind === 'shot') {
-                        const shot = findShotById(item.ref);
-                        if (shot) {
-                            state.adjustOverwrite = true;
-                            applyShotLook(shot);
-                            renderAll();
-                        }
+                    const look = recordedGroupLook(group);
+                    if (look) {
+                        previewGroupMember(item, look);
                         return;
                     }
-                    const scene = getImportedScenes().find((entry) => entry.id === item.ref);
+                    groupPreview = null;
+                    const sceneId = item.kind === 'shot'
+                        ? findShotById(item.ref)?.sourceSceneId
+                        : item.ref;
+                    const scene = getImportedScenes().find((entry) => entry.id === sceneId);
                     if (scene) selectImportedScene(scene);
                 });
             }
@@ -2048,8 +2026,23 @@
         // 只读只是"不能改组员"，整组照导不误 —— 那正是"把这份场景列表全导出来"的入口
         row.disabled = !total || !hasSpineRenderer();
         row.addEventListener('click', () => {
+            if (groupExportBusy || groupExportPicking) return;
+            if (!hasSpineRenderer()) {
+                closeGroupPicker();
+                showToast(t('emoteMaker.groupExportNoRuntime'));
+                return;
+            }
+            if (!planGroupExportFor(group, groupLibrary.MAX_ITEMS_PER_GROUP).plan.ready) {
+                closeGroupPicker();
+                showToast(t('emoteMaker.groupExportEmpty'));
+                return;
+            }
+            // 选择框要在气泡藏起来之前就打开。先关掉再调的话，内嵌网页会直接拒绝。
+            groupExportPicking = true;
+            const picking = requestExportDirectory();
             closeGroupPicker();
-            void exportGroup(group, $('#export-group-open-btn'));
+            void exportGroup(group, $('#export-group-open-btn'), picking)
+                .finally(() => { groupExportPicking = false; });
         });
         return row;
     }
@@ -2112,10 +2105,6 @@
         renderSceneListFilter();
         const active = activeGroup();
         const writable = Boolean(active && !active.readOnly);
-        const saveShot = $('#save-shot-btn');
-        // 选中的是导入的组时无处可写，收着比按了弹一句"不能改"更好；
-        // 还没选组时它会顺手新建一个组，所以照样能按。
-        if (saveShot) saveShot.hidden = Boolean(active && active.readOnly);
         const summary = $('#group-summary-state');
         if (summary) {
             // 收起时也要看得见"现在攒的是哪一组、几张"，否则收起就等于信息没了
@@ -2128,7 +2117,7 @@
     }
 
     /** 烘一项 → 一段字节。png 只要第 0 帧，gif 走现有编码器。 */
-    async function produceGroupFile(item, format) {
+    async function produceGroupFile(group, item, format) {
         const encoder = window.NekoEmoteGifEncoder;
         const sheet = window.NekoEmoteSheet;
         const edge = Math.min(state.exportResolution || GIF_EXPORT_WIDTH, GIF_EXPORT_WIDTH);
@@ -2137,19 +2126,24 @@
         if (item.kind === 'shot') {
             const shot = findShotById(item.ref);
             if (!shot) throw new Error('missing-shot');
-            // 取景存的是当时的换装与位移，先套上再烘；位移受「覆盖默认值」控制，
-            // 整组导出期间强制打开，否则会烘出一批没构图的图。
-            if (!applyShotLook(shot)) throw new Error('scene_unavailable');
-            state.adjustOverwrite = true;
             scene = getImportedScenes().find((entry) => entry.id === shot.sourceSceneId) || null;
+            if (!scene) throw new Error('scene_unavailable');
         }
         if (!scene) throw new Error('missing-scene');
-        const frames = await captureGifFrames({
-            scene,
-            maxFrames: format === 'png' ? 1 : PACK_MAX_FRAMES,
-            fps,
-            maxDimension: edge,
-        });
+        // 组上那一套数值盖到每一条上。没有记录的组（模板自带的列表）仍用编辑器当前值。
+        const look = recordedGroupLook(group);
+        if (look) captureLook = look;
+        let frames;
+        try {
+            frames = await captureGifFrames({
+                scene,
+                maxFrames: format === 'png' ? 1 : PACK_MAX_FRAMES,
+                fps,
+                maxDimension: edge,
+            });
+        } finally {
+            captureLook = null;
+        }
         if (!frames || !frames.length) throw new Error('empty');
         if (format === 'png') {
             return sheet.canvasToPngBytes(sheet.firstFrameCanvas(frames[0]));
@@ -2164,18 +2158,127 @@
         });
     }
 
-    async function pickExportDirectory() {
-        if (typeof window.showDirectoryPicker !== 'function') return null;
+    /**
+     * 选导出位置。返回值：
+     *   FileSystemDirectoryHandle —— 浏览器自己的目录句柄
+     *   { kind: 'path', path } —— 桌面桥或本机对话框给出的绝对路径
+     *   'cancelled' —— 用户关掉了对话框
+     *   null —— 哪条路都没打开，调用方改走内存下载
+     *
+     * 必须在点击处理函数里同步调用：showDirectoryPicker 晚于第一个 await，
+     * 或者点到的按钮已经被藏起来，浏览器会直接拒绝，对话框不会出现。
+     */
+    function requestExportDirectory() {
+        const host = window.nekoHost;
+        if (host && typeof host.pickDirectory === 'function') {
+            return pickExportDirectoryFromHost();
+        }
+        if (typeof window.showDirectoryPicker !== 'function') {
+            return pickExportDirectoryFromBackend();
+        }
+        let pending;
         try {
-            return await window.showDirectoryPicker({
-                mode: 'readwrite',
-                id: 'neko-emote-batch-export',
-            });
+            // 不传 id：记住的上次目录失效时，有的环境会不弹窗直接拒绝。
+            pending = window.showDirectoryPicker({ mode: 'readwrite' });
         } catch (error) {
+            pending = Promise.reject(error);
+        }
+        return pending.catch((error) => {
             if (error && error.name === 'AbortError') return 'cancelled';
-            console.warn('[emote-maker] 选择导出目录失败', error);
-            showToast(t('emoteMaker.groupExportFolderFailed'));
-            return 'cancelled';
+            console.warn('[emote-maker] 浏览器目录选择失败，改走系统对话框', error);
+            return pickExportDirectoryFromBackend();
+        });
+    }
+
+    async function pickExportDirectoryFromHost() {
+        try {
+            const result = await window.nekoHost.pickDirectory({
+                title: t('emoteMaker.groupExportPickFolder'),
+            });
+            if (!result || typeof result !== 'object') return pickExportDirectoryFromBackend();
+            if (result.cancelled) return 'cancelled';
+            const path = String(result.selected_root || result.path || '').trim();
+            if (!path) return pickExportDirectoryFromBackend();
+            return { kind: 'path', path };
+        } catch (error) {
+            console.warn('[emote-maker] 桌面目录选择失败', error);
+            return pickExportDirectoryFromBackend();
+        }
+    }
+
+    async function pickExportDirectoryFromBackend() {
+        try {
+            const response = await fetch('/api/storage/location/pick-directory', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ start_path: '' }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (payload && payload.cancelled) return 'cancelled';
+            const path = String((payload && payload.selected_root) || '').trim();
+            if (!response.ok || !payload || payload.ok !== true || !path) return null;
+            return { kind: 'path', path };
+        } catch (error) {
+            console.warn('[emote-maker] 系统目录选择失败', error);
+            return null;
+        }
+    }
+
+    async function prepareExportFolder(parentPath, folderName) {
+        const response = await fetch('/api/emote-maker/export/folder', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Neko-Emote-Export': '1',
+            },
+            body: JSON.stringify({ directory: parentPath, folder: folderName }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload || !payload.success) {
+            throw new Error((payload && payload.error) || 'folder');
+        }
+        return payload;
+    }
+
+    async function writeExportFile(disk, file) {
+        const body = new FormData();
+        body.append('directory', disk.path);
+        body.append('folder', disk.folder);
+        body.append('name', file.path);
+        body.append('file', new Blob([file.data]), file.path);
+        const response = await fetch('/api/emote-maker/export/file', {
+            method: 'POST',
+            headers: { 'X-Neko-Emote-Export': '1' },
+            body,
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error((payload && payload.error) || 'write-failed');
+        }
+    }
+
+    async function zipExportFolder(disk, names) {
+        const response = await fetch('/api/emote-maker/export/zip', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Neko-Emote-Export': '1',
+            },
+            body: JSON.stringify({
+                directory: disk.path,
+                folder: disk.folder,
+                names,
+                zip_name: `${disk.folder}.zip`,
+            }),
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error((payload && payload.error) || 'zip-failed');
         }
     }
 
@@ -2236,8 +2339,23 @@
         }
     }
 
+    function planGroupExportFor(group, limit) {
+        const format = state.exportFormat === 'png' ? 'png' : 'gif';
+        const plan = groupLibrary.planGroupExport({
+            group,
+            shots: ownShots(),
+            ext: format,
+            nameOf: (ref) => {
+                const scene = getImportedScenes().find((entry) => entry.id === ref);
+                return scene ? (scene.name || scene.id) : '';
+            },
+            limit,
+        });
+        return { format, plan };
+    }
+
     /** 导出气泡/按钮真正要导的那一组 —— 由气泡里的行决定，不是"当前下拉选中的那组"。 */
-    async function exportGroup(group, exportTrigger) {
+    async function exportGroup(group, exportTrigger, directoryPick) {
         if (groupExportBusy) return;
         if (!group) return;
         if (!hasSpineRenderer()) {
@@ -2246,35 +2364,45 @@
             showToast(t('emoteMaker.groupExportNoRuntime'));
             return;
         }
-        const format = state.exportFormat === 'png' ? 'png' : 'gif';
-        const sceneName = (ref) => {
-            const scene = getImportedScenes().find((entry) => entry.id === ref);
-            return scene ? (scene.name || scene.id) : '';
-        };
-        const canPick = typeof window.showDirectoryPicker === 'function';
-        const plan = groupLibrary.planGroupExport({
+        // 点击处已经把选择框打开了。这里再调一次只作为没经过那次点击的退路。
+        const picked = await (directoryPick || requestExportDirectory());
+        if (picked === 'cancelled') return;
+        const savingToFolder = Boolean(picked);
+        const planned = planGroupExportFor(
             group,
-            shots: ownShots(),
-            ext: format,
-            nameOf: sceneName,
-            limit: canPick ? groupLibrary.MAX_ITEMS_PER_GROUP : groupLibrary.MAX_BATCH,
-        });
+            savingToFolder ? groupLibrary.MAX_ITEMS_PER_GROUP : groupLibrary.MAX_BATCH,
+        );
+        const format = planned.format;
+        const plan = planned.plan;
         if (!plan.ready) {
             showToast(t('emoteMaker.groupExportEmpty'));
             return;
         }
-        // 选目录必须是这次点击之后的第一个 await，否则浏览器会拒绝弹窗。
-        const parent = canPick ? await pickExportDirectory() : null;
-        if (parent === 'cancelled') return;
+        if (!savingToFolder) showToast(t('emoteMaker.groupExportPickFailed'));
         let folder = null;
         let folderName = '';
-        if (parent) {
+        let disk = null;
+        if (picked && picked.kind === 'path') {
             try {
-                folderName = await uniqueChildName(
-                    parent,
+                const prepared = await prepareExportFolder(
+                    picked.path,
                     groupLibrary.sanitizeFileName(group.name, 'group'),
                 );
-                folder = await parent.getDirectoryHandle(folderName, { create: true });
+                disk = { path: prepared.directory, folder: prepared.folder };
+                folderName = prepared.folder;
+                folder = disk;
+            } catch (error) {
+                console.warn('[emote-maker] 创建导出文件夹失败', error);
+                showToast(t('emoteMaker.groupExportFolderFailed'));
+                return;
+            }
+        } else if (picked) {
+            try {
+                folderName = await uniqueChildName(
+                    picked,
+                    groupLibrary.sanitizeFileName(group.name, 'group'),
+                );
+                folder = await picked.getDirectoryHandle(folderName, { create: true });
             } catch (error) {
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
                 showToast(t('emoteMaker.groupExportFolderFailed'));
@@ -2295,8 +2423,8 @@
         try {
             result = await groupLibrary.runGroupExport({
                 plan,
-                produce: (item) => produceGroupFile(item, format),
-                store: folder ? async (file) => {
+                produce: (item) => produceGroupFile(group, item, format),
+                store: disk ? (file) => writeExportFile(disk, file) : folder ? async (file) => {
                     const handle = await folder.getFileHandle(file.path, { create: true });
                     const stream = await handle.createWritable();
                     try {
@@ -2307,9 +2435,12 @@
                         throw error;
                     }
                 } : undefined,
-                zipStored: folder ? async (names) => {
+                zipStored: disk ? async (names) => {
                     setGroupExportStatus(t('emoteMaker.groupExportZipping'));
-                    await writeStoredZip(parent, folder, names, `${folderName}.zip`);
+                    await zipExportFolder(disk, names);
+                } : folder ? async (names) => {
+                    setGroupExportStatus(t('emoteMaker.groupExportZipping'));
+                    await writeStoredZip(picked, folder, names, `${folderName}.zip`);
                 } : undefined,
                 zip: async (files) => {
                     const entries = {};
@@ -2332,8 +2463,7 @@
             state.selectedSceneId = previousSceneId;
             state.animationId = previousAnimationId;
             state.animationProgress = previousProgress;
-            const back = getSelectedScene();
-            if (back) syncNativeScene(back, { autoplay: false });
+            syncLiveCanvas({ autoplay: false });
             renderAll();
         }
         if (!result) return;
@@ -2365,7 +2495,7 @@
                 duration: getImportedAnimationDuration(item.id),
                 metadataOnly: !animationIsPlayable(item.id),
             }))
-            : ANIMATIONS;
+            : [];
         const signature = listsSignature(animations, 'anim');
         if (signature && signature === animationCardsSignature) {
             // 只有选中项变了：切 class 就够，不必重建 191 张卡
@@ -2374,11 +2504,11 @@
             return;
         }
         animationCardsSignature = signature;
-        if (!templatePackage && !EXPRESSIONS.length && !ACCESSORIES.length) {
+        if (!templatePackage) {
             const empty = document.createElement('div');
             empty.className = 'empty-template-state';
             empty.setAttribute('role', 'status');
-            empty.textContent = t('emoteMaker.selectTemplateFile');
+            empty.textContent = t('emoteMaker.selectTemplateFolder');
             replaceAnimationList(empty);
             updateAnimationControls();
             return;
@@ -2429,6 +2559,7 @@
                     return;
                 }
                 if (animation.metadataOnly) return;
+                groupPreview = null;
                 state.animationId = animation.id;
                 state.animationProgress = 0;
                 state.animationPlaying = false;
@@ -2442,7 +2573,8 @@
                 void renderCanvas();
             });
             button.title = animation.metadataOnly ? t('emoteMaker.templateMetadataOnly') : label.textContent;
-            // 右键多选/加组不设"能不能播"这个门槛：攒一份要导出的清单不需要播放，
+            // 右键：未选中就选上并打开加组菜单，已选中再点一次就取消。
+            // 不设"能不能播"这个门槛：攒一份要导出的清单不需要播放，
             // 真烘不出来由「批量导出」的气泡统一拦（那里才有渲染器可用与否的判断）
             button.addEventListener('contextmenu', (event) => {
                 event.preventDefault();
@@ -2462,7 +2594,7 @@
                 duration: getImportedAnimationDuration(state.animationId) || 1
             };
         }
-        return ANIMATIONS.find((animation) => animation.id === state.animationId) || ANIMATIONS[0];
+        return { id: state.animationId, name: state.animationId, duration: 1 };
     }
 
     function formatAnimationTime(totalSeconds) {
@@ -2549,27 +2681,10 @@
             updateAnimationControls();
             return;
         }
-        if (state.animationPlaying) {
-            animationLastTimestamp = 0;
-            animationFrameHandle = window.requestAnimationFrame(animationTick);
-        } else if (animationFrameHandle) {
-            window.cancelAnimationFrame(animationFrameHandle);
-            animationFrameHandle = null;
-        }
+        state.animationPlaying = false;
         updateAnimationControls();
     }
 
-    function animationTick(timestamp) {
-        if (!state.animationPlaying) return;
-        if (!animationLastTimestamp) animationLastTimestamp = timestamp;
-        const elapsed = timestamp - animationLastTimestamp;
-        animationLastTimestamp = timestamp;
-        const durationMs = getCurrentAnimation().duration * 1000;
-        state.animationProgress = (state.animationProgress + (elapsed * state.animationSpeed / durationMs) * 100) % 100;
-        updateAnimationControls();
-        void renderCanvas();
-        animationFrameHandle = window.requestAnimationFrame(animationTick);
-    }
 
     /**
      * Start the editor-owned playback loop after an animation has been
@@ -2596,32 +2711,11 @@
             startSpineAnimationLoop();
             return true;
         }
-
-        state.animationPlaying = true;
-        animationLastTimestamp = 0;
-        if (!animationFrameHandle && typeof window.requestAnimationFrame === 'function') {
-            animationFrameHandle = window.requestAnimationFrame(animationTick);
-        }
-        return true;
+        state.animationPlaying = false;
+        return false;
     }
 
 
-    function renderColorSwatches() {
-        if (!colorSwatches) return;
-        const colors = [...new Set([...state.recentColors, ...COLOR_SWATCHES])].slice(0, 14);
-        colorSwatches.replaceChildren(...colors.map((color) => {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'color-swatch' + (color.toLowerCase() === getSelectedColor().toLowerCase() ? ' is-selected' : '');
-            button.style.setProperty('--swatch', color);
-            button.title = color;
-            button.setAttribute('aria-label', color);
-            button.addEventListener('click', () => setSelectedColor(color));
-            return button;
-        }));
-        const customColor = $('#custom-color-input');
-        if (customColor) customColor.value = getSelectedColor();
-    }
 
     function renderTemplateSlotControls() {
         if (!templateSlotControls) return;
@@ -2718,95 +2812,9 @@
         templateSlotControls.replaceChildren(...children);
     }
 
-    function layerLabel(layerId) {
-        return t(`emoteMaker.layerNames.${layerId}`);
-    }
 
-    function layerSource(layerId) {
-        if (layerId === 'expression') return getExpression().src || `${ICON_ROOT}expression_chosen.png`;
-        if (layerId === 'accessory') return getAccessory().src || `${ICON_ROOT}expression_chosen.png`;
-        return `${ICON_ROOT}emotion_config_bg.png`;
-    }
 
-    function renderLayers() {
-        if (!layerList) return;
-        const section = layerList.closest('.layer-section');
-        if (section) section.hidden = Boolean(templatePackage);
-        if (templatePackage) {
-            // Imported Spine draw order is authored by the skeleton/animation.
-            // The editor's raster expression/accessory stack cannot safely
-            // reorder or hide those slots, so do not expose inert controls.
-            layerList.replaceChildren();
-            return;
-        }
-        const ordered = [...state.layerOrder].reverse();
-        layerList.replaceChildren(...ordered.map((layerId) => {
-            const item = document.createElement('div');
-            item.className = 'layer-item' + (layerId === state.selectedLayer ? ' is-selected' : '');
-            item.dataset.layerId = layerId;
-            item.addEventListener('click', () => {
-                if (state.selectedLayer === layerId) return;
-                state.selectedLayer = layerId;
-                renderAll();
-            });
 
-            const thumb = document.createElement('img');
-            thumb.className = 'layer-thumb';
-            thumb.src = layerSource(layerId);
-            thumb.alt = layerLabel(layerId);
-
-            const copy = document.createElement('span');
-            copy.className = 'layer-copy';
-            const name = document.createElement('span');
-            name.className = 'layer-name';
-            name.textContent = layerLabel(layerId);
-            const status = document.createElement('span');
-            status.className = 'layer-state';
-            status.textContent = state.layerVisible[layerId] ? t('emoteMaker.visible') : t('emoteMaker.hidden');
-            copy.append(name, status);
-
-            const actions = document.createElement('span');
-            actions.className = 'layer-actions';
-            const visibility = document.createElement('button');
-            visibility.type = 'button';
-            visibility.textContent = state.layerVisible[layerId] ? t('emoteMaker.visible') : t('emoteMaker.hidden');
-            visibility.addEventListener('click', (event) => {
-                event.stopPropagation();
-                recordChange(() => { state.layerVisible[layerId] = !state.layerVisible[layerId]; });
-            });
-            const index = state.layerOrder.indexOf(layerId);
-            const moveUp = document.createElement('button');
-            moveUp.type = 'button';
-            moveUp.textContent = t('emoteMaker.moveUp');
-            moveUp.disabled = index >= state.layerOrder.length - 1;
-            moveUp.addEventListener('click', (event) => {
-                event.stopPropagation();
-                moveLayer(layerId, 1);
-            });
-            const moveDown = document.createElement('button');
-            moveDown.type = 'button';
-            moveDown.textContent = t('emoteMaker.moveDown');
-            moveDown.disabled = index <= 0;
-            moveDown.addEventListener('click', (event) => {
-                event.stopPropagation();
-                moveLayer(layerId, -1);
-            });
-            actions.append(visibility, moveUp, moveDown);
-            item.append(thumb, copy, actions);
-            return item;
-        }));
-    }
-
-    function moveLayer(layerId, direction) {
-        recordChange(() => {
-            const index = state.layerOrder.indexOf(layerId);
-            const nextIndex = index + direction;
-            if (index < 0 || nextIndex < 0 || nextIndex >= state.layerOrder.length) return;
-            const next = state.layerOrder[nextIndex];
-            state.layerOrder[nextIndex] = layerId;
-            state.layerOrder[index] = next;
-        });
-    }
 
     function updateHistoryButtons() {
         const undoButton = $('#undo-btn');
@@ -2815,245 +2823,16 @@
         if (redoButton) redoButton.disabled = future.length === 0;
     }
 
-    function loadImage(src) {
-        if (!src) return Promise.resolve(null);
-        if (imageCache.has(src)) return imageCache.get(src);
-        const promise = new Promise((resolve) => {
-            const image = new Image();
-            image.onload = () => resolve(image);
-            image.onerror = () => resolve(null);
-            image.src = src;
-        });
-        imageCache.set(src, promise);
-        return promise;
-    }
 
-    function drawContain(context, image, x, y, width, height) {
-        if (!image) return;
-        const scale = Math.min(width / image.width, height / image.height);
-        const drawWidth = image.width * scale;
-        const drawHeight = image.height * scale;
-        context.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
-    }
 
-    async function drawTintedImage(context, image, box, color, tintStrength) {
-        if (!image) return;
-        const scratch = document.createElement('canvas');
-        scratch.width = Math.max(1, Math.round(box.width));
-        scratch.height = Math.max(1, Math.round(box.height));
-        const scratchContext = scratch.getContext('2d');
-        scratchContext.imageSmoothingEnabled = true;
-        scratchContext.imageSmoothingQuality = 'high';
-        drawContain(scratchContext, image, 0, 0, scratch.width, scratch.height);
-        if (state.colorMode !== 'default' && color && color.toLowerCase() !== '#ffffff') {
-            scratchContext.globalCompositeOperation = 'source-atop';
-            scratchContext.globalAlpha = tintStrength;
-            scratchContext.fillStyle = color;
-            scratchContext.fillRect(0, 0, scratch.width, scratch.height);
-            if (state.colorMode === 'two-tone') {
-                scratchContext.globalAlpha = Math.min(0.46, tintStrength * 0.72);
-                scratchContext.fillStyle = state.secondaryColor;
-                scratchContext.fillRect(0, 0, scratch.width, scratch.height);
-            }
-            scratchContext.globalAlpha = 1;
-            scratchContext.globalCompositeOperation = 'source-over';
-        }
-        context.drawImage(scratch, box.x, box.y, box.width, box.height);
-    }
 
-    function drawReactionHeart(context, x, y, size, fill) {
-        context.beginPath();
-        context.moveTo(x, y + size * 0.28);
-        context.bezierCurveTo(x - size * 0.52, y - size * 0.18, x - size * 0.62, y + size * 0.58, x, y + size);
-        context.bezierCurveTo(x + size * 0.62, y + size * 0.58, x + size * 0.52, y - size * 0.18, x, y + size * 0.28);
-        context.fillStyle = fill;
-        context.fill();
-        context.stroke();
-    }
 
-    function drawReactionSpark(context, x, y, size, fill) {
-        context.beginPath();
-        context.moveTo(x, y - size);
-        context.lineTo(x + size * 0.22, y - size * 0.22);
-        context.lineTo(x + size, y);
-        context.lineTo(x + size * 0.22, y + size * 0.22);
-        context.lineTo(x, y + size);
-        context.lineTo(x - size * 0.22, y + size * 0.22);
-        context.lineTo(x - size, y);
-        context.lineTo(x - size * 0.22, y - size * 0.22);
-        context.closePath();
-        context.fillStyle = fill;
-        context.fill();
-        context.stroke();
-    }
 
-    function drawReactionDrop(context, x, y, size) {
-        context.beginPath();
-        context.moveTo(x, y - size);
-        context.bezierCurveTo(x - size * 0.72, y - size * 0.18, x - size * 0.62, y + size * 0.78, x, y + size);
-        context.bezierCurveTo(x + size * 0.62, y + size * 0.78, x + size * 0.72, y - size * 0.18, x, y - size);
-        context.fillStyle = '#75d8ff';
-        context.fill();
-        context.stroke();
-    }
 
-    function drawReactionText(context, value, x, y, size, fill) {
-        context.font = `900 ${size}px "Trebuchet MS", sans-serif`;
-        context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.lineWidth = Math.max(5, size * 0.12);
-        context.strokeText(value, x, y);
-        context.fillStyle = fill;
-        context.fillText(value, x, y);
-    }
 
-    function drawReactionOverlay(context, overlay) {
-        const outline = '#5b1233';
-        context.save();
-        context.lineJoin = 'round';
-        context.lineCap = 'round';
-        context.lineWidth = 8;
-        context.strokeStyle = outline;
 
-        if (overlay === 'cheer') {
-            drawReactionSpark(context, 174, 356, 22, '#ffdc62');
-            drawReactionSpark(context, 850, 350, 22, '#78caff');
-            drawReactionSpark(context, 126, 438, 15, '#78caff');
-            drawReactionSpark(context, 900, 432, 15, '#ffdc62');
-        } else if (overlay === 'hello') {
-            context.beginPath();
-            context.arc(876, 514, 35, 0, Math.PI * 2);
-            context.fillStyle = '#75d8ff';
-            context.fill();
-            context.stroke();
-            context.beginPath();
-            context.moveTo(855, 486);
-            context.quadraticCurveTo(872, 452, 888, 480);
-            context.moveTo(872, 480);
-            context.quadraticCurveTo(898, 448, 910, 482);
-            context.stroke();
-            context.beginPath();
-            context.moveTo(924, 440);
-            context.lineTo(954, 418);
-            context.moveTo(930, 468);
-            context.lineTo(964, 460);
-            context.strokeStyle = '#78caff';
-            context.stroke();
-        } else if (overlay === 'sleepy') {
-            drawReactionText(context, 'Z', 848, 300, 58, '#b9a7ff');
-            drawReactionText(context, 'z', 906, 244, 38, '#b9a7ff');
-        } else if (overlay === 'shy') {
-            drawReactionHeart(context, 164, 450, 34, '#8fd6ff');
-            drawReactionHeart(context, 852, 446, 36, '#8fd6ff');
-            context.strokeStyle = '#f08ca7';
-            context.lineWidth = 7;
-            context.beginPath();
-            context.moveTo(402, 628); context.lineTo(420, 617);
-            context.moveTo(428, 638); context.lineTo(446, 627);
-            context.moveTo(716, 628); context.lineTo(734, 617);
-            context.moveTo(690, 638); context.lineTo(708, 627);
-            context.stroke();
-        } else if (overlay === 'cry') {
-            drawReactionDrop(context, 390, 650, 28);
-            drawReactionDrop(context, 634, 650, 28);
-            drawReactionDrop(context, 286, 716, 17);
-            drawReactionDrop(context, 738, 716, 17);
-        } else if (overlay === 'confused') {
-            drawReactionText(context, '?', 170, 310, 70, '#b9a7ff');
-            drawReactionText(context, '?', 874, 300, 58, '#b9a7ff');
-        } else if (overlay === 'angry') {
-            context.strokeStyle = '#ef6e8e';
-            context.lineWidth = 12;
-            context.beginPath();
-            context.moveTo(182, 364); context.lineTo(206, 344); context.lineTo(230, 364); context.lineTo(254, 344);
-            context.moveTo(770, 344); context.lineTo(794, 364); context.lineTo(818, 344); context.lineTo(842, 364);
-            context.stroke();
-            drawReactionText(context, '!', 860, 240, 48, '#ef6e8e');
-        } else if (overlay === 'love') {
-            drawReactionHeart(context, 160, 370, 48, '#ff9fb5');
-            drawReactionHeart(context, 866, 368, 52, '#ff9fb5');
-            drawReactionHeart(context, 190, 492, 26, '#8fd6ff');
-            drawReactionHeart(context, 836, 500, 28, '#8fd6ff');
-        } else if (overlay === 'celebrate') {
-            const confetti = [
-                [154, 300, 12, 34, '#78caff'], [216, 250, 12, 30, '#ffdc62'],
-                [836, 270, 12, 34, '#ff9fb5'], [896, 324, 12, 30, '#78caff'],
-                [168, 620, 12, 28, '#ff9fb5'], [866, 620, 12, 28, '#ffdc62']
-            ];
-            for (const [x, y, width, height, fill] of confetti) {
-                context.save();
-                context.translate(x, y);
-                context.rotate((x % 3) * 0.32 - 0.3);
-                context.fillStyle = fill;
-                context.fillRect(-width / 2, -height / 2, width, height);
-                context.strokeRect(-width / 2, -height / 2, width, height);
-                context.restore();
-            }
-            drawReactionSpark(context, 278, 268, 18, '#ffdc62');
-            drawReactionSpark(context, 750, 264, 18, '#78caff');
-        }
-        context.restore();
-    }
 
-    function getAnimationTransform(layerId) {
-        const phase = (state.animationProgress / 100) * Math.PI * 2;
-        const transform = { x: 0, y: 0, rotation: 0, scale: 100 };
-        if (state.animationId === 'bounce') {
-            transform.y = -Math.abs(Math.sin(phase)) * 18;
-            transform.scale = 100 + Math.sin(phase) * 2;
-        } else if (state.animationId === 'wiggle') {
-            transform.rotation = Math.sin(phase * 2) * 4;
-            transform.x = Math.sin(phase) * 8;
-        } else if (state.animationId === 'celebrate') {
-            transform.y = -Math.abs(Math.sin(phase * 2)) * 12;
-            transform.rotation = Math.sin(phase * 2) * 7;
-            transform.scale = 100 + Math.abs(Math.sin(phase * 2)) * 3;
-        }
-        if (state.adjustOverwrite && state.selectedLayer === layerId) {
-            transform.x += Number(state.adjustments.x) || 0;
-            transform.y += Number(state.adjustments.y) || 0;
-            transform.rotation += Number(state.adjustments.rotation) || 0;
-            transform.scale = transform.scale * ((Number(state.adjustments.scale) || 100) / 100);
-        }
-        return transform;
-    }
 
-    async function drawLayerImage(context, image, box, color, tintStrength, layerId) {
-        if (!image) return;
-        const transform = getAnimationTransform(layerId);
-        context.save();
-        context.translate(CANVAS_SIZE / 2 + transform.x * 2, CANVAS_SIZE / 2 + transform.y * 2);
-        context.rotate((transform.rotation * Math.PI) / 180);
-        context.scale(transform.scale / 100, transform.scale / 100);
-        await drawTintedImage(context, image, {
-            x: box.x - CANVAS_SIZE / 2,
-            y: box.y - CANVAS_SIZE / 2,
-            width: box.width,
-            height: box.height
-        }, color, tintStrength);
-        context.restore();
-    }
-
-    async function drawExpressionLayer(context, image, expression) {
-        if (!image) return;
-        const transform = getAnimationTransform('expression');
-        context.save();
-        context.translate(CANVAS_SIZE / 2 + transform.x * 2, CANVAS_SIZE / 2 + transform.y * 2);
-        context.rotate((transform.rotation * Math.PI) / 180);
-        context.scale(transform.scale / 100, transform.scale / 100);
-        await drawTintedImage(context, image, {
-            // The supplied PNG contains generous transparent padding. Crop
-            // only that padding; the character pixels themselves stay intact.
-            x: -112 - CANVAS_SIZE / 2,
-            y: -112 - CANVAS_SIZE / 2,
-            width: 1248,
-            height: 1248
-        }, state.colors.expression, 0.14);
-        // The reaction marks travel with the immutable character base.
-        context.translate(-CANVAS_SIZE / 2, -CANVAS_SIZE / 2);
-        drawReactionOverlay(context, expression.overlay);
-        context.restore();
-    }
 
     function finiteNumber(value, fallback = 0) {
         const number = Number(value);
@@ -3389,7 +3168,6 @@
 
     async function renderCanvas() {
         if (!canvas) return;
-        const token = ++renderToken;
         if (templatePackage && hasSpineRenderer()) {
             setCanvasMode(true);
             try {
@@ -3430,43 +3208,6 @@
             context.font = '500 20px "Microsoft YaHei", sans-serif';
             context.fillText(t('emoteMaker.templateNoRuntime'), CANVAS_SIZE / 2, 548);
             context.restore();
-            return;
-        }
-
-        const expression = getExpression();
-        const accessory = getAccessory();
-        const [expressionImage, accessoryImage] = await Promise.all([
-            loadImage(expression.src),
-            loadImage(accessory.src)
-        ]);
-        if (token !== renderToken) return;
-
-        for (const layerId of state.layerOrder) {
-            if (!state.layerVisible[layerId]) continue;
-            if (layerId === 'background') {
-                context.save();
-                context.fillStyle = '#f5fbff';
-                context.fillRect(34, 34, CANVAS_SIZE - 68, CANVAS_SIZE - 68);
-                context.restore();
-                continue;
-            }
-            if (layerId === 'expression') {
-                context.save();
-                context.shadowColor = 'rgba(28, 87, 126, 0.17)';
-                context.shadowBlur = 28;
-                context.shadowOffsetY = 14;
-                // The supplied YUI PNG is the immutable identity layer;
-                // reaction marks are composed around it without redrawing it.
-                await drawExpressionLayer(context, expressionImage, expression);
-                context.restore();
-                continue;
-            }
-            if (layerId === 'accessory' && accessoryImage && accessory.placement) {
-                const size = CANVAS_SIZE * accessory.placement.size;
-                const x = CANVAS_SIZE * accessory.placement.x - size / 2;
-                const y = CANVAS_SIZE * accessory.placement.y - size / 2;
-                await drawLayerImage(context, accessoryImage, { x, y, width: size, height: size }, state.colors.accessory, 0.82, 'accessory');
-            }
         }
     }
 
@@ -4263,6 +4004,7 @@
             character: {
                 skins: pick(state.templateSkins),
                 sliders: pick(state.templateSliders),
+                sliderDefaults: pick(state.templateSliderDefaults),
                 slots: pick(state.templateSlots),
             },
             adjustments: { ...state.adjustments },
@@ -4559,6 +4301,10 @@
             fingerprint: templateFingerprint(held.pkg),
         };
         applyTemplateSession(held.pkg);
+        if (!Array.isArray(lastTemplate?.character?.sliderDefaults)) {
+            const source = Array.isArray(held.pkg.character?.sliders) ? held.pkg.character.sliders : [];
+            state.templateSliderDefaults = source.map((item) => ({ ...item }));
+        }
         if (!state.groupId) {
             const first = allGroups()[0];
             if (first) selectGroup(first.id);
@@ -4609,12 +4355,7 @@
             showToast(t('emoteMaker.templateSwitched'));
             return;
         }
-        if (entry && entry.importKind === 'directory' && window.nekoHost
-            && typeof window.nekoHost.pickTemplateDirectory === 'function') {
-            await importTemplateDirectoryFromHost();
-        } else {
-            templateFileInput?.click();
-        }
+        chooseTemplateDirectory();
     }
 
     /** 页内确认框：window.confirm 的默认样式和这一页毫不相干，插值也归这里管。 */
@@ -4696,6 +4437,9 @@
         const character = lastTemplate.character || {};
         if (Array.isArray(character.skins)) state.templateSkins = character.skins.map((item) => ({ ...item }));
         if (Array.isArray(character.sliders)) state.templateSliders = character.sliders.map((item) => ({ ...item }));
+        if (Array.isArray(character.sliderDefaults)) {
+            state.templateSliderDefaults = character.sliderDefaults.map((item) => ({ ...item }));
+        }
         if (Array.isArray(character.slots) && character.slots.length) {
             // 只接受新包里仍然存在的槽位名，避免把过期色组写回去。
             const known = new Set((manifest.character?.slots || []).map((slot) => String(slot?.name || '')));
@@ -5196,8 +4940,7 @@
             if (!previewFps) setPackStatus('');
             state.selectedSceneId = previousSceneId;
             state.animationId = previousAnimationId;
-            const back = sceneList.find((item) => item.id === previousSceneId);
-            if (back) syncNativeScene(back, { autoplay: false });
+            syncLiveCanvas({ autoplay: false });
         }
         if (missingImages > 0) {
             showToast(interpolate(t('emoteMaker.stageImagesMissing'), { count: missingImages }));
@@ -5423,13 +5166,10 @@
     }
 
     function renderAll() {
-        const hasEditorContent = Boolean(templatePackage) || EXPRESSIONS.length > 0 || ACCESSORIES.length > 0;
+        const hasEditorContent = Boolean(templatePackage);
         const nativePreview = hasSpineRenderer();
         document.body.classList.toggle('editor-empty', !hasEditorContent);
         document.body.classList.toggle('editor-has-template', Boolean(templatePackage));
-        // The import card and canvas already provide the empty-state message;
-        // keeping this legacy footer visible creates a duplicate instruction.
-        if (assetTip) assetTip.hidden = true;
         if (inspectorEmptyState) inspectorEmptyState.hidden = hasEditorContent;
         if (animationDock) animationDock.hidden = !hasEditorContent;
         if (templateRuntimeBadge) {
@@ -5449,16 +5189,12 @@
         renderGroupBar();
         renderAssetGrid();
         renderPartGroups();
-        renderColorSwatches();
         renderColorMode();
         renderAdjustments();
         renderAnimations();
-        renderLayers();
         applyZoom();
-        const secondaryColor = $('#secondary-color-input');
-        if (secondaryColor) secondaryColor.value = state.secondaryColor;
         const exportButton = $('#export-png-btn');
-        if (exportButton) exportButton.disabled = EXPRESSIONS.length === 0 && !hasSpineRenderer();
+        if (exportButton) exportButton.disabled = !hasSpineRenderer();
         const exportLabel = exportButton?.querySelector('span');
         if (exportLabel) {
             // 出什么格式由上面的「格式」下拉说了算，按钮只管说"导哪一张"：现在是两颗
@@ -5621,12 +5357,10 @@
         if (templatePackage && hasSpineRenderer()) {
             stopSpineAnimationLoop();
             spineRenderer.pause();
-        } else if (animationFrameHandle) {
-            window.cancelAnimationFrame(animationFrameHandle);
-            animationFrameHandle = null;
         }
 
         try {
+            capturingFrames = true;
             if (scene) {
                 state.selectedSceneId = scene.id;
                 state.animationId = animationId;
@@ -5659,6 +5393,8 @@
             }
             return frames;
         } finally {
+            captureLook = null;
+            capturingFrames = false;
             state.animationProgress = previousProgress;
             if (templatePackage && hasSpineRenderer()) {
                 spineRenderer.setTime(previousTime, { render: false });
@@ -5673,11 +5409,7 @@
                     state.animationPlaying = false;
                 }
             } else {
-                state.animationPlaying = wasPlaying;
-                if (wasPlaying) {
-                    animationLastTimestamp = 0;
-                    animationFrameHandle = window.requestAnimationFrame(animationTick);
-                }
+                state.animationPlaying = false;
             }
             updateAnimationControls();
             void renderCanvas();
@@ -5685,7 +5417,7 @@
     }
 
     function exportFilename(extension) {
-        const value = state.expressionId || state.animationId || 'empty';
+        const value = state.animationId || 'empty';
         const safe = String(value)
             .replace(/[\\/:*?"<>|]+/g, '-')
             .replace(/\s+/g, '-')
@@ -5919,7 +5651,7 @@
         // 因此编码期间动画继续跑也不会改变导出的那一帧。
         const outputCanvas = hasSpineRenderer() ? (nativeCompositeCanvas() || spineCanvas) : canvas;
         if (!outputCanvas) return;
-        if (!EXPRESSIONS.length && !hasSpineRenderer()) {
+        if (!hasSpineRenderer()) {
             showToast(t('emoteMaker.noTemplates'));
             return;
         }
@@ -5937,12 +5669,8 @@
             showToast(t('emoteMaker.exportGifUnavailable'));
             return;
         }
-        if (templatePackage && !hasSpineRenderer()) {
+        if (!hasSpineRenderer()) {
             showToast(t('emoteMaker.exportGifUnavailable'));
-            return;
-        }
-        if (!EXPRESSIONS.length && !hasSpineRenderer()) {
-            showToast(t('emoteMaker.noTemplates'));
             return;
         }
         const exportButton = $('#export-png-btn');
@@ -6105,8 +5833,14 @@
         if (!state.adjustOverwrite) return;
         const numericValue = Number(value);
         if (!Number.isFinite(numericValue)) return;
+        const hadPreview = Boolean(groupPreview);
+        groupPreview = null;
         state.adjustments[key] = numericValue;
         syncAdjustmentReadouts();
+        if (hadPreview) {
+            const scene = getSelectedScene();
+            if (scene) syncNativeScene(scene, { autoplay: state.animationPlaying });
+        }
         applyNativeVisualState();
         void renderCanvas();
     }
@@ -6118,90 +5852,10 @@
 
 
 
-    function cloneBinaryValue(value) {
-        if (value instanceof Uint8Array) {
-            return new Uint8Array(value);
-        }
-        if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
-            return new Uint8Array(value.slice(0));
-        }
-        if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
-            return new Uint8Array(value.buffer.slice(
-                value.byteOffset,
-                value.byteOffset + value.byteLength,
-            ));
-        }
-        if (Array.isArray(value)) return Uint8Array.from(value);
-        if (value && typeof value === 'object' && value.data !== undefined) {
-            return cloneBinaryValue(value.data);
-        }
-        return null;
-    }
 
-    async function readBinaryValue(value) {
-        const direct = cloneBinaryValue(value);
-        if (direct) return direct;
-        if (value && typeof value.arrayBuffer === 'function') {
-            return cloneBinaryValue(await value.arrayBuffer());
-        }
-        return null;
-    }
 
-    function createMemoryFile(bytes, name, type = 'application/octet-stream') {
-        const safeName = String(name || 'template.zip').split(/[\\/]/).pop() || 'template.zip';
-        if (typeof File === 'function') {
-            return new File([bytes], safeName, { type });
-        }
-        if (typeof Blob === 'function') {
-            const blob = new Blob([bytes], { type });
-            try {
-                Object.defineProperty(blob, 'name', { value: safeName, configurable: true });
-            } catch (_) {
-                // Blob remains usable through arrayBuffer() when name is read-only.
-            }
-            return blob;
-        }
-        return null;
-    }
 
-    function setRelativePath(file, relativePath) {
-        const path = String(relativePath || '').replace(/\\/g, '/').trim();
-        if (!file || !path) return file;
-        try {
-            Object.defineProperty(file, 'webkitRelativePath', {
-                value: path,
-                configurable: true,
-            });
-            return file;
-        } catch (_) {
-            // Some browser File implementations expose a non-configurable
-            // relative path.  A tiny read-only facade preserves the full path
-            // so two same-named pages do not collapse to a basename guess.
-            return {
-                name: file.name || path.split('/').at(-1) || 'texture.png',
-                size: file.size,
-                type: file.type || 'image/png',
-                webkitRelativePath: path,
-                arrayBuffer: () => file.arrayBuffer(),
-            };
-        }
-    }
 
-    async function normalizeHostTextureFiles(values) {
-        const result = [];
-        for (const value of Array.from(values || [])) {
-            if (value && typeof value.arrayBuffer === 'function') {
-                result.push(value);
-                continue;
-            }
-            const bytes = await readBinaryValue(value?.bytes ?? value?.data ?? value);
-            if (!bytes) continue;
-            const path = String(value?.path || value?.relativePath || value?.name || 'texture.png');
-            const file = createMemoryFile(bytes, path, 'image/png');
-            if (file) result.push(setRelativePath(file, path));
-        }
-        return result;
-    }
 
     function incompleteTemplateError() {
         const error = new Error(t('emoteMaker.templateFolderIncomplete'));
@@ -6213,60 +5867,12 @@
         return error?.code === 'template_incomplete';
     }
 
-    async function hostTemplateFile(result) {
-        const candidate = result?.file || result?.zip || result?.bytes || result?.data;
-        if (candidate && typeof candidate.arrayBuffer === 'function' && candidate.name) {
-            return candidate;
-        }
-        const bytes = await readBinaryValue(candidate);
-        if (!bytes) return null;
-        return createMemoryFile(
-            bytes,
-            result?.fileName || result?.filename || result?.name || 'template.zip',
-            'application/zip',
-        );
+
+    /** 浏览器的目录选择能看见 .elpack。宿主那个选择器只认解压开的模型目录，工坊包会被它丢掉。 */
+    function chooseTemplateDirectory() {
+        templateDirectoryInput?.click();
     }
 
-    async function importTemplateDirectoryFromHost() {
-        const bridge = window.nekoHost;
-        if (!bridge || typeof bridge.pickTemplateDirectory !== 'function') return false;
-        if (templateImportButton) templateImportButton.disabled = true;
-        if (templateDirectoryButton) templateDirectoryButton.disabled = true;
-        setTemplateImportStatus(t('emoteMaker.importingTemplate'));
-        try {
-            // 不给 startPath：桌面端会把对话框开在用户上次选过的目录，
-            // 这里给了反而会盖掉它。界面只需要点一下确认。
-            // （"记住上次目录"属于被本地副本取代的旧重开路径，这里只管新导入。）
-            let result = await bridge.pickTemplateDirectory({
-                title: t('emoteMaker.selectTemplateFolder'),
-            });
-            if (!result || result.cancelled) {
-                setTemplateImportStatus(t('emoteMaker.templateFolderCancelled'), 'muted');
-                return true;
-            }
-            if (result.complete === false || result.completeness?.complete === false) {
-                throw incompleteTemplateError();
-            }
-            const file = await hostTemplateFile(result);
-            if (!file) throw new Error(t('emoteMaker.importFailed'));
-            let nextTextureFiles = textureCacheFiles;
-            if (Array.isArray(result.textureFiles || result.textures)) {
-                nextTextureFiles = await normalizeHostTextureFiles(result.textureFiles || result.textures);
-            }
-            await importTemplateFile(file, {
-                textureFiles: nextTextureFiles,
-                kind: 'directory',
-                sourceName: result.folderName || '',
-            });
-            return true;
-        } catch (error) {
-            reportImportFailure(error);
-            return true;
-        } finally {
-            if (templateImportButton) templateImportButton.disabled = false;
-            if (templateDirectoryButton) templateDirectoryButton.disabled = false;
-        }
-    }
 
     /**
      * @returns {Promise<boolean>} 导入是否成功。重开（从副本/重新定位）依赖这个返回值
@@ -6280,7 +5886,6 @@
         const nextTextureFiles = normalizeTextureCacheFiles(
             textureFiles === undefined ? textureCacheFiles : textureFiles,
         );
-        if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         let nextAssetStore = null;
@@ -6338,6 +5943,7 @@
             const nextTemplateSliders = Array.isArray(nextPackage.character?.sliders)
                 ? nextPackage.character.sliders.map((item) => ({ ...item }))
                 : [];
+            const nextTemplateSliderDefaults = nextTemplateSliders.map((item) => ({ ...item }));
             const nextTemplateSlots = Array.isArray(nextPackage.character?.slots)
                 ? nextPackage.character.slots.map((item) => ({
                     ...item,
@@ -6390,6 +5996,7 @@
             state.sceneListFilter = '';
             state.templateSkins = nextTemplateSkins;
             state.templateSliders = nextTemplateSliders;
+            state.templateSliderDefaults = nextTemplateSliderDefaults;
             state.templateSlots = nextTemplateSlots;
             state.templateSlotDefaults = nextTemplateSlotDefaults;
             state.templateSlotGroup = nextTemplateSlots[0]?.name || '';
@@ -6407,6 +6014,9 @@
             // 多选集合里是上一个模板的动画 id，留着会把旧动作一起加进新模板的组
             setPickedAnimations([]);
             applyTemplateSession(nextPackage);
+            // 会话里的滑杆是上次拖过的值。重置要回到角色文件里的那份，
+            // 所以出厂值以这次解开的包为准，不被会话覆盖。
+            state.templateSliderDefaults = nextTemplateSliderDefaults;
             if (!state.groupId) {
                 const first = allGroups()[0];
                 if (first) selectGroup(first.id);
@@ -6453,10 +6063,63 @@
             }
             return committed;
         } finally {
-            if (templateImportButton) templateImportButton.disabled = false;
             if (templateDirectoryButton) templateDirectoryButton.disabled = false;
             if (templateFileInput) templateFileInput.value = '';
         }
+    }
+
+    async function applyWorkshopCharacter(packed) {
+        const character = packed.workshopCharacter || {};
+        const needed = String(character.sharedModelKey || '');
+        const loaded = String(templatePackage?.model?.id || templatePackage?.source?.sharedModelKey || '');
+        const same = Boolean(needed) && needed.toLowerCase() === loaded.toLowerCase();
+        if (!same) {
+            const error = new Error(interpolate(t('emoteMaker.workshopCharacterNeedsModel'), {
+                name: character.displayName || packed.sourceName || needed,
+                model: needed,
+            }));
+            error.code = 'workshop_character';
+            throw error;
+        }
+        state.templateSkins = (character.skins || []).map((item) => ({ ...item }));
+        state.templateSliders = (character.sliders || []).map((item) => ({ ...item }));
+        state.templateSliderDefaults = state.templateSliders.map((item) => ({ ...item }));
+        state.templateSlots = (character.slots || []).map((item) => ({
+            ...item,
+            tintColor: item?.tintColor ? { ...item.tintColor } : null,
+            tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
+        }));
+        state.templateSlotDefaults = state.templateSlots.map((item) => ({
+            ...item,
+            tintColor: item?.tintColor ? { ...item.tintColor } : null,
+            tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
+        }));
+        if (state.templateSlots[0]) state.templateSlotGroup = state.templateSlots[0].name;
+        textureCacheFiles = Array.isArray(character.textureFiles) ? character.textureFiles : [];
+        if (templateAssetStore && typeof templateAssetStore.setFiles === 'function') {
+            templateAssetStore.setFiles(textureCacheFiles);
+        } else {
+            templateAssetStore = buildTemplateAssetStore(templateAssetStore, textureCacheFiles);
+        }
+        templatePackage.character = {
+            ...(templatePackage.character || {}),
+            sharedModelKey: needed,
+            skins: state.templateSkins,
+            sliders: state.templateSliders,
+            slots: state.templateSlots,
+            customTexture: textureCacheFiles.length > 0,
+            customTextureCache: {
+                required: textureCacheFiles.length > 0,
+                provided: textureCacheFiles.length > 0,
+            },
+        };
+        persistTemplateSession();
+        renderAll();
+        setTemplateImportStatus('');
+        showToast(interpolate(t('emoteMaker.workshopCharacterApplied'), {
+            name: character.displayName || packed.sourceName || needed,
+        }));
+        void activateNativeSpineRenderer();
     }
 
     /** 目录导入的默认名＝文件夹名：来源是每个文件的 webkitRelativePath 第一段。 */
@@ -6475,7 +6138,6 @@
             reportImportFailure(new Error(t('emoteMaker.importFailed')));
             return;
         }
-        if (templateImportButton) templateImportButton.disabled = true;
         if (templateDirectoryButton) templateDirectoryButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         try {
@@ -6483,6 +6145,10 @@
             const packed = await directoryApi.pack(selectedFiles, {
                 filename: 'template-directory.zip',
             });
+            if (packed.workshopCharacter) {
+                await applyWorkshopCharacter(packed);
+                return;
+            }
             if (packed.completeness && !packed.completeness.complete) {
                 throw incompleteTemplateError();
             }
@@ -6493,13 +6159,12 @@
             await importTemplateFile(file, {
                 textureFiles: packed.textureFiles || [],
                 kind: 'directory',
-                sourceName: folderNameFromFiles(selectedFiles),
+                sourceName: packed.sourceName || folderNameFromFiles(selectedFiles),
             });
         } catch (error) {
             reportImportFailure(error);
         } finally {
             if (templateDirectoryInput) templateDirectoryInput.value = '';
-            if (templateImportButton) templateImportButton.disabled = false;
             if (templateDirectoryButton) templateDirectoryButton.disabled = false;
         }
     }
@@ -6526,12 +6191,6 @@
     }
 
     function bindEvents() {
-        document.querySelectorAll('.category-tab').forEach((button) => {
-            button.addEventListener('click', () => {
-                state.category = button.dataset.category || 'template';
-                renderAll();
-            });
-        });
         document.querySelectorAll('.inspector-tab').forEach((button) => {
             button.addEventListener('click', () => setInspectorTab(button.dataset.inspectorTab || 'parts'));
         });
@@ -6543,6 +6202,11 @@
             // 这个下拉现在是"组"：选导入组时 selectGroup 会写回 sceneListFilter，
             // 选自建组时改成按成员过滤。
             selectGroup(event.target.value);
+        });
+        templateSceneListSelect?.addEventListener('emote-select-action', (event) => {
+            const detail = event.detail || {};
+            if (detail.action === 'rename') renameGroupById(detail.value, detail.name);
+            else if (detail.action === 'delete') void deleteGroupById(detail.value);
         });
         bindCursorTips();
         $('#new-group-btn')?.addEventListener('click', () => {
@@ -6580,7 +6244,6 @@
             // 加号在每次重绘里重建，监听挂委托：点在它或它里面的东西都算
             if (event.target.closest('#add-scene-to-group-btn')) addCurrentSceneToGroup();
         });
-        $('#save-shot-btn')?.addEventListener('click', () => saveCurrentAsShot());
         $('#export-group-open-btn')?.addEventListener('click', () => {
             if (groupExportBusy) {
                 // 同一颗按钮在跑的时候就是停止：一批可能上百张，得能中途停
@@ -6592,25 +6255,12 @@
             if (state.groupPickerOpen) closeGroupPicker();
             else openGroupPicker();
         });
-        $('#model-preset-select')?.addEventListener('change', (event) => {
-            showToast(t('emoteMaker.modelPreset'));
-        });
-        templateImportButton?.addEventListener('click', () => templateFileInput?.click());
-        canvasImportButton?.addEventListener('click', () => templateFileInput?.click());
+        canvasImportButton?.addEventListener('click', () => chooseTemplateDirectory());
         templateFileInput?.addEventListener('change', (event) => {
             const file = event.target.files?.[0];
             void importTemplateFile(file);
         });
-        templateDirectoryButton?.addEventListener('click', () => {
-            // Desktop builds can read the selected folder's sibling resources
-            // through the host bridge.  Web builds keep the normal directory
-            // input as a privacy-safe fallback.
-            if (window.nekoHost && typeof window.nekoHost.pickTemplateDirectory === 'function') {
-                void importTemplateDirectoryFromHost();
-                return;
-            }
-            templateDirectoryInput?.click();
-        });
+        templateDirectoryButton?.addEventListener('click', () => chooseTemplateDirectory());
         templateDirectoryInput?.addEventListener('change', (event) => {
             void importTemplateDirectory(event.target.files || []);
         });
@@ -6706,17 +6356,6 @@
             state.zoom = Math.max(0.75, state.zoom - 0.05);
             applyZoom();
         });
-        $('#custom-color-input')?.addEventListener('input', (event) => setSelectedColor(event.target.value));
-        $('#secondary-color-input')?.addEventListener('input', (event) => {
-            state.secondaryColor = event.target.value;
-            applyNativeVisualState();
-            void renderCanvas();
-        });
-        document.querySelectorAll('.color-mode-button').forEach((button) => {
-            button.addEventListener('click', () => {
-                recordChange(() => { state.colorMode = button.dataset.colorMode || 'default'; });
-            });
-        });
         $('#reset-color-btn')?.addEventListener('click', () => {
             if (templatePackage) {
                 const before = cloneState();
@@ -6736,14 +6375,7 @@
                     applyNativeCharacterState({ render: true });
                     renderAll();
                 }
-                return;
             }
-            recordChange(() => {
-                state.colorMode = 'default';
-                state.colors[state.selectedLayer] = DEFAULT_COLORS[state.selectedLayer] || DEFAULT_COLORS.expression;
-                state.secondaryColor = '#2a4664';
-            });
-            applyNativeVisualState();
         });
         $('#adjust-overwrite')?.addEventListener('change', (event) => {
             state.adjustOverwrite = Boolean(event.target.checked);
@@ -6755,14 +6387,25 @@
             input?.addEventListener('input', (event) => updateAdjustment(key, event.target.value));
         });
         $('#reset-adjustments-btn')?.addEventListener('click', () => {
-            recordChange(() => { state.adjustments = { x: 0, y: 0, rotation: 0, scale: 100 }; });
+            recordChange(() => {
+                state.adjustments = { x: 0, y: 0, rotation: 0, scale: 100 };
+                state.templateSliders = (state.templateSliderDefaults || []).map((item) => ({ ...item }));
+            });
+            applyNativeCharacterState({ render: true });
             applyNativeVisualState();
         });
         $('#play-animation-btn')?.addEventListener('click', toggleAnimationPlayback);
         animationProgress?.addEventListener('input', (event) => {
+            const hadPreview = Boolean(groupPreview);
+            groupPreview = null;
             state.animationProgress = Number(event.target.value) || 0;
             updateAnimationControls();
-            if (templatePackage && hasSpineRenderer()) syncNativeTimeFromProgress();
+            if (hadPreview) {
+                const scene = getSelectedScene();
+                if (scene) syncNativeScene(scene, { autoplay: false });
+            } else if (templatePackage && hasSpineRenderer()) {
+                syncNativeTimeFromProgress();
+            }
             void renderCanvas();
         });
         animationSpeed?.addEventListener('input', (event) => {
@@ -6771,7 +6414,6 @@
         });
         $('#transparent-background')?.addEventListener('change', (event) => {
             state.exportTransparent = event.target.checked !== false;
-            state.layerVisible.background = !state.exportTransparent;
             persistExportSettings();
             applyNativeVisualState();
             void renderCanvas();

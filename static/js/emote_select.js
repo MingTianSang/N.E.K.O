@@ -50,6 +50,93 @@
         if (disabled) closeMenu(entry.menu);
     }
 
+    function iconSvg(kind) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 16 16');
+        svg.setAttribute('width', '14');
+        svg.setAttribute('height', '14');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', 'currentColor');
+        path.setAttribute('stroke-width', '1.6');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('d', kind === 'rename'
+            ? 'M9.2 2.6l4.2 4.2M2.8 13.2l2.5-.5L13.2 4.8 11.2 2.8 3.3 10.7z'
+            : 'M3.2 4.4h9.6M6.2 4.4V3h3.6v1.4M4.4 4.4l.6 8.4h6l.6-8.4');
+        svg.appendChild(path);
+        return svg;
+    }
+
+    function dispatchSelectAction(select, detail) {
+        select.dispatchEvent(new CustomEvent('emote-select-action', { bubbles: true, detail }));
+    }
+
+    /** 自建组这一行：铅笔改名，垃圾桶删除。点字本身仍然是选中。 */
+    function appendGroupActions(entry, item, opt, label) {
+        const actions = document.createElement('span');
+        actions.className = 'emote-select-actions';
+        ['rename', 'delete'].forEach((action) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'emote-select-action' + (action === 'delete' ? ' is-delete' : '');
+            button.dataset.action = action;
+            button.setAttribute('aria-label', action === 'rename'
+                ? (opt.dataset.renameLabel || '改名')
+                : (opt.dataset.deleteLabel || '删除'));
+            button.appendChild(iconSvg(action));
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (action === 'delete') {
+                    dispatchSelectAction(entry.select, { action: 'delete', value: opt.value });
+                    closeMenu(entry.menu);
+                    return;
+                }
+                beginInlineRename(entry, item, opt, label);
+            });
+            actions.appendChild(button);
+        });
+        item.appendChild(actions);
+    }
+
+    function beginInlineRename(entry, item, opt, label) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'emote-select-rename';
+        input.maxLength = 40;
+        input.value = opt.textContent.trim();
+        input.setAttribute('aria-label', opt.dataset.renameLabel || '改名');
+        label.replaceWith(input);
+        let closed = false;
+        const finish = (commit) => {
+            if (closed) return;
+            closed = true;
+            const name = input.value.trim();
+            if (commit && name && name !== opt.textContent.trim()) {
+                dispatchSelectAction(entry.select, { action: 'rename', value: opt.value, name });
+            } else if (entry.menu.classList.contains('is-open')) {
+                buildMenu(entry);
+                placeMenu(entry);
+            }
+        };
+        input.addEventListener('click', (event) => event.stopPropagation());
+        input.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                finish(false);
+            }
+        });
+        input.addEventListener('blur', () => finish(true));
+        input.focus();
+        input.select();
+    }
+
     function buildMenu(entry) {
         const { select, menu } = entry;
         menu.replaceChildren();
@@ -62,17 +149,23 @@
             return;
         }
         options.forEach((opt) => {
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'emote-select-option';
+            const writable = opt.dataset.writable === '1';
+            const item = document.createElement(writable ? 'div' : 'button');
+            if (!writable) item.type = 'button';
+            item.className = 'emote-select-option' + (writable ? ' has-actions' : '');
             item.setAttribute('role', 'option');
-            item.textContent = opt.textContent.trim();
             item.tabIndex = -1;
+            const label = document.createElement('span');
+            label.className = 'emote-select-option-label';
+            label.textContent = opt.textContent.trim();
+            item.appendChild(label);
             const selected = opt.index === select.selectedIndex;
             item.classList.toggle('is-selected', selected);
             item.setAttribute('aria-selected', selected ? 'true' : 'false');
             if (opt.disabled) item.disabled = true;
+            if (writable) appendGroupActions(entry, item, opt, label);
             item.addEventListener('click', (event) => {
+                if (event.target.closest('.emote-select-action, .emote-select-rename')) return;
                 event.preventDefault();
                 event.stopPropagation();
                 if (opt.disabled || select.disabled) return;
@@ -225,6 +318,12 @@
             } else if (event.key === 'End') {
                 event.preventDefault();
                 items[items.length - 1]?.focus();
+            } else if (event.key === 'Enter') {
+                const current = document.activeElement;
+                if (current && current.classList.contains('emote-select-option') && current.tagName !== 'BUTTON') {
+                    event.preventDefault();
+                    current.click();
+                }
             } else if (event.key === 'Escape') {
                 event.preventDefault();
                 closeMenu(menu);

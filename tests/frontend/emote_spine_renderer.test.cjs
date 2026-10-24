@@ -815,3 +815,44 @@ test('renderer maps EmoteLab Unity camera units to Spine native pixels', () => {
     assert.equal(camera.position.y, 300);
     assert.equal(camera.position.z, 0);
 });
+
+test('editor rotation is applied to the root bone', () => {
+    const instance = new SpineRenderer({
+        canvas: canvas(),
+        manifest: { scenes: [] },
+        assetStore: {},
+    });
+    const pose = { rotation: 12 };
+    let updates = 0;
+    instance.runtime = { Physics: { update: 2 } };
+    instance.skeleton = {
+        rotation: 0,
+        getRootBone() { return { appliedPose: pose }; },
+        updateWorldTransform(mode) {
+            updates += 1;
+            assert.equal(mode, 2);
+        },
+    };
+    instance._sceneTransform = { x: 0, y: 0, rotation: 35, scale: 1 };
+    instance._rootRotationBasis = 12;
+    instance._applyEditorRotation();
+    assert.equal(pose.rotation, 47);
+    assert.equal(instance.skeleton.rotation, 35);
+    assert.equal(updates, 1);
+    // 同一帧再套一次不能叠角度。
+    instance._applyEditorRotation();
+    assert.equal(pose.rotation, 47);
+    assert.equal(updates, 1);
+    instance._sceneTransform.rotation = 0;
+    instance._applyEditorRotation();
+    assert.equal(pose.rotation, 12);
+    // 动画混合前先回到骨骼自己的角度。
+    pose.rotation = 99;
+    instance._restoreRootRotationBasis();
+    assert.equal(pose.rotation, 12);
+    pose.rotation = 20;
+    instance._captureRootRotationBasis();
+    instance._sceneTransform.rotation = -10;
+    instance._applyEditorRotation();
+    assert.equal(pose.rotation, 10);
+});

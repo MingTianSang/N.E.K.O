@@ -70,13 +70,12 @@
                     <!-- 标题删了：卡里第一排就是按钮，标题只是复述。运行徽章留着，
                          它报的是"能不能渲染"，这信息别处没有。 -->
                     <div class="template-import-actions">
-                        <button id="select-emotelab-template-btn" class="icon-text-button" type="button" data-i18n="emoteMaker.selectTemplateFile">选择模板文件</button>
                         <button id="select-emotelab-template-directory-btn" class="icon-text-button template-directory-button" type="button" data-i18n="emoteMaker.selectTemplateFolder">选择模板目录</button>
                         <span id="template-runtime-badge" class="template-runtime-badge" data-i18n="emoteMaker.templateNoRuntime">预览暂不可用</span>
                     </div>
                     <input id="emotelab-template-file" class="visually-hidden" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
                     <input id="emotelab-template-directory" class="visually-hidden" type="file" webkitdirectory directory multiple tabindex="-1" aria-hidden="true">
-                    <p id="template-import-status" class="template-import-status">支持模板文件或本地素材目录，系统会自动识别可用格式。</p>
+                    <p id="template-import-status" class="template-import-status">选择本地的模板目录，系统会自动识别里面的素材。</p>
                 </section>
                 <label class="asset-search" for="asset-search-input">
                     <span aria-hidden="true">⌕</span>
@@ -87,11 +86,6 @@
                     <h3 id="asset-section-title" data-i18n="emoteMaker.noTemplates">模板暂未添加</h3>
                 </div>
                 <div id="asset-grid" class="asset-grid" role="tabpanel" aria-labelledby="asset-section-title" tabindex="0"></div>
-
-                <div id="asset-tip" class="asset-tip">
-                    <img src="/static/icons/star.png" alt="" aria-hidden="true">
-                    <p data-i18n="emoteMaker.emptyLibraryHint">模板库暂为空，等待添加新模板</p>
-                </div>
             </aside>
 
             <div class="resize-handle resize-handle-col" id="resize-left" role="separator" aria-orientation="vertical" tabindex="0" data-i18n-aria="emoteMaker.resizeLibraryAria" aria-label="调整素材库宽度"></div>
@@ -119,7 +113,7 @@
                     </div>
                     <div id="template-canvas-status" class="template-canvas-status" role="status" aria-live="polite">
                         <span id="template-canvas-status-text" data-i18n="emoteMaker.emptyLibraryHint">模板库暂为空，等待添加新模板</span>
-                        <button id="canvas-import-btn" class="canvas-import-button" type="button" data-i18n="emoteMaker.selectTemplateFile">选择模板文件</button>
+                        <button id="canvas-import-btn" class="canvas-import-button" type="button" data-i18n="emoteMaker.selectTemplateFolder">选择模板目录</button>
                     </div>
                     <div class="canvas-zoom">
                         <button id="zoom-out-btn" type="button" aria-label="缩小">−</button>
@@ -177,22 +171,15 @@
                 </div>
 
                 <div id="inspector-empty-state" class="inspector-empty-state" role="status" hidden>
-                    <span data-i18n="emoteMaker.selectTemplateFile">选择模板文件</span>
+                    <span data-i18n="emoteMaker.selectTemplateFolder">选择模板目录</span>
                 </div>
 
                 <div id="inspector-panel-parts" class="inspector-tab-panel is-active" role="tabpanel" aria-labelledby="inspector-tab-parts" data-inspector-panel="parts">
                     <section class="inspector-section part-groups-section">
                         <div class="section-label-row">
                             <span class="section-label" data-i18n="emoteMaker.chooseParts">选择部件</span>
-                            <span class="part-group-hint" data-i18n="emoteMaker.activeIndex">当前变体</span>
                         </div>
-                        <div id="part-group-list" class="part-group-list"></div>
                         <div id="template-skin-controls" class="template-compat-controls" hidden></div>
-                    </section>
-
-                    <section class="inspector-section layer-section">
-                        <div class="section-label" data-i18n="emoteMaker.layers">图层顺序</div>
-                        <div id="layer-list" class="layer-list"></div>
                     </section>
                 </div>
 
@@ -203,10 +190,10 @@
                             <button id="reset-adjustments-btn" class="text-button" type="button" data-i18n="emoteMaker.reset">重置</button>
                         </div>
                         <label class="overwrite-row"><input id="adjust-overwrite" type="checkbox" checked><span data-i18n="emoteMaker.overwrite">覆盖默认值</span></label>
-                        <label class="range-row" for="adjust-x"><span data-i18n="emoteMaker.positionX">位置 X</span><output id="adjust-x-value">0</output><input id="adjust-x" type="range" min="-100" max="100" value="0"></label>
-                        <label class="range-row" for="adjust-y"><span data-i18n="emoteMaker.positionY">位置 Y</span><output id="adjust-y-value">0</output><input id="adjust-y" type="range" min="-100" max="100" value="0"></label>
-                        <label class="range-row" for="adjust-rotation"><span data-i18n="emoteMaker.rotation">旋转</span><output id="adjust-rotation-value">0°</output><input id="adjust-rotation" type="range" min="-30" max="30" value="0"></label>
-                        <label class="range-row" for="adjust-scale"><span data-i18n="emoteMaker.scale">缩放</span><output id="adjust-scale-value">100%</output><input id="adjust-scale" type="range" min="80" max="120" value="100"></label>
+                        <label class="range-row" for="adjust-x"><span data-i18n="emoteMaker.positionX">位置 X</span><output id="adjust-x-value">0</output><input id="adjust-x" type="range" min="-2000" max="2000" value="0"></label>
+                        <label class="range-row" for="adjust-y"><span data-i18n="emoteMaker.positionY">位置 Y</span><output id="adjust-y-value">0</output><input id="adjust-y" type="range" min="-2000" max="2000" value="0"></label>
+                        <label class="range-row" for="adjust-rotation"><span data-i18n="emoteMaker.rotation">旋转</span><output id="adjust-rotation-value">0°</output><input id="adjust-rotation" type="range" min="-180" max="180" value="0"></label>
+                        <label class="range-row" for="adjust-scale"><span data-i18n="emoteMaker.scale">缩放</span><output id="adjust-scale-value">100%</output><input id="adjust-scale" type="range" min="10" max="500" value="100"></label>
                         <div id="template-slider-controls" class="template-compat-controls" hidden></div>
                     </section>
                 </div>
@@ -217,20 +204,6 @@
                             <span class="section-label" data-i18n="emoteMaker.colorMode">着色模式</span>
                             <button id="reset-color-btn" class="text-button" type="button" data-i18n="emoteMaker.reset">重置</button>
                         </div>
-                        <div id="color-mode-list" class="color-mode-list" role="group">
-                            <button class="color-mode-button is-active" type="button" data-color-mode="default" data-i18n="emoteMaker.defaultColor">原色</button>
-                            <button class="color-mode-button" type="button" data-color-mode="tint" data-i18n="emoteMaker.tintColor">单色 Tint</button>
-                            <button class="color-mode-button" type="button" data-color-mode="two-tone" data-i18n="emoteMaker.twoColorTint">双色 Tint</button>
-                        </div>
-                        <div id="color-swatches" class="color-swatches" aria-label="颜色"></div>
-                        <label class="custom-color-row" for="custom-color-input">
-                            <span data-i18n="emoteMaker.recentColors">最近使用</span>
-                            <input id="custom-color-input" type="color" value="#56B9FF">
-                        </label>
-                        <label class="custom-color-row secondary-color-row" for="secondary-color-input">
-                            <span data-i18n="emoteMaker.tintBlack">阴影颜色</span>
-                            <input id="secondary-color-input" type="color" value="#2A4664">
-                        </label>
                         <div id="template-slot-controls" class="template-compat-controls" hidden></div>
                     </section>
                 </div>
@@ -251,11 +224,15 @@
                             <span class="group-summary-state" id="group-summary-state"></span>
                         </summary>
                         <div class="group-body">
-                            <div class="group-picker-row">
-                                <select id="template-scene-list-select" class="template-scene-list-select" data-i18n-aria="emoteMaker.batchExportPicker" aria-label="组"></select>
-                                <button id="new-group-btn" class="group-create-btn" type="button" data-i18n="emoteMaker.newGroupFromCurrent">按当前配置创建组</button>
-                                <button id="new-group-help" class="group-help" type="button" aria-label="按当前配置创建组是什么意思">?</button>
-                                <button id="save-shot-btn" class="group-chip-btn" type="button" data-i18n="emoteMaker.saveShot">存为取景</button>
+                            <div class="group-controls">
+                                <div class="group-picker-row">
+                                    <select id="template-scene-list-select" class="template-scene-list-select" data-i18n-aria="emoteMaker.batchExportPicker" aria-label="组"></select>
+                                </div>
+                                <div class="group-action-row">
+                                    <button id="new-group-btn" class="group-create-btn" type="button" data-i18n="emoteMaker.newGroupFromCurrent">按当前配置创建组</button>
+                                    <button id="new-group-help" class="group-help" type="button" aria-label="按当前配置创建组是什么意思">?</button>
+                                </div>
+                                <p class="panel-note" data-i18n="emoteMaker.groupContextHint">右键中间的动作列表，就能加入当前组。</p>
                             </div>
                             <div id="group-members" class="group-members" role="list"></div>
                             <p class="group-export-status" id="group-export-status"></p>
@@ -270,6 +247,7 @@
                         </div>
 
                         <div id="pack-panel-basic">
+                            <p class="panel-note" data-i18n="emoteMaker.packBasicDragHint">长按中间的动作，拖到下面某一行，就能快速应用。</p>
                             <div id="pack-basic-rows"></div>
                         </div>
 

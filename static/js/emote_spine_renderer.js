@@ -332,6 +332,10 @@
             this._viewportBounds = null;
             this._scene = null;
             this._sceneTransform = { x: 0, y: 0, rotation: 0, scale: 1 };
+            // Spine 4.3 的 Skeleton 没有 rotation。编辑器角度加在根骨骼上，
+            // 这个数记下动画自己的角度，避免每帧再叠一次。
+            this._rootRotationBasis = null;
+            this._editorRotationApplied = 0;
             this._colorMode = { mode: 'default', primary: null, secondary: null };
             this._background = [...DEFAULT_BACKGROUND];
         }
@@ -1057,11 +1061,51 @@
 
         _applyPose(deltaSeconds) {
             if (!this.state || !this.skeleton) return;
+            // 先把上一帧加上的编辑器旋转拿掉，动画混合才不会拿那个角度当起点。
+            this._restoreRootRotationBasis();
             if (deltaSeconds > 0) this.state.update(deltaSeconds);
             this.state.apply(this.skeleton);
             this._applyCharacterSlotStyles();
             this._applyCharacterSliders();
             this.skeleton.updateWorldTransform(this.runtime.Physics?.update ?? 2);
+            this._captureRootRotationBasis();
+        }
+
+        _rootAppliedPose() {
+            const root = this.skeleton?.getRootBone?.();
+            if (!root) return null;
+            return root.appliedPose || root.pose || null;
+        }
+
+        _captureRootRotationBasis() {
+            const pose = this._rootAppliedPose();
+            if (!pose || typeof pose.rotation !== 'number') return;
+            this._rootRotationBasis = pose.rotation;
+        }
+
+        _restoreRootRotationBasis() {
+            const pose = this._rootAppliedPose();
+            if (!pose || typeof this._rootRotationBasis !== 'number') return;
+            pose.rotation = this._rootRotationBasis;
+        }
+
+        // Skeleton.x / scaleX 会进绘制，rotation 不会。角度加在根骨骼的本地旋转上，
+        // 整棵骨架绕根骨转。同一帧里相机会套两次，第二次必须还是同一个角度。
+        _applyEditorRotation() {
+            const degrees = finiteOr(this._sceneTransform?.rotation, 0);
+            if (this.skeleton) this.skeleton.rotation = degrees;
+            const pose = this._rootAppliedPose();
+            if (!pose || typeof pose.rotation !== 'number'
+                || typeof this.skeleton.updateWorldTransform !== 'function') return;
+            if (typeof this._rootRotationBasis !== 'number') {
+                if (degrees === 0) return;
+                this._rootRotationBasis = pose.rotation;
+            }
+            const next = this._rootRotationBasis + degrees;
+            if (pose.rotation === next && this._editorRotationApplied === degrees) return;
+            pose.rotation = next;
+            this._editorRotationApplied = degrees;
+            this.skeleton.updateWorldTransform(this.runtime?.Physics?.update ?? 2);
         }
 
         tick(deltaSeconds = 1 / 60, options = {}) {
@@ -1476,8 +1520,8 @@
                 this.skeleton.y = 0;
                 this.skeleton.scaleX = (model.mirrored ? -1 : 1) * scale;
                 this.skeleton.scaleY = scale;
-                this.skeleton.rotation = finiteOr(transform.rotation, 0);
                 this.skeleton.visible = model.visible !== false;
+                this._applyEditorRotation();
                 this.renderer.camera.update();
                 return;
             }
@@ -1518,8 +1562,8 @@
             const mirror = model.mirrored ? -1 : 1;
             this.skeleton.scaleX = mirror * scale;
             this.skeleton.scaleY = scale;
-            this.skeleton.rotation = finiteOr(transform.rotation, 0);
             this.skeleton.visible = model.visible !== false;
+            this._applyEditorRotation();
             this.renderer.camera.update();
         }
 

@@ -131,7 +131,6 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
             return Boolean(el) && getComputedStyle(el).display !== 'none';
         };
         return {
-            save: shown('#save-shot-btn'),
             // 导出入口已经搬到底部那排按钮里，组这一栏里不该再有一颗
             oldExport: Boolean(document.querySelector('#export-group-btn')),
             current: shown('#export-png-btn'),
@@ -141,7 +140,6 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
     # 还没选组时两个写动作照样给：按下去会顺手建一个组，比"先别按"少一步
     assert state["oldExport"] is False, "「导出本组」还留在批量导出里"
     assert state["current"] and state["batch"], "底部两颗导出按钮没并排出现"
-    # 首组是导入的只读组：存为取景无处可写就该收着；
     # 加号（顶替「加入本组」的那颗）只住在空组提示里，此刻不该有
     assert group_page.evaluate(
         "() => Boolean(document.querySelector('#add-scene-to-group-btn'))") is False
@@ -255,6 +253,10 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
     transform = (shot.get("look") or {}).get("transform") or {}
     assert abs(float(transform.get("scale") or 0) - 1.18) < 0.01,         f"当前缩放没被带进组: {transform}"
     assert abs(float(transform.get("rotation") or 0) + 12) < 0.01,         f"当前旋转角度没被带进组: {transform}"
+    own = next((item for item in (stored.get("groups") or []) if not str(item.get("id") or "").startswith("list:")), {})
+    group_transform = ((own.get("look") or {}).get("transform") or {})
+    assert abs(float(group_transform.get("rotation") or 0) + 12) < 0.01, \
+        f"组自己没记下旋转，后加的成员就只能跟着滑杆跑: {own}"
 
     # 再加入当前场景：组里应该多一条"场景"成员。
     # （这条组已有一条取景，不是空组——加号只住在空组提示里，这里走右键菜单加。）
@@ -281,23 +283,173 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
         timeout=10000)
 
 
-def test_saving_the_current_framing_shows_up_as_a_member(group_page: Page) -> None:
+def _open_group_menu(page: Page) -> None:
+    page.evaluate("""() => {
+        const menu = document.querySelector('#template-scene-list-select-menu');
+        if (!menu || !menu.classList.contains('is-open')) {
+            document.querySelector('#template-scene-list-select-trigger').click();
+        }
+    }""")
+    page.wait_for_selector('#template-scene-list-select-menu.is-open', timeout=10000)
+
+
+def _rename_group_in_menu(page: Page, current: str, name: str) -> None:
+    _open_group_menu(page)
+    page.evaluate(
+        """(current) => {
+            const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+                .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === current);
+            row.querySelector('[data-action="rename"]').click();
+        }""",
+        current,
+    )
+    page.wait_for_selector('#template-scene-list-select-menu .emote-select-rename', timeout=10000)
+    page.evaluate(
+        """(name) => {
+            const input = document.querySelector('#template-scene-list-select-menu .emote-select-rename');
+            input.value = name;
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }""",
+        name,
+    )
+
+
+def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
+    """下拉占满这一行。改名和删除是菜单里的两个图标，导入的组没有。"""
+    stacked = group_page.evaluate("""() => {
+        const row = document.querySelector('.group-picker-row').getBoundingClientRect();
+        const trigger = document.querySelector('.group-picker-row .emote-select-trigger').getBoundingClientRect();
+        const actions = document.querySelector('.group-action-row').getBoundingClientRect();
+        return {
+            rowWidth: row.width, triggerWidth: trigger.width,
+            triggerTop: trigger.top, actionTop: actions.top,
+            nameGone: !document.querySelector('#group-name'),
+            deleteGone: !document.querySelector('#delete-group-btn'),
+        };
+    }""")
+    assert stacked["nameGone"] is True
+    assert stacked["deleteGone"] is True
+    assert stacked["triggerWidth"] >= stacked["rowWidth"] * 0.9, stacked
+    assert stacked["actionTop"] >= stacked["triggerTop"] + 20, stacked
+    _open_group_menu(group_page)
+    imported = group_page.evaluate("""() => {
+        const rows = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')];
+        return rows.map((row) => row.querySelectorAll('[data-action]').length);
+    }""")
+    assert imported and all(count == 0 for count in imported), imported
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
-    group_page.wait_for_function("() => !document.querySelector('#save-shot-btn').hidden", timeout=10000)
-    group_page.evaluate("() => document.querySelector('#save-shot-btn').click()")
-    # 建组自带 1 条取景，再存一次应当变成 2 条
     group_page.wait_for_function(
-        "() => document.querySelectorAll('#group-members .group-member').length === 2", timeout=10000)
-    kind = group_page.evaluate(
-        "() => document.querySelector('#group-members .group-member-kind').textContent")
-    assert kind == "取景", kind
-    stored = json.loads(group_page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY))
-    shot = stored["shots"][-1]
-    assert shot["sourceSceneId"], f"取景必须记住来源场景，否则导出时烘不出来: {shot}"
-    assert "skins" in (shot.get("look") or {}), shot
-    # 取景那条要能认出是哪个场景存的（名字里带场景名），别只有"取景"两个字
-    assert "第一个" in group_page.evaluate(
-        "() => document.querySelector('#group-members .group-member').textContent")
+        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+            .some((option) => option.textContent.trim() === '未命名组')""",
+        timeout=10000)
+    _open_group_menu(group_page)
+    icons = group_page.evaluate("""() => {
+        const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+            .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === '未命名组');
+        const rename = row.querySelector('[data-action="rename"]');
+        const remove = row.querySelector('[data-action="delete"]');
+        return {
+            renameLabel: rename.getAttribute('aria-label'),
+            deleteLabel: remove.getAttribute('aria-label'),
+            renameText: rename.textContent.trim(),
+            deleteText: remove.textContent.trim(),
+            svgs: row.querySelectorAll('svg').length,
+        };
+    }""")
+    assert icons["renameLabel"] == "改名", icons
+    assert icons["deleteLabel"] == "删除", icons
+    assert icons["renameText"] == "" and icons["deleteText"] == "", icons
+    assert icons["svgs"] == 2, icons
+    _rename_group_in_menu(group_page, "未命名组", "开心组")
+    group_page.wait_for_function(
+        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+            .some((option) => option.textContent.trim() === '开心组')""",
+        timeout=10000)
+    _rename_group_in_menu(group_page, "开心组", "改过的组")
+    group_page.wait_for_function(
+        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+            .some((option) => option.textContent.trim() === '改过的组')""",
+        timeout=10000)
+    assert "开心组" not in _options(group_page)
+
+
+def test_a_created_group_can_be_deleted(group_page: Page) -> None:
+    """自建组可以删。取消留着它，确认后组和只属于它的取景一起消失。导入的行没有垃圾桶。"""
+    group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
+    group_page.wait_for_function(
+        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+            .some((option) => option.textContent.trim() === '未命名组')""",
+        timeout=10000)
+
+    def delete_from_menu() -> None:
+        _open_group_menu(group_page)
+        group_page.evaluate("""() => {
+            const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+                .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === '未命名组');
+            row.querySelector('[data-action="delete"]').click();
+        }""")
+
+    delete_from_menu()
+    group_page.wait_for_selector("#emote-confirm:not([hidden])", timeout=10000)
+    assert "未命名组" in group_page.evaluate(
+        "() => document.querySelector('#emote-confirm-text').textContent")
+    group_page.evaluate("() => document.querySelector('#emote-confirm-cancel').click()")
+    assert "未命名组" in _options(group_page)
+    delete_from_menu()
+    group_page.wait_for_selector("#emote-confirm:not([hidden])", timeout=10000)
+    group_page.evaluate("() => document.querySelector('#emote-confirm-ok').click()")
+    group_page.wait_for_function(
+        """() => ![...document.querySelectorAll('#template-scene-list-select option')]
+            .some((option) => option.textContent.trim() === '未命名组')""",
+        timeout=10000)
+    stored = json.loads(group_page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY) or "{}")
+    assert not [group for group in (stored.get("groups") or []) if group.get("name") == "未命名组"]
+    assert stored.get("shots") == [] or stored.get("shots") is None
+    _open_group_menu(group_page)
+    leftover = group_page.evaluate(
+        "() => document.querySelectorAll('#template-scene-list-select-menu [data-action=\"delete\"]').length")
+    assert leftover == 0
+
+
+def test_group_shot_does_not_overwrite_the_editor_look(group_page: Page) -> None:
+    """组里存的旋转只留给组预览和整组导出。点开那一条之后，动作列表用的滑杆还是编辑器自己的。"""
+    group_page.evaluate("""() => {
+        const input = document.querySelector('#adjust-rotation');
+        input.value = '35';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('#new-group-btn').click();
+    }""")
+    group_page.wait_for_function(
+        "() => document.querySelectorAll('#group-members .group-member').length === 1",
+        timeout=10000)
+    stored = json.loads(group_page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY) or "{}")
+    shot = (stored.get("shots") or [{}])[-1]
+    assert (shot.get("look") or {}).get("transform", {}).get("rotation") == 35, shot
+    group_page.evaluate("""() => {
+        const input = document.querySelector('#adjust-rotation');
+        input.value = '0';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('#group-members .group-member-pick').click();
+        const card = document.querySelector('#animation-list .animation-card:not([disabled])');
+        if (card) card.click();
+    }""")
+    assert group_page.evaluate(
+        "() => document.querySelector('#adjust-rotation-value').textContent") == "0°"
+
+
+def test_group_panel_points_at_the_action_list_context_menu(group_page: Page) -> None:
+    """往组里加动作走右键菜单，组面板里写明这件事，不再单放一颗「存为取景」。"""
+    hint = group_page.evaluate("""() => {
+        const note = document.querySelector('#group-section .panel-note');
+        return {
+            gone: document.querySelector('#save-shot-btn') === null,
+            text: note ? note.textContent.trim() : '',
+            shown: Boolean(note) && getComputedStyle(note).display !== 'none',
+        };
+    }""")
+    assert hint["gone"] is True
+    assert hint["shown"] is True
+    assert "右键中间的动作列表" in hint["text"], hint["text"]
 
 
 def test_groups_are_scoped_to_the_template(group_page: Page) -> None:
@@ -355,7 +507,7 @@ def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
         return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
                  tip: el.dataset.tip || '' };
     }""")
-    assert "旋转角度" in anchor["tip"], f"说明没挂到 ? 上: {anchor}"
+    assert "换装" in anchor["tip"], f"说明没挂到 ? 上: {anchor}"
     group_page.mouse.move(20, 20)
     group_page.mouse.move(anchor["x"], anchor["y"])
     shown = group_page.evaluate("""() => {
@@ -382,7 +534,7 @@ def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
     # 点击不该再产生第二条 toast（眼睛在问号上，字却出现在脚边）
     group_page.evaluate("() => document.querySelector('#new-group-help').click()")
     group_page.wait_for_timeout(250)
-    assert "旋转角度" not in group_page.evaluate(
+    assert "换装" not in group_page.evaluate(
         "() => document.querySelector('#emote-toast').textContent"), \
         "点一下又把说明甩到页面底部了"
 
@@ -394,12 +546,31 @@ def test_collapse_caret_is_a_graphic_that_turns_in_place(group_page: Page) -> No
         return { content: cs.content, mask: cs.maskImage || cs.webkitMaskImage,
                  origin: cs.transformOrigin, w: cs.width, h: cs.height, transform: cs.transform };
     }"""
-    group_page.evaluate("() => { document.querySelector('#group-section').open = false; }")
-    # 140ms 的旋转过渡：不等落地就量，读到的是"还在 90°"的中间值
-    group_page.wait_for_timeout(260)
+    # 收起/展开都在页面里等过渡落地再量。固定等 260ms 时，主线程一忙
+    # 就会读到出发角度，收起态被误判成还转着 90°。
+    def _settle(open_state: bool, ready: str) -> None:
+        group_page.evaluate(
+            """([openState, ready]) => new Promise((resolve, reject) => {
+                const section = document.querySelector('#group-section');
+                section.open = openState;
+                const started = performance.now();
+                const tick = () => {
+                    const transform = getComputedStyle(
+                        document.querySelector('.group-summary'), '::before').transform;
+                    const identity = transform === 'none' || transform === 'matrix(1, 0, 0, 1, 0, 0)';
+                    const ok = ready === 'closed' ? identity : !identity && transform.startsWith('matrix(');
+                    if (ok) { resolve(transform); return; }
+                    if (performance.now() - started > 2000) { reject(new Error(transform)); return; }
+                    setTimeout(tick, 40);
+                };
+                tick();
+            })""",
+            [open_state, ready],
+        )
+
+    _settle(False, "closed")
     closed = group_page.evaluate(caret_style)
-    group_page.evaluate("() => { document.querySelector('#group-section').open = true; }")
-    group_page.wait_for_timeout(260)
+    _settle(True, "open")
     opened = group_page.evaluate(caret_style)
 
     caret = closed
@@ -564,7 +735,18 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
     assert menu["open"] is True, "右键没弹出菜单"
     assert menu["add"] is True and menu["remove"] is False, f"不在组里时该只给「加入」: {menu}"
     assert "未命名组" in menu["groupLabel"], menu
+    assert group_page.evaluate(
+        "() => document.querySelectorAll('#animation-list .animation-card.is-picked').length") == 1
 
+    # 再右键同一条：取消选择，菜单也收起来
+    _open_context_menu(group_page, 0)
+    toggled = group_page.evaluate("""() => ({
+        picked: document.querySelectorAll('#animation-list .animation-card.is-picked').length,
+        menuHidden: document.querySelector('#group-context-menu').hidden,
+    })""")
+    assert toggled["picked"] == 0 and toggled["menuHidden"] is True, f"再右键没有取消选择: {toggled}"
+
+    _open_context_menu(group_page, 0)
     group_page.evaluate("() => document.querySelector('#context-add-btn').click()")
     group_page.wait_for_function(
         """(before) => document.querySelectorAll('#group-members .group-member').length > before""",
@@ -573,7 +755,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
         "() => [...document.querySelectorAll('#group-members .group-member-kind')].map(e => e.textContent)")
     assert "动作" in kinds, f"右键加入的该是一个动作: {kinds}"
 
-    # 再右键同一个：已经在组里，菜单要改成「移出」
+    # 全选只用来核对计数。要看「移出」得先清掉多选再右键：已选中时再右键是取消，不会开菜单。
     group_page.evaluate("() => document.querySelector('#select-all-btn').click()")
     counted = group_page.evaluate("""() => ({
         cards: document.querySelectorAll('#animation-list [data-animation-id]').length,
@@ -582,6 +764,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
     })""")
     assert counted["picked"] == counted["cards"] > 0, f"全选没把列表里的动作都选上: {counted}"
     assert str(counted["cards"]) in counted["label"], f"计数条没报出选了几条: {counted}"
+    group_page.evaluate("() => document.querySelector('#select-none-btn').click()")
     _open_context_menu(group_page, 0)
     again = group_page.evaluate("""() => {
         const shown = (sel) => {

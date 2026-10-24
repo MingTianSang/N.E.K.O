@@ -75,6 +75,22 @@
         });
     }
 
+    /** 组记下的那一套换装/位移。之后加进来的每一条都用它预览和导出，不跟屏幕上后来的滑杆。 */
+    function normalizeLook(look) {
+        const transform = look?.transform && typeof look.transform === 'object' ? look.transform : {};
+        return {
+            skins: Array.isArray(look?.skins) ? look.skins.map((item) => ({ ...item })) : [],
+            sliders: Array.isArray(look?.sliders) ? look.sliders.map((item) => ({ ...item })) : [],
+            slots: Array.isArray(look?.slots) ? look.slots.map((item) => ({ ...item })) : [],
+            transform: {
+                x: Number(transform.x) || 0,
+                y: Number(transform.y) || 0,
+                rotation: Number(transform.rotation) || 0,
+                scale: Number(transform.scale) || 1,
+            },
+        };
+    }
+
     function makeGroup(input) {
         const src = input || {};
         const items = (Array.isArray(src.items) ? src.items : [])
@@ -90,6 +106,8 @@
             name: (text(src.name) || '未命名组').slice(0, MAX_GROUP_NAME),
             readOnly: false,
             items,
+            // 没有 look 的旧组保持 null，调用方再回退到第一条取景，别冻成一份全 0
+            look: src.look && typeof src.look === 'object' ? normalizeLook(src.look) : null,
             createdAt: Number(src.createdAt) || Date.now(),
         };
     }
@@ -110,6 +128,33 @@
     function removeItem(group, kind, ref) {
         if (!group || group.readOnly) return group;
         return { ...group, items: (group.items || []).filter((item) => !(item.kind === kind && item.ref === String(ref))) };
+    }
+
+    /**
+     * 删掉自建组，并清掉只被这一组引用的取景。
+     * 别的组还指着的取景留着。只读的导入组删不掉，原样退回。
+     */
+    function deleteGroup(groups, shots, id) {
+        const list = Array.isArray(groups) ? groups : [];
+        const target = list.find((group) => group && group.id === id);
+        if (!target || target.readOnly) return { groups: list, shots: Array.isArray(shots) ? shots : [] };
+        const nextGroups = list.filter((group) => group && group.id !== id);
+        const stillUsed = new Set();
+        nextGroups.forEach((group) => {
+            (group.items || []).forEach((item) => {
+                if (item && item.kind === 'shot') stillUsed.add(String(item.ref));
+            });
+        });
+        const dropped = new Set(
+            (target.items || [])
+                .filter((item) => item && item.kind === 'shot')
+                .map((item) => String(item.ref)),
+        );
+        const nextShots = (Array.isArray(shots) ? shots : []).filter((shot) => {
+            const shotId = String(shot && shot.id || '');
+            return !dropped.has(shotId) || stillUsed.has(shotId);
+        });
+        return { groups: nextGroups, shots: nextShots };
     }
 
     function renameGroup(groups, id, name) {
@@ -136,24 +181,12 @@
         const src = input || {};
         // 取景的形状必须和 currentLookDefaults() / applyLookToState() 用的一致：transform 住在
         // look 下面。放在顶层读会得到空对象，于是大小、角度、位移全都被静默丢成默认值。
-        const transform = src.look?.transform && typeof src.look.transform === 'object'
-            ? src.look.transform : {};
         return {
             id: text(src.id) || nextId('shot:'),
             name: (text(src.name) || '取景').slice(0, MAX_GROUP_NAME),
             sourceSceneId: text(src.sourceSceneId),
             progress: Math.max(0, Math.min(100, Number(src.progress) || 0)),
-            look: {
-                skins: Array.isArray(src.look?.skins) ? src.look.skins.map((item) => ({ ...item })) : [],
-                sliders: Array.isArray(src.look?.sliders) ? src.look.sliders.map((item) => ({ ...item })) : [],
-                slots: Array.isArray(src.look?.slots) ? src.look.slots.map((item) => ({ ...item })) : [],
-                transform: {
-                    x: Number(transform.x) || 0,
-                    y: Number(transform.y) || 0,
-                    rotation: Number(transform.rotation) || 0,
-                    scale: Number(transform.scale) || 1,
-                },
-            },
+            look: normalizeLook(src.look),
             createdAt: Number(src.createdAt) || Date.now(),
         };
     }
@@ -325,6 +358,7 @@
         removeItem,
         hasItem,
         renameGroup,
+        deleteGroup,
         uniqueGroupName,
         sanitizeFileName,
         planFileNames,

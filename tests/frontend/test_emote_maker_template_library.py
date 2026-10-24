@@ -69,6 +69,12 @@ def _import(page: Page, file_name: str, display_name: str, slot: str = "Demo",
     })
     page.wait_for_function("() => document.body.classList.contains('editor-has-template')",
                            timeout=25000)
+    # 第二次导入时编辑器已经有模板、卡片也已经在，上面两个条件会立刻返回。
+    # 必须等到这份文件名写进库，否则后面读到的还是上一条。
+    page.wait_for_function(
+        """(name) => (JSON.parse(localStorage.getItem('neko-emote-maker-template-library') || '{}').entries || [])
+            .some((entry) => String(entry.key || '').startsWith(name + '::'))""",
+        arg=file_name, timeout=25000)
     page.wait_for_function("() => document.querySelectorAll('#asset-grid .template-lib-card').length > 0",
                            timeout=15000)
 
@@ -289,18 +295,25 @@ def test_remove_takes_the_entry_away(library_page: Page) -> None:
         "() => document.body.classList.contains('editor-empty')", timeout=20000)
     assert _keys(library_page) == []
 def test_empty_state_does_not_echo_the_import_button(page: Page, running_server: str) -> None:
-    """没模板时别把主按钮的话再说一遍：徽章以前写「选择模板文件」，正下方就是同名按钮。"""
+    """没模板时别把主按钮的话再说一遍。导入只剩「选择模板目录」。"""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_function("() => Boolean(document.querySelector('#template-runtime-badge'))",
                            timeout=15000)
     empty = page.evaluate("""() => {
         const badge = document.querySelector('#template-runtime-badge');
-        const button = document.querySelector('#select-emotelab-template-btn');
+        const button = document.querySelector('#select-emotelab-template-directory-btn');
+        const canvas = document.querySelector('#canvas-import-btn');
         return {
             shown: getComputedStyle(badge).display !== 'none',
             sameAsButton: badge.textContent.trim() === button.textContent.trim(),
+            fileButtonGone: document.querySelector('#select-emotelab-template-btn') === null,
+            directory: button.textContent.trim(),
+            canvas: canvas.textContent.trim(),
         };
     }""")
+    assert empty["fileButtonGone"] is True
+    assert empty["directory"] == "选择模板目录", empty
+    assert empty["canvas"] == "选择模板目录", empty
     assert empty["shown"] is False, f"空态还挂着一张重复按钮文案的徽章: {empty}"
     dead = page.evaluate("""() => {
         const visible = (sel) => {
@@ -326,7 +339,7 @@ def test_empty_state_does_not_echo_the_import_button(page: Page, running_server:
     _import(page, "first.zip", "第一个", "A", scenes=2)
     loaded = page.evaluate("""() => {
         const badge = document.querySelector('#template-runtime-badge');
-        const button = document.querySelector('#select-emotelab-template-btn');
+        const button = document.querySelector('#select-emotelab-template-directory-btn');
         return {
             shown: getComputedStyle(badge).display !== 'none',
             text: badge.textContent.trim(),
@@ -559,7 +572,9 @@ def test_card_edge_click_switches_templates(library_page: Page) -> None:
     assert second_key.startswith("second.zip::"), second_key
     card = library_page.locator(
         f'#asset-grid .template-lib-card[data-template-key="{second_key}"]')
+    card.wait_for(state="visible")
     box = card.bounding_box()
+    assert box, "卡片还没排出来"
     # 左上角往内 3px：那是卡片 padding 的地盘，内层按钮够不着
     library_page.mouse.click(box["x"] + 3, box["y"] + 3)
     library_page.wait_for_function(

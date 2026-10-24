@@ -121,6 +121,44 @@ test('读回存储时丢掉认不出的条目，导入组不会被当成自建�
     assert.equal(groups.shotsFrom([{ id: 's1' }])[0].look.transform.scale, 1);
 });
 
+test('删除组时只清掉没有别的组再用的取景', () => {
+    const first = groups.addItem(
+        groups.addItem(groups.makeGroup({ id: 'g1', name: '甲' }), 'shot', 'shot:drop'),
+        'shot',
+        'shot:shared',
+    );
+    const second = groups.addItem(groups.makeGroup({ id: 'g2', name: '乙' }), 'shot', 'shot:shared');
+    const shots = [
+        groups.makeShot({ id: 'shot:keep', sourceSceneId: 'a' }),
+        groups.makeShot({ id: 'shot:drop', sourceSceneId: 'b' }),
+        groups.makeShot({ id: 'shot:shared', sourceSceneId: 'c' }),
+    ];
+    const removed = groups.deleteGroup([first, second], shots, 'g1');
+    assert.deepEqual(removed.groups.map((group) => group.id), ['g2']);
+    assert.deepEqual(removed.shots.map((shot) => shot.id).sort(), ['shot:keep', 'shot:shared']);
+    const locked = groups.deleteGroup(
+        [{ id: 'list:x', name: '导入', readOnly: true, items: [] }],
+        shots,
+        'list:x',
+    );
+    assert.equal(locked.groups.length, 1);
+});
+
+test('组记下的数值会跟着组走，加成员不会把它丢掉', () => {
+    const skins = [{ key: 'Hair', value: 'A' }];
+    const made = groups.makeGroup({
+        name: '构图',
+        look: { skins, transform: { x: 8, y: 0, rotation: 35, scale: 1.2 } },
+    });
+    skins[0].value = '改了';
+    const withScene = groups.addItem(made, 'scene', 'b#0');
+    const roundTrip = groups.groupsFrom([withScene])[0];
+    assert.equal(roundTrip.look.skins[0].value, 'A');
+    assert.deepEqual(roundTrip.look.transform, { x: 8, y: 0, rotation: 35, scale: 1.2 });
+    assert.equal(roundTrip.items.length, 1);
+    assert.equal(groups.makeGroup({ name: '旧组' }).look, null);
+});
+
 test('取景快照保存的是当时的外观，不是共享引用', () => {
     const skins = [{ key: 'Hair', value: 'A' }];
     const shot = groups.makeShot({

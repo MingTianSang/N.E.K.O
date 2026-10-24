@@ -224,3 +224,93 @@ def test_remove_texture_deletes_the_file(store):
         store.texture_path(key, "Tex/a.png")
     # 不存在的文件删了不报错
     store.remove_texture(key, "Tex/ghost.png")
+
+
+_EXPORT_HEADER = {"X-Neko-Emote-Export": "1"}
+
+
+def test_export_folder_file_and_zip_land_beside_each_other(client, tmp_path: Path):
+    parent = tmp_path / "picked"
+    parent.mkdir()
+    created = client.post(
+        "/api/emote-maker/export/folder",
+        headers=_EXPORT_HEADER,
+        json={"directory": str(parent), "folder": "表情组"},
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["folder"] == "表情组"
+    assert (parent / "表情组").is_dir()
+
+    written = client.post(
+        "/api/emote-maker/export/file",
+        headers=_EXPORT_HEADER,
+        data={"directory": body["directory"], "folder": body["folder"], "name": "01_笑.gif"},
+        files={"file": ("01_笑.gif", b"GIF89a", "image/gif")},
+    )
+    assert written.status_code == 200
+    assert (parent / "表情组" / "01_笑.gif").read_bytes() == b"GIF89a"
+
+    again = client.post(
+        "/api/emote-maker/export/folder",
+        headers=_EXPORT_HEADER,
+        json={"directory": str(parent), "folder": "表情组"},
+    )
+    assert again.json()["folder"] == "表情组 2"
+
+    zipped = client.post(
+        "/api/emote-maker/export/zip",
+        headers=_EXPORT_HEADER,
+        json={
+            "directory": body["directory"],
+            "folder": body["folder"],
+            "names": ["01_笑.gif"],
+            "zip_name": "表情组.zip",
+        },
+    )
+    assert zipped.status_code == 200
+    archive = parent / zipped.json()["zip"]
+    assert archive.is_file()
+    assert archive.parent == parent
+    with zipfile.ZipFile(archive) as package:
+        assert package.read("01_笑.gif") == b"GIF89a"
+
+
+def test_export_write_rejects_a_missing_header_and_a_path_escape(client, tmp_path: Path):
+    parent = tmp_path / "picked"
+    parent.mkdir()
+    naked = client.post(
+        "/api/emote-maker/export/folder",
+        json={"directory": str(parent), "folder": "组"},
+    )
+    assert naked.status_code == 403
+
+    created = client.post(
+        "/api/emote-maker/export/folder",
+        headers=_EXPORT_HEADER,
+        json={"directory": str(parent), "folder": "组"},
+    ).json()
+    escaped = client.post(
+        "/api/emote-maker/export/file",
+        headers=_EXPORT_HEADER,
+        data={
+            "directory": created["directory"],
+            "folder": created["folder"],
+            "name": "../outside.gif",
+        },
+        files={"file": ("../outside.gif", b"nope", "image/gif")},
+    )
+    assert escaped.status_code == 400
+    assert not (parent / "outside.gif").exists()
+    missing = client.post(
+        "/api/emote-maker/export/zip",
+        headers=_EXPORT_HEADER,
+        json={
+            "directory": created["directory"],
+            "folder": created["folder"],
+            "names": ["../outside.gif"],
+            "zip_name": "组.zip",
+        },
+    )
+    assert missing.status_code == 400
+    assert list(parent.glob("*.zip")) == []

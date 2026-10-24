@@ -122,6 +122,43 @@ def test_reset_is_only_offered_when_there_is_something_to_reset(adjust_page: Pag
         "已经全是默认值，重置还留着可点 —— 按下去什么都不动就是\"没作用\"的观感"
 
 
+def test_reset_puts_the_template_sliders_back(adjust_page: Page) -> None:
+    """下面那列模板滑杆也归这颗重置管。拖完再按，读数回到导入时的值，行本身不重建。"""
+    outcome = adjust_page.evaluate(r"""() => {
+        const host = document.querySelector('#template-slider-controls');
+        const row = host.querySelector('.template-slider-row');
+        const input = row.querySelector('input[type="range"]');
+        const output = row.querySelector('output');
+        let rebuilds = 0;
+        const observer = new MutationObserver((records) => {
+            records.forEach((record) => {
+                rebuilds += record.addedNodes.length + record.removedNodes.length;
+            });
+        });
+        observer.observe(host, { childList: true });
+        const before = output.textContent;
+        input.value = '1.5';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        const armed = document.querySelector('#reset-adjustments-btn').disabled === false;
+        document.querySelector('#reset-adjustments-btn').click();
+        observer.disconnect();
+        return {
+            before,
+            armed,
+            rebuilds,
+            readout: output.textContent,
+            value: input.value,
+            sameRow: row === host.querySelector('.template-slider-row'),
+        };
+    }""")
+    assert outcome["armed"] is True, outcome
+    assert outcome["readout"] == outcome["before"], outcome
+    assert float(outcome["value"]) == float(outcome["before"]), outcome
+    assert outcome["rebuilds"] == 0, outcome
+    assert outcome["sameRow"] is True, outcome
+    assert adjust_page.evaluate("() => document.querySelector('#reset-adjustments-btn').disabled") is True
+
+
 def test_unchecking_overwrite_greys_out_the_inert_sliders(adjust_page: Page) -> None:
     """「覆盖默认值」关着时四条滑杆不参与绘制，就必须禁用 —— 而不是让人拖一条不动的滑杆。"""
     adjust_page.evaluate("""() => {
