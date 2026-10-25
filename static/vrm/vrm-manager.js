@@ -403,6 +403,9 @@ class VRMManager {
         if (object.isSkinnedMesh && typeof object.computeBoundingBox === 'function') {
             const previousBox = object.boundingBox;
             try {
+                // computeBoundingBox 会清空并原地重填已有盒子。先换成新盒子，
+                // finally 再把原来的引用放回去，内容才不会被这次测量改掉。
+                object.boundingBox = null;
                 object.computeBoundingBox();
                 const computed = object.boundingBox;
                 if (computed && !computed.isEmpty()) return computed.clone();

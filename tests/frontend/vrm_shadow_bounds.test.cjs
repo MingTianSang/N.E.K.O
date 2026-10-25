@@ -65,15 +65,29 @@ for (const yaw of yawCases) {
 }
 
 {
+    // 没有蒙皮网格时才走普通网格分支，阴影平面的排除检查才会被执行。
     const scene = new THREE.Group();
-    scene.add(skinnedBox(0.4, 1, 0.2));
+    scene.add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 1, 0.2)));
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(4, 4));
     scene.add(shadow);
     const manager = Object.create(VRMManager.prototype);
     manager._shadowMesh = shadow;
     scene.rotation.y = Math.PI / 4;
     const size = manager._collectSceneLocalBodyBox(scene).getSize(new THREE.Vector3());
-    assert.ok(Math.max(size.x, size.z) < 1, `shadow plane must not widen the body box: ${size.x}, ${size.z}`);
+    assert.ok(Math.abs(Math.max(size.x, size.z) - 0.4) < 1e-4, `shadow plane widened the body box: ${size.x}, ${size.z}`);
+}
+
+{
+    const scene = new THREE.Group();
+    const mesh = skinnedBox(1, 2, 1);
+    const saved = new THREE.Box3(new THREE.Vector3(-3, -3, -3), new THREE.Vector3(3, 3, 3));
+    mesh.boundingBox = saved;
+    scene.add(mesh);
+    scene.rotation.y = 0.4;
+    footprintOf(scene);
+    assert.equal(mesh.boundingBox, saved);
+    assert.ok(saved.min.distanceTo(new THREE.Vector3(-3, -3, -3)) < 1e-8);
+    assert.ok(saved.max.distanceTo(new THREE.Vector3(3, 3, 3)) < 1e-8);
 }
 })().catch((error) => {
     console.error(error);
