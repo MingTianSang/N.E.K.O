@@ -1619,6 +1619,34 @@ class VRMCore {
         return 0.0011;
     }
 
+    _outlineHiddenByQuality() {
+        const quality = window.renderQuality || 'medium';
+        return quality === 'low' || quality === 'medium';
+    }
+
+    _sceneHasNativeOutline(scene) {
+        let found = false;
+        scene.traverse((object) => {
+            if (found || (!object.isMesh && !object.isSkinnedMesh)) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            if (mats.some((mat) => mat && (mat.isOutline || mat._isOutline) && !mat._nekoSyntheticOutline)) {
+                found = true;
+            }
+        });
+        return found;
+    }
+
+    _applySyntheticOutlineVisible(mat, scale) {
+        const wantVisible = scale > 0;
+        if (this._outlineHiddenByQuality()) {
+            mat._savedVisible = wantVisible;
+            mat.visible = false;
+            return;
+        }
+        mat.visible = wantVisible;
+        if (mat._savedVisible !== undefined) delete mat._savedVisible;
+    }
+
     _attachSyntheticOutline(mesh, scale) {
         if (!mesh?.isMesh && !mesh?.isSkinnedMesh) return 0;
         if (!(scale > 0)) return 0;
@@ -1654,7 +1682,7 @@ class VRMCore {
         if ('outlineWidthMultiplyTexture' in outline) {
             outline.outlineWidthMultiplyTexture = null;
         }
-        outline.visible = true;
+        outline.visible = false;
         if (typeof outline.update === 'function') outline.update(0);
         mesh.material = [base, outline];
 
@@ -1673,25 +1701,45 @@ class VRMCore {
         const safeScale = Number.isFinite(parsedScale) && parsedScale >= 0 ? parsedScale : 1;
         const scene = this.manager.currentModel?.vrm?.scene;
         if (!scene) return;
-        scene.traverse((object) => {
-            this._attachSyntheticOutline(object, safeScale);
-        });
+        this._appliedOutlineScale = safeScale;
+        if (!this._sceneHasNativeOutline(scene)) {
+            scene.traverse((object) => {
+                this._attachSyntheticOutline(object, safeScale);
+            });
+        }
+        const unitFactor = this._syntheticOutlineUnitFactor();
         scene.traverse((object) => {
             if (!object.isMesh && !object.isSkinnedMesh) return;
             const mats = Array.isArray(object.material) ? object.material : [object.material];
             mats.forEach((mat) => {
                 if (!mat || !(mat._isOutline || mat.isOutline)) return;
                 if (mat._nekoSyntheticOutline) {
-                    mat._originalOutlineWidthFactor = this._syntheticOutlineUnitFactor();
+                    mat._originalOutlineWidthFactor = unitFactor;
                     mat.outlineLightingMixFactor = 0;
                 } else if (mat._originalOutlineWidthFactor === undefined) {
                     mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
                 }
                 if (mat.outlineWidthFactor !== undefined) {
                     mat.outlineWidthFactor = mat._originalOutlineWidthFactor * safeScale;
-                    if (mat._nekoSyntheticOutline) mat.visible = safeScale > 0;
+                    if (mat._nekoSyntheticOutline) this._applySyntheticOutlineVisible(mat, safeScale);
                     mat.needsUpdate = true;
                 }
+            });
+        });
+    }
+
+    refreshSyntheticOutlineWidth() {
+        if (this._appliedOutlineScale == null) return;
+        const scene = this.manager.currentModel?.vrm?.scene;
+        if (!scene) return;
+        const unitFactor = this._syntheticOutlineUnitFactor();
+        scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach((mat) => {
+                if (!mat?._nekoSyntheticOutline || mat.outlineWidthFactor === undefined) return;
+                mat._originalOutlineWidthFactor = unitFactor;
+                mat.outlineWidthFactor = unitFactor * this._appliedOutlineScale;
             });
         });
     }
