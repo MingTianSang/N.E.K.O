@@ -188,6 +188,22 @@ def test_retry_rephrases_public_traits_caught_in_a_sentence_about_family(env):
     assert matched_fragment in llm.prompts[1]
 
 
+def test_retry_receives_a_phone_token_in_its_feedback(env):
+    client, _tmp, state, llm, scan = env
+    phone = "13800138000"
+    state["cards"]["A"] = CARD + f"\n联系电话{phone}。"
+    scan.sections = []
+    llm.replies = [GOOD_PERSONA + f"联系电话{phone}。", GOOD_PERSONA]
+
+    view = _generate(client)
+
+    assert view["state"] == "unreviewed" and view["text"] == GOOD_PERSONA
+    assert "error" not in view and len(llm.prompts) == 2
+    assert llm.prompts[1].startswith(llm.prompts[0])
+    feedback = llm.prompts[1][len(llm.prompts[0]):]
+    assert phone in feedback
+
+
 def test_rule_sections_catch_a_private_sentence_the_scan_missed(env):
     client, _tmp, _state, llm, scan = env
     scan.sections = []
