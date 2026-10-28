@@ -849,7 +849,7 @@ async function main() {
     'page exit left managed timers or listeners resident');
 
   for (const exitType of ['pagehide', 'beforeunload']) {
-    for (const outcome of ['success', 'rejected', 'failed']) {
+    for (const outcome of ['success', 'rejected', 'failed', 'rejected-before-exit', 'failed-before-exit']) {
       const pendingExitEnvironment = createEnvironment();
       const pendingEndResponse = deferred();
       const pendingEndCalls = [];
@@ -889,6 +889,19 @@ async function main() {
       assert(pendingExitEnvironment.windowListeners.get('pagehide')?.size === 1
         && pendingExitEnvironment.windowListeners.get('beforeunload')?.size === 1,
       'a pending end request removed its page-exit fallback');
+      const settleBeforeExit = outcome.endsWith('-before-exit');
+      const settleEnd = () => {
+        if (outcome.startsWith('failed')) pendingEndResponse.reject(new Error('end failure'));
+        else pendingEndResponse.resolve({ ok: outcome === 'success' });
+      };
+      if (settleBeforeExit) {
+        settleEnd();
+        await endingDuringExit;
+        assert(pendingExitGame.runtime.state === 'degraded'
+          && pendingExitEnvironment.windowListeners.get('pagehide')?.size === 1
+          && pendingExitEnvironment.windowListeners.get('beforeunload')?.size === 1,
+        'an end failure before closing did not restore the page-exit fallback');
+      }
       pendingExitEnvironment.windowImpl.dispatch(exitType);
       pendingExitEnvironment.windowImpl.dispatch(exitType === 'pagehide' ? 'beforeunload' : 'pagehide');
       assert(pendingEndCalls.length === 2 && pendingEndCalls[1].options.useBeacon === true,
@@ -898,12 +911,11 @@ async function main() {
       'the fallback beacon lost its event or route generation');
       assert(pendingExitGame.disposed && pendingExitPreserved,
         'page exit did not dispose while preserving pending route release');
-      if (outcome === 'failed') pendingEndResponse.reject(new Error('late end failure'));
-      else pendingEndResponse.resolve({ ok: outcome === 'success' });
+      if (!settleBeforeExit) settleEnd();
       await endingDuringExit;
       assert(pendingExitEnvironment.windowListeners.size === 0
         && pendingExitEnvironment.intervals.size === 0 && pendingExitGame.disposed,
-      'a late end settlement resurrected the exited client lifecycle');
+      'end settlement resurrected the exited client lifecycle');
     }
   }
 
