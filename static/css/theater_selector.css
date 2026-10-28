@@ -187,7 +187,6 @@ padding-left:20px}
 
 .theater-selector-shell .theater-status{
 -webkit-app-region:no-drag;
-cursor:help;
 min-width:0;
 overflow:hidden;
 text-overflow:ellipsis;
@@ -604,10 +603,7 @@ white-space:nowrap}
 display:none}
 
 .theater-selector-shell .theater-status{
-max-width:72px;
-overflow:hidden;
-text-overflow:ellipsis;
-white-space:nowrap}
+max-width:72px}
 
 .theater-selector-layout{
 padding:8px;
