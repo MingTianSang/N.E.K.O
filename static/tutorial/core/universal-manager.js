@@ -3591,14 +3591,16 @@ class UniversalTutorialManager {
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
                 throw new Error('avatar_floating_director_unavailable');
             }
-            await this.playAvatarFloatingRoundPrelude(round, source, director, {
+            const preludeCompleted = await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
-            const completed = await director.playAvatarFloatingRound(round, {
-                source,
-                surfaceReady: true,
-                revealPrepared: () => this.revealTutorialLive2dPrepared()
-            });
+            const completed = preludeCompleted !== false && !director.isStopping()
+                ? await director.playAvatarFloatingRound(round, {
+                    source,
+                    surfaceReady: true,
+                    revealPrepared: () => this.revealTutorialLive2dPrepared()
+                })
+                : false;
             if (directTutorialBoot) {
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     suppressPrediction: true
@@ -3662,6 +3664,8 @@ class UniversalTutorialManager {
         return controller.play(round, {
             source: source,
             director: director || null,
+            // Loading may finish after Escape has already torn down this tutorial.
+            cancelCheck: () => this._isDestroyed || this._tutorialEndHandled || !!(director && director.isStopping()),
             deferRevealPrepared: true,
             skipSourceModelFade: options && options.skipSourceModelFade === true
         });

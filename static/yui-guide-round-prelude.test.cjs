@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const repoRoot = path.resolve(__dirname, '..');
 const preludePath = path.join(__dirname, 'tutorial/core/round-prelude-controller.js');
@@ -66,6 +67,109 @@ test('round prelude runs avatar override, visibility, delay, lifecycle and start
         'skip',
         ['started', 4, 'manual']
     ]);
+});
+
+test('round prelude does not restore tutorial UI after cancellation during loading', async (t) => {
+    const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
+    const stages = ['beginAvatarOverride', 'revealPrepared', 'ensureVisible', 'waitForAvatarReady', 'sleep'];
+
+    for (const stage of stages) {
+        for (const rejectLoading of [false, true]) {
+            await t.test(`${stage}: ${rejectLoading ? 'rejects' : 'resolves'} after Escape`, async () => {
+                const calls = [];
+                let cancelled = false;
+                let settle;
+                let reached;
+                const blocked = new Promise((resolve, reject) => {
+                    settle = () => rejectLoading ? reject(new Error('late loading failure')) : resolve();
+                });
+                const waiting = new Promise((resolve) => { reached = resolve; });
+                const options = Object.fromEntries(stages.map((name) => [name, () => {
+                    calls.push(name);
+                    if (name === stage) {
+                        reached();
+                        return blocked;
+                    }
+                }]));
+                for (const name of ['beginTakingOver', 'setLifecycleActive', 'showSkipButton', 'dispatchStarted', 'warn']) {
+                    options[name] = () => calls.push(name);
+                }
+                const controller = new TutorialRoundPreludeController(options);
+                const pending = controller.play(1, { cancelCheck: () => cancelled });
+                await waiting;
+                cancelled = true;
+                settle();
+                if (rejectLoading && ['revealPrepared', 'sleep'].includes(stage)) {
+                    // These callbacks propagate errors; the manager owns their teardown.
+                    await assert.rejects(pending, /late loading failure/);
+                } else {
+                    assert.equal(await pending, false, 'a cancelled prelude must not start the round');
+                }
+                assert.deepEqual(calls, stages.slice(0, stages.indexOf(stage) + 1));
+            });
+        }
+    }
+});
+
+test('round prelude ignores an already cancelled run and supports a later live run', async () => {
+    const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
+    const calls = [];
+    const controller = new TutorialRoundPreludeController({
+        beginAvatarOverride() { calls.push('model'); },
+        showSkipButton() { calls.push('skip'); }
+    });
+
+    assert.equal(await controller.play(1, { cancelCheck: () => true }), false);
+    assert.deepEqual(calls, []);
+    assert.equal(await controller.play(1, { cancelCheck: () => false, deferRevealPrepared: true }), true);
+    assert.deepEqual(calls, ['model', 'skip']);
+});
+
+test('manager cancels the loading prelude when it ends or its original director stops', async (t) => {
+    for (const stopState of ['destroyed', 'ended', 'director-stopped']) {
+        await t.test(stopState, async () => {
+            const calls = [];
+            const module = { exports: {} };
+            vm.runInNewContext(managerSource, {
+                window: {
+                    TutorialRoundPrelude: require('./tutorial/core/round-prelude-controller.js'),
+                    dispatchEvent() { calls.push('started'); }
+                },
+                module,
+                console,
+                CustomEvent: class {}
+            });
+            const manager = Object.create(module.exports.UniversalTutorialManager.prototype);
+            let release;
+            let reached;
+            const blocked = new Promise((resolve) => { release = resolve; });
+            const waiting = new Promise((resolve) => { reached = resolve; });
+            Object.assign(manager, {
+                beginTutorialAvatarOverride() { calls.push('loading'); reached(); return blocked; },
+                revealTutorialLive2dPrepared() { calls.push('reveal'); },
+                ensureTutorialYuiLive2dVisible() { calls.push('visible'); },
+                waitForTutorialYuiLive2dVisualReady() { calls.push('ready'); },
+                sleep() { calls.push('delay'); },
+                showSkipButton() { calls.push('skip'); }
+            });
+            let directorStopped = false;
+            const director = {
+                isStopping: () => directorStopped,
+                setTutorialTakingOver() { calls.push('takeover'); }
+            };
+            const pending = manager.playAvatarFloatingRoundPrelude(1, 'auto', director);
+            await waiting;
+            manager._isDestroyed = stopState === 'destroyed';
+            manager._tutorialEndHandled = stopState === 'ended';
+            // The original director stays stopped even if a restart resets manager flags.
+            directorStopped = stopState === 'director-stopped';
+            release();
+
+            assert.equal(await pending, false);
+            assert.deepEqual(calls, ['loading']);
+            assert.notEqual(manager._yuiGuideLifecycleActive, true);
+        });
+    }
 });
 
 test('round prelude starts takeover for day one before audio activation', async () => {
@@ -287,7 +391,7 @@ test('manager delegates avatar floating prelude to TutorialRoundPreludeControlle
 
     assert.match(constructorBlock, /this\._tutorialRoundPreludeController = null;/);
     assert.match(managerSource, /ensureTutorialRoundPreludeController\(\) \{/);
-    assert.match(startRoundBlock, /await this\.playAvatarFloatingRoundPrelude\(round,\s*source,\s*director\);/);
+    assert.match(startRoundBlock, /await this\.playAvatarFloatingRoundPrelude\(round,\s*source,\s*director,\s*\{/);
     assert.match(startRoundBlock, /const endReason = completed[\s\S]*\? 'complete'[\s\S]*this\.lifecycleStateStore\.getEndReason\(\)[\s\S]*this\.requestTutorialDestroy\(endReason\);/);
     assert.doesNotMatch(startRoundBlock, /await this\.beginTutorialAvatarOverride\(\)/);
     assert.doesNotMatch(startRoundBlock, /await this\.sleep\(1500\)/);
