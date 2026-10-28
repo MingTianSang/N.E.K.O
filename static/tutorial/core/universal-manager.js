@@ -3470,6 +3470,9 @@ class UniversalTutorialManager {
         }
     }
 
+    /**
+     * @returns {Promise<boolean|null>} null when superseded, so callers must not recover or release startup gates.
+     */
     async startAvatarFloatingGuideRound(day, options = {}) {
         if (window.isNekoClickGuideActive) return false;
         const round = normalizeAvatarFloatingGuideRound(day);
@@ -3545,7 +3548,7 @@ class UniversalTutorialManager {
                     await stateApi.flush();
                 }
             }
-            if (!ownsStartup()) return false;
+            if (!ownsStartup()) return null;
             // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
             // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
             // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
@@ -3553,7 +3556,7 @@ class UniversalTutorialManager {
             // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
             // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
             const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
-            if (!ownsStartup()) return false;
+            if (!ownsStartup()) return null;
             if (
                 this._tutorialEndHandled
                 || this._isDestroyed
@@ -3601,7 +3604,7 @@ class UniversalTutorialManager {
             const preludeCompleted = await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
-            if (!ownsStartup()) return false;
+            if (!ownsStartup()) return null;
             const completed = preludeCompleted !== false && !director.isStopping()
                 ? await director.playAvatarFloatingRound(round, {
                     source,
@@ -3609,7 +3612,7 @@ class UniversalTutorialManager {
                     revealPrepared: () => this.revealTutorialLive2dPrepared()
                 })
                 : false;
-            if (!ownsStartup()) return false;
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     suppressPrediction: true
@@ -3625,9 +3628,10 @@ class UniversalTutorialManager {
                     );
                 await this.requestTutorialDestroy(endReason);
             }
+            if (!ownsStartup()) return null;
             return completed;
         } catch (error) {
-            if (!ownsStartup()) return false;
+            if (!ownsStartup()) return null;
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
             if (source === 'auto' && !tutorialStarted) {
                 this.rollbackAvatarFloatingGuideRoundAutoShown(round, autoReservationId);
@@ -3636,6 +3640,7 @@ class UniversalTutorialManager {
                     await stateApi.flush();
                 }
             }
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     keepUserModelBootSkipped: true,
@@ -3645,9 +3650,11 @@ class UniversalTutorialManager {
             if (!this._tutorialEndHandled) {
                 await this.requestTutorialDestroy('destroy');
             }
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed');
             }
+            if (!ownsStartup()) return null;
             throw error;
         }
     }

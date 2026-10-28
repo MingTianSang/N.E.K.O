@@ -172,14 +172,14 @@ test('manager cancels the loading prelude when it ends or its original director 
     }
 });
 
-test('a restarted tutorial keeps ownership when the old startup settles late', async (t) => {
+test('a restarted tutorial keeps ownership when its i18n startup caller settles late', async (t) => {
     const deferred = () => {
         let resolve;
         let reject;
         const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
         return { promise, resolve, reject };
     };
-    for (const stage of ['sleep', 'round', 'flush', 'prepare']) {
+    for (const stage of ['sleep', 'round', 'flush', 'prepare', 'teardown']) {
         for (const rejects of [false, true]) {
             await t.test(`${stage}: old startup ${rejects ? 'rejects' : 'resolves'} after restart`, async () => {
                 const oldGate = deferred();
@@ -189,6 +189,7 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                 const ends = [];
                 const releases = [];
                 const recoveries = [];
+                const greetingReleases = [];
                 let currentRun = 0;
                 let manager;
                 const waitAt = (name) => {
@@ -206,6 +207,7 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                 const module = { exports: {} };
                 vm.runInNewContext(managerSource, {
                     window, module, console: { ...console, error() {} }, CustomEvent: class {},
+                    setTimeout,
                     document: { body: { classList: { add() {} } } }
                 });
                 manager = Object.create(module.exports.UniversalTutorialManager.prototype);
@@ -220,6 +222,10 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                     recoverUserModelAfterDirectTutorialBootFailure() { recoveries.push(currentRun); },
                     prepareYuiGuideCompactChatForTutorial: () => waitAt('prepare'),
                     sleep: () => waitAt('sleep'),
+                    isI18nReady: () => true,
+                    getHomeAvatarFloatingGuideLaunchRound: () => 1,
+                    consumeTutorialStartSource: () => 'auto',
+                    dispatchStartupGreetingRelease() { greetingReleases.push(currentRun); },
                     getHomeAvatarFloatingGuideStartRound: () => 1,
                     getStorageKeysForPage: () => [],
                     ensureYuiGuideDirector() {
@@ -229,6 +235,7 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                             isStopping() { return this.destroyed; },
                             setTutorialTakingOver() {},
                             async playAvatarFloatingRound() {
+                                if (run === 1 && stage === 'teardown') return false;
                                 if (run === 1) return waitAt('round');
                                 newPlaying.resolve();
                                 return newGate.promise;
@@ -245,6 +252,7 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                         window.isInTutorial = false;
                         if (this.yuiGuideDirector) this.yuiGuideDirector.destroyed = true;
                         this.yuiGuideDirector = null;
+                        if (reason === 'destroy') await waitAt('teardown');
                     }
                 });
                 for (const name of ['markAvatarFloatingGuideRoundAutoShown', 'rollbackAvatarFloatingGuideRoundAutoShown',
@@ -255,28 +263,38 @@ test('a restarted tutorial keeps ownership when the old startup settles late', a
                     'revealTutorialLive2dPrepared', 'showSkipButton', 'restoreYuiGuideCompactChatSurface']) {
                     manager[name] = () => {};
                 }
-                const oldStartup = manager.startAvatarFloatingGuideRound(1, { source: 'auto' });
+                const startRound = manager.startAvatarFloatingGuideRound;
+                let oldStartup;
+                manager.startAvatarFloatingGuideRound = function (...args) {
+                    const pending = startRound.apply(this, args);
+                    oldStartup ||= pending;
+                    return pending;
+                };
+                manager.startTutorialWhenI18nReady();
                 await oldWaiting.promise;
                 const restarted = manager.restartCurrentTutorial();
                 await newPlaying.promise;
                 const newDirector = manager.yuiGuideDirector;
                 if (rejects) oldGate.reject(new Error('old startup failed late'));
                 else oldGate.resolve(true);
+                const priorEnds = stage === 'teardown' ? [[1, 'destroy'], [1, 'restart']] : [[1, 'restart']];
+                const priorReleases = stage === 'teardown' ? [1] : [];
                 try {
-                    assert.equal(await oldStartup, false);
+                    assert.equal(await oldStartup, null, 'superseded startup must not trigger caller recovery');
                     assert.equal(manager.yuiGuideDirector, newDirector);
                     assert.equal(newDirector.isStopping(), false);
                     assert.equal(manager.isTutorialRunning, true);
                     assert.equal(window.isInTutorial, true);
-                    assert.deepEqual(ends, [[1, 'restart']]);
-                    assert.deepEqual(releases, [], 'old completion must not release the new direct-boot claim');
+                    assert.deepEqual(ends, priorEnds);
+                    assert.deepEqual(releases, priorReleases, 'old completion must not release the new direct-boot claim');
                     assert.deepEqual(recoveries, [], 'old failures must not restore over the new model');
+                    assert.deepEqual(greetingReleases, [], 'the old caller must not release the new startup barrier');
                 } finally {
                     newGate.resolve(true);
                     await restarted;
                 }
-                assert.deepEqual(releases, [2], 'the new round still releases its own direct-boot claim');
-                assert.deepEqual(ends, [[1, 'restart'], [2, 'complete']]);
+                assert.deepEqual(releases, [...priorReleases, 2], 'the new round still releases its own direct-boot claim');
+                assert.deepEqual(ends, [...priorEnds, [2, 'complete']]);
             });
         }
     }
