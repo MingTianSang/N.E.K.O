@@ -172,6 +172,116 @@ test('manager cancels the loading prelude when it ends or its original director 
     }
 });
 
+test('a restarted tutorial keeps ownership when the old startup settles late', async (t) => {
+    const deferred = () => {
+        let resolve;
+        let reject;
+        const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+        return { promise, resolve, reject };
+    };
+    for (const stage of ['sleep', 'round', 'flush', 'prepare']) {
+        for (const rejects of [false, true]) {
+            await t.test(`${stage}: old startup ${rejects ? 'rejects' : 'resolves'} after restart`, async () => {
+                const oldGate = deferred();
+                const oldWaiting = deferred();
+                const newGate = deferred();
+                const newPlaying = deferred();
+                const ends = [];
+                const releases = [];
+                const recoveries = [];
+                let currentRun = 0;
+                let manager;
+                const waitAt = (name) => {
+                    if (currentRun === 1 && name === stage) {
+                        oldWaiting.resolve();
+                        return oldGate.promise;
+                    }
+                    return Promise.resolve(true);
+                };
+                const window = {
+                    TutorialRoundPrelude: require('./tutorial/core/round-prelude-controller.js'),
+                    NekoSevenDayTutorialState: { normalizeRound: day => day, flush: () => waitAt('flush') },
+                    dispatchEvent() {}
+                };
+                const module = { exports: {} };
+                vm.runInNewContext(managerSource, {
+                    window, module, console: { ...console, error() {} }, CustomEvent: class {},
+                    document: { body: { classList: { add() {} } } }
+                });
+                manager = Object.create(module.exports.UniversalTutorialManager.prototype);
+                Object.assign(manager, {
+                    currentPage: 'home',
+                    lifecycleStateStore: { resetEndReason() {}, getEndReason() {}, getEndRawReason() {} },
+                    waitUntilInitialized: async () => true,
+                    isDirectAvatarFloatingTutorialBoot: () => true,
+                    waitForTutorialModelHostReady: async () => true,
+                    claimDirectAvatarFloatingTutorialBoot() { currentRun++; },
+                    releaseDirectAvatarFloatingTutorialBoot() { releases.push(currentRun); },
+                    recoverUserModelAfterDirectTutorialBootFailure() { recoveries.push(currentRun); },
+                    prepareYuiGuideCompactChatForTutorial: () => waitAt('prepare'),
+                    sleep: () => waitAt('sleep'),
+                    getHomeAvatarFloatingGuideStartRound: () => 1,
+                    getStorageKeysForPage: () => [],
+                    ensureYuiGuideDirector() {
+                        const run = currentRun;
+                        const director = {
+                            destroyed: false,
+                            isStopping() { return this.destroyed; },
+                            setTutorialTakingOver() {},
+                            async playAvatarFloatingRound() {
+                                if (run === 1) return waitAt('round');
+                                newPlaying.resolve();
+                                return newGate.promise;
+                            }
+                        };
+                        this.yuiGuideDirector = director;
+                        return director;
+                    },
+                    async requestTutorialEnd(reason) {
+                        ends.push([currentRun, reason]);
+                        this._tutorialEndHandled = true;
+                        this._isDestroyed = true;
+                        this.isTutorialRunning = false;
+                        window.isInTutorial = false;
+                        if (this.yuiGuideDirector) this.yuiGuideDirector.destroyed = true;
+                        this.yuiGuideDirector = null;
+                    }
+                });
+                for (const name of ['markAvatarFloatingGuideRoundAutoShown', 'rollbackAvatarFloatingGuideRoundAutoShown',
+                    'resetAvatarFloatingGuideRoundState',
+                    'setAvatarFloatingGuideCurrentRound', 'snapshotAvatarFloatingModelInteractionState', 'lockBodyScroll',
+                    'relayYuiGuideTutorialLifecycleStarted', 'syncYuiGuideCompactChatFixedLayout', 'emitTutorialStarted',
+                    'beginTutorialAvatarOverride', 'ensureTutorialYuiLive2dVisible', 'waitForTutorialYuiLive2dVisualReady',
+                    'revealTutorialLive2dPrepared', 'showSkipButton', 'restoreYuiGuideCompactChatSurface']) {
+                    manager[name] = () => {};
+                }
+                const oldStartup = manager.startAvatarFloatingGuideRound(1, { source: 'auto' });
+                await oldWaiting.promise;
+                const restarted = manager.restartCurrentTutorial();
+                await newPlaying.promise;
+                const newDirector = manager.yuiGuideDirector;
+                if (rejects) oldGate.reject(new Error('old startup failed late'));
+                else oldGate.resolve(true);
+                try {
+                    assert.equal(await oldStartup, false);
+                    assert.equal(manager.yuiGuideDirector, newDirector);
+                    assert.equal(newDirector.isStopping(), false);
+                    assert.equal(manager.isTutorialRunning, true);
+                    assert.equal(window.isInTutorial, true);
+                    assert.deepEqual(ends, [[1, 'restart']]);
+                    assert.deepEqual(releases, [], 'old completion must not release the new direct-boot claim');
+                    assert.deepEqual(recoveries, [], 'old failures must not restore over the new model');
+                } finally {
+                    newGate.resolve(true);
+                    await restarted;
+                }
+                assert.deepEqual(releases, [2], 'the new round still releases its own direct-boot claim');
+                assert.deepEqual(ends, [[1, 'restart'], [2, 'complete']]);
+            });
+        }
+    }
+});
+
 test('round prelude starts takeover for day one before audio activation', async () => {
     const { TutorialRoundPreludeController } = require('./tutorial/core/round-prelude-controller.js');
     const calls = [];
