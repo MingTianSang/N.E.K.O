@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { setTimeout: setNativeTimeout, clearTimeout: clearNativeTimeout } = require('node:timers');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -14,6 +15,20 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function withDeadline(promise, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setNativeTimeout(() => reject(new Error(message)), 2000);
+      }),
+    ]);
+  } finally {
+    clearNativeTimeout(timer);
+  }
 }
 
 function createEnvironment() {
@@ -896,7 +911,7 @@ async function main() {
       };
       if (settleBeforeExit) {
         settleEnd();
-        await endingDuringExit;
+        await withDeadline(endingDuringExit, `end did not settle before ${exitType}: ${outcome}`);
         assert(pendingExitGame.runtime.state === 'degraded'
           && pendingExitEnvironment.windowListeners.get('pagehide')?.size === 1
           && pendingExitEnvironment.windowListeners.get('beforeunload')?.size === 1,
@@ -912,7 +927,7 @@ async function main() {
       assert(pendingExitGame.disposed && pendingExitPreserved,
         'page exit did not dispose while preserving pending route release');
       if (!settleBeforeExit) settleEnd();
-      await endingDuringExit;
+      await withDeadline(endingDuringExit, `end did not settle after ${exitType}: ${outcome}`);
       assert(pendingExitEnvironment.windowListeners.size === 0
         && pendingExitEnvironment.intervals.size === 0 && pendingExitGame.disposed,
       'end settlement resurrected the exited client lifecycle');
