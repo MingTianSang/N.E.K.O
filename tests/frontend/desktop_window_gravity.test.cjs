@@ -1558,7 +1558,8 @@ function installDragProducer(r, model, { fromCreation = false } = {}) {
 function installPlaygroundPointerDrag(r) {
   const body = attachPlaygroundBody(r, { width: 122, height: 122 });
   const state = r.button.__nekoIdleCat1PlaygroundDropState;
-  Object.assign(state, { pointerBodyId: '', pointerId: null, draggingBodyId: '', phase: 'settled' });
+  Object.assign(state, { pointerBodyId: '', pointerId: null, draggingBodyId: '', phase: 'settled',
+    token: 1, lastTickAt: 0, maxDeltaMs: 50, gravityPxPerSecond2: 2600 });
   Object.assign(r.context, {
     _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX: 5,
     _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL: 'air.gif',
@@ -1567,7 +1568,6 @@ function installPlaygroundPointerDrag(r) {
     _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
     _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
     _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
-    _startNekoIdleCat1PlaygroundPhysics() {},
   });
   const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
   for (const name of ['_isNekoIdleCat1PlaygroundEntryPending', '_isNekoIdleCat1PlaygroundEntryOrDropActive',
@@ -1576,11 +1576,18 @@ function installPlaygroundPointerDrag(r) {
     '_resolveNekoIdleCat1PlaygroundPointerClient', '_setNekoIdleCat1PlaygroundBodyPosition',
     '_applyNekoIdleCat1PlaygroundBodyRotation', '_updateNekoIdleCat1PlaygroundBodyBounds',
     '_setNekoIdleCat1PlaygroundCatAirArt', '_handleNekoIdleCat1PlaygroundPointerDownForBody',
-    '_handleNekoIdleCat1PlaygroundPointerMove']) {
+    '_handleNekoIdleCat1PlaygroundPointerMove', '_resolveNekoIdleCat1PlaygroundBodyCollisions',
+    '_stepNekoIdleCat1PlaygroundPhysics', '_startNekoIdleCat1PlaygroundPhysics']) {
     const start = source.indexOf(`function ${name}(`);
     assert.notEqual(start, -1, name);
     vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
   }
+  let physicsSteps = 0;
+  const stepPhysics = r.context._stepNekoIdleCat1PlaygroundPhysics;
+  r.context._stepNekoIdleCat1PlaygroundPhysics = (...args) => {
+    physicsSteps++;
+    return stepPhysics(...args);
+  };
   const journeySource = fs.readFileSync(path.join(avatar, 'idle-journey-and-presentation.js'), 'utf8');
   const positionStart = journeySource.indexOf('function _setNekoIdleCat1ContainerPosition(');
   vm.runInContext(journeySource.slice(positionStart, journeySource.indexOf('\n}', positionStart) + 2), r.context);
@@ -1588,7 +1595,7 @@ function installPlaygroundPointerDrag(r) {
     clientX: x, clientY: y, screenX: x + r.window.screenX, screenY: y + r.window.screenY,
     stopPropagation() {}, preventDefault() {} });
   return {
-    body, state,
+    body, state, physicsSteps: () => physicsSteps,
     down: (x, y) => r.context._handleNekoIdleCat1PlaygroundPointerDownForBody(r.button, body, pointer(x, y)),
     move: (x, y) => r.context._handleNekoIdleCat1PlaygroundPointerMove(r.button, pointer(x, y)),
   };
@@ -1615,7 +1622,9 @@ for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) for (const input of ['
       assert.equal(parseFloat(r.container.style.left), x - 60);
       assert.equal(parseFloat(r.container.style.top), y - 60);
       const position = [playground.body.x, playground.body.y, r.container.style.left, r.container.style.top];
+      const stepsBeforeRest = playground.physicsSteps();
       for (let frame = 0; frame < 12; frame++) r.frame();
+      assert.ok(playground.physicsSteps() > stepsBeforeRest, 'the production physics loop must run while held stationary');
       assert.deepEqual([playground.body.x, playground.body.y, r.container.style.left, r.container.style.top], position,
         'a held stationary pointer must keep the cat at its last pointer position');
     }
