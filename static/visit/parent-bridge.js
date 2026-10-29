@@ -57,6 +57,7 @@
   var MODEL_CONTAINER_IDS = ['live2d-container', 'vrm-container', 'mmd-container', 'pngtuber-container'];
   var ACTIVE_PHASES = { active: 1, wrap_up: 1 };
   var VISIT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+  var VISIT_UNAVAILABLE = {};
 
   /**
    * 分数累加器（纯函数）：acc += target / renderFps；acc ≥ 1 时抓一帧并减 1；
@@ -1131,7 +1132,14 @@
         return win.fetch('/api/visit/state?catgirl=' + encodeURIComponent(lanlanName), { headers: { 'X-CSRF-Token': token }, cache: 'no-store', credentials: 'same-origin' });
       }).then(function (res) {
         if (!res) return NO_RESPONSE;
-        return res.ok ? res.json() : null;
+        if (res.ok) return res.json();
+        if (res.status === 404) return VISIT_UNAVAILABLE;
+        if (res.status === 403 && typeof res.json === 'function') {
+          return Promise.resolve(res.json()).then(function (body) {
+            return body && body.code === 'VISIT_E_UNAUTHORIZED' ? VISIT_UNAVAILABLE : null;
+          });
+        }
+        return null;
       });
       var wait = Math.max(0, Math.min(RECOVER_FETCH_TIMEOUT_MS, deadline - now()));
       return withTimeout(request, wait, NO_RESPONSE).then(function (snap) {
@@ -1147,7 +1155,7 @@
     /**
      * 页面重载后：GET /api/visit/state 得知在飞场次就重建 iframe（20 s 页面重载宽限内重入房）。
      * overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。
-     * 返回 true 表示已应用权威快照（包括确认空闲）；失败或过时响应返回 false。
+     * 返回 true 表示已应用权威快照或确认串门接口不可用；临时失败或过时响应返回 false。
      */
     function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
@@ -1164,6 +1172,8 @@
         if (!snap || gen !== state.liveGen || state.frame !== frameAtSend) return false;
         var cfg = win.lanlan_config;
         if (cfg && cfg.lanlan_name && cfg.lanlan_name !== lanlanName) return false;
+        // 本机访问限制或未提供串门接口时结束临时核对；拒绝访问不能证明已有场次结束。
+        if (snap === VISIT_UNAVAILABLE) return true;
         if (snap.active === false) {
           // 另一份恢复快照可能已建出新 iframe，即使实时帧还没到，也不能用旧空闲响应收掉它。
           var endedVisit = state.visitId || state.closedVisitId;

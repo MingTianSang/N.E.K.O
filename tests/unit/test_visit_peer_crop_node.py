@@ -635,7 +635,7 @@ def test_visit_state_request_is_bounded_and_retried():
         """,
         files=BRIDGE_FILES,
     )
-    assert out == {"calls": 2, "result": True, "frame": True, "calls2": 1, "result2": False}
+    assert out == {"calls": 2, "result": True, "frame": True, "calls2": 1, "result2": True}
 
 
 def test_iframe_that_never_becomes_ready_is_reloaded():

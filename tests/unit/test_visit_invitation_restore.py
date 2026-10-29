@@ -496,3 +496,33 @@ def test_existing_transport_recovery_preserves_newer_lifecycle_and_other_visit(c
         files=BRIDGE_FILES, extra_prelude=_prelude(),
     )
     assert out == {"applied": False, "sameFrame": True, "phase": "wrap_up" if change == "newer_phase" else "joining", "visitId": True}
+
+
+@pytest.mark.parametrize("failure", ["nonlocal", "missing_endpoint", "csrf", "server"])
+@pytest.mark.parametrize("has_invite", [False, True])
+def test_return_releases_temporary_voice_gate_when_visits_are_unavailable_but_keeps_known_invites(failure, has_invite):
+    out = run_visit_js(
+        f"""
+        const h = makeChat();
+        const pet = connectMedia(h, true);
+        if (!{json.dumps(has_invite)}) pet.bridge.onStateChange({{
+          type: 'visit_state_change', action: 'ended', side: 'host', visit_id: VID }});
+        pet.ctx.dispatchEvent({{ type: 'pagehide', persisted: true }});
+        const failure = {json.dumps(failure)};
+        let calls = 0;
+        pet.ctx.fetch = async () => {{ calls++; return {{ ok: false,
+          status: failure === 'server' ? 503 : failure === 'missing_endpoint' ? 404 : 403,
+          json: async () => ({{ code: failure === 'nonlocal' ? 'VISIT_E_UNAUTHORIZED' : 'invalid_csrf_token' }})
+        }}; }};
+        pet.ctx.dispatchEvent({{ type: 'pageshow', persisted: true }});
+        const duringCheck = pet.ctx.isNekoVisitVoiceBlocked();
+        await settle();
+        const afterCheck = pet.ctx.isNekoVisitVoiceBlocked();
+        await advance(1000);
+        return {{ duringCheck, afterCheck, calls, knownInvite: pet.bridge.blocksOrdinaryVoice() }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    unavailable = failure in {"nonlocal", "missing_endpoint"}
+    assert out == {"duringCheck": True, "afterCheck": has_invite or not unavailable,
+                   "calls": 1 if unavailable else 2, "knownInvite": has_invite}
