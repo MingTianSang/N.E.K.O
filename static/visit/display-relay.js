@@ -41,6 +41,30 @@
     channel = null;
   }
 
+  function voiceBlockReason(phase) {
+    return ['pending', 'invite_ready', 'joining', 'awaiting_accept'].indexOf(phase) !== -1
+      ? 'VISIT_INPUT_REFUSED_NOT_READY' : 'VISIT_VOICE_UNAVAILABLE';
+  }
+
+  // 聊天窗从聊天状态判定，Pet 窗从同步过来的媒体桥状态判定。
+  window.getNekoVisitVoiceBlockReason = function getNekoVisitVoiceBlockReason() {
+    var bridge = window.nekoVisitParentBridge;
+    var bridgeBlocked = !!(bridge && typeof bridge.blocksOrdinaryVoice === 'function'
+      && bridge.blocksOrdinaryVoice());
+    var bridgeReason = bridgeBlocked ? voiceBlockReason(bridge.getPhase()) : null;
+    // Pet 的聊天状态可能停在 /chat 接管主连接之前，不能用它覆盖同步过来的结束状态。
+    if (window.__NEKO_MULTI_WINDOW__ === true && !isChatFollower && bridge) return bridgeReason;
+    var chat = window.nekoVisitChat;
+    if (chat && typeof chat.isActive === 'function' && chat.isActive()) {
+      return voiceBlockReason(chat.getState().phase);
+    }
+    return bridgeReason;
+  };
+
+  window.isNekoVisitVoiceBlocked = function isNekoVisitVoiceBlocked() {
+    return !!window.getNekoVisitVoiceBlockReason();
+  };
+
   window.nekoRelayVisitStateToDisplay = function relayVisitStateToDisplay(frame) {
     if (!isChatFollower || !channel) return false;
     var normalized = safeFrame(frame);
@@ -57,12 +81,29 @@
     }
   };
 
+  function reconcileIdleDisplay() {
+    var bridge = window.nekoVisitParentBridge;
+    if (bridge && typeof bridge.blocksOrdinaryVoice === 'function' && bridge.blocksOrdinaryVoice()
+        && typeof bridge.recoverFromPageConfig === 'function') {
+      // 接收窗自行核对当前后端状态，迟到的空闲通知不能清掉新邀请。
+      bridge.recoverFromPageConfig();
+    }
+  }
+
+  window.nekoRelayVisitIdleToDisplay = function relayVisitIdleToDisplay() {
+    if (!isChatFollower) { reconcileIdleDisplay(); return; }
+    if (!channel) return;
+    try { channel.postMessage({ type: 'visit_display_idle', catgirl: currentCatgirl() }); }
+    catch (_) { /* 下次权威状态恢复时重试 */ }
+  };
+
   if (!isChatFollower && channel) {
     channel.onmessage = function (event) {
       var payload = event && event.data;
-      if (!payload || payload.type !== 'visit_display_state') return;
+      if (!payload || (payload.type !== 'visit_display_state' && payload.type !== 'visit_display_idle')) return;
       var catgirl = currentCatgirl();
       if (payload.catgirl && catgirl && payload.catgirl !== catgirl) return;
+      if (payload.type === 'visit_display_idle') { reconcileIdleDisplay(); return; }
       var frame = safeFrame(payload.frame);
       var bridge = window.nekoVisitParentBridge;
       if (!frame || !bridge || typeof bridge.onStateChange !== 'function') return;

@@ -1152,15 +1152,26 @@
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
       var gen = state.liveGen;
+      var frameAtSend = state.frame;
       var auxGen = { crop: state.auxGen.crop, hidden: state.auxGen.hidden, away: state.auxGen.away };
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
       return acquireToken(0, Math.min(now() + RECOVER_TOKEN_WINDOW_MS, cap)).then(function (token) {
         if (!token) return null;
         return fetchSnapshot(lanlanName, token, 0, Math.min(now() + RECOVER_FETCH_WINDOW_MS, cap));
       }).then(function (snap) {
-        if (!snap || !snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
         // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
-        if (gen !== state.liveGen) return false;
+        if (!snap || gen !== state.liveGen) return false;
+        var cfg = win.lanlan_config;
+        if (cfg && cfg.lanlan_name && cfg.lanlan_name !== lanlanName) return false;
+        if (snap.active === false) {
+          // 另一份恢复快照可能已建出新 iframe，即使实时帧还没到，也不能用旧空闲响应收掉它。
+          if (state.frame !== frameAtSend) return false;
+          var endedVisit = state.visitId || state.closedVisitId;
+          if (!endedVisit) return false;
+          onStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side });
+          return true;
+        }
+        if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
         if (state.frame) return false;
         var actionByPhase = { pending: 'pending', invite_ready: 'invite_ready', joining: 'joining', awaiting_accept: 'awaiting_accept', active: 'started', wrap_up: 'wrap_up' };
         var action = actionByPhase[snap.phase];
@@ -1196,6 +1207,11 @@
 
     var bridge = {
       onStateChange: onStateChange,
+      blocksOrdinaryVoice: function () {
+        return !!((state.visitId || state.closedVisitId) && state.phase
+          && state.phase !== 'ending' && state.phase !== 'ended');
+      },
+      getPhase: function () { return state.phase; },
       /** VRM / MMD 在 render 之后调用（同一任务）。 */
       onExternalRender: function () {
         if (!captureWanted()) return;
