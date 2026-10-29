@@ -37,11 +37,16 @@
     return copy;
   }
 
-  try {
-    if (typeof BroadcastChannel === 'function') channel = new BroadcastChannel(CHANNEL_NAME);
-  } catch (_) {
-    channel = null;
+  function openDisplayChannel() {
+    if (channel) return;
+    try {
+      if (typeof BroadcastChannel === 'function') channel = new BroadcastChannel(CHANNEL_NAME);
+    } catch (_) {
+      channel = null;
+    }
+    if (!isChatFollower && channel) channel.onmessage = onDisplayMessage;
   }
+  openDisplayChannel();
 
   function voiceBlockReason(phase) {
     return ['pending', 'invite_ready', 'joining', 'awaiting_accept'].indexOf(phase) !== -1
@@ -100,7 +105,10 @@
       if (idleReconciliation === task) stopIdleReconciliation();
       return;
     }
-    Promise.resolve().then(function () { return task.bridge.recoverFromPageConfig(); }).then(function (recovered) {
+    Promise.resolve().then(function () {
+      if (!isCurrentIdleReconciliation(task)) return false;
+      return task.bridge.recoverFromPageConfig();
+    }).then(function (recovered) {
       if (idleReconciliation !== task) return;
       if (recovered || !isCurrentIdleReconciliation(task)) { stopIdleReconciliation(); return; }
       retryIdleDisplay(task);
@@ -140,18 +148,16 @@
     catch (_) { /* 下次权威状态恢复时重试 */ }
   };
 
-  if (!isChatFollower && channel) {
-    channel.onmessage = function (event) {
-      var payload = event && event.data;
-      if (!payload || (payload.type !== 'visit_display_state' && payload.type !== 'visit_display_idle')) return;
-      var catgirl = currentCatgirl();
-      if (payload.catgirl && catgirl && payload.catgirl !== catgirl) return;
-      if (payload.type === 'visit_display_idle') { reconcileIdleDisplay(); return; }
-      var frame = safeFrame(payload.frame);
-      var bridge = window.nekoVisitParentBridge;
-      if (!frame || !bridge || typeof bridge.onStateChange !== 'function') return;
-      try { bridge.onStateChange(frame); } catch (_) { /* 下一条权威状态仍可恢复 */ }
-    };
+  function onDisplayMessage(event) {
+    var payload = event && event.data;
+    if (!payload || (payload.type !== 'visit_display_state' && payload.type !== 'visit_display_idle')) return;
+    var catgirl = currentCatgirl();
+    if (payload.catgirl && catgirl && payload.catgirl !== catgirl) return;
+    if (payload.type === 'visit_display_idle') { reconcileIdleDisplay(); return; }
+    var frame = safeFrame(payload.frame);
+    var bridge = window.nekoVisitParentBridge;
+    if (!frame || !bridge || typeof bridge.onStateChange !== 'function') return;
+    try { bridge.onStateChange(frame); } catch (_) { /* 下一条权威状态仍可恢复 */ }
   }
 
   window.addEventListener('pagehide', function () {
@@ -159,5 +165,11 @@
     if (!channel || typeof channel.close !== 'function') return;
     try { channel.close(); } catch (_) { /* noop */ }
     channel = null;
-  }, { once: true });
+  });
+
+  window.addEventListener('pageshow', function (event) {
+    if (!event || !event.persisted) return;
+    openDisplayChannel();
+    reconcileIdleDisplay();
+  });
 })();

@@ -49,11 +49,14 @@ function connectMedia(h, multi) {{
   if (multi) {{
     const channels = [];
     class Channel {{
-      constructor(name) {{ this.name = name; channels.push(this); }}
+      constructor(name) {{ this.name = name; this.closed = false; channels.push(this); }}
+      close() {{ this.closed = true; this.onmessage = null; }}
       postMessage(data) {{
-        for (const peer of channels) if (peer !== this && peer.name === this.name && peer.onmessage) peer.onmessage({{ data }});
+        if (this.closed) throw Error('closed channel');
+        for (const peer of channels) if (!peer.closed && peer !== this && peer.name === this.name && peer.onmessage) peer.onmessage({{ data }});
       }}
     }}
+    pet.channels = channels;
     pet.ctx.__NEKO_MULTI_WINDOW__ = true;
     pet.ctx.BroadcastChannel = Channel;
     load(pet.ctx, [DISPLAY_RELAY]);
@@ -338,3 +341,67 @@ def test_repeated_idle_notifications_share_one_pending_reconciliation():
         files=BRIDGE_FILES, extra_prelude=_prelude(),
     )
     assert out == {"pendingCalls": 1, "calls": 1, "blocked": False}
+
+
+@pytest.mark.parametrize("still_waiting", [False, True])
+def test_bfcache_return_reopens_channels_and_reconciles_while_preserving_valid_invites(still_waiting):
+    out = run_visit_js(
+        f"""
+        const h = makeChat({{ routes: {{ [STATE_URL]: async () => ({{ status: 200,
+          body: {{ active: false, enabled: true, visit_id: null }} }}) }} }});
+        const pet = connectMedia(h, true);
+        let calls = 0;
+        pet.ctx.fetch = async () => {{
+          if (++calls === 1) return {{ ok: false, status: 503 }};
+          return {{ ok: true, json: async () => ({json.dumps(still_waiting)} ? snapshot() : {{ active: false, visit_id: null }}) }};
+        }};
+        await h.chat.afterBind(h.socket, '咪咪');
+        await settle();
+        function lifecycle(ctx, type) {{ ctx.dispatchEvent({{ type, persisted: true }}); }}
+        lifecycle(pet.ctx, 'pagehide');
+        lifecycle(h.win, 'pagehide');
+        const closed = pet.channels.every(channel => channel.closed);
+        await advance(1000);
+        const hiddenCalls = calls;
+        lifecycle(h.win, 'pageshow');
+        lifecycle(pet.ctx, 'pageshow');
+        await settle();
+        const blockedAfterReturn = pet.bridge.blocksOrdinaryVoice();
+        const reopened = pet.channels.filter(channel => !channel.closed).length;
+        function relay(action, visitId) {{ h.win.nekoRelayVisitStateToDisplay({{
+          type: 'visit_state_change', action, side: 'host', visit_id: visitId
+        }}); }}
+        relay('pending', 'B'.repeat(22));
+        const receivesNewInvite = pet.bridge.getVisitId() === 'B'.repeat(22);
+        // 再次缓存/返回仍要关闭旧通道并恢复接收，不能只处理第一次 pagehide。
+        lifecycle(pet.ctx, 'pagehide');
+        lifecycle(h.win, 'pagehide');
+        lifecycle(h.win, 'pageshow');
+        lifecycle(pet.ctx, 'pageshow');
+        relay('ended', 'B'.repeat(22));
+        await settle();
+        return {{ closed, hiddenCalls, reopened, blockedAfterReturn, receivesNewInvite,
+          receivesEnd: !pet.bridge.blocksOrdinaryVoice() }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out["closed"] and out["hiddenCalls"] == 1 and out["reopened"] == 2
+    assert out["blockedAfterReturn"] is still_waiting
+    assert out["receivesNewInvite"] and out["receivesEnd"]
+
+
+def test_ordinary_pageshow_does_not_start_idle_reconciliation():
+    out = run_visit_js(
+        """
+        const h = makeChat();
+        const pet = connectMedia(h, true);
+        let calls = 0;
+        pet.ctx.fetch = async () => { calls++; return { ok: false, status: 503 }; };
+        pet.ctx.dispatchEvent({ type: 'pageshow', persisted: false });
+        h.win.dispatchEvent({ type: 'pageshow', persisted: false });
+        await settle();
+        return { calls, channels: pet.channels.length };
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"calls": 0, "channels": 2}
