@@ -401,7 +401,7 @@ def test_reload_recovery_waits_for_a_token_before_asking_the_backend():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["late"] == {"fetched": ["tok"], "result": False, "lookups": 3}
+    assert out["late"] == {"fetched": ["tok"], "result": True, "lookups": 3}
     assert out["never"]["fetched"] == [] and out["never"]["result"] is False
     assert 3 <= out["never"]["lookups"] <= 5
 

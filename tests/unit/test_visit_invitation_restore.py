@@ -405,3 +405,94 @@ def test_ordinary_pageshow_does_not_start_idle_reconciliation():
         files=BRIDGE_FILES, extra_prelude=_prelude(),
     )
     assert out == {"calls": 0, "channels": 2}
+
+
+@pytest.mark.parametrize("phase", ["active", "wrap_up"])
+def test_cached_guest_applies_missed_phase_without_replacing_transport_and_resumes_capture(phase):
+    out = run_visit_js(
+        f"""
+        const h = makeChat();
+        const pet = connectMedia(h, true);
+        const frame = await open(pet, 'guest');
+        change(pet, 'joining');
+        pet.ctx.dispatchEvent({{ type: 'pagehide', persisted: true }});
+        h.win.nekoRelayVisitStateToDisplay({{ type: 'visit_state_change', action: 'started',
+          side: 'guest', visit_id: VISIT_ID }});
+        const before = pet.bridge.getPhase();
+        pet.ctx.fetch = async () => ({{ ok: true, json: async () => snapshot({{
+          visit_id: VISIT_ID, side: 'guest', phase: {json.dumps(phase)} }}) }});
+        pet.ctx.dispatchEvent({{ type: 'pageshow', persisted: true }});
+        await settle();
+        return {{ before, phase: pet.bridge.getPhase(), sameFrame: pet.bridge._state.frame === frame,
+          capturing: pet.ctx.live2dManager._visitCaptureActive,
+          postedPhase: pet.child.posted.filter(m => m.t === 'visit_state').at(-1).phase }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"before": "joining", "phase": phase, "sameFrame": True, "capturing": True, "postedPhase": phase}
+
+
+@pytest.mark.parametrize("outcome", ["waiting", "idle", "retry", "newer_live"])
+def test_cached_idle_pet_checks_for_missed_invitations_before_allowing_voice(outcome):
+    out = run_visit_js(
+        f"""
+        const h = makeChat();
+        const pet = connectMedia(h, true);
+        pet.bridge.onStateChange({{ type: 'visit_state_change', action: 'ended', side: 'host', visit_id: VID }});
+        pet.ctx.dispatchEvent({{ type: 'pagehide', persisted: true }});
+        h.win.nekoRelayVisitStateToDisplay({{ type: 'visit_state_change', action: 'pending',
+          side: 'host', visit_id: 'B'.repeat(22) }});
+        let calls = 0;
+        let respond;
+        pet.ctx.fetch = () => {{ calls++; return new Promise(resolve => {{ respond = resolve; }}); }};
+        const idleBeforeReturn = !pet.bridge.blocksOrdinaryVoice();
+        pet.ctx.dispatchEvent({{ type: 'pageshow', persisted: true }});
+        const checking = pet.ctx.isNekoVisitVoiceBlocked();
+        await settle();
+        if ({json.dumps(outcome)} === 'newer_live') h.win.nekoRelayVisitStateToDisplay({{
+          type: 'visit_state_change', action: 'pending', side: 'host', visit_id: 'C'.repeat(22) }});
+        respond({{ ok: {json.dumps(outcome != 'retry')}, json: async () =>
+          ({json.dumps(outcome)} === 'idle' ? {{ active: false }} : snapshot({{ visit_id: 'B'.repeat(22) }})) }});
+        await settle();
+        const afterFirst = pet.ctx.isNekoVisitVoiceBlocked();
+        if ({json.dumps(outcome)} === 'retry') {{
+          await advance(1000);
+          respond({{ ok: true, json: async () => snapshot({{ visit_id: 'B'.repeat(22) }}) }});
+          await settle();
+        }}
+        const beforeDuplicateIdle = calls;
+        h.win.nekoRelayVisitIdleToDisplay();
+        await settle();
+        return {{ idleBeforeReturn, checking, afterFirst, calls: beforeDuplicateIdle,
+          blocked: pet.ctx.isNekoVisitVoiceBlocked(), visitId: pet.bridge.getVisitId() }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out["idleBeforeReturn"] and out["checking"]
+    assert out["afterFirst"] is (outcome != "idle")
+    assert out["calls"] == (2 if outcome == "retry" else 1)
+    assert out["blocked"] is (outcome != "idle")
+    assert out["visitId"] == ("" if outcome == "idle" else ("C" if outcome == "newer_live" else "B") * 22)
+
+
+@pytest.mark.parametrize("change", ["newer_phase", "different_visit"])
+def test_existing_transport_recovery_preserves_newer_lifecycle_and_other_visit(change):
+    out = run_visit_js(
+        f"""
+        const pet = makeBridge();
+        const frame = await open(pet, 'guest');
+        change(pet, 'joining');
+        let respond;
+        pet.ctx.fetch = () => new Promise(resolve => {{ respond = resolve; }});
+        const request = pet.bridge.recoverAfterReload('咪咪');
+        await settle();
+        if ({json.dumps(change)} === 'newer_phase') change(pet, 'wrap_up');
+        respond({{ ok: true, json: async () => snapshot({{ side: 'guest', phase: 'active',
+          visit_id: {json.dumps(change)} === 'different_visit' ? 'B'.repeat(22) : VISIT_ID }}) }});
+        const applied = await request;
+        return {{ applied, sameFrame: pet.bridge._state.frame === frame, phase: pet.bridge.getPhase(),
+          visitId: pet.bridge.getVisitId() === VISIT_ID }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"applied": False, "sameFrame": True, "phase": "wrap_up" if change == "newer_phase" else "joining", "visitId": True}

@@ -1147,6 +1147,7 @@
     /**
      * 页面重载后：GET /api/visit/state 得知在飞场次就重建 iframe（20 s 页面重载宽限内重入房）。
      * overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。
+     * 返回 true 表示已应用权威快照（包括确认空闲）；失败或过时响应返回 false。
      */
     function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
@@ -1160,26 +1161,30 @@
         return fetchSnapshot(lanlanName, token, 0, Math.min(now() + RECOVER_FETCH_WINDOW_MS, cap));
       }).then(function (snap) {
         // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
-        if (!snap || gen !== state.liveGen) return false;
+        if (!snap || gen !== state.liveGen || state.frame !== frameAtSend) return false;
         var cfg = win.lanlan_config;
         if (cfg && cfg.lanlan_name && cfg.lanlan_name !== lanlanName) return false;
         if (snap.active === false) {
           // 另一份恢复快照可能已建出新 iframe，即使实时帧还没到，也不能用旧空闲响应收掉它。
-          if (state.frame !== frameAtSend) return false;
           var endedVisit = state.visitId || state.closedVisitId;
-          if (!endedVisit) return false;
+          if (!endedVisit) return true;
           onStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side });
           return true;
         }
         if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
-        if (state.frame) return false;
+        if (state.frame && (state.visitId !== snap.visit_id || state.side !== snap.side)) return false;
         var actionByPhase = { pending: 'pending', invite_ready: 'invite_ready', joining: 'joining', awaiting_accept: 'awaiting_accept', active: 'started', wrap_up: 'wrap_up' };
         var action = actionByPhase[snap.phase];
         if (!action) return false;
         // 建 iframe 会清掉显隐 / 离家样式：先记下查询期间实时推来的值，建完再套回去
         var live = { hidden: !!state.peerHidden, away: !!state.away };
-        ensureFrame(snap.side, snap.visit_id);
-        state.phase = snap.phase;
+        if (state.frame) {
+          // 缓存期间可能错过阶段帧；同一场保留传输 iframe，并走实时路径同步采集和传输状态。
+          onStateChange({ type: 'visit_state_change', action: action, visit_id: snap.visit_id, side: snap.side });
+        } else {
+          ensureFrame(snap.side, snap.visit_id);
+          state.phase = snap.phase;
+        }
         // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：更新过的用实时值，没更新过的才用快照
         var room = snap.room || {};
         if (auxGen.crop === state.auxGen.crop && (room.peer_crop === 'upper' || room.peer_crop === 'full')) state.peerCrop = room.peer_crop;
@@ -1187,6 +1192,8 @@
         else if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
         if (auxGen.hidden !== state.auxGen.hidden) setPeerHidden(live.hidden);
         else if (snap.peer && snap.peer.hidden) setPeerHidden(true);
+        syncCapture();
+        tick(true);
         return true;
       }).catch(function () {
         return false;

@@ -59,6 +59,9 @@
     var bridgeBlocked = !!(bridge && typeof bridge.blocksOrdinaryVoice === 'function'
       && bridge.blocksOrdinaryVoice());
     var bridgeReason = bridgeBlocked ? voiceBlockReason(bridge.getPhase()) : null;
+    // 缓存期间可能错过新邀请，权威核对结束前不能按旧的空闲状态放行。
+    if (idleReconciliation && idleReconciliation.recheckAll
+        && isCurrentIdleReconciliation(idleReconciliation)) return bridgeReason || 'VISIT_VOICE_UNAVAILABLE';
     // Pet 的聊天状态可能停在 /chat 接管主连接之前，不能用它覆盖同步过来的结束状态。
     if (window.__NEKO_MULTI_WINDOW__ === true && !isChatFollower && bridge) return bridgeReason;
     var chat = window.nekoVisitChat;
@@ -96,7 +99,7 @@
 
   function isCurrentIdleReconciliation(task) {
     return idleReconciliation === task && currentCatgirl() === task.catgirl
-      && window.nekoVisitParentBridge === task.bridge && task.bridge.blocksOrdinaryVoice()
+      && window.nekoVisitParentBridge === task.bridge && (task.recheckAll || task.bridge.blocksOrdinaryVoice())
       && task.bridge.getVisitId() === task.visitId && task.bridge.getPhase() === task.phase;
   }
 
@@ -127,15 +130,17 @@
     }, delay);
   }
 
-  function reconcileIdleDisplay() {
+  function reconcileIdleDisplay(recheckAll) {
+    if (isChatFollower) return;
     if (idleReconciliation && isCurrentIdleReconciliation(idleReconciliation)) return;
     stopIdleReconciliation();
     var bridge = window.nekoVisitParentBridge;
-    if (bridge && typeof bridge.blocksOrdinaryVoice === 'function' && bridge.blocksOrdinaryVoice()
+    if (bridge && typeof bridge.blocksOrdinaryVoice === 'function' && (recheckAll || bridge.blocksOrdinaryVoice())
         && typeof bridge.recoverFromPageConfig === 'function') {
       // 接收窗自行核对当前后端状态，迟到的空闲通知不能清掉新邀请。
       idleReconciliation = {
-        bridge: bridge, catgirl: currentCatgirl(), visitId: bridge.getVisitId(), phase: bridge.getPhase(), attempt: 0
+        bridge: bridge, catgirl: currentCatgirl(), visitId: bridge.getVisitId(), phase: bridge.getPhase(),
+        recheckAll: !!recheckAll, attempt: 0
       };
       checkIdleDisplay(idleReconciliation);
     }
@@ -170,6 +175,6 @@
   window.addEventListener('pageshow', function (event) {
     if (!event || !event.persisted) return;
     openDisplayChannel();
-    reconcileIdleDisplay();
+    reconcileIdleDisplay(true);
   });
 })();
