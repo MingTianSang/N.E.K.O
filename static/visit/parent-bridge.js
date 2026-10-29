@@ -112,6 +112,7 @@
     var assetVersion = env.assetVersion || '';
     var relayFactory = win.NekoVisitVoiceRelay;
     var voice = env.voice || (relayFactory ? relayFactory.createVoiceRelay({ window: win, log: function (level, msg) { logFrame(level, msg); } }) : null);
+    var recoverySeq = 0; // 并行恢复只采纳最后发起的请求，和实时帧代数分别判定。
 
     var state = {
       frame: null,
@@ -1054,6 +1055,10 @@
     };
 
     function onStateChange(msg) {
+      applyStateChange(msg, false);
+    }
+
+    function applyStateChange(msg, fromRecovery) {
       if (!msg || msg.type !== 'visit_state_change') return;
       var action = msg.action;
       // 别的场次迟到的事件在改任何状态之前就丢掉（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）；
@@ -1065,7 +1070,7 @@
       if (action !== 'pending' && msg.visit_id && msg.visit_id === state.endedVisitId) return;
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
-      if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
+      if (!fromRecovery && (action === 'ended' || PHASE_OF_ACTION[action])) state.liveGen += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.auxGen.crop += 1;
       if (action === 'peer_hidden' || action === 'peer_visible') state.auxGen.hidden += 1;
       if (action === 'departed') state.auxGen.away += 1;
@@ -1160,6 +1165,7 @@
     function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
+      var requestSeq = ++recoverySeq;
       var gen = state.liveGen;
       var frameAtSend = state.frame;
       var auxGen = { crop: state.auxGen.crop, hidden: state.auxGen.hidden, away: state.auxGen.away };
@@ -1168,17 +1174,16 @@
         if (!token) return null;
         return fetchSnapshot(lanlanName, token, 0, Math.min(now() + RECOVER_FETCH_WINDOW_MS, cap));
       }).then(function (snap) {
-        // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
-        if (!snap || gen !== state.liveGen || state.frame !== frameAtSend) return false;
+        // 新恢复请求、实时生命周期帧或传输 iframe 变化都会让在途快照作废。
+        if (!snap || requestSeq !== recoverySeq || gen !== state.liveGen || state.frame !== frameAtSend) return false;
         var cfg = win.lanlan_config;
         if (cfg && cfg.lanlan_name && cfg.lanlan_name !== lanlanName) return false;
         // 本机访问限制或未提供串门接口时结束临时核对；拒绝访问不能证明已有场次结束。
         if (snap === VISIT_UNAVAILABLE) return true;
         if (snap.active === false) {
-          // 另一份恢复快照可能已建出新 iframe，即使实时帧还没到，也不能用旧空闲响应收掉它。
           var endedVisit = state.visitId || state.closedVisitId;
           if (!endedVisit) return true;
-          onStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side });
+          applyStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side }, true);
           return true;
         }
         if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
@@ -1190,7 +1195,7 @@
         var live = { hidden: !!state.peerHidden, away: !!state.away };
         if (state.frame) {
           // 缓存期间可能错过阶段帧；同一场保留传输 iframe，并走实时路径同步采集和传输状态。
-          onStateChange({ type: 'visit_state_change', action: action, visit_id: snap.visit_id, side: snap.side });
+          applyStateChange({ type: 'visit_state_change', action: action, visit_id: snap.visit_id, side: snap.side }, true);
         } else {
           ensureFrame(snap.side, snap.visit_id);
           state.phase = snap.phase;

@@ -261,6 +261,35 @@ def test_late_idle_recovery_cannot_clear_an_invitation_restored_by_a_newer_snaps
     assert out == {"blocked": True, "visitId": "A" * 22}
 
 
+@pytest.mark.parametrize("first_response", [0, 1])
+@pytest.mark.parametrize("new_active", [False, True])
+@pytest.mark.parametrize("has_frame", [False, True])
+def test_latest_recovery_request_wins_without_changing_the_live_frame_generation(first_response, new_active, has_frame):
+    out = run_visit_js(
+        f"""
+        const pet = makeBridge();
+        if ({json.dumps(has_frame)}) pet.bridge.onStateChange({{
+          type: 'visit_state_change', action: 'invite_ready', visit_id: VID, side: 'host' }});
+        const liveGen = pet.bridge._state.liveGen;
+        const replies = [];
+        pet.ctx.fetch = () => new Promise(resolve => replies.push(resolve));
+        const oldRequest = pet.bridge.recoverAfterReload('咪咪');
+        await settle();
+        const newRequest = pet.bridge.recoverAfterReload('咪咪');
+        await settle();
+        const snapshots = {json.dumps(new_active)} ? [{{ active: false }}, snapshot()] : [snapshot(), {{ active: false }}];
+        for (const i of [{first_response}, {1 - first_response}]) {{
+          replies[i]({{ ok: true, json: async () => snapshots[i] }});
+          await settle();
+        }}
+        return {{ oldApplied: await oldRequest, newApplied: await newRequest,
+          blocked: pet.bridge.blocksOrdinaryVoice(), unchangedLiveGen: pet.bridge._state.liveGen === liveGen }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"oldApplied": False, "newApplied": True, "blocked": new_active, "unchangedLiveGen": True}
+
+
 @pytest.mark.parametrize("change", ["none", "new_visit", "new_phase", "new_character", "pagehide"])
 def test_idle_reconciliation_retries_after_failure_but_stops_for_a_changed_target(change):
     out = run_visit_js(
