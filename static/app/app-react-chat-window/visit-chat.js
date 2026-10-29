@@ -62,6 +62,10 @@
         invite_invalid: 'VISIT_INVITE_INVALID',
         invite_expired: 'VISIT_INVITE_INVALID',
         busy: 'VISIT_E_BUSY',
+        peer_lost: 'VISIT_PEER_LOST',
+        proto_mismatch: 'VISIT_PROTO_MISMATCH',
+        peer_identity_rejected: 'VISIT_PEER_IDENTITY_REJECTED',
+        peer_blocked: 'VISIT_PEER_IDENTITY_REJECTED',
         relay_lost: 'VISIT_RELAY_LOST',
         local_page_lost: 'VISIT_RELAY_LOST',
         kicked: 'VISIT_KICKED'

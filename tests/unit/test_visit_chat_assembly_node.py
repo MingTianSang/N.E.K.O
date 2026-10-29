@@ -1762,6 +1762,31 @@ const report = {};
       });
     }
   }
+  // Both invitation callers retain specific peer failures even when the
+  // corresponding status toast is missing and only ended reaches the page.
+  report.invite_peer_failures = [];
+  for (const kind of ['manual', 'direct']) {
+    for (const reason of ['peer_lost', 'proto_mismatch', 'peer_identity_rejected', 'peer_blocked']) {
+      const target = '11111111-1111-4111-8111-111111111111';
+      const statusTexts = JSON.parse(fs.readFileSync('static/locales/zh-CN.json', 'utf8')).visit.status;
+      const h = createHarness({ routes: {
+        '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID, phase: 'pending', target_user_id: target } }),
+      } });
+      h.win.t = (key) => statusTexts[key.replace(/^visit\.status\./, '')] || key;
+      delete h.win.showStatusToast;
+      let outcome = 'pending';
+      const pending = kind === 'manual' ? h.chat.createInviteCode() : h.chat.createDirectInvitation(target);
+      pending.then(() => { outcome = 'unexpected_success'; }, (error) => { outcome = error.message; });
+      await h.settle();
+      h.state('ended', { reason });
+      h.advance(120);
+      await h.settle();
+      report.invite_peer_failures.push({ kind, reason, error: outcome,
+        remainingWaiters: h.timers.filter((entry) => entry.every === 120).length,
+        extraCleanup: h.fetches.filter((entry) => entry.url === '/api/visit/route/end').length,
+      });
+    }
+  }
   // WS can finish the visit before the HTTP creation response reaches this
   // window. Preserve its error instead of reporting another invite conflict.
   {
@@ -1845,6 +1870,21 @@ def test_quota_reaches_invite_caller_in_web_and_electron_for_both_event_orders(r
 
 def test_quota_failure_before_http_response_is_not_lost_or_reported_as_an_invite_conflict(report):
     assert report["invite_quota_before_http"] == "今天的串门时间用完了"
+
+
+@pytest.mark.parametrize("kind", ["manual", "direct"])
+@pytest.mark.parametrize("reason,message", [
+    ("peer_lost", "和对方断开了连接"),
+    ("proto_mismatch", "对方版本不兼容，请双方更新"),
+    ("peer_identity_rejected", "没能确认对方的身份，串门已取消"),
+    ("peer_blocked", "没能确认对方的身份，串门已取消"),
+])
+def test_ended_peer_failure_reaches_invitation_caller_without_status(report, kind, reason, message):
+    result = next(item for item in report["invite_peer_failures"]
+                  if item["kind"] == kind and item["reason"] == reason)
+    assert result["error"] == message
+    assert result["remainingWaiters"] == 0
+    assert result["extraCleanup"] == 0
 
 
 def test_old_quota_error_and_input_refusals_do_not_reject_a_new_invitation(report):
