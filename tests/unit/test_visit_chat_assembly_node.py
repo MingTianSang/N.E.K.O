@@ -1729,6 +1729,91 @@ const report = {};
     await h.chat._test.pollDirectInvitations();
     report.direct_invite_character_questions = questionUrls;
   }
+  // Startup failures must reach the caller without depending on global toasts.
+  report.invite_quota_orders = [];
+  for (const windowKind of ['web', 'pet', 'chat']) {
+    for (const order of ['status', 'ended', 'status_then_ended', 'ended_then_status']) {
+      const target = '11111111-1111-4111-8111-111111111111';
+      const h = createHarness({ routes: {
+        '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID, phase: 'pending', target_user_id: target } }),
+      } });
+      if (windowKind !== 'web') {
+        h.win.__NEKO_MULTI_WINDOW__ = true;
+        h.win.location.pathname = windowKind === 'chat' ? '/chat' : '/';
+      }
+      delete h.win.showStatusToast;
+      let outcome = 'pending';
+      h.chat.createDirectInvitation(target).then(() => { outcome = 'unexpected_success'; }, (error) => { outcome = error.message; });
+      await h.settle();
+      const status = () => h.chat.handleStatus('VISIT_QUOTA_EXCEEDED', { visit_id: VID });
+      const ended = () => h.state('ended', { reason: 'quota_exceeded' });
+      if (order === 'status') status();
+      else if (order === 'ended') ended();
+      else if (order === 'status_then_ended') { status(); ended(); }
+      else { ended(); status(); }
+      h.advance(120);
+      await h.settle();
+      const early = outcome;
+      h.advance(15120);
+      await h.settle();
+      report.invite_quota_orders.push({ windowKind, order, early, final: outcome,
+        remainingWaiters: h.timers.filter((entry) => entry.every === 120).length,
+        extraCleanup: h.fetches.filter((entry) => entry.url === '/api/visit/route/end').length,
+      });
+    }
+  }
+  // WS can finish the visit before the HTTP creation response reaches this
+  // window. Preserve its error instead of reporting another invite conflict.
+  {
+    const target = '11111111-1111-4111-8111-111111111111';
+    let h;
+    h = createHarness({ routes: {
+      '/api/visit/rooms': async () => {
+        h.state('pending', { target_user_id: target });
+        h.state('ended', { reason: 'quota_exceeded' });
+        return { status: 202, body: { visit_id: VID, phase: 'pending', target_user_id: target } };
+      },
+    } });
+    report.invite_quota_before_http = await h.chat.createDirectInvitation(target).catch((error) => error.message);
+  }
+  // A previous visit's delayed error must not reject a new successful invite.
+  {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const h = createHarness({ routes: {
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID2, phase: 'pending', target_user_id: target } }),
+    } });
+    const pending = h.chat.createDirectInvitation(target);
+    await h.settle();
+    h.chat.handleStatus('VISIT_QUOTA_EXCEEDED', { visit_id: VID });
+    h.chat.handleStatus('VISIT_E_BUSY', { visit_id: VID2, request_id: 'ordinary-input' });
+    h.state('invite_ready', { visit_id: VID2, target_user_id: target });
+    h.advance(120);
+    report.invite_success_after_old_quota = (await pending).visit_id;
+  }
+  // Manual-code invitations use the same terminal failure path.
+  {
+    const h = createHarness({ routes: {
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID, phase: 'pending' } }),
+    } });
+    const pending = h.chat.createInviteCode().catch((error) => error.message);
+    await h.settle();
+    h.state('ended', { reason: 'quota_exceeded' });
+    h.advance(120);
+    report.manual_invite_quota = await pending;
+  }
+  // A real readiness timeout still cancels its own pending room.
+  {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const h = createHarness({ routes: {
+      '/api/visit/rooms': async () => ({ status: 202, body: { visit_id: VID, phase: 'pending', target_user_id: target } }),
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    } });
+    const pending = h.chat.createDirectInvitation(target).catch((error) => error.message);
+    await h.settle();
+    h.advance(15120);
+    report.invite_real_timeout = await pending;
+    report.invite_real_timeout_cleanup = h.fetches.filter((entry) => entry.url === '/api/visit/route/end').length;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -1748,6 +1833,28 @@ def report() -> dict:
     return _run(HARNESS.replace("__CHAT_PATH__", json.dumps(str(CHAT_PATH)))
                 .replace("__PACER_PATH__", json.dumps(str(PACER_PATH)))
                 .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
+
+
+def test_quota_reaches_invite_caller_in_web_and_electron_for_both_event_orders(report):
+    assert len(report["invite_quota_orders"]) == 12
+    for case in report["invite_quota_orders"]:
+        assert case["early"] == case["final"] == "今天的串门时间用完了", case
+        assert case["remainingWaiters"] == 0, case
+        assert case["extraCleanup"] == 0, case
+
+
+def test_quota_failure_before_http_response_is_not_lost_or_reported_as_an_invite_conflict(report):
+    assert report["invite_quota_before_http"] == "今天的串门时间用完了"
+
+
+def test_old_quota_error_and_input_refusals_do_not_reject_a_new_invitation(report):
+    assert report["invite_success_after_old_quota"] == "B" * 22
+
+
+def test_manual_invite_reports_quota_and_genuine_timeout_still_cancels_the_room(report):
+    assert report["manual_invite_quota"] == "今天的串门时间用完了"
+    assert report["invite_real_timeout"] == "定向串门房间没有准备好，请稍后再试"
+    assert report["invite_real_timeout_cleanup"] == 1
 
 
 def test_out_of_order_pieces_land_by_index_and_gaps_stay_placeholders(report):
