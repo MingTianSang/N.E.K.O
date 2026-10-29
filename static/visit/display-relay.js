@@ -13,6 +13,8 @@
     (window.location && window.location.pathname) || ''
   );
   var channel = null;
+  var idleReconciliation = null;
+  var idleRetryTimer = null;
 
   function currentCatgirl() {
     var config = window.lanlan_config;
@@ -81,12 +83,53 @@
     }
   };
 
+  function stopIdleReconciliation() {
+    idleReconciliation = null;
+    if (idleRetryTimer !== null) clearTimeout(idleRetryTimer);
+    idleRetryTimer = null;
+  }
+
+  function isCurrentIdleReconciliation(task) {
+    return idleReconciliation === task && currentCatgirl() === task.catgirl
+      && window.nekoVisitParentBridge === task.bridge && task.bridge.blocksOrdinaryVoice()
+      && task.bridge.getVisitId() === task.visitId && task.bridge.getPhase() === task.phase;
+  }
+
+  function checkIdleDisplay(task) {
+    if (!isCurrentIdleReconciliation(task)) {
+      if (idleReconciliation === task) stopIdleReconciliation();
+      return;
+    }
+    Promise.resolve().then(function () { return task.bridge.recoverFromPageConfig(); }).then(function (recovered) {
+      if (idleReconciliation !== task) return;
+      if (recovered || !isCurrentIdleReconciliation(task)) { stopIdleReconciliation(); return; }
+      retryIdleDisplay(task);
+    }, function () { retryIdleDisplay(task); });
+  }
+
+  function retryIdleDisplay(task) {
+    if (!isCurrentIdleReconciliation(task)) {
+      if (idleReconciliation === task) stopIdleReconciliation();
+      return;
+    }
+    var delay = Math.min(1000 * Math.pow(2, task.attempt++), 30000);
+    idleRetryTimer = setTimeout(function () {
+      idleRetryTimer = null;
+      checkIdleDisplay(task);
+    }, delay);
+  }
+
   function reconcileIdleDisplay() {
+    if (idleReconciliation && isCurrentIdleReconciliation(idleReconciliation)) return;
+    stopIdleReconciliation();
     var bridge = window.nekoVisitParentBridge;
     if (bridge && typeof bridge.blocksOrdinaryVoice === 'function' && bridge.blocksOrdinaryVoice()
         && typeof bridge.recoverFromPageConfig === 'function') {
       // 接收窗自行核对当前后端状态，迟到的空闲通知不能清掉新邀请。
-      bridge.recoverFromPageConfig();
+      idleReconciliation = {
+        bridge: bridge, catgirl: currentCatgirl(), visitId: bridge.getVisitId(), phase: bridge.getPhase(), attempt: 0
+      };
+      checkIdleDisplay(idleReconciliation);
     }
   }
 
@@ -112,6 +155,7 @@
   }
 
   window.addEventListener('pagehide', function () {
+    stopIdleReconciliation();
     if (!channel || typeof channel.close !== 'function') return;
     try { channel.close(); } catch (_) { /* noop */ }
     channel = null;

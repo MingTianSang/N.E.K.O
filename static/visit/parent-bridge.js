@@ -1212,6 +1212,7 @@
           && state.phase !== 'ending' && state.phase !== 'ended');
       },
       getPhase: function () { return state.phase; },
+      getVisitId: function () { return state.visitId || state.closedVisitId || ''; },
       /** VRM / MMD 在 render 之后调用（同一任务）。 */
       onExternalRender: function () {
         if (!captureWanted()) return;

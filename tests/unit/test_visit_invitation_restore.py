@@ -256,3 +256,85 @@ def test_late_idle_recovery_cannot_clear_an_invitation_restored_by_a_newer_snaps
         files=BRIDGE_FILES, extra_prelude=_prelude(),
     )
     assert out == {"blocked": True, "visitId": "A" * 22}
+
+
+@pytest.mark.parametrize("change", ["none", "new_visit", "new_phase", "new_character", "pagehide"])
+def test_idle_reconciliation_retries_after_failure_but_stops_for_a_changed_target(change):
+    out = run_visit_js(
+        f"""
+        const h = makeChat({{ routes: {{ [STATE_URL]: async () => ({{ status: 200,
+          body: {{ active: false, enabled: true, visit_id: null }} }}) }} }});
+        const pet = connectMedia(h, true);
+        let calls = 0;
+        pet.ctx.fetch = async () => {{
+          if (++calls === 1) return {{ ok: false, status: 503 }};
+          return {{ ok: true, json: async () => ({{ active: false, visit_id: null }}) }};
+        }};
+        await h.chat.afterBind(h.socket, '咪咪');
+        await settle();
+        const blockedAfterFailure = pet.bridge.blocksOrdinaryVoice();
+        if ({json.dumps(change)} === 'new_visit') pet.bridge.onStateChange({{
+          type: 'visit_state_change', action: 'pending', side: 'host', visit_id: 'B'.repeat(22)
+        }});
+        if ({json.dumps(change)} === 'new_phase') pet.bridge.onStateChange({{
+          type: 'visit_state_change', action: 'started', side: 'host', visit_id: VID
+        }});
+        if ({json.dumps(change)} === 'new_character') pet.ctx.lanlan_config.lanlan_name = 'Other';
+        if ({json.dumps(change)} === 'pagehide') pet.ctx.dispatchEvent(new pet.ctx.CustomEvent('pagehide'));
+        await advance(1000);
+        await settle();
+        return {{ blockedAfterFailure, calls, blocked: pet.bridge.blocksOrdinaryVoice() }};
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out["blockedAfterFailure"]
+    assert out["calls"] == (2 if change == "none" else 1)
+    assert out["blocked"] is (change != "none")
+
+
+def test_idle_reconciliation_recovers_after_the_parent_fetch_retry_window_is_exhausted():
+    out = run_visit_js(
+        """
+        const h = makeChat({ routes: { [STATE_URL]: async () => ({ status: 200,
+          body: { active: false, enabled: true, visit_id: null } }) } });
+        const pet = connectMedia(h, true);
+        let calls = 0;
+        pet.ctx.fetch = async () => {
+          if (++calls <= 4) throw Error('offline');
+          return { ok: true, json: async () => ({ active: false, visit_id: null }) };
+        };
+        await h.chat.afterBind(h.socket, '咪咪');
+        await settle();
+        await advance(7000);
+        const afterFailures = pet.bridge.blocksOrdinaryVoice();
+        await advance(1000);
+        return { afterFailures, calls, blocked: pet.bridge.blocksOrdinaryVoice() };
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"afterFailures": True, "calls": 5, "blocked": False}
+
+
+def test_repeated_idle_notifications_share_one_pending_reconciliation():
+    out = run_visit_js(
+        """
+        const h = makeChat({ routes: { [STATE_URL]: async () => ({ status: 200,
+          body: { active: false, enabled: true, visit_id: null } }) } });
+        const pet = connectMedia(h, true);
+        let calls = 0;
+        let respond;
+        pet.ctx.fetch = () => { calls++; return new Promise(resolve => { respond = resolve; }); };
+        await h.chat.afterBind(h.socket, '咪咪');
+        await settle();
+        h.win.nekoRelayVisitIdleToDisplay();
+        h.win.nekoRelayVisitIdleToDisplay();
+        await settle();
+        const pendingCalls = calls;
+        respond({ ok: true, json: async () => ({ active: false, visit_id: null }) });
+        await settle();
+        await advance(31000);
+        return { pendingCalls, calls, blocked: pet.bridge.blocksOrdinaryVoice() };
+        """,
+        files=BRIDGE_FILES, extra_prelude=_prelude(),
+    )
+    assert out == {"pendingCalls": 1, "calls": 1, "blocked": False}
