@@ -1258,6 +1258,7 @@ class UniversalTutorialManager {
     }
 
     prepareYuiGuideCompactChatForTutorial() {
+        const startupToken = this._avatarFloatingGuideStartupToken;
         const requestId = `tutorial-compact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         let tutorialRunId = '';
         try {
@@ -1289,6 +1290,10 @@ class UniversalTutorialManager {
                 settled = true;
                 window.removeEventListener('neko:yui-guide:compact-chat-ready', handleReady);
                 window.clearTimeout(timeoutId);
+                if (this._avatarFloatingGuideStartupToken !== startupToken) {
+                    resolve(false);
+                    return;
+                }
                 const response = detail && typeof detail === 'object' ? detail : {};
                 // 只在握手完成后保存启动前形态；上一轮迟到回执不能覆盖本轮恢复目标。
                 this._avatarFloatingChatSurfaceSnapshot = {
@@ -3526,6 +3531,8 @@ class UniversalTutorialManager {
         const autoReservationId = source === 'auto'
             ? `auto-${round}-${Date.now()}-${Math.random().toString(36).slice(2)}`
             : '';
+        const isCancelled = () => this._tutorialEndHandled || this._isDestroyed
+            || !this.isTutorialRunning || window.isInTutorial !== true;
 
         try {
             if (source === 'auto') {
@@ -3542,33 +3549,11 @@ class UniversalTutorialManager {
             this.isTutorialRunning = true;
             window.isInTutorial = true;
             this.lockBodyScroll();
-            if (source === 'auto') {
-                const stateApi = getSevenDayTutorialStateApi();
-                if (typeof stateApi.flush === 'function') {
-                    await stateApi.flush();
-                }
-            }
-            if (!ownsStartup()) return null;
-            // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
-            // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
-            // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
-            this.relayYuiGuideTutorialLifecycleStarted('home', source);
-            // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
-            // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
-            const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
-            if (!ownsStartup()) return null;
-            if (
-                this._tutorialEndHandled
-                || this._isDestroyed
-                || !this.isTutorialRunning
-                || window.isInTutorial !== true
-            ) {
-                // skip/远程结束可能发生在 prepare 等待期间；迟到回执刚写入的形态快照
-                // 仍需补恢复，但不能再走 catch 重复 teardown，更不能继续固定布局并启动 director。
-                this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare');
+            const cancelStartup = async (reason) => {
+                if (!ownsStartup()) return null;
+                // Teardown may finish before a pending prepare acknowledgement arrives.
+                this.restoreYuiGuideCompactChatSurface(reason);
                 if (directTutorialBoot) {
-                    // teardown 已接管取消流程；这里只释放提前建立的 claim，并保留已跳过模型标记，
-                    // 让调用方既有的 result=false recovery 在拆除后恢复用户模型。
                     this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {
                         keepUserModelBootSkipped: true,
                         suppressPrediction: true
@@ -3581,7 +3566,28 @@ class UniversalTutorialManager {
                         await stateApi.flush();
                     }
                 }
-                return false;
+                return ownsStartup() ? false : null;
+            };
+            if (source === 'auto') {
+                const stateApi = getSevenDayTutorialStateApi();
+                if (typeof stateApi.flush === 'function') {
+                    await stateApi.flush();
+                }
+            }
+            if (!ownsStartup()) return null;
+            if (isCancelled()) {
+                return await cancelStartup('tutorial-start-cancelled-before-prepare');
+            }
+            // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
+            // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
+            // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
+            this.relayYuiGuideTutorialLifecycleStarted('home', source);
+            // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
+            // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
+            const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
+            if (!ownsStartup()) return null;
+            if (isCancelled()) {
+                return await cancelStartup('tutorial-start-cancelled-after-prepare');
             }
             if (!compactChatReady) {
                 throw new Error('tutorial_compact_chat_not_ready');

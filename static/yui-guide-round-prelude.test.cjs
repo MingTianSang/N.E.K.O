@@ -179,8 +179,9 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
         const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
         return { promise, resolve, reject };
     };
-    for (const stage of ['sleep', 'round', 'flush', 'prepare', 'teardown']) {
+    for (const stage of ['sleep', 'round', 'flush', 'prepare', 'teardown', 'rollback', 'cancel-flush']) {
         for (const rejects of [false, true]) {
+            if (stage === 'cancel-flush' && rejects) continue;
             await t.test(`${stage}: old startup ${rejects ? 'rejects' : 'resolves'} after restart`, async () => {
                 const oldGate = deferred();
                 const oldWaiting = deferred();
@@ -190,10 +191,13 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                 const releases = [];
                 const recoveries = [];
                 const greetingReleases = [];
+                const relays = [];
+                const prepares = [];
                 let currentRun = 0;
+                let flushCalls = 0;
                 let manager;
                 const waitAt = (name) => {
-                    if (currentRun === 1 && name === stage) {
+                    if (currentRun === 1 && (name === stage || (stage === 'cancel-flush' && name === 'flush'))) {
                         oldWaiting.resolve();
                         return oldGate.promise;
                     }
@@ -201,7 +205,17 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                 };
                 const window = {
                     TutorialRoundPrelude: require('./tutorial/core/round-prelude-controller.js'),
-                    NekoSevenDayTutorialState: { normalizeRound: day => day, flush: () => waitAt('flush') },
+                    NekoSevenDayTutorialState: {
+                        normalizeRound: day => day,
+                        flush() {
+                            flushCalls++;
+                            if (stage === 'rollback' && currentRun === 1 && flushCalls === 2) {
+                                oldWaiting.resolve();
+                                return oldGate.promise;
+                            }
+                            return waitAt('flush');
+                        }
+                    },
                     dispatchEvent() {}
                 };
                 const module = { exports: {} };
@@ -220,7 +234,12 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                     claimDirectAvatarFloatingTutorialBoot() { currentRun++; },
                     releaseDirectAvatarFloatingTutorialBoot() { releases.push(currentRun); },
                     recoverUserModelAfterDirectTutorialBootFailure() { recoveries.push(currentRun); },
-                    prepareYuiGuideCompactChatForTutorial: () => waitAt('prepare'),
+                    relayYuiGuideTutorialLifecycleStarted() { relays.push(currentRun); },
+                    prepareYuiGuideCompactChatForTutorial() {
+                        prepares.push(currentRun);
+                        if (currentRun === 1 && stage === 'rollback') this.requestTutorialEnd('skip');
+                        return waitAt('prepare');
+                    },
                     sleep: () => waitAt('sleep'),
                     isI18nReady: () => true,
                     getHomeAvatarFloatingGuideLaunchRound: () => 1,
@@ -258,7 +277,7 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                 for (const name of ['markAvatarFloatingGuideRoundAutoShown', 'rollbackAvatarFloatingGuideRoundAutoShown',
                     'resetAvatarFloatingGuideRoundState',
                     'setAvatarFloatingGuideCurrentRound', 'snapshotAvatarFloatingModelInteractionState', 'lockBodyScroll',
-                    'relayYuiGuideTutorialLifecycleStarted', 'syncYuiGuideCompactChatFixedLayout', 'emitTutorialStarted',
+                    'syncYuiGuideCompactChatFixedLayout', 'emitTutorialStarted',
                     'beginTutorialAvatarOverride', 'ensureTutorialYuiLive2dVisible', 'waitForTutorialYuiLive2dVisualReady',
                     'revealTutorialLive2dPrepared', 'showSkipButton', 'restoreYuiGuideCompactChatSurface']) {
                     manager[name] = () => {};
@@ -272,13 +291,25 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                 };
                 manager.startTutorialWhenI18nReady();
                 await oldWaiting.promise;
+                if (stage === 'cancel-flush') {
+                    await manager.requestTutorialEnd('skip');
+                    oldGate.resolve(true);
+                    assert.equal(await oldStartup, false, 'a current cancelled startup still allows normal recovery');
+                    assert.deepEqual(relays, [], 'Escape during flush must not reopen the lifecycle');
+                    assert.deepEqual(prepares, [], 'a cancelled startup must not prepare chat');
+                    assert.deepEqual(releases, [1]);
+                    assert.deepEqual(recoveries, [1]);
+                    assert.deepEqual(greetingReleases, [1]);
+                    return;
+                }
                 const restarted = manager.restartCurrentTutorial();
                 await newPlaying.promise;
                 const newDirector = manager.yuiGuideDirector;
                 if (rejects) oldGate.reject(new Error('old startup failed late'));
                 else oldGate.resolve(true);
-                const priorEnds = stage === 'teardown' ? [[1, 'destroy'], [1, 'restart']] : [[1, 'restart']];
-                const priorReleases = stage === 'teardown' ? [1] : [];
+                const priorEnds = stage === 'teardown' ? [[1, 'destroy'], [1, 'restart']]
+                    : stage === 'rollback' ? [[1, 'skip'], [1, 'restart']] : [[1, 'restart']];
+                const priorReleases = ['teardown', 'rollback'].includes(stage) ? [1] : [];
                 try {
                     assert.equal(await oldStartup, null, 'superseded startup must not trigger caller recovery');
                     assert.equal(manager.yuiGuideDirector, newDirector);
@@ -297,6 +328,47 @@ test('a restarted tutorial keeps ownership when its i18n startup caller settles 
                 assert.deepEqual(ends, [...priorEnds, [2, 'complete']]);
             });
         }
+    }
+});
+
+test('late chat preparation cannot replace the restarted round snapshot', async (t) => {
+    for (const completion of ['ack', 'timeout']) {
+        await t.test(completion, async () => {
+            const listeners = new Set();
+            const timers = new Map();
+            const messages = [];
+            const values = new Map();
+            let timerId = 0;
+            const window = {
+                addEventListener(_type, listener) { listeners.add(listener); },
+                removeEventListener(_type, listener) { listeners.delete(listener); },
+                setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
+                clearTimeout(id) { timers.delete(id); },
+                localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
+                nekoTutorialOverlay: { relayToChat(message) { messages.push(message); } }
+            };
+            const module = { exports: {} };
+            vm.runInNewContext(managerSource, { window, module, console: { ...console, warn() {} } });
+            const manager = Object.create(module.exports.UniversalTutorialManager.prototype);
+            manager._avatarFloatingGuideStartupToken = {};
+            const oldPrepare = manager.prepareYuiGuideCompactChatForTutorial();
+            const oldTimeout = timers.get(1);
+            manager._avatarFloatingGuideStartupToken = {};
+            const newPrepare = manager.prepareYuiGuideCompactChatForTutorial();
+            const emitReady = (requestId, wasCollapsed) => {
+                for (const listener of [...listeners]) listener({ detail: { requestId, wasCollapsed } });
+            };
+            emitReady(messages[1].requestId, false);
+            assert.equal(await newPrepare, true);
+            const snapshot = manager._avatarFloatingChatSurfaceSnapshot;
+            assert.equal(snapshot.requestId, messages[1].requestId);
+            if (completion === 'ack') emitReady(messages[0].requestId, true);
+            else oldTimeout();
+            assert.equal(await oldPrepare, false);
+            assert.equal(manager._avatarFloatingChatSurfaceSnapshot, snapshot);
+            assert.equal(listeners.size, 0);
+            assert.equal(timers.size, 0);
+        });
     }
 });
 
