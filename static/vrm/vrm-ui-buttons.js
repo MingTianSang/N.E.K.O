@@ -1145,23 +1145,21 @@ VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {
     const canvasRect = this.renderer.domElement.getBoundingClientRect();
     const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
     const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
-    if (viewWidth <= 0 || viewHeight <= 0) return;
+    if (!(viewWidth > 0) || !(viewHeight > 0)
+        || !Number.isFinite(screenDx) || !Number.isFinite(screenDy)) return;
 
-    const cameraDistance = camera.position.distanceTo(scene.position);
-    if (cameraDistance < 0.001) return;
-
-    const fov = camera.fov * (Math.PI / 180);
-    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-    const worldWidth = worldHeight * camera.aspect;
-
-    const pixelToWorldX = worldWidth / viewWidth;
-    const pixelToWorldY = worldHeight / viewHeight;
-
-    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-    scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
-    scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+    // 在同一投影深度上平移。直线距离会随横向/纵向偏移增长，导致来回拖猫时越移越远。
+    camera.updateMatrixWorld(true);
+    const worldPosition = scene.getWorldPosition(new window.THREE.Vector3());
+    const depth = -worldPosition.clone().applyMatrix4(camera.matrixWorldInverse).z;
+    if (!Number.isFinite(depth) || depth < 0.001) return;
+    const target = worldPosition.project(camera);
+    target.x += screenDx * 2 / viewWidth;
+    target.y -= screenDy * 2 / viewHeight;
+    target.unproject(camera);
+    if (scene.parent) scene.parent.worldToLocal(target);
+    if (![target.x, target.y, target.z].every(Number.isFinite)) return;
+    scene.position.copy(target);
 
     if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
         const clamped = this.interaction.clampModelPosition(scene.position.clone());
