@@ -155,6 +155,57 @@ function assertVisible(h) {
 }
 
 for (const type of ['vrm', 'mmd']) {
+    for (const originZ of [6, 4, 3.95]) {
+        for (const parented of [false, true]) {
+            test(`${type}: visible body follows the cat when its origin is behind or inside the near plane (z=${originZ}, parent=${parented})`, async () => {
+                const h = await harness(type);
+                const root = new h.THREE.Group();
+                root.scale.setScalar(6);
+                const parent = new h.THREE.Group();
+                if (parented) {
+                    parent.position.set(-3, -2, 1);
+                    parent.rotation.set(0.2, 0.5, 0.1);
+                    parent.scale.set(1.2, 0.9, 0.8);
+                    parent.add(root);
+                }
+                const origin = new h.THREE.Vector3(0, 1, originZ);
+                root.position.copy(parented ? parent.worldToLocal(origin) : origin);
+                const body = new h.THREE.Mesh(new h.THREE.BoxGeometry(0.6, 1.8, 0.25));
+                root.add(body);
+                body.position.copy(root.worldToLocal(new h.THREE.Vector3(0, 1, -6)));
+                h.manager.currentModel = { scene: root, mesh: root, vrm: { scene: root } };
+                root.updateMatrixWorld(true);
+                const raycaster = new h.THREE.Raycaster();
+                raycaster.setFromCamera(new h.THREE.Vector2(0, 0), h.manager.camera);
+                assert.ok(raycaster.intersectObject(root, true).some(hit => {
+                    const depth = -hit.point.clone().applyMatrix4(h.manager.camera.matrixWorldInverse).z;
+                    return depth >= h.manager.camera.near && depth <= h.manager.camera.far;
+                }), 'the body is visible even though the model origin cannot be projected safely');
+                const start = root.position.clone();
+                const scale = root.scale.clone();
+                const rotation = root.quaternion.clone();
+                const screenStart = body.getWorldPosition(new h.THREE.Vector3()).project(h.manager.camera);
+                h.manager.applyScreenDelta(120, -80, { clamp: false });
+                const screenEnd = body.getWorldPosition(new h.THREE.Vector3()).project(h.manager.camera);
+                assert.ok(Math.abs((screenEnd.x - screenStart.x) * 640 - 120) < 1e-6);
+                assert.ok(Math.abs((screenStart.y - screenEnd.y) * 360 + 80) < 1e-6);
+                h.manager.applyScreenDelta(-120, 80, { clamp: false });
+                assert.ok(root.position.distanceTo(start) < 1e-8, 'moving the cat back restores the original position');
+                assert.ok(root.scale.equals(scale));
+                assert.ok(root.quaternion.equals(rotation));
+            });
+        }
+    }
+
+    test(`${type}: a model wholly behind the camera does not produce an invalid return displacement`, async () => {
+        const h = await harness(type);
+        h.scene.position.z = 1000;
+        const start = h.scene.position.clone();
+        h.manager.applyScreenDelta(120, -80, { clamp: false });
+        assert.ok(h.scene.position.equals(start));
+        assert.ok([h.scene.position.x, h.scene.position.y, h.scene.position.z].every(Number.isFinite));
+    });
+
     test(`${type}: cat movement preserves screen distance with a rotated camera and transformed model parent`, async () => {
         const h = await harness(type);
         const parent = new h.THREE.Group();

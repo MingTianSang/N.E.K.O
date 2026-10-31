@@ -1149,14 +1149,39 @@ VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {
         || !Number.isFinite(screenDx) || !Number.isFinite(screenDy)) return;
 
     // 在同一投影深度上平移。直线距离会随横向/纵向偏移增长，导致来回拖猫时越移越远。
-    camera.updateMatrixWorld(true);
+    camera.updateWorldMatrix(true, false);
     const worldPosition = scene.getWorldPosition(new window.THREE.Vector3());
     const depth = -worldPosition.clone().applyMatrix4(camera.matrixWorldInverse).z;
-    if (!Number.isFinite(depth) || depth < 0.001) return;
-    const target = worldPosition.project(camera);
+    if (!Number.isFinite(depth)) return;
+    const anchor = worldPosition.clone();
+    const near = Math.max(camera.near, 0.001);
+    if (depth < near) {
+        // 大模型旋转后，原点可在相机后方而身体仍可见；以可见深度区间的中点换算位移。
+        const box = new window.THREE.Box3().setFromObject(scene);
+        if (box.isEmpty()) return;
+        let minDepth = Infinity, maxDepth = -Infinity;
+        for (const x of [box.min.x, box.max.x]) {
+            for (const y of [box.min.y, box.max.y]) {
+                for (const z of [box.min.z, box.max.z]) {
+                    const point = new window.THREE.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+                    minDepth = Math.min(minDepth, -point.z);
+                    maxDepth = Math.max(maxDepth, -point.z);
+                }
+            }
+        }
+        const visibleNear = Math.max(near, minDepth);
+        const visibleFar = Math.min(camera.far, maxDepth);
+        if (!Number.isFinite(visibleNear) || !Number.isFinite(visibleFar) || visibleFar < visibleNear) return;
+        box.getCenter(anchor).applyMatrix4(camera.matrixWorldInverse);
+        anchor.z = -(visibleNear + visibleFar) / 2;
+        anchor.applyMatrix4(camera.matrixWorld);
+    }
+    const target = anchor.clone().project(camera);
     target.x += screenDx * 2 / viewWidth;
     target.y -= screenDy * 2 / viewHeight;
     target.unproject(camera);
+    // 锚点仅决定换算深度；世界位移仍应用到原始模型原点。
+    target.sub(anchor).add(worldPosition);
     if (scene.parent) scene.parent.worldToLocal(target);
     if (![target.x, target.y, target.z].every(Number.isFinite)) return;
     scene.position.copy(target);
