@@ -967,6 +967,7 @@ MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {
                 }
             }
         }
+        // 参考深度限定在相机 near/far 内，避免选到远裁剪面之外的锚点。
         const visibleNear = Math.max(near, minDepth);
         const visibleFar = Math.min(camera.far, maxDepth);
         if (!Number.isFinite(visibleNear) || !Number.isFinite(visibleFar) || visibleFar < visibleNear) return;
