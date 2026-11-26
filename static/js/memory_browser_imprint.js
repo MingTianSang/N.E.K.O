@@ -37,7 +37,9 @@
     let searchRequestId = 0;
     let lineageRequestId = 0;
     let dagRequestId = 0;
-    let unmountStarMap = null;
+    let starMapView = null;
+    let tabIndicator = null;
+    const memoryEditDrafts = new Map();
 
     async function fetchCsrfToken(forceRefresh) {
         if (csrfTokenCache && !forceRefresh) {
@@ -263,15 +265,97 @@
         return y + '-' + m + '-' + day;
     }
 
+    function mountTabIndicator() {
+        const tabs = document.getElementById('memory-view-tabs');
+        const indicator = tabs && tabs.querySelector('.memory-tab-indicator');
+        if (!indicator) return null;
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+        let animation = null;
+        let lastTarget = null;
+        let destroyed = false;
+
+        function bounds(node) {
+            const rect = node.getBoundingClientRect();
+            const parent = tabs.getBoundingClientRect();
+            return { left: rect.left - parent.left + tabs.scrollLeft - tabs.clientLeft, width: rect.width };
+        }
+
+        function frame(box) {
+            return { left: box.left + 'px', width: box.width + 'px' };
+        }
+
+        function update(animate, forceSnap) {
+            if (destroyed) return;
+            const selected = tabs.querySelector('.memory-view-tab[aria-selected="true"]');
+            if (!selected || !selected.getClientRects().length) return;
+            const label = selected.querySelector('[data-i18n]');
+            const target = bounds(label || selected);
+            if (!target.width) return;
+            if (!forceSnap && lastTarget && Math.abs(target.left - lastTarget.left) < 0.25
+                && Math.abs(target.width - lastTarget.width) < 0.25) return;
+            const current = lastTarget ? bounds(indicator) : target;
+            const shouldAnimate = lastTarget && !forceSnap && !reducedMotion.matches
+                && (animate || animation) && typeof indicator.animate === 'function';
+            if (animation) animation.cancel();
+            animation = null;
+            Object.assign(indicator.style, frame(target));
+            lastTarget = target;
+            tabs.classList.add('has-tab-indicator');
+            if (!shouldAnimate) return;
+            const currentRight = current.left + current.width;
+            const targetRight = target.left + target.width;
+            const movingRight = target.left + target.width / 2 > current.left + current.width / 2;
+            // Both ends advance toward the destination, with the leading end moving first.
+            const left = current.left + (target.left - current.left) * (movingRight ? 0.18 : 0.82);
+            const right = currentRight + (targetRight - currentRight) * (movingRight ? 0.82 : 0.18);
+            const next = indicator.animate([
+                Object.assign(frame(current), { offset: 0, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' }),
+                Object.assign(frame({ left: left, width: right - left }), { offset: 0.42, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' }),
+                Object.assign(frame(target), { offset: 1 }),
+            ], { duration: 380 });
+            animation = next;
+            next.onfinish = function () {
+                if (animation === next) animation = null;
+            };
+        }
+
+        function onLayout() { update(false); }
+        function onMotionChange() { update(false, true); }
+        let observer = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            observer = new ResizeObserver(onLayout);
+            observer.observe(tabs);
+            tabs.querySelectorAll('.memory-view-tab').forEach(function (tab) { observer.observe(tab); });
+        }
+        window.addEventListener('resize', onLayout);
+        window.addEventListener('pageshow', onLayout);
+        reducedMotion.addEventListener('change', onMotionChange);
+        if (document.fonts) document.fonts.ready.then(onLayout);
+        function onPageHide(event) {
+            if (event.persisted) return;
+            destroyed = true;
+            if (animation) animation.cancel();
+            if (observer) observer.disconnect();
+            window.removeEventListener('resize', onLayout);
+            window.removeEventListener('pageshow', onLayout);
+            window.removeEventListener('pagehide', onPageHide);
+            reducedMotion.removeEventListener('change', onMotionChange);
+        }
+        window.addEventListener('pagehide', onPageHide);
+        return { update: update };
+    }
+
     function setActiveTab(tabName) {
         if (tabName !== 'imprint' && tabName !== 'profile' && tabName !== 'recent') {
             tabName = 'imprint';
         }
+        const changed = activeTab !== tabName;
         activeTab = tabName;
         document.querySelectorAll('#memory-view-tabs .memory-view-tab').forEach(function (btn) {
             const selected = btn.getAttribute('data-memory-tab') === tabName;
             btn.setAttribute('aria-selected', selected ? 'true' : 'false');
         });
+        if (tabIndicator) tabIndicator.update(changed);
         const panels = {
             imprint: document.getElementById('memory-panel-imprint'),
             profile: document.getElementById('memory-panel-profile'),
@@ -282,14 +366,6 @@
                 panels[key].hidden = key !== tabName;
             }
         });
-        const titleEl = document.getElementById('memory-editor-active-title');
-        if (titleEl) {
-            if (activeCharacter) {
-                titleEl.textContent = activeCharacter;
-            } else {
-                titleEl.textContent = tr('memory.title', '记忆浏览');
-            }
-        }
     }
 
     async function fetchOverview(characterName) {
@@ -927,81 +1003,94 @@
 
     // ── Tab 1: Imprint Rendering ─────────────────────────────────────
 
-    function renderRadarSvg(dimensions) {
-        const ns = 'http://www.w3.org/2000/svg';
-        const svg = document.createElementNS(ns, 'svg');
-        svg.setAttribute('viewBox', '0 0 280 240');
-        svg.setAttribute('class', 'imprint-radar-svg');
-        svg.setAttribute('role', 'img');
-        svg.setAttribute('aria-label', tr('memory.imprintRadarTitle', 'TA 眼中的你维度分布'));
+    function renderDimensionRadar(dimensions) {
+        const ordered = ['preferences', 'habits', 'personality', 'shared_memories', 'agreements', 'growth']
+            .map(function (key) {
+                const dim = dimensions.find(function (entry) { return entry.key === key; });
+                const count = Number(dim && dim.count);
+                return { key: key, count: Number.isFinite(count) ? Math.max(0, count) : 0 };
+            });
+        const maxCount = Math.max(1, ...ordered.map(function (dim) { return dim.count; }));
+        const radar = el('div', { className: 'imprint-dimension-radar' });
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'imprint-radar-plot');
+        svg.setAttribute('viewBox', '0 0 152 176');
+        svg.setAttribute('aria-hidden', 'true');
+        radar.appendChild(svg);
 
-        const cx = 140;
-        const cy = 120;
-        const maxR = 76;
-        const count = dimensions.length || 6;
+        const cx = 76;
+        const cy = 88;
+        const radius = 82;
 
-        function pointAt(idx, radius) {
-            const angle = (-Math.PI / 2) + (idx * 2 * Math.PI) / count;
-            return [cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius];
+        function pointAt(index, ratio) {
+            const angle = -Math.PI / 2 + index * Math.PI / 3;
+            return [(cx + Math.cos(angle) * radius * ratio).toFixed(2),
+                (cy + Math.sin(angle) * radius * ratio).toFixed(2)];
         }
 
-        // 4 concentric rings
-        [0.25, 0.5, 0.75, 1.0].forEach(function (level) {
-            const pts = [];
-            for (let i = 0; i < count; i += 1) {
-                const p = pointAt(i, maxR * level);
-                pts.push(p[0].toFixed(1) + ',' + p[1].toFixed(1));
+        function drawShape(tag, className, attrs) {
+            const shape = document.createElementNS(svg.namespaceURI, tag);
+            shape.setAttribute('class', className);
+            Object.entries(attrs).forEach(function ([key, value]) { shape.setAttribute(key, value); });
+            svg.appendChild(shape);
+        }
+
+        [0.25, 0.5, 0.75, 1].forEach(function (ratio) {
+            drawShape('polygon', 'imprint-radar-grid', {
+                points: ordered.map(function (_, index) { return pointAt(index, ratio).join(','); }).join(' '),
+            });
+        });
+        const values = ordered.map(function (dim, index) {
+            const [x, y] = pointAt(index, 1);
+            drawShape('line', 'imprint-radar-grid', { x1: cx, y1: cy, x2: x, y2: y });
+            return pointAt(index, dim.count / maxCount);
+        });
+        if (ordered.some(function (dim) { return dim.count > 0; })) {
+            drawShape('polygon', 'imprint-radar-area', {
+                points: values.map(function (point) { return point.join(','); }).join(' '),
+            });
+        }
+        ordered.forEach(function (dim, index) {
+            const title = tr('memory.dim_' + dim.key, dim.key);
+            if (dim.count > 0) {
+                drawShape('circle', 'imprint-radar-dot', { cx: values[index][0], cy: values[index][1], r: 3 });
             }
-            const poly = document.createElementNS(ns, 'polygon');
-            poly.setAttribute('points', pts.join(' '));
-            poly.setAttribute('class', 'imprint-radar-grid');
-            svg.appendChild(poly);
+            radar.appendChild(el('button', {
+                type: 'button',
+                className: 'imprint-radar-label',
+                'data-dimension': dim.key,
+                disabled: dim.count === 0,
+                'aria-label': dim.count > 0
+                    ? tr('memory.imprintDimensionBrowse', '{{dimension}} · {{count}}，查看相关记忆', {
+                        dimension: title, count: dim.count,
+                    }) : title + ' · 0',
+                onClick: function () {
+                    setActiveTab('profile');
+                    runSearch(title);
+                },
+            }, [
+                el('span', { textContent: title }),
+                el('span', { className: 'imprint-radar-count', textContent: String(dim.count) }),
+            ]));
         });
+        return radar;
+    }
 
-        // Axes & Labels
-        const dataPts = [];
-        const dotCoords = [];
-        dimensions.forEach(function (dim, i) {
-            const outer = pointAt(i, maxR);
-            const axis = document.createElementNS(ns, 'line');
-            axis.setAttribute('x1', String(cx));
-            axis.setAttribute('y1', String(cy));
-            axis.setAttribute('x2', outer[0].toFixed(1));
-            axis.setAttribute('y2', outer[1].toFixed(1));
-            axis.setAttribute('class', 'imprint-radar-axis');
-            svg.appendChild(axis);
-
-            const ratio = Math.max(dim.count > 0 ? 0.18 : 0.06, Math.min(1, Number(dim.ratio || 0)));
-            const dp = pointAt(i, maxR * ratio);
-            dataPts.push(dp[0].toFixed(1) + ',' + dp[1].toFixed(1));
-            dotCoords.push(dp);
-
-            const lp = pointAt(i, maxR + 22);
-            const label = document.createElementNS(ns, 'text');
-            label.setAttribute('x', lp[0].toFixed(1));
-            label.setAttribute('y', (lp[1] + 4).toFixed(1));
-            label.setAttribute('text-anchor', lp[0] < cx - 8 ? 'end' : (lp[0] > cx + 8 ? 'start' : 'middle'));
-            label.setAttribute('class', 'imprint-radar-label');
-            const dimTitle = tr('memory.dim_' + dim.key, dim.key);
-            label.textContent = dimTitle + ' (' + dim.count + ')';
-            svg.appendChild(label);
+    function renderMemoryExcerpt(text) {
+        const content = String(text || '');
+        if (content.length <= 110) return el('p', { className: 'imprint-timeline-text', textContent: content });
+        const label = el('span', { className: 'imprint-excerpt-toggle', textContent: tr('memory.imprintReadMore', '展开全文') });
+        const details = el('details', { className: 'imprint-excerpt' }, [
+            el('summary', {}, [
+                el('span', { className: 'imprint-excerpt-preview', textContent: content.slice(0, 110) + '…' }),
+                label,
+            ]),
+            el('p', { className: 'imprint-timeline-text', textContent: content }),
+        ]);
+        details.addEventListener('toggle', function () {
+            label.textContent = details.open ? tr('memory.imprintReadLess', '收起全文') : tr('memory.imprintReadMore', '展开全文');
         });
-
-        const area = document.createElementNS(ns, 'polygon');
-        area.setAttribute('points', dataPts.join(' '));
-        area.setAttribute('class', 'imprint-radar-area');
-        svg.appendChild(area);
-
-        dotCoords.forEach(function (dp) {
-            const dot = document.createElementNS(ns, 'circle');
-            dot.setAttribute('cx', dp[0].toFixed(1));
-            dot.setAttribute('cy', dp[1].toFixed(1));
-            dot.setAttribute('r', '3.5');
-            dot.setAttribute('class', 'imprint-radar-dot');
-            svg.appendChild(dot);
-        });
-
-        return svg;
+        return details;
     }
 
     function getFallbackWarmCopy(imprint, charName) {
@@ -1075,12 +1164,18 @@
     function renderImprintPanel() {
         const panel = document.getElementById('memory-panel-imprint');
         if (!panel) return;
-        if (typeof unmountStarMap === 'function') {
-            unmountStarMap();
-            unmountStarMap = null;
+        const wasMapExpanded = panel.classList.contains('has-expanded-starmap')
+            && !panel.querySelector('.imprint-composition.is-starmap-closing');
+        const scrollTop = panel.scrollTop;
+        const mapSnapshot = wasMapExpanded && starMapView?.captureView ? starMapView.captureView() : null;
+        if (starMapView) {
+            starMapView.unmount();
+            starMapView = null;
         }
+        panel.classList.remove('has-expanded-starmap');
         panel.textContent = '';
-        panel.appendChild(el('div', { id: 'memory-imprint-toast-slot' }));
+        const toastHost = el('div', { id: 'memory-imprint-toast-slot' });
+        panel.appendChild(toastHost);
         renderActiveToastIntoHost();
 
         if (!activeCharacter) {
@@ -1121,15 +1216,21 @@
         const fallback = getFallbackWarmCopy(imprint, activeCharacter);
         const cached = warm.cached_note;
 
-        const summaryText = (cached && cached.summary) ? cached.summary : fallback.summary;
-        const commentaryText = (cached && cached.commentary) ? cached.commentary : fallback.commentary;
+        const summaryText = (cached && cached.summary) ? cached.summary : fallback.commentary;
+        const commentaryText = (cached && cached.commentary) ? cached.commentary : '';
         const blessingText = (cached && cached.blessing) ? cached.blessing : fallback.blessing;
+        const composition = el('div', { className: 'imprint-composition' });
+        const content = el('div', { className: 'imprint-content' });
+        const dimmer = el('div', { className: 'imprint-starmap-dimmer', 'aria-hidden': 'true' });
+        composition.appendChild(content);
+        composition.appendChild(dimmer);
+        composition.appendChild(toastHost);
 
         // 1. Warm Hero Card
         const keepsakeBtn = el('button', {
             type: 'button',
             id: 'memory-export-keepsake-btn',
-            className: 'memory-pill-btn',
+            className: 'imprint-action-link',
             disabled: exportingMode === 'keepsake',
             onClick: function () { handleExportZip('keepsake'); },
             textContent: exportingMode === 'keepsake'
@@ -1140,7 +1241,7 @@
         const genBtn = el('button', {
             type: 'button',
             id: 'memory-generate-note-btn',
-            className: 'memory-pill-btn',
+            className: 'imprint-action-link',
             disabled: noteGenerating,
             onClick: handleGenerateWarmNote,
             textContent: noteGenerating
@@ -1151,77 +1252,107 @@
         });
 
         const hero = el('section', { className: 'imprint-hero-card' }, [
-            el('div', { className: 'imprint-hero-head' }, [
-                el('div', { className: 'imprint-hero-title-group' }, [
-                    el('span', { className: 'imprint-stage-pill', textContent: fallback.stageLabel }),
-                    el('h3', { className: 'imprint-hero-headline', textContent: fallback.headline }),
+            el('div', { className: 'imprint-story-copy' }, [
+                el('div', { className: 'imprint-hero-head' }, [
+                    el('div', { className: 'imprint-hero-title-group' }, [
+                        el('div', { className: 'imprint-hero-meta' }, [
+                            el('span', { className: 'imprint-stage-label', textContent: fallback.stageLabel }),
+                            stats.companion_days > 0 ? el('span', {
+                                className: 'imprint-day-label',
+                                textContent: tr('memory.imprintCompanionDay', '相伴第 {{count}} 天', { count: stats.companion_days }),
+                            }) : null,
+                        ]),
+                        el('h3', { className: 'imprint-hero-headline', textContent: fallback.headline }),
+                    ]),
                 ]),
-                el('div', { className: 'imprint-hero-actions' }, [keepsakeBtn, genBtn]),
-            ]),
-            el('div', { className: 'imprint-warm-copy' }, [
-                el('p', { className: 'imprint-summary-text', textContent: summaryText }),
-                el('div', { className: 'imprint-commentary-box', textContent: commentaryText }),
-            ]),
-            el('div', { className: 'imprint-blessing-row' }, [
-                el('p', { className: 'imprint-blessing-text', textContent: '“' + blessingText + '”' }),
-                cached && cached.generated_at
-                    ? el('span', {
-                        className: 'imprint-note-meta',
-                        textContent: tr('memory.noteUpdatedAt', '更新于 {{date}}', {
-                            date: formatShortDate(cached.generated_at),
-                        }),
-                    })
-                    : null,
-            ]),
-        ]);
-        panel.appendChild(hero);
-
-        // 2. Stats Wall
-        const statsGrid = el('section', { className: 'imprint-stats-grid' }, [
-            el('div', { className: 'imprint-stat-card' }, [
-                el('span', {
-                    className: 'imprint-stat-value',
-                    textContent: stats.companion_days > 0 ? String(stats.companion_days) : '—',
-                }),
-                el('span', { className: 'imprint-stat-label', textContent: tr('memory.statCompanionDays', '相伴天数') }),
-            ]),
-            el('div', { className: 'imprint-stat-card' }, [
-                el('span', { className: 'imprint-stat-value', textContent: String(stats.total_messages || 0) }),
-                el('span', { className: 'imprint-stat-label', textContent: tr('memory.statTotalMessages', '对话印记') }),
-            ]),
-            el('div', { className: 'imprint-stat-card' }, [
-                el('span', { className: 'imprint-stat-value', textContent: String(stats.facts_total || 0) }),
-                el('span', { className: 'imprint-stat-label', textContent: tr('memory.statFactsTotal', '记住的事') }),
-            ]),
-            el('div', { className: 'imprint-stat-card' }, [
-                el('span', { className: 'imprint-stat-value', textContent: String(stats.imprint_persona_count || 0) }),
-                el('span', { className: 'imprint-stat-label', textContent: tr('memory.statImprintPersona', '刻进心里的了解') }),
+                el('div', { className: 'imprint-warm-copy' }, [
+                    el('p', { className: 'imprint-summary-text', textContent: summaryText }),
+                    commentaryText ? el('p', { className: 'imprint-commentary-box', textContent: commentaryText }) : null,
+                ]),
+                el('div', { className: 'imprint-blessing-row' }, [
+                    el('p', { className: 'imprint-blessing-text', textContent: '“' + blessingText + '”' }),
+                    cached && cached.generated_at
+                        ? el('span', {
+                            className: 'imprint-note-meta',
+                            textContent: tr('memory.noteUpdatedAt', '更新于 {{date}}', {
+                                date: formatShortDate(cached.generated_at),
+                            }),
+                        })
+                        : null,
+                ]),
             ]),
         ]);
-        panel.appendChild(statsGrid);
+        content.appendChild(hero);
 
-        // 3. Soft attention nudge (only if pending items exist)
-        if (Number(stats.pending_attention_count || 0) > 0) {
-            panel.appendChild(el('div', { className: 'imprint-attention-banner' }, [
-                el('span', {
-                    textContent: tr(
-                        'memory.imprintPendingBanner',
-                        '有 {{count}} 条记忆待确认或需要整理，帮 {{name}} 校准一下？',
-                        { count: stats.pending_attention_count, name: activeCharacter }
-                    ),
+        hero.appendChild(el('div', { className: 'imprint-hero-footer' }, [
+            el('p', {
+                className: 'imprint-stats-line',
+                textContent: tr('memory.imprintCounts', '{{messages}} 次对话 · {{facts}} 件记住的事 · {{imprints}} 条长期了解', {
+                    messages: stats.total_messages || 0, facts: stats.facts_total || 0, imprints: stats.imprint_persona_count || 0,
                 }),
-                el('button', {
-                    type: 'button',
-                    className: 'memory-pill-btn is-primary is-sm',
-                    textContent: tr('memory.goReviewNow', '去看看'),
-                    onClick: function () { setActiveTab('profile'); },
-                }),
-            ]));
-        }
+            }),
+            el('div', { className: 'imprint-hero-actions' }, [genBtn, keepsakeBtn]),
+        ]));
 
         // 3b. Memory Star Map Card (Phase 2)
         const starMapHost = el('div', { id: 'memory-starmap-host' });
+        const starMapLegendHost = el('div', { className: 'starmap-legend-host' });
         const starMapHeaderActions = el('div', { className: 'starmap-header-actions' });
+        function updateMapViewport() {
+            const panelRect = panel.getBoundingClientRect();
+            const compositionRect = composition.getBoundingClientRect();
+            const style = getComputedStyle(panel);
+            const paddingTop = parseFloat(style.paddingTop) || 0;
+            const paddingBottom = parseFloat(style.paddingBottom) || 0;
+            composition.style.setProperty('--starmap-viewport-top', (panelRect.top + paddingTop - compositionRect.top) + 'px');
+            composition.style.setProperty('--starmap-viewport-height', Math.max(1, panel.clientHeight - paddingTop - paddingBottom) + 'px');
+            if (composition.classList.contains('is-starmap-expanded')) {
+                const toolbar = starMapCard.querySelector('.starmap-toolbar').getBoundingClientRect();
+                const card = starMapCard.getBoundingClientRect();
+                starMapHost.style.setProperty('--starmap-toolbar-bottom', Math.max(0, toolbar.bottom - card.top + 12) + 'px');
+            }
+        }
+        function previewMapFrame() {
+            const rect = composition.getBoundingClientRect();
+            const style = getComputedStyle(composition);
+            return {
+                left: rect.left + parseFloat(style.getPropertyValue('--starmap-preview-x')),
+                top: rect.top + parseFloat(style.getPropertyValue('--starmap-preview-y')),
+                width: parseFloat(style.getPropertyValue('--starmap-preview-width')),
+                height: parseFloat(style.getPropertyValue('--starmap-preview-height')),
+            };
+        }
+        function finishMapCollapse() {
+            composition.classList.remove('is-starmap-expanded', 'is-starmap-closing', 'is-starmap-restored');
+            panel.classList.remove('has-expanded-starmap');
+            content.inert = false;
+            starMapCard.querySelector('.starmap-toolbar').inert = false;
+            starMapHost.querySelector('canvas')?.focus({ preventScroll: true });
+        }
+        function setMapExpanded(expanded, point, restoredView) {
+            if (expanded) {
+                const source = restoredView || (starMapView && starMapView.captureView ? starMapView.captureView() : null);
+                updateMapViewport();
+                composition.classList.remove('is-starmap-closing');
+                composition.classList.toggle('is-starmap-restored', Boolean(restoredView));
+                composition.classList.add('is-starmap-expanded');
+                panel.classList.add('has-expanded-starmap');
+                content.inert = true;
+                starMapCard.querySelector('.starmap-toolbar').inert = false;
+                updateMapViewport();
+                starMapView && starMapView.setExpanded(true, point, source, Boolean(restoredView));
+                const focusTarget = starMapHost.querySelector('canvas')
+                    || starMapHeaderActions.querySelector('.starmap-collapse-trigger');
+                focusTarget?.focus({ preventScroll: true });
+            } else {
+                if (!composition.classList.contains('is-starmap-expanded') || composition.classList.contains('is-starmap-closing')) return;
+                composition.classList.add('is-starmap-closing');
+                starMapHost.querySelector('canvas')?.focus({ preventScroll: true });
+                starMapCard.querySelector('.starmap-toolbar').inert = true;
+                if (starMapView) starMapView.setExpanded(false);
+                else finishMapCollapse();
+            }
+        }
         if (starMapData && starMapData.ready && (starMapData.clusters || []).length > 0) {
             starMapHeaderActions.appendChild(el('button', {
                 type: 'button',
@@ -1233,20 +1364,44 @@
                 onClick: handleLabelStarMapClusters,
             }));
         }
-        const starMapCard = el('section', { className: 'imprint-section-card', id: 'memory-starmap-card' }, [
-            el('div', { className: 'starmap-header-row' }, [
-                el('div', {}, [
-                    el('h4', { className: 'imprint-section-title', textContent: tr('memory.starMapTitle', '专属记忆星图') }),
-                    el('p', { className: 'imprint-section-sub', textContent: tr('memory.starMapSub', '每一颗星都是一段被记住的片段，相近的回忆会自然聚成主题星云') }),
+        starMapHeaderActions.appendChild(el('button', {
+            type: 'button',
+            className: 'memory-pill-btn starmap-collapse-trigger',
+            textContent: tr('memory.starMapCollapse', '收起星图'),
+            onClick: function () { setMapExpanded(false); },
+        }));
+        const starMapCard = el('section', { className: 'imprint-section-card imprint-starmap-section', id: 'memory-starmap-card' }, [
+            el('div', { className: 'starmap-toolbar' }, [
+                el('div', { className: 'starmap-header-row' }, [
+                    el('div', { className: 'imprint-section-heading' }, [
+                        el('h4', { className: 'imprint-section-title', textContent: tr('memory.starMapTitle', '专属记忆星图') }),
+                        el('p', { className: 'imprint-section-sub', textContent: tr('memory.starMapSub', '每一颗星都是一段被记住的片段，相近的回忆会自然聚成主题星云') }),
+                    ]),
+                    starMapHeaderActions,
                 ]),
-                starMapHeaderActions,
+                starMapLegendHost,
             ]),
             starMapHost,
         ]);
-        panel.appendChild(starMapCard);
+        starMapCard.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape' && !ev.defaultPrevented) {
+                ev.preventDefault();
+                setMapExpanded(false);
+            }
+        });
+        composition.appendChild(starMapCard);
 
         if (starMapData && window.nekoMemoryStarMap && typeof window.nekoMemoryStarMap.mount === 'function') {
-            unmountStarMap = window.nekoMemoryStarMap.mount(starMapHost, starMapData, {
+            starMapView = window.nekoMemoryStarMap.mount(starMapHost, starMapData, {
+                interactionRoot: panel,
+                legendHost: starMapLegendHost,
+                getPreviewFrame: previewMapFrame,
+                onResize: function () {
+                    updateMapViewport();
+                },
+                onCollapseComplete: finishMapCollapse,
+                onRequestExpand: function (point) { setMapExpanded(true, point); },
+                onRequestCollapse: function () { setMapExpanded(false); },
                 onTrace: function (point) {
                     openLineageDrawer(point);
                 },
@@ -1257,23 +1412,24 @@
                     }
                 },
             });
-        } else {
-            starMapHost.appendChild(el('div', {
-                className: 'memory-empty-state',
-                textContent: tr('memory.loading', '加载中...'),
-            }));
         }
 
-        // 4. Radar + Milestones / Evolution
-        const radarCard = el('section', { className: 'imprint-section-card' }, [
-            el('h4', { className: 'imprint-section-title', textContent: tr('memory.imprintRadarTitle', 'TA 了解你的维度') }),
-            el('p', { className: 'imprint-section-sub', textContent: tr('memory.imprintRadarSub', '记录你们在偏好、习惯、性格、回忆、约定与共同成长上的沉淀') }),
-            el('div', { className: 'imprint-radar-wrap' }, [
-                renderRadarSvg(imprint.dimensions || []),
+        // 4. Memory dimensions and a chronological reading journal.
+        const dimensionsCard = el('section', { className: 'imprint-section-card imprint-dimensions-card' }, [
+            el('div', { className: 'imprint-section-heading' }, [
+                el('h4', { className: 'imprint-section-title', textContent: tr('memory.imprintDimensionsTitle', 'TA 了解你的维度') }),
+                el('p', { className: 'imprint-section-sub', textContent: tr('memory.imprintDimensionsSub', '从这些细节里，慢慢认识你。') }),
             ]),
+            renderDimensionRadar(imprint.dimensions || []),
         ]);
 
         const milestonesList = el('ul', { className: 'imprint-timeline-list' });
+        function timelineDate(rawDate) {
+            const date = formatShortDate(rawDate);
+            return el('time', { className: 'imprint-timeline-date', datetime: rawDate || null, 'aria-label': date }, [
+                el('span', { className: 'imprint-timeline-day', textContent: date ? date.slice(5).replace('-', '.') : '—' }),
+            ]);
+        }
         const milestones = imprint.milestones || [];
         const evolution = imprint.evolution || [];
         if (milestones.length === 0 && evolution.length === 0) {
@@ -1282,42 +1438,52 @@
                 textContent: tr('memory.noMilestonesYet', '随着一起经历更多故事，重要的回忆与默契会沉淀在这里。'),
             }));
         } else {
-            milestones.slice(0, 6).forEach(function (m) {
+            const entries = milestones.slice(0, 6).map(function (item) { return { item: item, date: item.date }; })
+                .concat(evolution.slice(0, 4).map(function (item) { return { item: item, date: item.changed_at, evolution: true }; }))
+                .sort(function (a, b) { return (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0); });
+            let previousYear = null;
+            entries.forEach(function (entry) {
+                const item = entry.item;
+                const year = formatShortDate(entry.date).slice(0, 4);
+                if (year && year !== previousYear) {
+                    milestonesList.appendChild(el('li', { className: 'imprint-timeline-year', textContent: year }));
+                    previousYear = year;
+                }
+                const note = el('div', { className: 'imprint-timeline-note' });
+                if (entry.evolution) {
+                    note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.evolutionTag', '印象演变') }));
+                    note.appendChild(renderMemoryExcerpt(item.current_text));
+                    if (item.previous_text) {
+                        note.appendChild(el('details', { className: 'imprint-evolution-history' }, [
+                            el('summary', { textContent: tr('memory.oldImpression', '之前的印象') }),
+                            el('p', { className: 'imprint-evolution-old', textContent: item.previous_text }),
+                        ]));
+                    }
+                } else {
+                    if (item.category && item.category !== 'highlight') {
+                        note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.milestoneCat_' + item.category, item.category) }));
+                    }
+                    note.appendChild(renderMemoryExcerpt(item.text));
+                }
                 milestonesList.appendChild(el('li', { className: 'imprint-timeline-item' }, [
-                    el('div', { className: 'imprint-timeline-meta' }, [
-                        el('span', {
-                            className: 'imprint-timeline-tag',
-                            textContent: tr('memory.milestoneCat_' + m.category, m.category || 'highlight'),
-                        }),
-                        el('span', { textContent: formatShortDate(m.date) }),
-                    ]),
-                    el('p', { className: 'imprint-timeline-text', textContent: m.text }),
-                ]));
-            });
-            evolution.slice(0, 4).forEach(function (ev) {
-                milestonesList.appendChild(el('li', { className: 'imprint-timeline-item' }, [
-                    el('div', { className: 'imprint-timeline-meta' }, [
-                        el('span', {
-                            className: 'imprint-timeline-tag',
-                            textContent: tr('memory.evolutionTag', '印象演变'),
-                        }),
-                        el('span', { textContent: formatShortDate(ev.changed_at) }),
-                    ]),
-                    el('div', { className: 'imprint-evolution-diff' }, [
-                        el('span', { className: 'imprint-evolution-old', textContent: ev.previous_text }),
-                        el('span', { className: 'imprint-evolution-new', textContent: '→ ' + ev.current_text }),
-                    ]),
+                    timelineDate(entry.date), note,
                 ]));
             });
         }
 
-        const timelineCard = el('section', { className: 'imprint-section-card' }, [
-            el('h4', { className: 'imprint-section-title', textContent: tr('memory.milestonesTitle', '高光印记与印象变迁') }),
-            el('p', { className: 'imprint-section-sub', textContent: tr('memory.milestonesSub', '那些被牢记的共同片段，以及 TA 对你认识的悄然更新') }),
+        const timelineCard = el('section', { className: 'imprint-section-card imprint-milestones-card' }, [
+            el('div', { className: 'imprint-section-heading' }, [
+                el('h4', { className: 'imprint-section-title', textContent: tr('memory.milestonesTitle', '高光印记与印象变迁') }),
+                el('p', { className: 'imprint-section-sub', textContent: tr('memory.milestonesSub', '那些被牢记的共同片段，以及 TA 对你认识的悄然更新') }),
+            ]),
             milestonesList,
         ]);
 
-        panel.appendChild(el('div', { className: 'imprint-visual-grid' }, [radarCard, timelineCard]));
+        content.appendChild(el('div', { className: 'imprint-visual-grid' }, [dimensionsCard, timelineCard]));
+        panel.appendChild(composition);
+        panel.scrollTop = scrollTop;
+        updateMapViewport();
+        if (wasMapExpanded && starMapView) setMapExpanded(true, null, mapSnapshot);
     }
 
     // ── Tab 2: Profile / Correction & 6-Axis Technical Health ────────
@@ -1862,17 +2028,34 @@
         }
 
         if (!isReadOnly && item.id) {
-            const editArea = el('textarea', { className: 'memory-inline-textarea', hidden: true });
-            editArea.value = item.text || '';
+            const draftKey = JSON.stringify([activeCharacter, item.kind, item.entity || '', item.id]);
+            const draft = memoryEditDrafts.get(draftKey);
+            const editArea = el('textarea', {
+                className: 'memory-inline-textarea',
+                'data-memory-draft-key': draftKey,
+                hidden: !draft,
+                onInput: function () {
+                    memoryEditDrafts.set(draftKey, { text: editArea.value });
+                    // Search results can display another editor for the same memory.
+                    document.querySelectorAll('textarea[data-memory-draft-key]').forEach(function (node) {
+                        if (node !== editArea && node.getAttribute('data-memory-draft-key') === draftKey) {
+                            node.value = editArea.value;
+                        }
+                    });
+                },
+            });
+            editArea.value = draft ? draft.text : (item.text || '');
+            textEl.hidden = Boolean(draft);
             const saveBtn = el('button', {
                 type: 'button',
                 className: 'memory-pill-btn is-primary is-sm',
-                hidden: true,
+                hidden: !draft,
                 textContent: tr('memory.save', '保存'),
                 onClick: async function () {
                     const nextText = editArea.value.trim();
                     if (!nextText) return;
                     const targetChar = activeCharacter;
+                    const submittedDraft = memoryEditDrafts.get(draftKey);
                     let ok = false;
                     if (item.kind === 'persona') {
                         ok = await postMutation('/api/memory/persona/edit', {
@@ -1895,6 +2078,11 @@
                             text: nextText,
                         }, tr('memory.savedToast', '已保存修改'));
                     }
+                    // Input replaces the draft object, so a late save cannot discard newer edits.
+                    if (ok && memoryEditDrafts.get(draftKey) === submittedDraft) {
+                        memoryEditDrafts.delete(draftKey);
+                        if (targetChar === activeCharacter) renderProfilePanel();
+                    }
                     if (ok && targetChar === activeCharacter) {
                         checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText, targetChar, {
                             subject_kind: item.subject_kind || '',
@@ -1907,13 +2095,11 @@
             const cancelBtn = el('button', {
                 type: 'button',
                 className: 'memory-pill-btn is-sm',
-                hidden: true,
+                hidden: !draft,
                 textContent: tr('memory.cancelSwitch', '取消'),
                 onClick: function () {
-                    editArea.hidden = true;
-                    saveBtn.hidden = true;
-                    cancelBtn.hidden = true;
-                    textEl.hidden = false;
+                    memoryEditDrafts.delete(draftKey);
+                    renderProfilePanel();
                 },
             });
 
@@ -1923,6 +2109,7 @@
                     className: 'memory-pill-btn is-sm',
                     textContent: tr('memory.actionEdit', '修改'),
                     onClick: function () {
+                        memoryEditDrafts.set(draftKey, { text: editArea.value });
                         textEl.hidden = true;
                         editArea.hidden = false;
                         saveBtn.hidden = false;
@@ -2247,6 +2434,19 @@
     function renderProfilePanel() {
         const panel = document.getElementById('memory-panel-profile');
         if (!panel) return;
+        const focusedEditor = panel.contains(document.activeElement)
+            && document.activeElement.matches('textarea[data-memory-draft-key]')
+            ? document.activeElement : null;
+        const editorSelection = focusedEditor ? {
+            key: focusedEditor.getAttribute('data-memory-draft-key'),
+            occurrence: Array.from(panel.querySelectorAll('textarea[data-memory-draft-key]'))
+                .filter(function (node) {
+                    return node.getAttribute('data-memory-draft-key') === focusedEditor.getAttribute('data-memory-draft-key');
+                }).indexOf(focusedEditor),
+            start: focusedEditor.selectionStart,
+            end: focusedEditor.selectionEnd,
+            direction: focusedEditor.selectionDirection,
+        } : null;
         panel.textContent = '';
 
         panel.appendChild(el('div', { id: 'memory-profile-toast-slot' }));
@@ -2433,6 +2633,17 @@
             searchFooter.appendChild(list);
         }
         panel.appendChild(searchFooter);
+        if (editorSelection) {
+            const matchingEditors = Array.from(panel.querySelectorAll('textarea[data-memory-draft-key]'))
+                .filter(function (node) {
+                    return !node.hidden && node.getAttribute('data-memory-draft-key') === editorSelection.key;
+                });
+            const nextEditor = matchingEditors[editorSelection.occurrence] || matchingEditors[0];
+            if (nextEditor) {
+                nextEditor.focus({ preventScroll: true });
+                nextEditor.setSelectionRange(editorSelection.start, editorSelection.end, editorSelection.direction);
+            }
+        }
     }
 
     function renderMemoryVaultSection() {
@@ -2570,6 +2781,7 @@
             // ignore
         }
 
+        tabIndicator = mountTabIndicator();
         document.querySelectorAll('#memory-view-tabs .memory-view-tab').forEach(function (btn) {
             btn.addEventListener('click', function () {
                 const tab = btn.getAttribute('data-memory-tab');
