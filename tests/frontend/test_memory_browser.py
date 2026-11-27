@@ -13,12 +13,12 @@ from utils.storage_policy import save_storage_policy
 
 def test_recent_sync_notification_refreshes_saved_view_and_preserves_dirty_draft(mock_page, running_server, seed_memory_file):
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    mock_page.goto(f'{running_server}/memory_browser')
+    mock_page.goto(f'{running_server}/memory_browser?tab=recent')
     rows = mock_page.locator('#memory-chat-edit .chat-item')
     expect(rows).to_have_count(3)
-    current = json.loads(seed_memory_file.read_text())
+    current = json.loads(seed_memory_file.read_text(encoding='utf-8'))
     current.append({'type': 'human', 'data': {'content': 'remote visible chat'}})
-    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False), encoding='utf-8')
     notify = """() => { const channel = new BroadcastChannel('neko_page_channel');
         channel.postMessage({action:'recent_memory_changed',catgirl_name:'测试猫娘'}); channel.close(); }"""
     mock_page.evaluate(notify)
@@ -26,7 +26,7 @@ def test_recent_sync_notification_refreshes_saved_view_and_preserves_dirty_draft
     memo = mock_page.locator('#memory-chat-edit .memo-textarea').first
     memo.fill('unsaved local draft')
     current.append({'type': 'ai', 'data': {'content': 'another remote chat'}})
-    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False), encoding='utf-8')
     mock_page.evaluate(notify)
     mock_page.wait_for_timeout(150)
     expect(rows).to_have_count(4)
@@ -7221,7 +7221,7 @@ def _build_sparse_memory_overview():
 def test_memory_browser_imprint_dimension_radar_stays_with_heading_for_long_timeline(
     browser, running_server: str, seed_memory_file, width, scale, entry_count,
 ):
-    """Timeline height must never move the radar chart away from its heading."""
+    """Keep the chart with its heading and long timelines in their reading column."""
     overview = _build_sparse_memory_overview()
     imprint = overview["imprint"]
     milestones = imprint["milestones"]
@@ -7233,7 +7233,7 @@ def test_memory_browser_imprint_dimension_radar_stays_with_heading_for_long_time
         page = context.new_page()
         page.goto(f"{running_server}/memory_browser", wait_until="networkidle")
         page.wait_for_function("document.fonts.status === 'loaded'")
-        heading = page.locator(".imprint-dimensions-card > .imprint-section-heading")
+        heading = page.locator(".imprint-dimensions-card .imprint-section-heading")
         radar = page.locator(".imprint-dimension-radar")
         expect(radar).to_be_visible()
         initial_gap = radar.bounding_box()["y"] - heading.bounding_box()["y"] - heading.bounding_box()["height"]
@@ -7245,6 +7245,58 @@ def test_memory_browser_imprint_dimension_radar_stays_with_heading_for_long_time
             current_gap = radar.bounding_box()["y"] - heading.bounding_box()["y"] - heading.bounding_box()["height"]
             assert current_gap == pytest.approx(initial_gap, abs=2), (width, scale, count, initial_gap, current_gap)
             assert current_gap <= 140, (width, scale, count, current_gap)
+            pager = page.locator(".imprint-timeline-pagination")
+            chart = page.locator(".imprint-dimensions-card").bounding_box()
+            timeline = page.locator(".imprint-milestones-card").bounding_box()
+            if width >= 1248:
+                assert chart["y"] == pytest.approx(timeline["y"], abs=1)
+                assert chart["height"] == pytest.approx(timeline["height"], abs=1)
+            else:
+                assert timeline["x"] == pytest.approx(chart["x"], abs=1)
+                assert timeline["y"] >= chart["y"] + chart["height"]
+            if not count:
+                expect(pager).to_be_hidden()
+                continue
+            dates = page.locator(".imprint-timeline-day-group")
+            first = dates.first.bounding_box()
+            chart_bottom = chart["y"] + chart["height"]
+            if width >= 1248:
+                assert first["x"] >= chart["x"] + chart["width"]
+                assert first["y"] < chart_bottom
+                if count == 1:
+                    expect(pager).to_be_hidden()
+                    continue
+                shown = page.locator(".imprint-timeline-day-group:visible")
+                expect(shown).to_have_count(3)
+                previous_page = pager.get_by_role("button", name="上一页")
+                next_page = pager.get_by_role("button", name="下一页")
+                expect(previous_page).to_be_disabled()
+                if count == 5:
+                    lists = page.locator(".imprint-timeline-list")
+                    assert lists.first.bounding_box()["height"] > lists.last.bounding_box()["height"] + 40
+                pager.scroll_into_view_if_needed()
+                pager_before = pager.bounding_box()
+                panel = page.locator("#memory-panel-imprint")
+                scroll_before = panel.evaluate("node => node.scrollTop")
+                first_day = shown.first.locator("time").get_attribute("datetime")
+                next_page.focus()
+                next_page.press("Enter")
+                older_day = shown.first.locator("time").get_attribute("datetime")
+                assert older_day < first_day
+                assert shown.first.bounding_box()["x"] == pytest.approx(first["x"], abs=1)
+                assert pager.bounding_box() == pytest.approx(pager_before, abs=1)
+                assert panel.evaluate("node => node.scrollTop") == pytest.approx(scroll_before, abs=1)
+                expect(pager.locator("output")).to_have_text("2 / 2")
+                expect(next_page).to_be_disabled()
+                expect(previous_page).to_be_focused()
+                previous_page.click()
+                expect(shown.first.locator("time")).to_have_attribute("datetime", first_day)
+                assert pager.bounding_box() == pytest.approx(pager_before, abs=1)
+            else:
+                assert first["x"] == pytest.approx(heading.bounding_box()["x"], abs=1)
+                assert first["y"] >= chart_bottom
+                expect(pager).to_be_hidden()
+                expect(dates.last).to_be_visible()
     finally:
         context.close()
 
@@ -7281,42 +7333,97 @@ def test_memory_browser_imprint_dimension_radar_opens_related_search(
 
 
 @pytest.mark.frontend
-def test_memory_browser_imprint_journal_groups_years_and_preserves_full_revisions(
-    mock_page: Page, running_server: str, seed_memory_file,
+@pytest.mark.parametrize("width", [1440, 540])
+def test_memory_browser_imprint_journal_groups_days_and_compares_full_revisions(
+    mock_page: Page, running_server: str, seed_memory_file, width,
 ):
     overview = _build_sparse_memory_overview()
     imprint = overview["imprint"]
-    imprint["milestones"] = imprint["milestones"][:1]
-    imprint["milestones"][0]["date"] = "2026-11-15T12:00:00"
+    imprint["milestones"] = imprint["milestones"][:3]
+    imprint["milestones"][0]["date"] = "2026-11-18T09:00:00"
+    imprint["milestones"][0]["text"] *= 5
+    imprint["milestones"][1]["date"] = "2026-11-17T09:00:00"
+    imprint["milestones"][2]["date"] = "2026-11-16T09:00:00"
     latest = dict(imprint["evolution"][0], changed_at="2026-11-18T12:00:00")
-    older = dict(imprint["evolution"][0], id="older_revision", changed_at="2025-12-30T12:00:00")
+    latest["previous_text"] *= 12
+    latest["current_text"] *= 12
+    older = dict(latest, id="older_revision", changed_at="2025-12-30T12:00:00",
+                 previous_text="", current_text="更早的一条印象。")
     imprint["evolution"] = [older, latest]
     _install_ready_memory_browser_routes(mock_page, seed_memory_file, overview_data=overview)
-    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.set_viewport_size({"width": width, "height": 900})
+    mock_page.goto(f"{running_server}/memory_browser", wait_until="networkidle")
     items = mock_page.locator(".imprint-timeline-item")
-    expect(items).to_have_count(3)
-    assert items.locator("time").evaluate_all("nodes => nodes.map(node => node.dateTime)") == [
-        "2026-11-18T12:00:00", "2026-11-15T12:00:00", "2025-12-30T12:00:00",
+    expect(items).to_have_count(5)
+    days = mock_page.locator(".imprint-timeline-day-group")
+    assert days.locator("time").evaluate_all("nodes => nodes.map(node => node.dateTime)") == [
+        "2026-11-18", "2026-11-17", "2026-11-16", "2025-12-30",
     ]
+    expect(days.first.locator(".imprint-timeline-item")).to_have_count(2)
     assert mock_page.locator(".imprint-timeline-year").all_text_contents() == ["2026", "2025"]
     expect(items.nth(1).locator(".imprint-timeline-tag")).to_have_count(0)
 
-    history = items.first.locator(".imprint-evolution-history")
-    expect(history.locator(".imprint-evolution-old")).to_be_hidden()
-    history.locator("summary").press("Enter")
-    expect(history.locator(".imprint-evolution-old")).to_have_text(latest["previous_text"])
-    expect(history.locator(".imprint-evolution-old")).to_be_visible()
-    history.locator("summary").press("Enter")
-    expect(history.locator(".imprint-evolution-old")).to_be_hidden()
+    trigger = items.first.get_by_role("button", name="查看变化")
+    popover = items.first.locator(".imprint-impression-popover")
+    comparison = popover.locator(".imprint-impression-comparison")
+    panel = mock_page.locator("#memory-panel-imprint")
+    pager = panel.locator(".imprint-timeline-pagination")
+    trigger.scroll_into_view_if_needed()
+    scroll_top = panel.evaluate("node => node.scrollTop")
+    scroll_height = panel.evaluate("node => node.scrollHeight")
+    next_item_position = items.nth(1).bounding_box()
+    pager_position = pager.bounding_box()
+    anchor = trigger.bounding_box()
+    expect(popover).to_be_hidden()
+    trigger.press("Enter")
+    expect(popover).to_have_accessible_name("印象演变")
+    expect(popover).to_be_in_viewport(ratio=0.98)
+    floating = popover.bounding_box()
+    if floating["y"] >= anchor["y"]:
+        assert floating["y"] == pytest.approx(anchor["y"] + anchor["height"] + 6, abs=1)
+    else:
+        assert floating["y"] + floating["height"] == pytest.approx(anchor["y"] - 6, abs=1)
+    assert floating["x"] <= anchor["x"] + 1 <= floating["x"] + floating["width"]
+    before = comparison.locator(".imprint-impression-before")
+    after = comparison.locator(".imprint-impression-after")
+    expect(before.locator("p")).to_have_text(latest["previous_text"])
+    expect(after.locator("p")).to_have_text(latest["current_text"])
+    if width == 1440:
+        assert before.bounding_box()["y"] == pytest.approx(after.bounding_box()["y"], abs=1)
+    else:
+        assert before.bounding_box()["y"] < after.bounding_box()["y"]
+    assert comparison.evaluate("node => { node.scrollTop = node.scrollHeight; return node.scrollTop; }") > 0
+    assert panel.evaluate("node => node.scrollTop") == scroll_top
+    assert panel.evaluate("node => node.scrollHeight") == scroll_height
+    assert items.nth(1).bounding_box() == next_item_position
+    assert pager.bounding_box() == pager_position
+    comparison.evaluate("node => node.focus({preventScroll: true})")
+    mock_page.keyboard.press("Escape")
+    expect(popover).to_be_hidden()
+    expect(trigger).to_be_focused()
+    assert panel.evaluate("node => node.scrollTop") == scroll_top
 
-    excerpt = items.first.locator(".imprint-excerpt")
+    excerpt = items.nth(1).locator(".imprint-excerpt")
     expect(excerpt.locator(".imprint-timeline-text")).to_be_hidden()
     excerpt.locator("summary").click()
-    expect(excerpt.locator(".imprint-timeline-text")).to_have_text(latest["current_text"])
+    expect(excerpt.locator(".imprint-timeline-text")).to_have_text(imprint["milestones"][0]["text"])
     expect(excerpt.locator(".imprint-timeline-text")).to_be_visible()
     expect(excerpt.locator(".imprint-excerpt-toggle")).to_have_text("收起全文")
     excerpt.locator("summary").click()
     expect(excerpt.locator(".imprint-timeline-text")).to_be_hidden()
+
+    if width == 1440:
+        pager.get_by_role("button", name="下一页").click()
+    older_trigger = items.last.get_by_role("button", name="查看变化")
+    older_popover = items.last.locator(".imprint-impression-popover")
+    older_trigger.click()
+    expect(older_popover.locator(".imprint-impression-before")).to_have_count(0)
+    expect(older_popover.locator(".imprint-impression-after p")).to_have_text(older["current_text"])
+    older_popover.get_by_role("button", name="关闭面板").click()
+    expect(older_popover).to_be_hidden()
+    older_trigger.click()
+    mock_page.mouse.click(4, 4)
+    expect(older_popover).to_be_hidden()
 
 
 @pytest.mark.frontend
@@ -7340,6 +7447,8 @@ def test_memory_browser_imprint_fits_window_with_long_content(
     mock_page.evaluate("language => window.changeLanguage(language)", language)
     mock_page.evaluate("dark => window.nekoTheme.apply(dark, {persist: false})", dark)
     expect(mock_page.locator(".imprint-day-label")).to_contain_text("12345")
+    hero_background = mock_page.locator(".imprint-hero-card").evaluate("node => getComputedStyle(node).backgroundImage")
+    assert hero_background.startswith("radial-gradient(")
 
     bounds = mock_page.evaluate("""() => {
         const panel = document.getElementById('memory-panel-imprint');
@@ -7809,7 +7918,7 @@ def test_memory_browser_star_map_renders_constellations_and_manual_theme_refresh
     mock_page.wait_for_function("previous => document.querySelector('.starmap-legend-dot').style.background !== previous", arg=dark_legend)
     assert mock_page.locator(".starmap-legend-dot").first.evaluate("node => node.style.background") != dark_legend
 
-    mock_page.locator("#memory-starmap-card").get_by_role("button", name="刷新星云主题").click()
+    mock_page.locator("#memory-starmap-card").get_by_role("button", name="刷新星团名称").click()
     expect(mock_page.locator(".starmap-legend-pill").first).to_contain_text("早安咖啡时光", timeout=5_000)
     expect(mock_page.locator(".imprint-starmap-dimmer")).to_be_visible()
     assert len(label_calls) == 1
@@ -7912,8 +8021,8 @@ def test_memory_browser_star_map_theme_refresh_preserves_view_through_toast_dism
         expect(mock_page.locator(".starmap-canvas-controls button")).to_be_in_viewport(ratio=0.95)
 
     with mock_page.expect_request("**/api/memory/star_map/label_clusters/**"):
-        mock_page.get_by_role("button", name="刷新星云主题").click()
-    expect(mock_page.get_by_role("button", name="正在命名星云...")).to_be_disabled()
+        mock_page.get_by_role("button", name="刷新星团名称").click()
+    expect(mock_page.get_by_role("button", name="正在为星团命名...")).to_be_disabled()
     expect_view_preserved()
     assert len(pending) == 1
     if status == 200:
@@ -7922,7 +8031,7 @@ def test_memory_browser_star_map_theme_refresh_preserves_view_through_toast_dism
         expect(mock_page.locator(".starmap-legend-pill")).to_contain_text("更新后的主题")
     else:
         pending[0].fulfill(status=429, json={"success": False, "retry_after": 15})
-    expect(mock_page.get_by_role("button", name="刷新星云主题")).to_be_enabled()
+    expect(mock_page.get_by_role("button", name="刷新星团名称")).to_be_enabled()
     expect(mock_page.locator("#memory-imprint-toast-slot .memory-profile-toast")).to_be_visible()
     expect_view_preserved()
     mock_page.clock.fast_forward(3700)
@@ -7971,7 +8080,7 @@ def test_memory_browser_star_map_preview_expands_over_dimmed_content(
         const ctx = canvas.getContext('2d');
         const sx = canvas.width / rect.width;
         const sy = canvas.height / rect.height;
-        const selectors = ['.imprint-dimensions-card > .imprint-section-heading',
+        const selectors = ['.imprint-dimensions-card .imprint-section-heading',
             '.imprint-dimension-radar', '.imprint-milestones-card'];
         return selectors.filter(selector => {
             const target = document.querySelector(selector).getBoundingClientRect();
@@ -7999,8 +8108,14 @@ def test_memory_browser_star_map_preview_expands_over_dimmed_content(
     x = preview_box["x"] + painted[4][0]
     y = preview_box["y"] + painted[4][1]
     assert canvas.evaluate("node => getComputedStyle(node).pointerEvents") == "none"
+    cue = mock_page.locator(".starmap-preview-hint")
+    expect(cue).to_have_css("opacity", "0")
+    expect(cue).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+    canvas.focus()
+    expect(cue).to_have_css("opacity", "1")
     mock_page.mouse.move(x, y)
     expect(mock_page.locator(".starmap-tooltip")).to_contain_text("边界记忆4")
+    expect(cue).to_have_css("opacity", "0")
     expect(mock_page.locator(".starmap-detail-card")).to_be_hidden()
     mock_page.mouse.click(x, y)
     expect(canvas).to_have_attribute("aria-expanded", "true")
@@ -8026,6 +8141,79 @@ def test_memory_browser_star_map_preview_expands_over_dimmed_content(
     canvas.press("Escape")
     expect(canvas).to_be_focused()
     expect(canvas).to_have_attribute("aria-expanded", "false")
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_preview_hint_waits_after_latest_star_hover(
+    mock_page: Page, running_server: str, seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.set_viewport_size({"width": 1440, "height": 1100})
+    mock_page.emulate_media(reduced_motion="reduce")
+    mock_page.goto(f"{running_server}/memory_browser")
+    canvas = mock_page.locator(".starmap-canvas")
+    expect(canvas).to_have_attribute("aria-expanded", "false")
+    hint = mock_page.locator(".starmap-preview-hint")
+    tooltip = mock_page.locator(".starmap-tooltip")
+    box = canvas.bounding_box()
+    first, second = _memory_star_map_painted_points(mock_page)
+    gap = ((first[0] + second[0]) / 2, min(first[1], second[1]) + 2)
+    mock_page.clock.install()
+
+    def move_to(point):
+        mock_page.mouse.move(box["x"] + point[0], box["y"] + point[1])
+
+    move_to(gap)
+    expect(hint).to_have_css("opacity", "1")
+    move_to(first)
+    expect(tooltip).to_contain_text("燕麦拿铁")
+    move_to(gap)
+    mock_page.clock.fast_forward(180)
+    expect(tooltip).to_be_hidden()
+    expect(hint).to_have_css("opacity", "0")
+    mock_page.clock.fast_forward(350)
+    expect(hint).to_have_css("opacity", "0")
+
+    move_to(second)
+    expect(tooltip).to_contain_text("约定每周五晚上一起看电影")
+    move_to(gap)
+    mock_page.clock.fast_forward(180)
+    expect(tooltip).to_be_hidden()
+    # The first hover's deadline has elapsed, but the second still suppresses the hint.
+    mock_page.clock.fast_forward(350)
+    expect(hint).to_have_css("opacity", "0")
+    mock_page.clock.fast_forward(350)
+    expect(hint).to_have_css("opacity", "1")
+
+    move_to(first)
+    expect(tooltip).to_be_visible()
+    mock_page.mouse.move(box["x"] + box["width"] + 200, box["y"] + gap[1])
+    mock_page.clock.fast_forward(700)
+    expect(hint).to_have_css("opacity", "0")
+    expect(canvas).to_have_attribute("aria-expanded", "false")
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_touch_hint_is_shown_once_per_session(
+    browser, running_server: str, seed_memory_file,
+):
+    context = browser.new_context(
+        viewport={"width": 720, "height": 1000}, is_mobile=True, has_touch=True, reduced_motion="reduce",
+    )
+    try:
+        _install_ready_memory_browser_routes(context, seed_memory_file)
+        page = context.new_page()
+        page.clock.install()
+        page.goto(f"{running_server}/memory_browser")
+        hint = page.locator(".starmap-preview-hint")
+        expect(hint).to_have_css("opacity", "1")
+        page.clock.fast_forward(3500)
+        expect(hint).to_have_css("opacity", "0")
+        page.reload(wait_until="networkidle")
+        expect(page.locator(".starmap-canvas")).to_be_visible()
+        expect(hint).to_have_css("opacity", "0")
+    finally:
+        context.close()
 
 
 @pytest.mark.frontend
@@ -8107,6 +8295,11 @@ def test_memory_browser_star_map_preview_anchors_visible_cloud_instead_of_world_
     assert 0 < min(point[1] for point in painted) < 20
     box = canvas.bounding_box()
     assert max(point[1] for point in painted) - min(point[1] for point in painted) > box["height"] * 0.5
+    hero = mock_page.locator(".imprint-hero-card").bounding_box()
+    assert hero["x"] < box["x"] + min(point[0] for point in painted)
+    assert hero["y"] < box["y"] + min(point[1] for point in painted)
+    assert box["x"] + max(point[0] for point in painted) < hero["x"] + hero["width"]
+    assert box["y"] + max(point[1] for point in painted) < hero["y"] + hero["height"]
     room = mock_page.locator(".imprint-story-copy").evaluate("""copy => {
         let reserved = copy;
         if (!parseFloat(getComputedStyle(reserved).paddingInlineStart)) {
@@ -8209,7 +8402,7 @@ def test_memory_browser_star_map_preview_tilt_hover_and_click_focus(
     """The preview follows nearby pointers, keeps hit testing aligned, and opens the clicked memory."""
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     points = [
-        {"uid": "preview:first", "text": "清晨一起喝咖啡，记住这个新的日常。", "x": -0.5},
+        {"uid": "preview:first", "text": "清晨一起喝咖啡，记住这个新的日常。" * 30 + "记忆的结尾。", "x": -0.5},
         {"uid": "preview:nearby", "text": "同一主题里的另一段记忆", "x": -0.35},
         {"uid": "preview:far", "text": "另一个方向的记忆", "x": 0.5},
     ]
@@ -8234,9 +8427,13 @@ def test_memory_browser_star_map_preview_tilt_hover_and_click_focus(
     }""")
     box = canvas.bounding_box()
     painted = _memory_star_map_painted_points(mock_page)
-    center_x = box["x"] + sum(point[0] for point in painted) / len(painted)
+    left_x = min(point[0] for point in painted)
+    right_x = max(point[0] for point in painted)
+    center_x = box["x"] + (left_x + right_x) / 2
     center_y = box["y"] + sum(point[1] for point in painted) / len(painted)
-    reach = max(point[0] for point in painted) - min(point[0] for point in painted)
+    hint = mock_page.locator(".starmap-preview-hint")
+    mock_page.mouse.move(box["x"] + box["width"] + 72, center_y)
+    expect(hint).to_have_css("opacity", "0")
     mock_page.mouse.move(box["x"] + 8, center_y)
     mock_page.wait_for_timeout(550)
     if reduced_motion:
@@ -8244,7 +8441,8 @@ def test_memory_browser_star_map_preview_tilt_hover_and_click_focus(
         canvas.focus()
         canvas.press("Escape")
     left = mock_page.evaluate("window.__previewPositions")
-    mock_page.mouse.move(center_x + reach * 0.75, center_y)
+    mock_page.mouse.move(center_x + (right_x - left_x) * 0.9, center_y)
+    expect(hint).to_have_css("opacity", "1")
     mock_page.wait_for_timeout(550)
     if reduced_motion:
         canvas.press("Escape")
@@ -8253,13 +8451,20 @@ def test_memory_browser_star_map_preview_tilt_hover_and_click_focus(
     if reduced_motion:
         assert mean_shift == pytest.approx(0, abs=0.1)
     else:
-        assert mean_shift > 2.5, (left, right)
+        assert mean_shift > 5.5, (left, right)
 
     # Use the painted location after the tilt, not an untransformed approximation.
     mock_page.mouse.move(box["x"] + right[0][0], box["y"] + right[0][1])
     tooltip = mock_page.locator(".starmap-tooltip")
     expect(tooltip).to_contain_text(points[0]["text"])
     expect(mock_page.locator(".starmap-detail-card")).to_be_hidden()
+    # The card stays open as the pointer crosses into it, and wheel input reads the full memory.
+    tooltip_text = tooltip.locator(".starmap-tooltip-text")
+    tooltip_text.hover()
+    mock_page.mouse.wheel(0, 180)
+    mock_page.wait_for_function("document.querySelector('.starmap-tooltip-text').scrollTop > 0")
+    expect(tooltip).to_be_visible()
+    expect(canvas).to_have_attribute("aria-expanded", "false")
     mock_page.mouse.click(box["x"] + right[0][0], box["y"] + right[0][1])
     expect(canvas).to_have_attribute("aria-expanded", "true")
     detail = mock_page.locator(".starmap-detail-card")
@@ -8291,6 +8496,74 @@ def test_memory_browser_star_map_cold_start_shows_progress_without_expand_button
     expect(mock_page.locator(".starmap-coldstart")).to_be_visible()
     expect(mock_page.locator(".starmap-coldstart")).to_contain_text("3 / 15")
     assert mock_page.locator(".imprint-content").evaluate("node => node.inert") is False
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_selected_ring_and_shimmer_move_outward(
+    mock_page: Page, running_server: str, seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.set_viewport_size({"width": 1440, "height": 1100})
+    mock_page.emulate_media(reduced_motion="no-preference")
+    mock_page.goto(f"{running_server}/memory_browser", wait_until="networkidle")
+    canvas = _expand_memory_star_map(mock_page)
+    mock_page.clock.install()
+    mock_page.clock.pause_at(mock_page.evaluate("Date.now() + 50"))
+    canvas.evaluate("""canvas => {
+        const ctx = canvas.getContext('2d');
+        const clear = ctx.clearRect.bind(ctx);
+        const arc = ctx.arc.bind(ctx);
+        const gradient = ctx.createLinearGradient.bind(ctx);
+        ctx.clearRect = (...args) => {
+            window.__selectionFrame = {arcs: [], gradients: []};
+            return clear(...args);
+        };
+        ctx.arc = (x, y, radius, ...args) => {
+            window.__selectionFrame.arcs.push({x, y, radius});
+            return arc(x, y, radius, ...args);
+        };
+        ctx.createLinearGradient = (...ray) => {
+            const instance = gradient(...ray);
+            const addStop = instance.addColorStop.bind(instance);
+            const stops = [];
+            window.__selectionFrame.gradients.push({ray, stops});
+            instance.addColorStop = (offset, color) => {
+                stops.push(offset);
+                addStop(offset, color);
+            };
+            return instance;
+        };
+    }""")
+    # The second star is stored as the destination of the fixture's shared edge.
+    mock_page.locator(".starmap-legend-pill").nth(1).evaluate("button => button.click()")
+    mock_page.clock.run_for(540)
+
+    def read_frame():
+        return mock_page.evaluate("window.__selectionFrame")
+
+    def read_shimmer(frame):
+        return next(item for item in frame["gradients"] if len(item["stops"]) == 3)
+
+    early = read_frame()
+    ray = read_shimmer(early)["ray"]
+    neighbor, selected, ring = early["arcs"]
+    assert ray[:2] == pytest.approx([selected["x"], selected["y"]], abs=0.1)
+    assert ray[2:] == pytest.approx([neighbor["x"], neighbor["y"]], abs=0.1)
+    assert ring["radius"] > selected["radius"] + 3
+
+    mock_page.clock.run_for(340)
+    late = read_frame()
+    assert read_shimmer(late)["stops"][1] > read_shimmer(early)["stops"][1]
+    assert 0.5 < late["arcs"][-1]["radius"] - ring["radius"] < 2
+
+    mock_page.clock.resume()
+    mock_page.emulate_media(reduced_motion="reduce")
+    mock_page.wait_for_function("matchMedia('(prefers-reduced-motion: reduce)').matches")
+    # Sample a fresh canvas draw after updating media while the Playwright clock resumes.
+    canvas.dispatch_event("pointercancel")
+    still = read_frame()
+    assert all(len(item["stops"]) == 2 for item in still["gradients"])
+    assert still["arcs"][-1]["radius"] == pytest.approx(still["arcs"][-2]["radius"] + 3)
 
 
 @pytest.mark.frontend
@@ -8340,7 +8613,7 @@ def test_memory_browser_star_map_hover_focus_and_reset(
     page_errors = []
     mock_page.on("pageerror", lambda error: page_errors.append(str(error)))
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
-    full_text = "清晨一起喝咖啡的记忆。" * 30 + "这是只有详情才会显示的结尾。"
+    full_text = "清晨一起喝咖啡的记忆。" * 30 + "这是这段记忆的结尾。"
     first = {"uid": "persona:master:first", "id": "first", "kind": "persona", "entity": "master",
              "text": full_text, "x": -0.35, "y": -0.15, "cluster_id": 0,
              "strength": 3, "neighbors": ["persona:master:second"]}
@@ -8366,7 +8639,7 @@ def test_memory_browser_star_map_hover_focus_and_reset(
     preview = mock_page.locator(".starmap-tooltip")
     expect(preview).to_be_visible()
     expect(preview).to_contain_text("清晨一起喝咖啡")
-    expect(preview).not_to_contain_text("这是只有详情才会显示的结尾")
+    expect(preview.locator(".starmap-tooltip-text")).to_have_text(full_text)
     expect(detail).to_be_hidden()
 
     mock_page.mouse.click(original_x, original_y)
@@ -8417,6 +8690,225 @@ def test_memory_browser_star_map_hover_focus_and_reset(
     expect(detail).to_be_hidden()
     mock_page.wait_for_timeout(500)
     assert page_errors == []
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("width", [1440, 720])
+def test_memory_browser_star_map_preview_actions_work_without_expanding(
+    mock_page: Page, running_server: str, seed_memory_file, width,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.set_viewport_size({"width": width, "height": 1000})
+    mock_page.emulate_media(reduced_motion="reduce")
+    memory = {"kind": "persona", "id": "prom_1", "entity": "master", "text": "最近改喝燕麦拿铁"}
+    mock_page.route("**/api/memory/lineage/**", lambda route: route.fulfill(json={
+        "success": True, "target": memory,
+        "steps": {"conversations": [{"role": "human", "text": "今天换杯燕麦拿铁。", "inferred": True}]},
+    }))
+    mock_page.route("**/api/memory/search/**", lambda route: route.fulfill(json={
+        "success": True, "results": [{**memory, "strength": 2}],
+    }))
+    mock_page.goto(f"{running_server}/memory_browser", wait_until="networkidle")
+    canvas = mock_page.locator(".starmap-canvas")
+    box = canvas.bounding_box()
+    x, y = _memory_star_map_painted_points(mock_page)[0]
+    mock_page.mouse.move(box["x"] + x, box["y"] + y)
+    preview = mock_page.locator(".starmap-tooltip")
+    trace = preview.get_by_role("button", name="为什么这么记？")
+    correct = preview.get_by_role("button", name="去校准")
+    expect(preview.locator(".starmap-tooltip-text")).to_have_text(memory["text"])
+    expect(correct).to_be_visible()
+    trace.hover()
+    mock_page.wait_for_timeout(240)
+    with mock_page.expect_request("**/api/memory/lineage/**") as request:
+        trace.click()
+    assert parse_qs(urlparse(request.value.url).query)["entry_id"] == ["prom_1"]
+    expect(preview).to_contain_text("今天换杯燕麦拿铁。")
+    expect(preview.get_by_role("button", name="返回")).to_be_focused()
+    expect(preview).to_be_in_viewport(ratio=0.98)
+    expect(canvas).to_have_attribute("aria-expanded", "false")
+    expect(mock_page.locator(".starmap-detail-card")).to_be_hidden()
+    expect(mock_page.locator("#memory-lineage-drawer")).to_be_hidden()
+
+    mock_page.keyboard.press("Escape")
+    expect(trace).to_be_focused()
+    expect(preview.locator(".starmap-tooltip-text")).to_have_text(memory["text"])
+    with mock_page.expect_request("**/api/memory/search/**") as request:
+        correct.click()
+    assert request.value.post_data_json["query"] == memory["text"]
+    expect(mock_page.locator("#memory-tab-profile")).to_have_attribute("aria-selected", "true")
+    expect(mock_page.locator("#memory-profile-search-footer")).to_contain_text(memory["text"])
+    expect(preview).to_be_hidden()
+    expect(canvas).to_have_attribute("aria-expanded", "false")
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_preview_can_be_reached_across_another_star(
+    mock_page: Page, running_server: str, seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.set_viewport_size({"width": 1440, "height": 1000})
+    mock_page.emulate_media(reduced_motion="reduce")
+    points = [
+        {"uid": "first", "id": "first", "kind": "fact", "text": "先看到的记忆", "x": -1, "y": -1},
+        {"uid": "crossing", "id": "crossing", "kind": "fact", "text": "路过的星点", "x": -0.82, "y": -0.91},
+        {"uid": "far", "id": "far", "kind": "fact", "text": "远处的星点", "x": 1, "y": 1},
+    ]
+    mock_page.route("**/api/memory/star_map/**", lambda route: route.fulfill(json={
+        "success": True, "ready": True, "points": points, "clusters": [],
+    }))
+    mock_page.goto(f"{running_server}/memory_browser", wait_until="networkidle")
+    canvas = mock_page.locator(".starmap-canvas")
+    box = canvas.bounding_box()
+    positions = [(box["x"] + x, box["y"] + y) for x, y in _memory_star_map_painted_points(mock_page)]
+    first, crossing, _ = positions
+    mock_page.clock.install()
+    preview = mock_page.locator(".starmap-tooltip")
+    text = preview.locator(".starmap-tooltip-text")
+
+    mock_page.mouse.move(*first)
+    expect(text).to_have_text(points[0]["text"])
+    assert crossing[1] < preview.bounding_box()["y"]
+    mock_page.mouse.move(*crossing, steps=6)
+    expect(text).to_have_text(points[0]["text"])
+    preview.get_by_role("button", name="为什么这么记？").hover()
+    mock_page.clock.fast_forward(300)
+    expect(text).to_have_text(points[0]["text"])
+
+    mock_page.mouse.move(*first)
+    mock_page.mouse.move(*crossing, steps=6)
+    expect(text).to_have_text(points[0]["text"])
+    mock_page.clock.fast_forward(300)
+    expect(text).to_have_text(points[1]["text"])
+
+    mock_page.mouse.move(*first)
+    expect(text).to_have_text(points[0]["text"])
+    mock_page.mouse.move(*crossing, steps=6)
+    expect(text).to_have_text(points[0]["text"])
+    mock_page.mouse.click(*crossing)
+    expect(canvas).to_have_attribute("aria-expanded", "true")
+    expect(mock_page.locator(".starmap-detail-text")).to_have_text(points[1]["text"])
+
+
+@pytest.mark.frontend
+def test_memory_browser_star_map_calibration_button_interaction(
+    mock_page: Page, running_server: str, seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.emulate_media(reduced_motion="reduce")
+    mock_page.route("**/api/memory/search/**", lambda route: route.fulfill(json={
+        "success": True, "results": [{
+            "kind": "persona", "id": "prom_1", "entity": "master", "text": "最近改喝燕麦拿铁", "strength": 3,
+        }],
+    }))
+    mock_page.goto(f"{running_server}/memory_browser")
+    _expand_memory_star_map(mock_page)
+    mock_page.locator(".starmap-legend-pill").first.click()
+    detail = mock_page.locator(".starmap-detail-card")
+    correct = detail.get_by_role("button", name="去校准")
+
+    for dark in (False, True):
+        mock_page.evaluate("dark => window.nekoTheme.apply(dark, {persist: false})", dark)
+        color = correct.evaluate("button => getComputedStyle(button).color")
+        correct.hover()
+        expect(correct).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+        expect(correct).to_have_css("color", color)
+        expect(correct).to_have_css("text-decoration-line", "underline")
+        mock_page.mouse.down()
+        expect(correct).to_have_css("text-decoration-thickness", "2px")
+        expect(correct).to_have_css("transform", "none")
+        mock_page.mouse.move(1, 1)
+        mock_page.mouse.up()
+
+    detail.get_by_role("button", name="为什么这么记？").focus()
+    mock_page.keyboard.press("Tab")
+    expect(correct).to_be_focused()
+    expect(correct).to_have_css("outline-style", "solid")
+    with mock_page.expect_request("**/api/memory/search/**") as request:
+        mock_page.keyboard.press("Enter")
+    assert request.value.post_data_json["query"] == "最近改喝燕麦拿铁"
+    expect(mock_page.locator("#memory-tab-profile")).to_have_attribute("aria-selected", "true")
+    expect(mock_page.locator("#memory-profile-search-footer")).to_contain_text("最近改喝燕麦拿铁")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("width", [1440, 540])
+def test_memory_browser_star_map_lineage_stays_in_selected_star_detail(
+    mock_page: Page, running_server: str, seed_memory_file, width,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.set_viewport_size({"width": width, "height": 900})
+    mock_page.emulate_media(reduced_motion="reduce")
+    pending = []
+    mock_page.route("**/api/memory/lineage/**", lambda route: pending.append(route))
+    mock_page.goto(f"{running_server}/memory_browser")
+    canvas = _expand_memory_star_map(mock_page)
+    legend = mock_page.locator(".starmap-legend-pill")
+    legend.first.click()
+    detail = mock_page.locator(".starmap-detail-card")
+    trace = detail.get_by_role("button", name="为什么这么记？")
+    back = detail.get_by_role("button", name="返回", exact=True)
+    selected_position = mock_page.locator(".starmap-stage").evaluate("node => node.getBoundingClientRect().toJSON()")
+    # Draw calls are stable with reduced motion and no pointer on the canvas.
+    selected_sky = canvas.evaluate("node => node.toDataURL()")
+
+    with mock_page.expect_request("**/api/memory/lineage/**") as request:
+        trace.click()
+    assert parse_qs(urlparse(request.value.url).query)["entry_id"] == ["prom_1"]
+    expect(back).to_be_focused()
+    expect(detail.get_by_role("status")).to_contain_text("加载中")
+    expect(mock_page.locator("#memory-lineage-drawer")).to_be_hidden()
+    expect(mock_page.locator("#memory-lineage-backdrop")).to_be_hidden()
+    pending.pop().fulfill(status=503, json={"success": False})
+    expect(detail.get_by_role("status")).to_contain_text("暂时找不到")
+
+    story = {
+        "success": True,
+        "target": {"kind": "persona", "id": "prom_1", "text": "最近改喝燕麦拿铁", "created_at": "2026-10-16T09:10:00"},
+        "steps": {
+            "conversations": [{"role": "human", "text": "今天想换杯燕麦拿铁。\n以后早餐也试试这样搭配。",
+                               "timestamp": "2026-10-16T09:05:00", "inferred": True}],
+            "facts": [{"id": "coffee_fact", "text": "早餐改喝燕麦拿铁", "created_at": "2026-10-16T09:06:00"}],
+            "reflections": [{"id": "coffee_reflection", "text": "口味变得更偏向燕麦拿铁"}],
+        },
+    }
+    with mock_page.expect_request("**/api/memory/lineage/**"):
+        detail.get_by_role("button", name="重试", exact=True).click()
+    pending.pop().fulfill(json=story)
+    expect(detail.locator(".lineage-step-num")).to_have_text([
+        "① 当时的那几句聊天", "② 记下的那件事", "③ 最终形成的印象",
+    ])
+    expect(detail).to_contain_text("推测来自这段聊天")
+    expect(detail.locator(".lineage-snippet.is-current")).to_contain_text("最近改喝燕麦拿铁")
+    expect(detail.get_by_role("button", name="忘掉这条源头记忆")).to_be_visible()
+    assert mock_page.locator(".starmap-stage").evaluate("node => node.getBoundingClientRect().toJSON()") == selected_position
+    assert canvas.evaluate("node => node.toDataURL()") == selected_sky
+    expect(detail.get_by_role("heading", name="为什么 TA 会这么记？")).to_be_in_viewport()
+
+    def serve_story(route):
+        route.fulfill(json=story)
+
+    mock_page.route("**/api/memory/lineage/**", serve_story)
+    with mock_page.expect_response("**/api/memory/lineage/**"):
+        mock_page.evaluate("() => window.nekoMemoryImprint.refresh()")
+    mock_page.wait_for_load_state("networkidle")
+    expect(detail.locator(".lineage-snippet.is-current")).to_contain_text("最近改喝燕麦拿铁")
+    expect(canvas).to_have_attribute("aria-expanded", "true")
+    mock_page.unroute("**/api/memory/lineage/**", serve_story)
+
+    back.click()
+    expect(detail.locator(".starmap-detail-text")).to_have_text("最近改喝燕麦拿铁")
+    expect(trace).to_be_focused()
+    with mock_page.expect_request("**/api/memory/lineage/**"):
+        trace.click()
+    mock_page.keyboard.press("Escape")
+    expect(trace).to_be_focused()
+    legend.nth(1).click()
+    with mock_page.expect_response("**/api/memory/lineage/**"):
+        pending.pop().fulfill(json=story)
+    expect(detail.locator(".starmap-detail-text")).to_contain_text("每周五晚上一起看电影")
+    expect(detail.locator(".starmap-lineage-story")).to_have_count(0)
+    expect(canvas).to_have_attribute("aria-expanded", "true")
 
 
 @pytest.mark.frontend

@@ -2,6 +2,7 @@
     'use strict';
 
     const ADVANCED_DIAG_STORAGE_KEY = 'neko_memory_advanced_diagnostics';
+    const IMPRINT_TIMELINE_DAYS_PER_PAGE = 3;
 
     let activeTab = 'imprint';
     let activeCharacter = '';
@@ -33,6 +34,7 @@
     let activeToast = null;
     let csrfTokenCache = '';
     let overviewError = '';
+    let imprintTimelinePage = 0;
     let dataVersion = 0;
     let searchRequestId = 0;
     let lineageRequestId = 0;
@@ -701,11 +703,11 @@
                 if (data && data.error) console.warn('[MemoryBrowser] star map labeling failed:', data.error);
                 if (resp.status === 429) {
                     // Manual cooldown: say how long to wait, not that the model is misconfigured.
-                    showToast(tr('memory.starMapLabelCooldown', '操作太频繁，请 {{seconds}} 秒后再刷新星云主题', {
+                    showToast(tr('memory.starMapLabelCooldown', '操作太频繁，请 {{seconds}} 秒后再刷新星团名称', {
                         seconds: (data && data.retry_after) || 15,
                     }), true);
                 } else {
-                    showToast(tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+                    showToast(tr('memory.starMapLabelFailed', '刷新星团名称失败'), true);
                 }
             } else {
                 if (data.star_map) {
@@ -713,12 +715,12 @@
                 } else {
                     await fetchStarMap(targetChar);
                 }
-                showToast(tr('memory.starMapLabelSuccess', '星云主题已更新'), false);
+                showToast(tr('memory.starMapLabelSuccess', '星团名称已更新'), false);
             }
         } catch (err) {
             if (targetChar !== activeCharacter) return;
             console.warn('[MemoryBrowser] star map labeling failed:', err);
-            showToast(tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+            showToast(tr('memory.starMapLabelFailed', '刷新星团名称失败'), true);
         } finally {
             if (targetChar === activeCharacter) {
                 clusterLabeling = false;
@@ -759,15 +761,15 @@
     }
 
     function closeLineageDrawer() {
+        lineageRequestId += 1;
         const drawer = document.getElementById('memory-lineage-drawer');
         const backdrop = document.getElementById('memory-lineage-backdrop');
         if (drawer) drawer.hidden = true;
         if (backdrop) backdrop.hidden = true;
     }
 
-    async function openLineageDrawer(item) {
-        const targetChar = activeCharacter;
-        if (!targetChar || !item || !item.id) return;
+    function openLineageDrawer(item) {
+        if (!activeCharacter || !item || !item.id) return;
         const reqId = ++lineageRequestId;
         const drawer = document.getElementById('memory-lineage-drawer');
         const backdrop = document.getElementById('memory-lineage-backdrop');
@@ -777,11 +779,34 @@
         backdrop.hidden = false;
         drawer.hidden = false;
         drawer.focus();
-        body.textContent = '';
-        body.appendChild(el('div', {
-            className: 'memory-empty-state',
-            textContent: tr('memory.loading', '加载中...'),
-        }));
+        body.scrollTop = 0;
+        loadMemoryLineage(item, body, function () { return reqId === lineageRequestId; });
+    }
+
+    async function loadMemoryLineage(item, body, isCurrent, compact) {
+        const targetChar = activeCharacter;
+        const current = function () { return targetChar === activeCharacter && isCurrent(); };
+        const failure = tr('memory.lineageLoadFailed', '暂时找不到这条记忆的来龙去脉');
+        function showStatus(message, retry) {
+            body.replaceChildren(el('p', {
+                className: compact ? 'starmap-lineage-status' : 'memory-empty-state',
+                role: 'status',
+                textContent: message,
+            }));
+            if (retry && compact) {
+                body.appendChild(el('button', {
+                    type: 'button',
+                    className: 'starmap-detail-link',
+                    textContent: tr('common.retry', '重试'),
+                    onClick: function () {
+                        body.parentElement.focus({ preventScroll: true });
+                        loadMemoryLineage(item, body, isCurrent, compact);
+                    },
+                }));
+            }
+        }
+
+        showStatus(tr('memory.loading', '加载中...'));
 
         try {
             const qs = '?kind=' + encodeURIComponent(item.kind || 'persona')
@@ -790,33 +815,33 @@
                 '/api/memory/lineage/' + encodeURIComponent(targetChar) + qs
             );
             const data = await resp.json();
-            if (targetChar !== activeCharacter || reqId !== lineageRequestId) return;
+            if (!current()) return;
             if (!resp.ok || !data.success) {
-                body.textContent = '';
-                body.appendChild(el('div', {
-                    className: 'memory-empty-state',
-                    textContent: data.error || tr('memory.lineageLoadFailed', '暂时找不到这条记忆的来龙去脉'),
-                }));
+                showStatus(compact ? failure : (data.error || failure), true);
                 return;
             }
-            renderLineageStory(body, data);
+            renderLineageStory(body, data, compact, async function (factId) {
+                const ok = await postMutation('/api/memory/fact/archive', {
+                    character_name: targetChar,
+                    fact_id: factId,
+                }, tr('memory.lineageRootForgottenToast', '已忘掉源头事件'));
+                if (ok && current()) loadMemoryLineage(item, body, isCurrent, compact);
+                return ok;
+            });
         } catch (err) {
-            if (targetChar !== activeCharacter || reqId !== lineageRequestId) return;
-            body.textContent = '';
-            body.appendChild(el('div', {
-                className: 'memory-empty-state',
-                textContent: (err && err.message) || tr('memory.lineageLoadFailed', '暂时找不到这条记忆的来龙去脉'),
-            }));
+            if (current()) showStatus(compact ? failure : ((err && err.message) || failure), true);
         }
     }
 
-    function renderLineageStory(body, story) {
+    function renderLineageStory(body, story, compact, archiveFact) {
         body.textContent = '';
         const steps = story.steps || {};
         const target = story.target || {};
         const conversations = steps.conversations || [];
         const facts = steps.facts || [];
         const reflections = steps.reflections || [];
+        const targetInFacts = compact && target.kind === 'fact'
+            && facts.some(function (f) { return f.id === target.id; });
 
         // Step 1: Conversations
         const step1 = el('section', { className: 'lineage-step-card' }, [
@@ -842,7 +867,7 @@
                         el('span', { textContent: who }),
                         el('span', { textContent: formatShortDate(c.timestamp) }),
                     ]),
-                    el('div', { textContent: c.text }),
+                    el('div', { className: 'lineage-snippet-text', textContent: c.text }),
                 ]));
             });
         }
@@ -864,12 +889,13 @@
             }));
         } else {
             facts.forEach(function (f) {
-                const snippet = el('div', { className: 'lineage-snippet' }, [
+                const isCurrent = targetInFacts && f.id === target.id;
+                const snippet = el('div', { className: 'lineage-snippet' + (isCurrent ? ' is-current' : '') }, [
                     el('div', { className: 'lineage-snippet-meta' }, [
                         el('span', { textContent: f.archived ? tr('memory.lineageFactArchived', '已归档事件') : tr('memory.lineageFactActive', '具体事件') }),
                         el('span', { textContent: formatShortDate(f.created_at) }),
                     ]),
-                    el('div', { textContent: f.text }),
+                    el('div', { className: 'lineage-snippet-text', textContent: f.text }),
                 ]);
                 if (!f.archived && f.id) {
                     snippet.appendChild(el('div', { className: 'memory-card-actions' }, [
@@ -877,14 +903,10 @@
                             type: 'button',
                             className: 'memory-pill-btn is-danger is-sm',
                             textContent: tr('memory.lineageForgetRootFact', '忘掉这条源头记忆'),
-                            onClick: async function () {
-                                const ok = await postMutation('/api/memory/fact/archive', {
-                                    character_name: activeCharacter,
-                                    fact_id: f.id,
-                                }, tr('memory.lineageRootForgottenToast', '已忘掉源头事件'));
-                                if (ok) {
-                                    openLineageDrawer(target);
-                                }
+                            onClick: async function (ev) {
+                                const button = ev.currentTarget;
+                                button.disabled = true;
+                                if (!await archiveFact(f.id)) button.disabled = false;
                             },
                         }),
                     ]));
@@ -900,12 +922,12 @@
             el('div', { className: 'lineage-step-head' }, [
                 el('span', { className: 'lineage-step-num', textContent: tr('memory.lineageStep3Title', '③ 最终形成的印象') }),
             ]),
-            el('div', { className: 'lineage-snippet' }, [
+            targetInFacts ? null : el('div', { className: 'lineage-snippet is-current' }, [
                 el('div', { className: 'lineage-snippet-meta' }, [
                     el('span', { textContent: tr('memory.lineageCurrentImpression', '当前记忆') }),
                     el('span', { textContent: formatShortDate(target.created_at) }),
                 ]),
-                el('div', { textContent: targetDisplayText }),
+                el('div', { className: 'lineage-snippet-text', textContent: targetDisplayText }),
             ]),
         ]);
         reflections.forEach(function (r) {
@@ -919,7 +941,7 @@
                         el('span', { textContent: tr('memory.lineageLinkedReflection', '中间总结') }),
                         el('span', { textContent: formatShortDate(r.created_at) }),
                     ]),
-                    el('div', { textContent: displayText }),
+                    el('div', { className: 'lineage-snippet-text', textContent: displayText }),
                 ]));
             }
         });
@@ -931,11 +953,11 @@
                         el('span', { textContent: tr('memory.evolutionTag', '印象演变') }),
                         el('span', { textContent: formatShortDate(vh.replaced_at) }),
                     ]),
-                    el('div', { textContent: vh.text }),
+                    el('div', { className: 'lineage-snippet-text', textContent: vh.text }),
                 ]));
             });
         }
-        body.appendChild(step3);
+        if (step3.children.length > 1) body.appendChild(step3);
     }
 
     function renderErrorState(msg) {
@@ -1091,6 +1113,167 @@
             label.textContent = details.open ? tr('memory.imprintReadLess', '收起全文') : tr('memory.imprintReadMore', '展开全文');
         });
         return details;
+    }
+
+    function renderImpressionChange(item, index) {
+        const id = 'imprint-impression-' + index;
+        const popover = el('div', {
+            id: id,
+            className: 'imprint-impression-popover',
+            popover: 'auto',
+            role: 'dialog',
+            'aria-labelledby': id + '-title',
+        }, [
+            el('header', { className: 'imprint-impression-popover-header' }, [
+                el('h4', { id: id + '-title', textContent: tr('memory.evolutionTag', '印象演变') }),
+                el('button', {
+                    type: 'button',
+                    className: 'memory-aux-panel-close',
+                    'aria-label': tr('memory.closePanel', '关闭面板'),
+                    popovertarget: id,
+                    popovertargetaction: 'hide',
+                }, [el('img', { src: '/static/icons/close_button.png', alt: '', draggable: 'false' })]),
+            ]),
+            el('div', { className: 'imprint-impression-comparison', tabindex: '0' }, [
+                item.previous_text ? el('section', { className: 'imprint-impression-before' }, [
+                    el('h5', { textContent: tr('memory.oldImpression', '之前的印象') }),
+                    el('p', { className: 'imprint-timeline-text', textContent: item.previous_text }),
+                ]) : null,
+                el('section', { className: 'imprint-impression-after' }, [
+                    el('h5', { textContent: tr('memory.imprintCurrentImpression', '现在的印象') }),
+                    el('p', { className: 'imprint-timeline-text', textContent: item.current_text }),
+                ]),
+            ]),
+        ]);
+        popover.addEventListener('beforetoggle', function (ev) {
+            if (ev.newState === 'closed') popover.querySelector('.imprint-impression-comparison').scrollTop = 0;
+        });
+        return el('div', { className: 'imprint-impression-change' }, [
+            el('p', { className: 'imprint-timeline-text imprint-excerpt-preview', textContent: item.current_text }),
+            el('button', {
+                type: 'button',
+                className: 'imprint-action-link',
+                'aria-haspopup': 'dialog',
+                popovertarget: id,
+                textContent: tr('memory.imprintViewChange', '查看变化'),
+            }),
+            popover,
+        ]);
+    }
+
+    function renderTimelineEntry(entry) {
+        const item = entry.item;
+        const note = el('div', { className: 'imprint-timeline-note' });
+        if (entry.evolution) {
+            note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.evolutionTag', '印象演变') }));
+            note.appendChild(renderImpressionChange(item, entry.index));
+        } else {
+            if (item.category && item.category !== 'highlight') {
+                note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.milestoneCat_' + item.category, item.category) }));
+            }
+            note.appendChild(renderMemoryExcerpt(item.text));
+        }
+        return el('li', { className: 'imprint-timeline-item' }, [note]);
+    }
+
+    function renderImprintTimeline(imprint) {
+        const heading = el('h4', {
+            className: 'imprint-section-title',
+            textContent: tr('memory.milestonesTitle', '高光印记与印象变迁'),
+        });
+        const card = el('section', { className: 'imprint-section-card imprint-milestones-card' }, [
+            el('div', { className: 'imprint-section-heading' }, [
+                heading,
+                el('p', { className: 'imprint-section-sub', textContent: tr('memory.milestonesSub', '那些被牢记的共同片段，以及 TA 对你认识的悄然更新') }),
+            ]),
+        ]);
+        const entries = (imprint.milestones || []).slice(0, 6)
+            .map(function (item) { return { item: item, date: item.date }; })
+            .concat((imprint.evolution || []).slice(0, 4).map(function (item) {
+                return { item: item, date: item.changed_at, evolution: true };
+            }))
+            .sort(function (a, b) { return (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0); });
+        if (!entries.length) {
+            imprintTimelinePage = 0;
+            card.appendChild(el('p', {
+                className: 'memory-empty-state',
+                textContent: tr('memory.noMilestonesYet', '随着一起经历更多故事，重要的回忆与默契会沉淀在这里。'),
+            }));
+            return card;
+        }
+
+        const days = new Map();
+        entries.forEach(function (entry, index) {
+            entry.index = index;
+            const day = formatShortDate(entry.date);
+            if (!days.has(day)) days.set(day, []);
+            days.get(day).push(entry);
+        });
+        const pagesHost = el('div', { className: 'imprint-timeline-pages' });
+        card.appendChild(pagesHost);
+        const pages = [];
+        let previousYear = null;
+        let list;
+        Array.from(days.entries()).forEach(function ([day, group], index) {
+            const pageStart = index % IMPRINT_TIMELINE_DAYS_PER_PAGE === 0;
+            if (pageStart) {
+                list = el('ul', { className: 'imprint-timeline-list' });
+                pages.push(list);
+                pagesHost.appendChild(list);
+            }
+            const year = day.slice(0, 4);
+            if (year && (pageStart || year !== previousYear)) {
+                list.appendChild(el('li', {
+                    className: 'imprint-timeline-year' + (year === previousYear ? ' is-page-heading' : ''),
+                    textContent: year,
+                }));
+            }
+            previousYear = year;
+            list.appendChild(el('li', { className: 'imprint-timeline-day-group' }, [
+                el('time', { className: 'imprint-timeline-date', datetime: day || null, 'aria-label': day || null }, [
+                    el('span', { className: 'imprint-timeline-day', textContent: day ? day.slice(5).replace('-', '.') : '—' }),
+                ]),
+                el('ul', { className: 'imprint-timeline-day-entries' }, group.map(renderTimelineEntry)),
+            ]));
+        });
+
+        imprintTimelinePage = Math.min(imprintTimelinePage, pages.length - 1);
+        if (pages.length === 1) return card;
+
+        const newer = el('button', {
+            type: 'button', className: 'imprint-action-link',
+            textContent: tr('common.prevPage', '上一页'),
+            onClick: function () { turnPage(-1); },
+        });
+        const older = el('button', {
+            type: 'button', className: 'imprint-action-link',
+            textContent: tr('common.nextPage', '下一页'),
+            onClick: function () { turnPage(1); },
+        });
+        const position = el('output', { className: 'imprint-timeline-position' });
+        function updatePage() {
+            pages.forEach(function (page, index) {
+                page.classList.toggle('is-inactive', index !== imprintTimelinePage);
+            });
+            newer.disabled = imprintTimelinePage === 0;
+            older.disabled = imprintTimelinePage === pages.length - 1;
+            position.textContent = (imprintTimelinePage + 1) + ' / ' + pages.length;
+        }
+        function turnPage(direction) {
+            const page = imprintTimelinePage + direction;
+            if (page < 0 || page >= pages.length) return;
+            const focusedButton = document.activeElement;
+            imprintTimelinePage = page;
+            updatePage();
+            if (focusedButton === newer && newer.disabled) {
+                older.focus({ preventScroll: true });
+            } else if (focusedButton === older && older.disabled) {
+                newer.focus({ preventScroll: true });
+            }
+        }
+        updatePage();
+        card.appendChild(el('div', { className: 'imprint-timeline-pagination' }, [newer, position, older]));
+        return card;
     }
 
     function getFallbackWarmCopy(imprint, charName) {
@@ -1271,14 +1454,6 @@
                 ]),
                 el('div', { className: 'imprint-blessing-row' }, [
                     el('p', { className: 'imprint-blessing-text', textContent: '“' + blessingText + '”' }),
-                    cached && cached.generated_at
-                        ? el('span', {
-                            className: 'imprint-note-meta',
-                            textContent: tr('memory.noteUpdatedAt', '更新于 {{date}}', {
-                                date: formatShortDate(cached.generated_at),
-                            }),
-                        })
-                        : null,
                 ]),
             ]),
         ]);
@@ -1291,7 +1466,19 @@
                     messages: stats.total_messages || 0, facts: stats.facts_total || 0, imprints: stats.imprint_persona_count || 0,
                 }),
             }),
-            el('div', { className: 'imprint-hero-actions' }, [genBtn, keepsakeBtn]),
+            el('div', { className: 'imprint-hero-actions' }, [
+                el('div', { className: 'imprint-note-actions' }, [
+                    genBtn,
+                    cached && cached.generated_at ? el('time', {
+                        className: 'imprint-note-meta',
+                        datetime: cached.generated_at,
+                        textContent: tr('memory.noteUpdatedAt', '更新于 {{date}}', {
+                            date: formatShortDate(cached.generated_at),
+                        }),
+                    }) : null,
+                ]),
+                keepsakeBtn,
+            ]),
         ]));
 
         // 3b. Memory Star Map Card (Phase 2)
@@ -1359,8 +1546,8 @@
                 className: 'memory-pill-btn is-sm',
                 disabled: clusterLabeling,
                 textContent: clusterLabeling
-                    ? tr('memory.starMapLabeling', '正在命名星云...')
-                    : tr('memory.starMapRefreshLabels', '刷新星云主题'),
+                    ? tr('memory.starMapLabeling', '正在为星团命名...')
+                    : tr('memory.starMapRefreshLabels', '刷新星团名称'),
                 onClick: handleLabelStarMapClusters,
             }));
         }
@@ -1375,7 +1562,7 @@
                 el('div', { className: 'starmap-header-row' }, [
                     el('div', { className: 'imprint-section-heading' }, [
                         el('h4', { className: 'imprint-section-title', textContent: tr('memory.starMapTitle', '专属记忆星图') }),
-                        el('p', { className: 'imprint-section-sub', textContent: tr('memory.starMapSub', '每一颗星都是一段被记住的片段，相近的回忆会自然聚成主题星云') }),
+                        el('p', { className: 'imprint-section-sub', textContent: tr('memory.starMapSub', '每一颗星都是一段被记住的片段，相近的回忆会自然聚成星团') }),
                     ]),
                     starMapHeaderActions,
                 ]),
@@ -1402,8 +1589,10 @@
                 onCollapseComplete: finishMapCollapse,
                 onRequestExpand: function (point) { setMapExpanded(true, point); },
                 onRequestCollapse: function () { setMapExpanded(false); },
-                onTrace: function (point) {
-                    openLineageDrawer(point);
+                onTrace: function (point, body) {
+                    return loadMemoryLineage(point, body, function () {
+                        return body.isConnected && !body.closest('[inert]');
+                    }, true);
                 },
                 onCorrect: function (point) {
                     setActiveTab('profile');
@@ -1416,70 +1605,16 @@
 
         // 4. Memory dimensions and a chronological reading journal.
         const dimensionsCard = el('section', { className: 'imprint-section-card imprint-dimensions-card' }, [
-            el('div', { className: 'imprint-section-heading' }, [
-                el('h4', { className: 'imprint-section-title', textContent: tr('memory.imprintDimensionsTitle', 'TA 了解你的维度') }),
-                el('p', { className: 'imprint-section-sub', textContent: tr('memory.imprintDimensionsSub', '从这些细节里，慢慢认识你。') }),
+            el('div', { className: 'imprint-dimensions-content' }, [
+                el('div', { className: 'imprint-section-heading' }, [
+                    el('h4', { className: 'imprint-section-title', textContent: tr('memory.imprintDimensionsTitle', 'TA 了解你的维度') }),
+                    el('p', { className: 'imprint-section-sub', textContent: tr('memory.imprintDimensionsSub', '按维度统计已记住的内容') }),
+                ]),
+                renderDimensionRadar(imprint.dimensions || []),
             ]),
-            renderDimensionRadar(imprint.dimensions || []),
         ]);
 
-        const milestonesList = el('ul', { className: 'imprint-timeline-list' });
-        function timelineDate(rawDate) {
-            const date = formatShortDate(rawDate);
-            return el('time', { className: 'imprint-timeline-date', datetime: rawDate || null, 'aria-label': date }, [
-                el('span', { className: 'imprint-timeline-day', textContent: date ? date.slice(5).replace('-', '.') : '—' }),
-            ]);
-        }
-        const milestones = imprint.milestones || [];
-        const evolution = imprint.evolution || [];
-        if (milestones.length === 0 && evolution.length === 0) {
-            milestonesList.appendChild(el('li', {
-                className: 'memory-empty-state',
-                textContent: tr('memory.noMilestonesYet', '随着一起经历更多故事，重要的回忆与默契会沉淀在这里。'),
-            }));
-        } else {
-            const entries = milestones.slice(0, 6).map(function (item) { return { item: item, date: item.date }; })
-                .concat(evolution.slice(0, 4).map(function (item) { return { item: item, date: item.changed_at, evolution: true }; }))
-                .sort(function (a, b) { return (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0); });
-            let previousYear = null;
-            entries.forEach(function (entry) {
-                const item = entry.item;
-                const year = formatShortDate(entry.date).slice(0, 4);
-                if (year && year !== previousYear) {
-                    milestonesList.appendChild(el('li', { className: 'imprint-timeline-year', textContent: year }));
-                    previousYear = year;
-                }
-                const note = el('div', { className: 'imprint-timeline-note' });
-                if (entry.evolution) {
-                    note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.evolutionTag', '印象演变') }));
-                    note.appendChild(renderMemoryExcerpt(item.current_text));
-                    if (item.previous_text) {
-                        note.appendChild(el('details', { className: 'imprint-evolution-history' }, [
-                            el('summary', { textContent: tr('memory.oldImpression', '之前的印象') }),
-                            el('p', { className: 'imprint-evolution-old', textContent: item.previous_text }),
-                        ]));
-                    }
-                } else {
-                    if (item.category && item.category !== 'highlight') {
-                        note.appendChild(el('span', { className: 'imprint-timeline-tag', textContent: tr('memory.milestoneCat_' + item.category, item.category) }));
-                    }
-                    note.appendChild(renderMemoryExcerpt(item.text));
-                }
-                milestonesList.appendChild(el('li', { className: 'imprint-timeline-item' }, [
-                    timelineDate(entry.date), note,
-                ]));
-            });
-        }
-
-        const timelineCard = el('section', { className: 'imprint-section-card imprint-milestones-card' }, [
-            el('div', { className: 'imprint-section-heading' }, [
-                el('h4', { className: 'imprint-section-title', textContent: tr('memory.milestonesTitle', '高光印记与印象变迁') }),
-                el('p', { className: 'imprint-section-sub', textContent: tr('memory.milestonesSub', '那些被牢记的共同片段，以及 TA 对你认识的悄然更新') }),
-            ]),
-            milestonesList,
-        ]);
-
-        content.appendChild(el('div', { className: 'imprint-visual-grid' }, [dimensionsCard, timelineCard]));
+        content.appendChild(el('div', { className: 'imprint-reading-layout' }, [dimensionsCard, renderImprintTimeline(imprint)]));
         panel.appendChild(composition);
         panel.scrollTop = scrollTop;
         updateMapViewport();
@@ -2828,6 +2963,7 @@
 
         window.addEventListener('neko:memory-character-selected', function (evt) {
             const catName = (evt && evt.detail && evt.detail.catName) ? String(evt.detail.catName) : '';
+            if (activeCharacter !== catName) imprintTimelinePage = 0;
             activeCharacter = catName;
             overviewData = null;
             starMapData = null;

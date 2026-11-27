@@ -1,6 +1,15 @@
 (function () {
     'use strict';
 
+    const PREVIEW_HINT_RESUME_MS = 650;
+    const PREVIEW_DISMISS_MS = 180;
+    const PREVIEW_SWITCH_MS = 140;
+    const PREVIEW_APPROACH_SWITCH_MS = 250;
+    const SELECTION_PULSE_PERIOD = 2.8;
+    const LINK_SHIMMER_DELAY = 0.28;
+    const LINK_SHIMMER_DURATION = 1.5;
+    let touchPreviewHintShown = false;
+
     function hexToRgba(hex, alpha) {
         const clean = hex.replace('#', '');
         const num = parseInt(clean, 16);
@@ -17,6 +26,10 @@
             const value = Math.round(((a >> shift) & 255) * (1 - amount) + ((b >> shift) & 255) * amount);
             return value.toString(16).padStart(2, '0');
         }).join('');
+    }
+
+    function starLevel(point) {
+        return Math.max(1, Math.min(3, Math.trunc(Number(point.strength) || 1)));
     }
 
     function tr(key, fallback, vars) {
@@ -65,7 +78,7 @@
             desc.className = 'starmap-coldstart-desc';
             desc.textContent = tr(
                 'memory.starMapColdStartDesc',
-                '等日常对话再沉淀几段珍贵记忆，这里就会自然汇聚成一片属于你们的主题星云。'
+                '当更多日常对话沉淀成记忆，相近的回忆会在这里聚成星团。'
             );
             const bar = document.createElement('div');
             bar.className = 'starmap-progress-track';
@@ -129,13 +142,17 @@
         });
         const previewEdges = new Set(Array.from(nearestEdges.values(), function (entry) { return entry.edge; }));
         let mapColor = '#5c6f7e';
-        let mapInkColor = '#1f2a36';
         let accentColor = '#147ea6';
+        let nodeColors;
+        let linkShimmerColor;
         function updateColors() {
             const style = getComputedStyle(hostEl);
             mapColor = style.getPropertyValue('--memory-text-secondary').trim() || '#5c6f7e';
-            mapInkColor = style.getPropertyValue('--memory-text').trim() || '#1f2a36';
             accentColor = style.getPropertyValue('--memory-accent-foreground').trim() || '#147ea6';
+            const low = style.getPropertyValue('--starmap-node-low').trim() || '#77c6fa';
+            const high = style.getPropertyValue('--starmap-node-high').trim() || '#2372ca';
+            nodeColors = [low, mixHexColors(low, high, 0.5), high];
+            linkShimmerColor = mixHexColors(accentColor, '#ffffff', 0.65);
         }
         updateColors();
 
@@ -158,14 +175,32 @@
         const hint = document.createElement('p');
         hint.id = 'starmap-explore-hint';
         hint.className = 'starmap-explore-hint';
-        hint.textContent = tr('memory.starMapClickHint', '悬停星星预览，点击展开并定位；展开后可拖动或滚轮探索。');
+        hint.textContent = tr('memory.starMapClickHint', '悬停预览星星内容，点击可查看详情；左键拖动星图滚轮缩放星图');
         stage.appendChild(hint);
 
         const tooltip = document.createElement('div');
         tooltip.className = 'starmap-tooltip';
         tooltip.setAttribute('role', 'tooltip');
         tooltip.hidden = true;
+        const tooltipHeader = document.createElement('div');
+        tooltipHeader.className = 'starmap-tooltip-header';
+        const tooltipTopic = document.createElement('strong');
+        tooltipTopic.className = 'starmap-tooltip-topic';
+        const tooltipDate = document.createElement('time');
+        tooltipDate.className = 'imprint-note-meta';
+        tooltipHeader.append(tooltipTopic, tooltipDate);
+        const tooltipText = document.createElement('div');
+        tooltipText.className = 'starmap-tooltip-text';
+        const tooltipActions = document.createElement('div');
+        tooltipActions.className = 'memory-card-actions starmap-tooltip-actions';
+        tooltip.append(tooltipHeader, tooltipText, tooltipActions);
         stage.appendChild(tooltip);
+
+        const previewHint = document.createElement('span');
+        previewHint.className = 'starmap-preview-hint';
+        previewHint.setAttribute('aria-hidden', 'true');
+        previewHint.textContent = tr('memory.starMapPreviewHint', '选择星点查看记忆');
+        stage.appendChild(previewHint);
 
         const controls = document.createElement('div');
         controls.className = 'starmap-canvas-controls';
@@ -222,12 +257,20 @@
         let offsetY = 0;
         let hoveredUid = null;
         let selectedUid = null;
+        let summaryScroll = 0;
+        let selectionStartedAt = 0;
         let keyboardIndex = -1;
         let cameraFrame = null;
         let ambientFrame = null;
         let lastAmbientDraw = 0;
         let motionTime = 0;
         let stageVisible = true;
+        let touchHintTimer;
+        let previewHintTimer;
+        let previewDismissTimer = null;
+        let previewSwitchTimer;
+        let previewedUid = null;
+        let lastPreviewPointer = null;
         let mounted = true;
         const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
         let isDragging = false;
@@ -281,6 +324,8 @@
                 rect: rect, preview: !expanded, blend: previewBlend,
                 selectedUid: selectedUid,
                 detailScroll: detail.querySelector('.starmap-detail-body')?.scrollTop || 0,
+                lineageOpen: detail.classList.contains('is-showing-lineage'),
+                summaryScroll: summaryScroll,
                 points: new Map(points.map(function (entry) {
                     const pos = pointScreen(entry, size.width, size.height);
                     return [entry.uid, [rect.left + pos[0], rect.top + pos[1]]];
@@ -375,9 +420,12 @@
             tiltX = tiltY = targetTiltX = targetTiltY = 0;
             pressedPreviewUid = null;
             previewRoot.classList.remove('is-starmap-hovering');
+            stage.classList.remove('is-preview-nearby', 'is-touch-preview-prompt');
+            window.clearTimeout(touchHintTimer);
+            resetPreviewHintDelay();
             selectedUid = null;
             hoveredUid = null;
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             if (!value) {
                 viewTransition = 'closing';
                 detail.inert = true;
@@ -397,8 +445,13 @@
             const selected = point || (restoreView && source && pointByUid[source.selectedUid]);
             if (selected) selectPoint(selected, restoreView);
             if (restoreView && source) {
-                const body = detail.querySelector('.starmap-detail-body');
-                if (body) body.scrollTop = source.detailScroll || 0;
+                if (selected && source.lineageOpen) {
+                    summaryScroll = source.summaryScroll;
+                    renderDetail(selected, { scrollTop: source.detailScroll });
+                } else {
+                    const body = detail.querySelector('.starmap-detail-body');
+                    if (body) body.scrollTop = source.detailScroll || 0;
+                }
                 moveCamera({ scale: scale, x: offsetX, y: offsetY }, false);
             } else if (!selected) moveCamera({ scale: 1, x: 0, y: 0 }, true);
             updateAmbientAnimation();
@@ -425,7 +478,7 @@
             lastTiltFrame = now;
             const tiltMoving = !expanded && (Math.abs(targetTiltX - tiltX) + Math.abs(targetTiltY - tiltY) > 0.00003);
             if (tiltMoving) {
-                const blend = 1 - Math.exp(-delta / 110);
+                const blend = 1 - Math.exp(-delta / 95);
                 tiltX += (targetTiltX - tiltX) * blend;
                 tiltY += (targetTiltY - tiltY) * blend;
             } else {
@@ -457,8 +510,8 @@
                 const depth = z * Math.cos(tiltY) - x * Math.sin(tiltY);
                 const cameraDistance = Math.max(500, projection.reach * 10);
                 const perspective = cameraDistance / (cameraDistance - depth);
-                pos[0] = cx + (x * Math.cos(tiltY) + z * Math.sin(tiltY)) * perspective + tiltY * 55;
-                pos[1] = cy + y * Math.cos(tiltX) * perspective - tiltX * 55;
+                pos[0] = cx + (x * Math.cos(tiltY) + z * Math.sin(tiltY)) * perspective + tiltY * 72;
+                pos[1] = cy + y * Math.cos(tiltX) * perspective - tiltX * 72;
             }
             const correction = expanded && correctionMix ? cameraCorrections.get(point.uid) : null;
             if (correction) {
@@ -531,7 +584,7 @@
             selectedUid = null;
             hoveredUid = null;
             keyboardIndex = -1;
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             renderDetail(null);
             moveCamera({ scale: 1, x: 0, y: 0 }, true);
             if (restoreFocus) canvas.focus({ preventScroll: true });
@@ -559,8 +612,13 @@
             const w = size.width;
             const h = size.height;
             const openness = expanded ? 1 - previewBlend : 0;
+            const selectionTime = expanded && selectedUid && !reducedMotion.matches
+                ? Math.max(0, motionTime - selectionStartedAt) % SELECTION_PULSE_PERIOD : 0;
+            const ringExpansion = (1 - Math.cos(selectionTime / SELECTION_PULSE_PERIOD * Math.PI * 2)) * 0.95;
+            const shimmerProgress = (selectionTime - LINK_SHIMMER_DELAY) / LINK_SHIMMER_DURATION;
+            const shimmerOpacity = shimmerProgress > 0 && shimmerProgress < 1
+                ? Math.sin(shimmerProgress * Math.PI) * openness * 0.56 : 0;
             canvas.style.setProperty('--starmap-edge-strength', String(openness));
-            const graphColor = mixHexColors(mapColor, mapInkColor, openness);
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
             if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
@@ -593,8 +651,10 @@
             }
             edges.forEach(function (edge, index) {
                 const highlighted = focusPoint && (edge.from.uid === focusUid || edge.to.uid === focusUid);
+                const fromSelected = edge.from.uid === selectedUid;
+                const connectsSelection = fromSelected || edge.to.uid === selectedUid;
                 if (!expanded && !highlighted && !previewEdges.has(edge)) return;
-                if (!highlighted && index % ambientEdgeStep !== 0) return;
+                if (!highlighted && !connectsSelection && index % ambientEdgeStep !== 0) return;
                 const a = pointScreen(edge.from, w, h);
                 const b = pointScreen(edge.to, w, h);
                 const dx = b[0] - a[0];
@@ -604,7 +664,6 @@
                 const bend = Math.min(expanded ? 32 : 12, distance * 0.16) * Math.sin(phase + index * 0.7);
                 const cx = (a[0] + b[0]) / 2 - dy / distance * bend;
                 const cy = (a[1] + b[1]) / 2 + dx / distance * bend;
-                const color = highlighted ? accentColor : graphColor;
                 const preview = expanded ? previewBlend : 1;
                 let alpha = highlighted ? 0.45 + 0.4 * openness : (focusPoint ? 0.07 + 0.15 * openness : 0.26 + 0.28 * openness);
                 if (expanded && !highlighted && !previewEdges.has(edge)) alpha *= 1 - preview;
@@ -615,22 +674,51 @@
                 ctx.beginPath();
                 ctx.moveTo(a[0], a[1]);
                 ctx.quadraticCurveTo(cx, cy, b[0], b[1]);
-                ctx.strokeStyle = hexToRgba(color, alpha);
+                const fromActive = edge.from.uid === hoveredUid || fromSelected;
+                const toActive = edge.to.uid === hoveredUid || edge.to.uid === selectedUid;
+                const fromColor = fromActive ? accentColor : nodeColors[starLevel(edge.from) - 1];
+                const toColor = toActive ? accentColor : nodeColors[starLevel(edge.to) - 1];
+                if (fromColor === toColor) {
+                    ctx.strokeStyle = fromColor;
+                } else {
+                    const gradient = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
+                    gradient.addColorStop(0, fromColor);
+                    gradient.addColorStop(1, toColor);
+                    ctx.strokeStyle = gradient;
+                }
+                ctx.globalAlpha = alpha;
                 ctx.lineWidth = highlighted ? 0.9 + 0.5 * openness : 0.65 + 0.45 * openness;
                 ctx.stroke();
+
+                if (connectsSelection && shimmerOpacity > 0) {
+                    const start = fromSelected ? a : b;
+                    const end = fromSelected ? b : a;
+                    const shimmer = ctx.createLinearGradient(start[0], start[1], end[0], end[1]);
+                    const transparent = hexToRgba(linkShimmerColor, 0);
+                    shimmer.addColorStop(Math.max(0, shimmerProgress - 0.22), transparent);
+                    shimmer.addColorStop(shimmerProgress, linkShimmerColor);
+                    shimmer.addColorStop(Math.min(1, shimmerProgress + 0.13), transparent);
+                    ctx.strokeStyle = shimmer;
+                    ctx.globalAlpha = shimmerOpacity * (highlighted ? 1 : 0.65);
+                    ctx.lineWidth += 0.55;
+                    ctx.stroke();
+                }
             });
 
-            // Only the active memory uses an accent; the reading view remains visible underneath.
+            // Let the background show through ordinary stars as the map expands.
             points.forEach(function (p) {
                 const pos = pointScreen(p, w, h);
                 const isSelected = p.uid === selectedUid;
                 const isHovered = p.uid === hoveredUid;
+                const isActive = isSelected || isHovered;
                 const isNeighbor = Boolean(neighborSet[p.uid]);
+                const level = starLevel(p);
                 const preview = expanded ? previewBlend : 1;
-                const baseR = 1.4 + 0.8 * openness + Number(p.strength || 1) * 0.25;
-                const r = isSelected ? 4.2 * (1 - preview) + (baseR + 0.7) * preview : (isHovered ? baseR + 0.7 : baseR);
-                const col = isSelected || isHovered ? accentColor : graphColor;
-                ctx.globalAlpha = (focusPoint && !isSelected && !isHovered && !isNeighbor) ? 0.25 + 0.35 * openness : 0.85 + 0.1 * openness;
+                const baseR = 1.4 + 0.8 * openness + level * 0.25;
+                const r = isSelected ? 4.2 * (1 - preview) + (baseR + 0.7) * preview : (isHovered ? baseR + 1.45 : baseR);
+                const col = isActive ? accentColor : nodeColors[level - 1];
+                const isDimmed = focusPoint && !isActive && !isNeighbor;
+                ctx.globalAlpha = isDimmed ? 0.25 + 0.26 * openness : 0.85 + (isActive ? 0.1 : -0.12) * openness;
                 if (expanded && preview) ctx.globalAlpha *= 1 - preview + preview * (previewVisibility.get(p.uid) ?? 1);
                 ctx.beginPath();
                 ctx.arc(pos[0], pos[1], r, 0, Math.PI * 2);
@@ -638,9 +726,9 @@
                 ctx.fill();
                 if (isSelected) {
                     ctx.beginPath();
-                    ctx.arc(pos[0], pos[1], r + 3, 0, Math.PI * 2);
-                    ctx.strokeStyle = hexToRgba(col, 0.55 * (1 - preview));
-                    ctx.lineWidth = 0.6 + 0.2 * openness;
+                    ctx.arc(pos[0], pos[1], r + 3 + ringExpansion * openness, 0, Math.PI * 2);
+                    ctx.strokeStyle = hexToRgba(col, 0.60 * (1 - preview));
+                    ctx.lineWidth = 0.6 + 0.4 * openness;
                     ctx.stroke();
                 }
                 ctx.globalAlpha = 1;
@@ -669,8 +757,48 @@
             return best;
         }
 
-        function renderDetail(point) {
+        function appendLineageHeading(head, onBack) {
+            const back = document.createElement('button');
+            back.type = 'button';
+            back.className = 'starmap-detail-link starmap-lineage-back';
+            back.title = tr('common.back', '返回');
+            back.setAttribute('aria-label', back.title);
+            back.addEventListener('click', onBack);
+            const title = document.createElement('h4');
+            title.className = 'starmap-lineage-title';
+            title.textContent = tr('memory.lineageDrawerTitle', '为什么 TA 会这么记？');
+            head.append(back, title);
+            return back;
+        }
+
+        function renderPointActions(actions, point, showLineage) {
+            actions.replaceChildren();
+            if (point.id && typeof options.onTrace === 'function') {
+                const trace = document.createElement('button');
+                trace.type = 'button';
+                trace.className = 'starmap-detail-link starmap-lineage-trigger';
+                trace.textContent = tr('memory.actionWhyRemember', '为什么这么记？');
+                trace.addEventListener('click', showLineage);
+                actions.appendChild(trace);
+            }
+            if (typeof options.onCorrect === 'function') {
+                const correct = document.createElement('button');
+                correct.type = 'button';
+                correct.className = 'starmap-detail-link';
+                correct.textContent = tr('memory.starMapGoCorrect', '去校准');
+                correct.addEventListener('click', function () {
+                    clearPreview();
+                    options.onCorrect(point);
+                });
+                actions.appendChild(correct);
+            }
+            actions.hidden = !actions.childElementCount;
+        }
+
+        function renderDetail(point, lineage) {
             detail.textContent = '';
+            detail.classList.toggle('is-showing-lineage', Boolean(lineage));
+            detail.setAttribute('aria-live', lineage ? 'off' : 'polite');
             detail.hidden = !point;
             detail.inert = !point;
             hint.hidden = Boolean(point);
@@ -679,22 +807,31 @@
                 return;
             }
 
-            const cluster = clusterById[point.cluster_id];
-            const head = document.createElement('div');
-            head.className = 'memory-entry-badges';
-            if (cluster) {
-                const tag = document.createElement('span');
-                tag.className = 'memory-mini-badge is-accent';
-                tag.textContent = cluster.label;
-                head.appendChild(tag);
-            }
-            const stars = document.createElement('span');
-            stars.className = 'memory-mini-badge';
-            stars.textContent = '★'.repeat(Math.max(1, Math.min(3, Number(point.strength || 1))));
-            head.appendChild(stars);
             const detailHead = document.createElement('div');
             detailHead.className = 'starmap-detail-head';
-            detailHead.appendChild(head);
+            let backBtn;
+            if (lineage) {
+                backBtn = appendLineageHeading(detailHead, function () {
+                    renderDetail(point);
+                    detail.querySelector('.starmap-detail-body').scrollTop = summaryScroll;
+                    detail.querySelector('.starmap-lineage-trigger').focus({ preventScroll: true });
+                });
+            } else {
+                const head = document.createElement('div');
+                head.className = 'memory-entry-badges';
+                const cluster = clusterById[point.cluster_id];
+                if (cluster) {
+                    const tag = document.createElement('span');
+                    tag.className = 'memory-mini-badge is-accent';
+                    tag.textContent = cluster.label;
+                    head.appendChild(tag);
+                }
+                const stars = document.createElement('span');
+                stars.className = 'memory-mini-badge';
+                stars.textContent = '★'.repeat(starLevel(point));
+                head.appendChild(stars);
+                detailHead.appendChild(head);
+            }
             const closeBtn = document.createElement('button');
             closeBtn.type = 'button';
             closeBtn.className = 'starmap-detail-close';
@@ -708,6 +845,16 @@
             detailBody.className = 'starmap-detail-body';
             detailBody.tabIndex = 0;
             detail.appendChild(detailBody);
+            if (lineage) {
+                const story = document.createElement('div');
+                story.className = 'starmap-lineage-story';
+                detailBody.appendChild(story);
+                options.onTrace(point, story).then(function () {
+                    detailBody.scrollTop = lineage.scrollTop;
+                });
+                if (lineage.focusBack) backBtn.focus({ preventScroll: true });
+                return;
+            }
             const body = document.createElement('p');
             body.className = 'starmap-detail-text';
             body.textContent = point.text;
@@ -745,23 +892,10 @@
 
             const actions = document.createElement('div');
             actions.className = 'memory-card-actions';
-
-            if (typeof options.onTrace === 'function') {
-                const traceBtn = document.createElement('button');
-                traceBtn.type = 'button';
-                traceBtn.className = 'memory-pill-btn is-sm';
-                traceBtn.textContent = tr('memory.actionWhyRemember', '为什么这么记？');
-                traceBtn.addEventListener('click', function () { options.onTrace(point); });
-                actions.appendChild(traceBtn);
-            }
-            if (typeof options.onCorrect === 'function') {
-                const fixBtn = document.createElement('button');
-                fixBtn.type = 'button';
-                fixBtn.className = 'memory-pill-btn is-primary is-sm';
-                fixBtn.textContent = tr('memory.starMapGoCorrect', '去校准');
-                fixBtn.addEventListener('click', function () { options.onCorrect(point); });
-                actions.appendChild(fixBtn);
-            }
+            renderPointActions(actions, point, function () {
+                summaryScroll = detailBody.scrollTop;
+                renderDetail(point, { scrollTop: 0, focusBack: true });
+            });
             detail.appendChild(actions);
         }
 
@@ -770,9 +904,11 @@
                 if (typeof options.onRequestExpand === 'function') options.onRequestExpand(point);
                 return;
             }
+            if (point && point.uid !== selectedUid) selectionStartedAt = performance.now() / 1000;
             selectedUid = point ? point.uid : null;
+            summaryScroll = 0;
             hoveredUid = null;
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             renderDetail(point);
             if (point) {
                 keyboardIndex = points.indexOf(point);
@@ -781,69 +917,230 @@
             }
         }
 
-        function previewPoint(point, clientX, clientY) {
-            tooltip.textContent = '';
+        function previewPoint(point) {
+            cancelPreviewTimers();
+            if (!tooltip.hidden && previewedUid === point.uid) return;
+            previewedUid = point.uid;
             const cluster = clusterById[point.cluster_id];
-            if (cluster) {
-                const topic = document.createElement('strong');
-                topic.className = 'starmap-tooltip-topic';
-                topic.textContent = cluster.label;
-                tooltip.appendChild(topic);
-            }
-            const summary = document.createElement('span');
-            const text = String(point.text || '');
-            summary.textContent = text.length > 120 ? text.slice(0, 120) + '…' : text;
-            tooltip.appendChild(summary);
+            const date = String(point.created_at || '').slice(0, 10);
+            tooltipTopic.textContent = cluster?.label || '';
+            tooltipDate.textContent = date;
+            tooltipDate.dateTime = date;
+            tooltipHeader.hidden = !cluster && !date;
+            tooltipText.textContent = point.text;
+            tooltip.setAttribute('role', expanded ? 'tooltip' : 'dialog');
+            tooltip.setAttribute('aria-label', cluster?.label || tr('memory.starMapTitle', '专属记忆星图'));
+            if (expanded) tooltipActions.hidden = true;
+            else renderPointActions(tooltipActions, point, function () { showPreviewLineage(point); });
             tooltip.hidden = false;
+            tooltipText.scrollTop = 0;
+            positionPreview(point);
+        }
+
+        function isPreviewLineageOpen() {
+            return tooltip.classList.contains('is-showing-lineage');
+        }
+
+        function restorePreviewSummary() {
+            if (!isPreviewLineageOpen()) return;
+            tooltip.classList.remove('is-showing-lineage');
+            tooltip.replaceChildren(tooltipHeader, tooltipText, tooltipActions);
+        }
+
+        function showPreviewLineage(point) {
+            cancelPreviewTimers();
+            const scrollTop = tooltipText.scrollTop;
+            const head = document.createElement('div');
+            head.className = 'starmap-detail-head';
+            const back = appendLineageHeading(head, function () {
+                restorePreviewSummary();
+                positionPreview(point);
+                tooltipText.scrollTop = scrollTop;
+                tooltipActions.querySelector('.starmap-lineage-trigger').focus({ preventScroll: true });
+            });
+            const body = document.createElement('div');
+            body.className = 'starmap-tooltip-text';
+            body.tabIndex = 0;
+            const story = document.createElement('div');
+            story.className = 'starmap-lineage-story';
+            body.appendChild(story);
+            tooltip.classList.add('is-showing-lineage');
+            tooltip.replaceChildren(head, body);
+            positionPreview(point);
+            back.focus({ preventScroll: true });
+            options.onTrace(point, story);
+        }
+
+        function positionPreview(point) {
             const rect = stage.getBoundingClientRect();
-            const x = clientX - rect.left;
-            const y = clientY - rect.top;
-            const left = x + tooltip.offsetWidth + 16 > rect.width ? x - tooltip.offsetWidth - 16 : x + 16;
-            tooltip.style.left = Math.max(12, Math.min(left, rect.width - tooltip.offsetWidth - 12)) + 'px';
-            tooltip.style.top = Math.max(12, Math.min(y + 16, rect.height - tooltip.offsetHeight - 12)) + 'px';
+            const [x, y] = pointScreen(point, rect.width, rect.height);
+            const inset = 12;
+            const gap = 16;
+            const lineage = isPreviewLineageOpen();
+            const viewport = lineage ? previewRoot.getBoundingClientRect() : rect;
+            const topLimit = Math.max(0, viewport.top) - rect.top + inset;
+            const bottomLimit = Math.min(window.innerHeight, viewport.bottom) - rect.top - inset;
+            const heightLimit = lineage ? 340 : 220;
+            const above = y - gap - topLimit;
+            const below = bottomLimit - y - gap;
+            const leftSpace = x - gap - inset;
+            const rightSpace = rect.width - x - gap - inset;
+            tooltip.style.maxWidth = '';
+            tooltip.style.maxHeight = Math.min(heightLimit, bottomLimit - topLimit) + 'px';
+
+            let left;
+            let top;
+            if (Math.max(above, below) < tooltip.offsetHeight && Math.max(leftSpace, rightSpace) >= 216) {
+                const placeRight = rightSpace >= leftSpace;
+                tooltip.style.maxWidth = Math.min(308, placeRight ? rightSpace : leftSpace) + 'px';
+                left = placeRight ? x + gap : x - gap - tooltip.offsetWidth;
+                top = y - 12;
+            } else {
+                const placeBelow = below >= tooltip.offsetHeight || below >= above;
+                tooltip.style.maxHeight = Math.min(heightLimit, placeBelow ? below : above) + 'px';
+                top = placeBelow ? y + gap : y - gap - tooltip.offsetHeight;
+                left = rightSpace >= tooltip.offsetWidth ? x + gap : x - gap - tooltip.offsetWidth;
+            }
+            tooltip.style.left = Math.max(inset, Math.min(left, rect.width - tooltip.offsetWidth - inset)) + 'px';
+            tooltip.style.top = Math.max(topLimit, Math.min(top, bottomLimit - tooltip.offsetHeight)) + 'px';
         }
 
         function isReadingControl(target) {
-            return target instanceof Element && target.closest('button, a, input, select, textarea, label, [contenteditable]');
+            return target instanceof Element && (tooltip.contains(target)
+                || target.closest('button, a, input, select, textarea, label, [contenteditable]'));
+        }
+
+        function resetPreviewHintDelay() {
+            window.clearTimeout(previewHintTimer);
+            stage.classList.remove('is-preview-hint-paused');
+        }
+
+        function delayPreviewHint(hoveringStar) {
+            window.clearTimeout(previewHintTimer);
+            stage.classList.add('is-preview-hint-paused');
+            if (!hoveringStar) {
+                previewHintTimer = window.setTimeout(resetPreviewHintDelay, PREVIEW_HINT_RESUME_MS);
+            }
+        }
+
+        function hidePreviewTooltip() {
+            cancelPreviewTimers();
+            if (!tooltip.hidden && stage.classList.contains('is-preview-hint-paused')) delayPreviewHint(false);
+            tooltip.hidden = true;
+            restorePreviewSummary();
+        }
+
+        function cancelPreviewDismiss() {
+            window.clearTimeout(previewDismissTimer);
+            previewDismissTimer = null;
+        }
+
+        function cancelPreviewTimers() {
+            cancelPreviewDismiss();
+            window.clearTimeout(previewSwitchTimer);
+        }
+
+        function schedulePreviewDismiss() {
+            if (tooltip.hidden || isPreviewLineageOpen() || previewDismissTimer !== null) return;
+            previewDismissTimer = window.setTimeout(function () {
+                previewDismissTimer = null;
+                if (tooltip.contains(document.activeElement) || tooltip.matches(':hover')) return;
+                hoveredUid = null;
+                hidePreviewTooltip();
+                draw();
+            }, PREVIEW_DISMISS_MS);
         }
 
         function clearPreview() {
             targetTiltX = targetTiltY = 0;
             pressedPreviewUid = null;
             hoveredUid = null;
-            tooltip.hidden = true;
+            lastPreviewPointer = null;
+            hidePreviewTooltip();
             previewRoot.classList.remove('is-starmap-hovering');
+            stage.classList.remove('is-preview-nearby');
             if (!expanded) canvas.setAttribute('aria-label', tr('memory.starMapTitle', '专属记忆星图'));
             if (mounted && stageVisible && !document.hidden) draw();
         }
 
+        function movesTowardPreview(previous, pointer) {
+            if (!previous || tooltip.hidden) return false;
+            const { x, y } = pointer;
+            const dx = x - previous.x;
+            const dy = y - previous.y;
+            const { left, right, top, bottom } = tooltip.getBoundingClientRect();
+            const margin = 8;
+
+            // Check whether the pointer's direction reaches an edge of the current card.
+            if ((dx > 0 && x < left) || (dx < 0 && x > right)) {
+                const edgeX = dx > 0 ? left : right;
+                const edgeY = y + (edgeX - x) * dy / dx;
+                if (edgeY >= top - margin && edgeY <= bottom + margin) return true;
+            }
+            if ((dy > 0 && y < top) || (dy < 0 && y > bottom)) {
+                const edgeY = dy > 0 ? top : bottom;
+                const edgeX = x + (edgeY - y) * dx / dy;
+                return edgeX >= left - margin && edgeX <= right + margin;
+            }
+            return false;
+        }
+
+        function updatePreviewHover(point) {
+            previewRoot.classList.toggle('is-starmap-hovering', Boolean(point));
+            if (!point) {
+                schedulePreviewDismiss();
+                return;
+            }
+            if (point.uid !== hoveredUid) {
+                hoveredUid = point.uid;
+                draw();
+            }
+            if (tooltip.hidden || !stage.classList.contains('is-preview-hint-paused')) delayPreviewHint(true);
+            previewPoint(point);
+        }
+
         function onPreviewMove(ev) {
-            if (expanded || !stageVisible) return;
+            if (expanded || !stageVisible || isPreviewLineageOpen() || tooltip.contains(ev.target)) return;
+            window.clearTimeout(previewSwitchTimer);
+            const previous = lastPreviewPointer;
+            const pointer = { x: ev.clientX, y: ev.clientY };
+            lastPreviewPointer = pointer;
             const rect = canvas.getBoundingClientRect();
-            if (!reducedMotion.matches && ev.pointerType !== 'touch') {
-                const projection = previewProjection(rect.width, rect.height);
-                const dx = (ev.clientX - rect.left - projection.centerX) / projection.reach;
-                const dy = (ev.clientY - rect.top - projection.centerY) / projection.reach;
-                const proximity = Math.max(0, Math.min(1, 1.5 - Math.hypot(dx, dy)));
-                targetTiltX = -Math.max(-1, Math.min(1, dy)) * 0.05 * proximity;
-                targetTiltY = Math.max(-1, Math.min(1, dx)) * 0.065 * proximity;
+            const projection = previewProjection(rect.width, rect.height);
+            const readingControl = isReadingControl(ev.target);
+            const dx = (ev.clientX - rect.left - projection.centerX) / (projection.reach * 1.85);
+            const dy = (ev.clientY - rect.top - projection.centerY) / (projection.reach * 1.65);
+            const distance = Math.hypot(dx, dy);
+            const followsPointer = !readingControl && ev.pointerType !== 'touch' && distance < 1;
+            stage.classList.toggle('is-preview-nearby', followsPointer);
+            if (!reducedMotion.matches) {
+                // Ease the tilt back to neutral as the pointer leaves the hint area.
+                const strength = followsPointer ? Math.min(1, (1 - distance) * 3) : 0;
+                targetTiltX = -dy * 0.1 * strength;
+                targetTiltY = dx * 0.125 * strength;
             }
             if (pressedPreviewUid && Math.hypot(ev.clientX - previewDownX, ev.clientY - previewDownY) > 6) {
                 pressedPreviewUid = null;
             }
-            const hit = isReadingControl(ev.target) ? null : hitTest(ev.clientX, ev.clientY);
-            const nextHover = hit ? hit.uid : null;
-            if (nextHover !== hoveredUid) {
-                hoveredUid = nextHover;
-                previewRoot.classList.toggle('is-starmap-hovering', Boolean(hit));
-                draw();
+            const canPreview = !readingControl && ev.pointerType !== 'touch';
+            const hit = canPreview ? hitTest(pointer.x, pointer.y) : null;
+            const movingTowardCard = canPreview && movesTowardPreview(previous, pointer);
+            if (movingTowardCard) cancelPreviewDismiss();
+            if (hit && !tooltip.hidden && hit.uid !== previewedUid) {
+                cancelPreviewDismiss();
+                previewRoot.classList.add('is-starmap-hovering');
+                previewSwitchTimer = window.setTimeout(function () {
+                    updatePreviewHover(hitTest(pointer.x, pointer.y));
+                }, movingTowardCard ? PREVIEW_APPROACH_SWITCH_MS : PREVIEW_SWITCH_MS);
+                return;
             }
-            if (hit && ev.pointerType !== 'touch') previewPoint(hit, ev.clientX, ev.clientY);
-            else tooltip.hidden = true;
+            updatePreviewHover(hit);
         }
 
         function onPreviewDown(ev) {
-            if (expanded || ev.button !== 0 || isReadingControl(ev.target)) return;
+            if (expanded || ev.button !== 0 || tooltip.contains(ev.target)) return;
+            if (isPreviewLineageOpen()) clearPreview();
+            if (isReadingControl(ev.target)) return;
             const hit = hitTest(ev.clientX, ev.clientY);
             pressedPreviewUid = hit ? hit.uid : null;
             previewDownX = ev.clientX;
@@ -863,7 +1160,24 @@
         }
 
         function onPreviewLeave() {
-            if (!expanded) clearPreview();
+            if (!expanded && !isPreviewLineageOpen() && !tooltip.contains(document.activeElement)) clearPreview();
+        }
+
+        function showTouchPreviewHint() {
+            if (touchPreviewHintShown || expanded || document.hidden
+                || !window.matchMedia('(hover: none) and (pointer: coarse)').matches) return;
+            touchPreviewHintShown = true;
+            try {
+                const key = 'neko-memory-star-map-preview-seen';
+                if (window.sessionStorage.getItem(key)) return;
+                window.sessionStorage.setItem(key, '1');
+            } catch (_e) {
+                // Keep the once-per-page behavior when storage is unavailable.
+            }
+            stage.classList.add('is-touch-preview-prompt');
+            touchHintTimer = window.setTimeout(function () {
+                stage.classList.remove('is-touch-preview-prompt');
+            }, 3200);
         }
 
         // Observe the panel without putting a transparent hit box over its text or controls.
@@ -872,6 +1186,15 @@
         previewRoot.addEventListener('click', onPreviewClick, true);
         previewRoot.addEventListener('pointerleave', onPreviewLeave);
         previewRoot.addEventListener('pointercancel', onPreviewLeave);
+        tooltip.addEventListener('pointerenter', function () {
+            lastPreviewPointer = null;
+            cancelPreviewTimers();
+        });
+        tooltip.addEventListener('pointerleave', schedulePreviewDismiss);
+        tooltip.addEventListener('focusin', cancelPreviewTimers);
+        tooltip.addEventListener('focusout', function (ev) {
+            if (!tooltip.contains(ev.relatedTarget)) schedulePreviewDismiss();
+        });
 
         // Mouse interactions
         canvas.addEventListener('pointerdown', function (ev) {
@@ -896,23 +1219,22 @@
                 if (Math.hypot(dx, dy) > 4) dragMoved = true;
                 offsetX = dragOrigOffsetX + dx;
                 offsetY = dragOrigOffsetY + dy;
-                tooltip.hidden = true;
+                hidePreviewTooltip();
                 canvas.style.cursor = 'grabbing';
                 draw();
                 return;
             }
             const hit = hitTest(ev.clientX, ev.clientY);
-            const nextHover = hit ? hit.uid : null;
-            if (nextHover !== hoveredUid) {
-                hoveredUid = nextHover;
-                canvas.style.cursor = hit ? 'pointer' : 'grab';
+            canvas.style.cursor = hit ? 'pointer' : 'grab';
+            if (!hit) {
+                schedulePreviewDismiss();
+                return;
+            }
+            if (hit.uid !== hoveredUid) {
+                hoveredUid = hit.uid;
                 draw();
             }
-            if (hit) {
-                previewPoint(hit, ev.clientX, ev.clientY);
-            } else {
-                tooltip.hidden = true;
-            }
+            previewPoint(hit);
         });
 
         canvas.addEventListener('pointerup', function (ev) {
@@ -935,29 +1257,28 @@
         });
 
         canvas.addEventListener('pointerleave', function () {
-            hoveredUid = null;
-            tooltip.hidden = true;
-            draw();
+            if (expanded) schedulePreviewDismiss();
         });
 
         canvas.addEventListener('pointercancel', function () {
             isDragging = false;
             canvas.style.cursor = 'grab';
             hoveredUid = null;
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             draw();
         });
         canvas.addEventListener('lostpointercapture', function () {
             isDragging = false;
             canvas.style.cursor = 'grab';
         });
-        canvas.addEventListener('blur', function () {
+        canvas.addEventListener('blur', function (ev) {
+            if (tooltip.contains(ev.relatedTarget)) return;
             if (!expanded) {
                 clearPreview();
                 return;
             }
             hoveredUid = null;
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             draw();
         });
 
@@ -966,7 +1287,7 @@
             ev.preventDefault();
             if (viewTransition) return;
             stopCameraAnimation();
-            tooltip.hidden = true;
+            hidePreviewTooltip();
             hoveredUid = null;
             const rect = canvas.getBoundingClientRect();
             const x = ev.clientX - rect.left - rect.width / 2;
@@ -980,6 +1301,7 @@
         }, { passive: false });
 
         canvas.addEventListener('keydown', function (ev) {
+            if (!expanded) resetPreviewHintDelay();
             if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(ev.key) && points.length) {
                 ev.preventDefault();
                 const step = ev.key === 'ArrowLeft' || ev.key === 'ArrowUp' ? -1 : 1;
@@ -987,9 +1309,7 @@
                     : (keyboardIndex + step + points.length) % points.length;
                 const point = points[keyboardIndex];
                 hoveredUid = point.uid;
-                const rect = canvas.getBoundingClientRect();
-                const pos = pointScreen(point, rect.width, rect.height);
-                previewPoint(point, rect.left + pos[0], rect.top + pos[1]);
+                previewPoint(point);
                 canvas.setAttribute('aria-label', tr('memory.starMapTitle', '专属记忆星图') + ' · ' + point.text);
                 draw();
             } else if ((ev.key === 'Enter' || ev.key === ' ') && points.length) {
@@ -1001,7 +1321,13 @@
         stage.addEventListener('keydown', function (ev) {
             if (ev.key === 'Escape') {
                 ev.preventDefault();
-                if (!expanded) clearPreview();
+                if (!expanded && isPreviewLineageOpen()) tooltip.querySelector('.starmap-lineage-back').click();
+                else if (!expanded) {
+                    const restoreFocus = tooltip.contains(document.activeElement);
+                    clearPreview();
+                    if (restoreFocus) canvas.focus({ preventScroll: true });
+                }
+                else if (detail.classList.contains('is-showing-lineage')) detail.querySelector('.starmap-lineage-back').click();
                 else if (selectedUid) resetView(true);
                 else if (typeof options.onRequestCollapse === 'function') options.onRequestCollapse();
             }
@@ -1040,6 +1366,7 @@
             visibilityObserver = new IntersectionObserver(function (entries) {
                 stageVisible = entries[0].isIntersecting;
                 if (!stageVisible && !expanded) clearPreview();
+                if (stageVisible) showTouchPreviewHint();
                 updateAmbientAnimation();
             });
             visibilityObserver.observe(stage);
@@ -1050,6 +1377,9 @@
 
         function unmount() {
             mounted = false;
+            cancelPreviewTimers();
+            window.clearTimeout(touchHintTimer);
+            resetPreviewHintDelay();
             stopCameraAnimation();
             if (ambientFrame !== null) window.cancelAnimationFrame(ambientFrame);
             previewRoot.removeEventListener('pointermove', onPreviewMove);
